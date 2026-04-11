@@ -7,8 +7,9 @@ use uuid::Uuid;
 pub struct User {
     pub id: Uuid,
     pub username: String,
+    pub email: String,
     #[serde(skip_serializing)]
-    pub password_hash: String,
+    pub password_hash: Option<String>,
     pub public_key: Option<String>,
     pub is_admin: bool,
     pub disabled: bool,
@@ -19,20 +20,6 @@ pub struct User {
     pub require_2fa: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-}
-
-impl From<User> for crate::proto::common::User {
-    fn from(user: User) -> Self {
-        crate::proto::common::User {
-            id: user.id.to_string(),
-            username: user.username,
-            email: String::new(), // deprecated, kept for proto compat
-            is_admin: user.is_admin,
-            totp_enabled: user.totp_enabled,
-            require_2fa: user.require_2fa,
-            created_at: user.created_at.to_rfc3339(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,8 +48,7 @@ impl From<User> for UserPublic {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ContentType {
     #[default]
     Text,

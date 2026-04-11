@@ -64,7 +64,7 @@ services:
       context: ./server
       dockerfile: Dockerfile
     ports:
-      - "50051:50051"
+      - "8080:8080"
     environment:
       DATABASE_URL: postgres://fast_chat:${POSTGRES_PASSWORD:-changeme}@postgres:5432/fast_chat
       REDIS_URL: redis://redis:6379
@@ -77,17 +77,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    networks:
-      - fastchat
-
-  envoy:
-    image: envoyproxy/envoy:v1.31-latest
-    ports:
-      - "8082:8080"
-    volumes:
-      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
-    depends_on:
-      - server
     networks:
       - fastchat
 

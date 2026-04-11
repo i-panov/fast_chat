@@ -7,11 +7,16 @@ pub struct Settings {
     pub redis_url: String,
     pub jwt_secret: String,
     pub jwt_expiry_hours: i64,
+    pub refresh_token_expiry_days: i64,
     pub files_dir: PathBuf,
     pub server_addr: String,
     pub coturn_host: String,
     pub coturn_port: u16,
     pub ion_sfu_url: Option<String>,
+    pub tls_cert_path: Option<String>,
+    pub tls_key_path: Option<String>,
+    pub allow_registration: bool,
+    pub require_2fa: bool,
 }
 
 impl Default for Settings {
@@ -21,11 +26,16 @@ impl Default for Settings {
             redis_url: "redis://localhost:6379".to_string(),
             jwt_secret: "changeme".to_string(),
             jwt_expiry_hours: 24,
+            refresh_token_expiry_days: 7,
             files_dir: PathBuf::from("./files"),
-            server_addr: "0.0.0.0:50051".to_string(),
+            server_addr: "0.0.0.0:8080".to_string(),
             coturn_host: "localhost".to_string(),
             coturn_port: 3478,
             ion_sfu_url: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            allow_registration: false,
+            require_2fa: false,
         }
     }
 }
