@@ -20,6 +20,7 @@ pub struct Settings {
     pub vapid_public_key: Option<String>,
     pub vapid_private_key: Option<String>,
     pub vapid_subject: Option<String>,
+    pub allowed_origins: Vec<String>,
 }
 
 impl Default for Settings {
@@ -42,6 +43,7 @@ impl Default for Settings {
             vapid_public_key: None,
             vapid_private_key: None,
             vapid_subject: None,
+            allowed_origins: vec![],
         }
     }
 }

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use totp_lite::{totp, Sha1};
 use uuid::Uuid;
+use argon2::{PasswordVerifier, PasswordHasher};
 
 use crate::{
     crypto::CryptoService,
@@ -187,8 +188,14 @@ pub async fn remove_used_backup_code(
         if let Ok(decrypted) = CryptoService::decrypt_aes(&enc, &state.settings.jwt_secret) {
             if let Ok(hashes_json) = String::from_utf8(decrypted) {
                 if let Ok(mut hashes) = serde_json::from_slice::<Vec<String>>(hashes_json.as_bytes()) {
-                    if let Some(idx) = hashes.iter().position(|h| {
-                        CryptoService::verify_backup_code(used_code, h).unwrap_or(false)
+                    if let Some(idx) = hashes.iter().position(|hash_str| {
+                        if let Ok(parsed_hash) = argon2::PasswordHash::new(hash_str) {
+                            argon2::Argon2::default()
+                                .verify_password(used_code.as_bytes(), &parsed_hash)
+                                .is_ok()
+                        } else {
+                            false
+                        }
                     }) {
                         hashes.remove(idx);
                         let new_json = serde_json::to_string(&hashes).map_err(AppError::Serialization)?;

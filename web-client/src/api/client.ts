@@ -1,7 +1,7 @@
 import type { User, AuthResponse, Chat, Message, Channel, FileMeta, PendingMessage, SseEvent } from '@/types'
 import * as db from '@/db'
 
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080'
 
 // ─── HTTP Client ───
 class ApiClient {

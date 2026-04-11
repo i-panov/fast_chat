@@ -3,7 +3,7 @@
 
 CREATE TABLE bots (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    owner_id UUID REFERENCES users(id) ON DELETE SET NULL,
     username VARCHAR(60) UNIQUE NOT NULL,       -- always ends with _bot
     display_name VARCHAR(100),
     description TEXT,

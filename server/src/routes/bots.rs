@@ -88,19 +88,13 @@ async fn get_bot_by_token(state: &AppState, token: &str) -> Result<Bot, AppError
 
 fn bot_to_json(bot: &Bot, include_token: Option<&str>) -> serde_json::Value {
     let mut v = serde_json::json!({
-        "id": bot.id.to_string(), "owner_id": bot.owner_id.to_string(), "username": bot.username,
+        "id": bot.id.to_string(), "owner_id": bot.owner_id.map(|id| id.to_string()), "username": bot.username,
         "display_name": bot.display_name, "description": bot.description, "avatar_url": bot.avatar_url,
         "webhook_url": bot.webhook_url, "delivery_mode": bot.delivery_mode,
         "is_active": bot.is_active, "is_master": bot.is_master, "created_at": bot.created_at.to_rfc3339(),
     });
     if let Some(t) = include_token { v["access_token"] = serde_json::Value::String(t.to_string()); }
     v
-}
-
-fn extract_auth(headers: &HeaderMap) -> Result<(String, Uuid), AppError> {
-    let auth_header = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()).ok_or(AppError::InvalidToken)?;
-    let user_id = get_user_id_from_request(auth_header, "placeholder")?;
-    Ok((auth_header.to_string(), user_id))
 }
 
 async fn verify_owner(state: &AppState, bot_id: Uuid, user_id: Uuid) -> Result<(), AppError> {
@@ -111,8 +105,7 @@ async fn verify_owner(state: &AppState, bot_id: Uuid, user_id: Uuid) -> Result<(
 }
 
 pub async fn create_bot(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap, Json(req): Json<CreateBotRequest>) -> Result<Json<serde_json::Value>, AppError> {
-    let (_, user_id) = extract_auth(&headers)?;
-    let actual_user_id = get_user_id_from_request(headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()).ok_or(AppError::InvalidToken)?, &state.settings.jwt_secret)?;
+    let user_id = get_user_id_from_request(headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()).ok_or(AppError::InvalidToken)?, &state.settings.jwt_secret)?;
     let mut username = req.username.trim().to_lowercase();
     if !username.ends_with("_bot") { username = format!("{}_bot", username); }
     if !username.chars().all(|c| c.is_alphanumeric() || c == '_') { return Err(AppError::Validation("Username must be alphanumeric + underscores".to_string())); }
@@ -120,15 +113,14 @@ pub async fn create_bot(State(state): State<std::sync::Arc<AppState>>, headers: 
     let token_hash = hash_bot_token(&token);
     let now = Utc::now();
     let bot = sqlx::query_as::<_, Bot>("INSERT INTO bots (owner_id, username, display_name, description, access_token_hash, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *")
-        .bind(actual_user_id).bind(&username).bind(&req.display_name).bind(&req.description).bind(&token_hash).bind(now).bind(now)
+        .bind(user_id).bind(&username).bind(&req.display_name).bind(&req.description).bind(&token_hash).bind(now).bind(now)
         .fetch_one(state.db.get_pool()).await?;
     Ok(Json(bot_to_json(&bot, Some(&token))))
 }
 
 pub async fn list_bots(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let (_, user_id) = extract_auth(&headers)?;
-    let actual_user_id = get_user_id_from_request(headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()).ok_or(AppError::InvalidToken)?, &state.settings.jwt_secret)?;
-    let bots = sqlx::query_as::<_, Bot>("SELECT * FROM bots WHERE owner_id = $1 ORDER BY created_at DESC").bind(actual_user_id).fetch_all(state.db.get_pool()).await?;
+    let user_id = get_user_id_from_request(headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()).ok_or(AppError::InvalidToken)?, &state.settings.jwt_secret)?;
+    let bots = sqlx::query_as::<_, Bot>("SELECT * FROM bots WHERE owner_id = $1 ORDER BY created_at DESC").bind(user_id).fetch_all(state.db.get_pool()).await?;
     Ok(Json(bots.iter().map(|b| bot_to_json(b, None)).collect()))
 }
 

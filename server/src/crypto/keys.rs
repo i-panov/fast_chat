@@ -1,10 +1,10 @@
+use aes_gcm::{Aes256Gcm, Nonce as AesNonce};
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher, PasswordVerifier};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng},
     ChaCha20Poly1305, Nonce,
 };
-use aes_gcm::{Aes256Gcm, Nonce as AesNonce};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
@@ -27,7 +27,7 @@ impl CryptoService {
     pub fn encrypt_message(
         content: &[u8],
         recipient_public_key: &str,
-    ) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
+    ) -> Result<Vec<u8>, CryptoError> {
         let public_key_bytes = BASE64
             .decode(recipient_public_key)
             .map_err(|_| CryptoError::InvalidPublicKey)?;
@@ -55,13 +55,15 @@ impl CryptoService {
             .map_err(|_| CryptoError::EncryptionFailed)?;
 
         let mut result = ephemeral_public.as_bytes().to_vec();
+        result.extend(&nonce_bytes);
         result.extend(ciphertext);
 
-        Ok((result, nonce_bytes.to_vec()))
+        Ok(result)
     }
 
     pub fn decrypt_message(encrypted: &[u8], private_key: &str) -> Result<Vec<u8>, CryptoError> {
-        if encrypted.len() < 32 {
+        // Format: ephemeral_public (32 bytes) + nonce (12 bytes) + ciphertext
+        if encrypted.len() < 44 {
             return Err(CryptoError::InvalidCiphertext);
         }
 
@@ -84,8 +86,8 @@ impl CryptoService {
         let key = shared_secret.as_bytes();
 
         let cipher = ChaCha20Poly1305::new(key.into());
-        let nonce = Nonce::from_slice(&encrypted[..12]);
-        let ciphertext = &encrypted[32..];
+        let nonce = Nonce::from_slice(&encrypted[32..44]);
+        let ciphertext = &encrypted[44..];
 
         cipher
             .decrypt(nonce, ciphertext)
@@ -158,7 +160,10 @@ impl CryptoService {
         for hash_str in &hashes {
             let parsed_hash =
                 argon2::PasswordHash::new(hash_str).map_err(|_| CryptoError::PasswordHashFailed)?;
-            if argon2.verify_password(code.as_bytes(), &parsed_hash).is_ok() {
+            if argon2
+                .verify_password(code.as_bytes(), &parsed_hash)
+                .is_ok()
+            {
                 return Ok(true);
             }
         }
@@ -173,7 +178,10 @@ impl CryptoService {
 
     /// Legacy: verify codes joined with '|' against a single argon2 hash
     #[allow(dead_code)]
-    pub fn verify_backup_codes_legacy(codes: &[String], stored_hash: &str) -> Result<bool, CryptoError> {
+    pub fn verify_backup_codes_legacy(
+        codes: &[String],
+        stored_hash: &str,
+    ) -> Result<bool, CryptoError> {
         let combined: String = codes.join("|");
         let parsed_hash =
             argon2::PasswordHash::new(stored_hash).map_err(|_| CryptoError::PasswordHashFailed)?;

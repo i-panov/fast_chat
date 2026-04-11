@@ -208,10 +208,14 @@ pub async fn get_channel(
 
     // Private channels: only subscribers or owner can see details
     if ch.access_level != "public" {
-        let _: Option<i64> = sqlx::query_scalar(
+        let is_subscribed: Option<i64> = sqlx::query_scalar(
             "SELECT 1 FROM channel_subscribers WHERE channel_id = $1 AND user_id = $2 AND status IN ('active', 'pending')"
         ).bind(ch_id).bind(user_id).fetch_optional(state.db.get_pool()).await?;
-        // If not found and not owner, check owner
+
+        let is_owner = ch.owner_id == user_id;
+        if is_subscribed.is_none() && !is_owner {
+            return Err(AppError::NotAuthorized);
+        }
     }
 
     let is_subscriber: Option<i64> = sqlx::query_scalar(

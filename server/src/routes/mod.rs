@@ -17,10 +17,20 @@ use tower_http::cors::{CorsLayer, Any};
 use crate::{AppState, middleware::jwt::jwt_auth};
 
 pub fn create_router(state: Arc<AppState>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = if state.settings.allowed_origins.is_empty() {
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    } else {
+        let origins: Vec<_> = state.settings.allowed_origins.iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    };
 
     // ─── Public routes (no JWT required) ───
     let public = Router::new()
@@ -115,9 +125,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/send-message", routing::post(bots::bot_api_send_message));
 
     Router::new()
-        .merge(public)
-        .merge(protected)
-        .nest("/bot-api", bot_api)
+        .nest("/api", Router::new().merge(public).merge(protected))
+        .nest("/api/bot-api", bot_api)
         .layer(cors)
         .with_state(state)
 }

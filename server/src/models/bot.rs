@@ -6,7 +6,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Bot {
     pub id: Uuid,
-    pub owner_id: Uuid,
+    pub owner_id: Option<Uuid>,
     pub username: String,
     pub display_name: Option<String>,
     pub description: Option<String>,

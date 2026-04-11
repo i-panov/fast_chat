@@ -11,57 +11,56 @@
           </v-toolbar>
 
           <v-card-text>
-            <v-form v-model="formValid" @submit.prevent="handleLogin">
-              <v-text-field
-                v-model="username"
-                prepend-inner-icon="mdi-account"
-                label="Username"
-                type="text"
-                variant="outlined"
-                :rules="[v => !!v || 'Username is required']"
-                required
-              />
-              <v-text-field
-                v-model="password"
-                prepend-inner-icon="mdi-lock"
-                label="Password"
-                type="password"
-                variant="outlined"
-                :rules="[v => !!v || 'Password is required']"
-                required
-              />
-              <v-text-field
-                v-if="show2FA"
-                v-model="totpCode"
-                prepend-inner-icon="mdi-shield-key"
-                label="2FA Code"
-                type="text"
-                variant="outlined"
-                placeholder="123456"
-                maxlength="6"
-                :rules="[v => v.length === 6 || 'Must be 6 digits']"
-              />
-              <v-btn
-                type="submit"
-                color="primary"
-                block
-                size="large"
-                :loading="loading"
-                :disabled="!formValid"
-              >
-                Login
-              </v-btn>
-            </v-form>
+            <p v-if="step === 1">Enter your admin email to receive a login code.</p>
+            <p v-if="step === 2">Code sent! Enter the 6-digit code (dev code shown above).</p>
+            <p v-if="step === 3">Enter your 2FA code.</p>
+            <p v-if="step === 4">Scan QR and enter TOTP code.</p>
+
+            <!-- Step 1: Email -->
+            <v-text-field
+              v-if="step === 1"
+              v-model="email"
+              label="Email"
+              type="email"
+              variant="outlined"
+              class="mt-2"
+            />
+
+            <!-- Step 2: Code -->
+            <v-text-field
+              v-if="step === 2"
+              v-model="code"
+              label="Verification Code"
+              type="text"
+              variant="outlined"
+              maxlength="6"
+              class="mt-2"
+            />
+
+            <!-- Step 3/4: TOTP -->
+            <v-text-field
+              v-if="step === 3 || step === 4"
+              v-model="totpCode"
+              label="TOTP Code"
+              type="text"
+              variant="outlined"
+              maxlength="6"
+              class="mt-2"
+            />
+
+            <v-img v-if="step === 4 && qrUrl" :src="qrUrl" max-width="200" class="mx-auto mt-4 mb-4" />
+
+            <v-btn color="primary" block size="large" :loading="loading" @click="doAction">
+              {{ actionLabel }}
+            </v-btn>
           </v-card-text>
 
-          <v-alert
-            v-if="error"
-            type="error"
-            variant="tonal"
-            density="compact"
-            class="ma-4"
-          >
+          <v-alert v-if="error" type="error" variant="tonal" density="compact" class="ma-4">
             {{ error }}
+          </v-alert>
+
+          <v-alert v-if="devCode" type="info" variant="tonal" density="compact" class="mx-4 mb-4">
+            Dev code: <strong>{{ devCode }}</strong>
           </v-alert>
         </v-card>
       </v-col>
@@ -70,58 +69,88 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
-
-const username = ref('')
-const password = ref('')
+const step = ref(1)
+const email = ref('')
+const code = ref('')
 const totpCode = ref('')
-const show2FA = ref(false)
-const formValid = ref(false)
+const devCode = ref('')
 const loading = ref(false)
 const error = ref('')
+const qrUrl = ref('')
+const pendingUserId = ref('')
 
-async function handleLogin() {
+const actionLabel = computed(() => {
+  if (step.value === 1) return 'Send Code'
+  if (step.value === 2) return 'Verify & Login'
+  if (step.value === 3) return 'Verify 2FA'
+  return 'Verify & Enable'
+})
+
+async function doAction() {
   loading.value = true
   error.value = ''
 
   try {
-    const response = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: username.value,
-        password: password.value,
-        totp_code: totpCode.value || null,
-      }),
-    })
+    if (step.value === 1) {
+      const res = await fetch('/api/auth/request-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.value }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed')
+      devCode.value = data.dev_code || ''
+      step.value = 2
 
-    if (response.status === 403) {
-      show2FA.value = true
-      error.value = 'Enter your 2FA code'
-      return
-    }
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error('Invalid username or password')
+    } else if (step.value === 2) {
+      const res = await fetch('/api/auth/verify-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.value, code: code.value }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed')
+      if (data.need_2fa) {
+        pendingUserId.value = data.user_id
+        step.value = data.require_2fa ? 4 : 3
+        if (data.require_2fa) {
+          const sr = await fetch('/api/auth/2fa/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+          const sd = await sr.json()
+          qrUrl.value = 'https://api.qrserver.com/v1/create-qr-code/?data=' + encodeURIComponent(sd.qr_code_url) + '&size=200x200'
+        }
+      } else {
+        if (!data.user?.is_admin) { error.value = 'Admin access required'; return }
+        localStorage.setItem('admin_token', data.access_token)
+        router.push('/')
       }
-      throw new Error(`Login failed: ${response.status}`)
+
+    } else if (step.value === 3) {
+      const res = await fetch('/api/auth/verify-2fa', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: pendingUserId.value, totp_code: totpCode.value }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed')
+      if (!data.user?.is_admin) { error.value = 'Admin access required'; return }
+      localStorage.setItem('admin_token', data.access_token)
+      router.push('/')
+
+    } else if (step.value === 4) {
+      await fetch('/api/auth/2fa/verify-setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: totpCode.value }) })
+      await fetch('/api/auth/2fa/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: totpCode.value }) })
+      const res = await fetch('/api/auth/verify-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: email.value, code: code.value }) })
+      const data = await res.json()
+      if (!data.user?.is_admin) { error.value = 'Admin access required'; return }
+      localStorage.setItem('admin_token', data.access_token)
+      router.push('/')
     }
-
-    const data = await response.json()
-
-    if (!data.user?.is_admin) {
-      error.value = 'Access denied: admin privileges required'
-      return
-    }
-
-    localStorage.setItem('admin_token', data.access_token)
-    router.push('/')
-  } catch (err: unknown) {
-    error.value = err instanceof Error ? err.message : 'Login failed'
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : 'Error'
   } finally {
     loading.value = false
   }

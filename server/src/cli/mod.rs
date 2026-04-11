@@ -32,7 +32,7 @@ pub enum Commands {
         username: String,
 
         #[arg(short, long)]
-        password: String,
+        email: String,
 
         #[arg(long, default_value = "false")]
         admin: bool,

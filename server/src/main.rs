@@ -45,7 +45,7 @@ async fn init_master_bot(pool: &crate::db::postgres::PostgresPool) -> Result<Opt
          VALUES ($1, $2, $3, $4, $5, TRUE, TRUE, 'polling', $6, $7)",
     )
     .bind(uuid::Uuid::new_v4())
-    .bind(uuid::Uuid::nil())
+    .bind(Option::<uuid::Uuid>::None) // No owner (system bot)
     .bind("master_bot")
     .bind("Master Bot")
     .bind(&token_hash)
@@ -96,7 +96,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         vapid_public_key: std::env::var("VAPID_PUBLIC_KEY").ok(),
         vapid_private_key: std::env::var("VAPID_PRIVATE_KEY").ok(),
         vapid_subject: std::env::var("VAPID_SUBJECT").ok().or_else(|| Some("mailto:admin@localhost".to_string())),
+        allowed_origins: std::env::var("ALLOWED_ORIGINS").ok()
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_default(),
     };
+
+    // Validate JWT secret
+    if settings.jwt_secret.len() < 32 {
+        tracing::error!("JWT_SECRET must be at least 32 bytes (got {})", settings.jwt_secret.len());
+        std::process::exit(1);
+    }
 
     info!("Starting Fast Chat server on {}", settings.server_addr);
 
@@ -141,25 +150,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         axum::serve(listener, app).await?;
     }
 
-    info!("  POST   /api/auth/login         - Login");
-    info!("  POST   /api/auth/refresh       - Refresh token");
-    info!("  GET    /api/auth/me            - Current user");
-    info!("  GET    /api/sse/connect        - SSE stream");
-    info!("  GET    /api/users              - List users (admin)");
-    info!("  POST   /api/users              - Create user (admin)");
-    info!("  GET    /api/chats              - Get user chats");
-    info!("  POST   /api/messages           - Send message");
-    info!("  GET    /api/chats/:id/messages - Get messages");
-    info!("  POST   /api/files/upload       - Upload file");
-    info!("  GET    /api/files/:id          - Download file");
-    info!("  POST   /api/calls              - Create call");
-    info!("  GET    /api/health             - Health check");
-
-    let app = routes::create_router(state.clone());
-
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
-
     Ok(())
 }
 
@@ -172,25 +162,23 @@ async fn run_cli_command(
     match &command {
         cli::Commands::UserCreate {
             username,
-            password,
+            email,
             admin,
         } => {
-            let password_hash = CryptoService::hash_password(password)
-                .map_err(|e| format!("Failed to hash password: {}", e))?;
             let (public_key, _) = CryptoService::generate_keypair();
             let id = uuid::Uuid::new_v4();
             let now = chrono::Utc::now();
 
             sqlx::query(
                 r#"
-                INSERT INTO users (id, username, password_hash, public_key, is_admin, created_at, updated_at)
+                INSERT INTO users (id, username, email, public_key, is_admin, created_at, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (username) DO UPDATE SET password_hash = $3, public_key = $4, updated_at = $6
+                ON CONFLICT (username) DO UPDATE SET email = $3, public_key = $4, updated_at = $7
                 "#
             )
             .bind(id)
             .bind(username)
-            .bind(&password_hash)
+            .bind(email)
             .bind(&public_key)
             .bind(admin)
             .bind(now)
