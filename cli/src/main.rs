@@ -1,4 +1,5 @@
 use clap::Parser;
+use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
 use std::env;
 
@@ -65,150 +66,206 @@ enum DbCommands {
     Status,
 }
 
+fn get_db_url(cli: &Cli) -> String {
+    cli.database_url
+        .clone()
+        .or_else(|| env::var("DATABASE_URL").ok())
+        .unwrap_or_else(|| {
+            eprintln!("ERROR: DATABASE_URL not set and --database-url not provided");
+            std::process::exit(1);
+        })
+}
+
+async fn connect_db(db_url: &str) -> Result<sqlx::PgPool, sqlx::Error> {
+    PgPoolOptions::new()
+        .max_connections(1)
+        .connect(db_url)
+        .await
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-
-    let db = cli
-        .database_url
-        .clone()
-        .or_else(|| env::var("DATABASE_URL").ok())
-        .unwrap_or_else(|| "postgres://fast_chat:changeme@localhost:5432/fast_chat".to_string());
+    let db_url = get_db_url(&cli);
 
     match cli.command {
-        Some(Commands::User { subcommand }) => {
-            match subcommand {
-                Some(UserCommands::Create { username, email, admin }) => {
-                    let pool = sqlx::postgres::PgPoolOptions::new()
-                        .max_connections(1)
-                        .connect(&db)
-                        .await?;
+        Some(Commands::User { subcommand }) => match subcommand {
+            Some(UserCommands::Create {
+                username,
+                email,
+                admin,
+            }) => {
+                let pool = connect_db(&db_url)
+                    .await
+                    .map_err(|e| format!("Database connection failed: {}", e))?;
 
-                    let (public_key, _) = generate_keypair();
-                    let id = uuid::Uuid::new_v4();
-                    let now = chrono::Utc::now();
+                let id = uuid::Uuid::new_v4();
 
-                    sqlx::query(
-                        r#"
-                        INSERT INTO users (id, username, email, public_key, is_admin, created_at, updated_at)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        ON CONFLICT (username) DO UPDATE SET email = $3, public_key = $4, updated_at = $6
-                        "#
-                    )
-                    .bind(id)
-                    .bind(&username)
-                    .bind(&email)
-                    .bind(&public_key)
-                    .bind(admin)
-                    .bind(now)
-                    .bind(now)
+                sqlx::query(
+                    r#"
+                        INSERT INTO users (id, username, email, is_admin, created_at, updated_at)
+                        VALUES ($1, $2, $3, $4, NOW(), NOW())
+                        ON CONFLICT (username) DO UPDATE SET email = $2, updated_at = NOW()
+                        "#,
+                )
+                .bind(id)
+                .bind(&username)
+                .bind(&email)
+                .bind(admin)
+                .execute(&pool)
+                .await
+                .map_err(|e| format!("Failed to create user: {}", e))?;
+
+                println!("User created: {} ({}) - admin: {}", username, email, admin);
+                println!("Note: Public key should be set by the client app.");
+            }
+            Some(UserCommands::List) => {
+                let pool = connect_db(&db_url)
+                    .await
+                    .map_err(|e| format!("Database connection failed: {}", e))?;
+
+                use sqlx::FromRow;
+                #[derive(FromRow)]
+                struct UserRow {
+                    id: uuid::Uuid,
+                    username: String,
+                    email: String,
+                    is_admin: bool,
+                }
+
+                let users = sqlx::query_as::<_, UserRow>(
+                    "SELECT id, username, email, is_admin FROM users ORDER BY created_at DESC",
+                )
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| format!("Failed to list users: {}", e))?;
+
+                println!(
+                    "{:<36} {:<20} {:<30} {:<10}",
+                    "ID", "USERNAME", "EMAIL", "ADMIN"
+                );
+                println!("{}", "-".repeat(96));
+                for user in users {
+                    println!(
+                        "{:<36} {:<20} {:<30} {:<10}",
+                        user.id, user.username, user.email, user.is_admin
+                    );
+                }
+            }
+            Some(UserCommands::SetAdmin { id, yes }) => {
+                let pool = connect_db(&db_url)
+                    .await
+                    .map_err(|e| format!("Database connection failed: {}", e))?;
+
+                let uuid: uuid::Uuid = id.parse().map_err(|_| "Invalid UUID format")?;
+                sqlx::query("UPDATE users SET is_admin = $1, updated_at = NOW() WHERE id = $2")
+                    .bind(yes)
+                    .bind(uuid)
                     .execute(&pool)
-                    .await?;
+                    .await
+                    .map_err(|e| format!("Failed to update user: {}", e))?;
+                println!("User {} admin status set to {}", id, yes);
+            }
+            Some(UserCommands::SetDisabled { id, yes }) => {
+                let pool = connect_db(&db_url)
+                    .await
+                    .map_err(|e| format!("Database connection failed: {}", e))?;
 
-                    println!("User created: {} ({}) - admin: {}", username, email, admin);
-                }
-                Some(UserCommands::List) => {
-                    let pool = sqlx::postgres::PgPoolOptions::new()
-                        .max_connections(1)
-                        .connect(&db)
-                        .await?;
+                let uuid: uuid::Uuid = id.parse().map_err(|_| "Invalid UUID format")?;
+                sqlx::query("UPDATE users SET disabled = $1, updated_at = NOW() WHERE id = $2")
+                    .bind(yes)
+                    .bind(uuid)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| format!("Failed to update user: {}", e))?;
+                println!("User {} disabled status set to {}", id, yes);
+            }
+            Some(UserCommands::InitAdmin { username, email }) => {
+                let pool = connect_db(&db_url)
+                    .await
+                    .map_err(|e| format!("Database connection failed: {}", e))?;
 
-                    use sqlx::FromRow;
-                    #[derive(FromRow)]
-                    struct UserRow {
-                        id: uuid::Uuid,
-                        username: String,
-                        email: String,
-                        is_admin: bool,
-                    }
-
-                    let users = sqlx::query_as::<_, UserRow>("SELECT id, username, email, is_admin FROM users ORDER BY created_at DESC")
-                        .fetch_all(&pool)
-                        .await?;
-
-                    println!("{:<36} {:<20} {:<30} {:<10}", "ID", "USERNAME", "EMAIL", "ADMIN");
-                    println!("{}", "-".repeat(96));
-                    for user in users {
-                        println!("{:<36} {:<20} {:<30} {:<10}", user.id, user.username, user.email, user.is_admin);
-                    }
-                }
-                Some(UserCommands::SetAdmin { id, yes }) => {
-                    let pool = sqlx::postgres::PgPoolOptions::new()
-                        .max_connections(1)
-                        .connect(&db)
-                        .await?;
-
-                    let uuid: uuid::Uuid = id.parse().map_err(|_| "Invalid UUID")?;
-                    sqlx::query("UPDATE users SET is_admin = $1, updated_at = NOW() WHERE id = $2")
-                        .bind(yes)
-                        .bind(uuid)
-                        .execute(&pool)
-                        .await?;
-                    println!("User {} admin status set to {}", id, yes);
-                }
-                Some(UserCommands::SetDisabled { id, yes }) => {
-                    let pool = sqlx::postgres::PgPoolOptions::new()
-                        .max_connections(1)
-                        .connect(&db)
-                        .await?;
-
-                    let uuid: uuid::Uuid = id.parse().map_err(|_| "Invalid UUID")?;
-                    sqlx::query("UPDATE users SET disabled = $1, updated_at = NOW() WHERE id = $2")
-                        .bind(yes)
-                        .bind(uuid)
-                        .execute(&pool)
-                        .await?;
-                    println!("User {} disabled status set to {}", id, yes);
-                }
-                Some(UserCommands::InitAdmin { username, email }) => {
-                    let pool = sqlx::postgres::PgPoolOptions::new()
-                        .max_connections(1)
-                        .connect(&db)
-                        .await?;
-
-                    let id = uuid::Uuid::new_v4();
-                    sqlx::query(
+                let id = uuid::Uuid::new_v4();
+                sqlx::query(
                         "INSERT INTO users (id, username, email, is_admin, created_at, updated_at) VALUES ($1, $2, $3, TRUE, NOW(), NOW())"
                     )
                     .bind(id)
                     .bind(&username)
                     .bind(&email)
                     .execute(&pool)
-                    .await?;
-                    println!("Admin created: {} ({})", username, email);
-                    println!();
-                    println!("⚠️  IMPORTANT: Admin accounts require 2FA (TOTP) to be enabled.");
-                    println!("   This admin cannot log in until TOTP is configured.");
-                    println!("   Please set up TOTP using the admin panel or API after first login.");
-                }
-                None => {
-                    println!("User subcommands: create, list, set-admin, set-disabled, init-admin");
-                }
+                    .await.map_err(|e| {
+                        format!("Failed to create admin: {}", e)
+                    })?;
+                println!("Admin created: {} ({})", username, email);
+                println!();
+                println!("IMPORTANT: Admin accounts require 2FA (TOTP) to be enabled.");
+                println!("   This admin cannot log in until TOTP is configured.");
+                println!("   Please set up TOTP using the admin panel or API after first login.");
             }
-        }
+            None => {
+                println!("User subcommands: create, list, set-admin, set-disabled, init-admin");
+            }
+        },
         Some(Commands::Db { subcommand }) => {
             match subcommand {
                 Some(DbCommands::Migrate) => {
-                    let pool = sqlx::postgres::PgPoolOptions::new()
-                        .max_connections(1)
-                        .connect(&db)
-                        .await?;
+                    let pool = connect_db(&db_url)
+                        .await
+                        .map_err(|e| format!("Database connection failed: {}", e))?;
+
+                    sqlx::query(
+                        "CREATE TABLE IF NOT EXISTS schema_migrations (version VARCHAR(20) PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL)"
+                    ).execute(&pool).await.map_err(|e| {
+                        format!("Failed to create migrations table: {}", e)
+                    })?;
 
                     let migrations_dir = std::path::PathBuf::from("../migrations");
-                    let migrations = std::fs::read_dir(&migrations_dir)?
+                    let entries = std::fs::read_dir(&migrations_dir)?
                         .filter_map(|e| e.ok())
                         .filter(|e| e.path().extension().is_some_and(|ext| ext == "sql"))
                         .collect::<Vec<_>>();
-                    let mut migrations = migrations.into_iter().collect::<Vec<_>>();
-                    migrations.sort_by_key(|a| a.file_name());
-                    for entry in migrations {
+                    let mut entries = entries.into_iter().collect::<Vec<_>>();
+                    entries.sort_by_key(|a| a.file_name());
+
+                    let mut applied = 0;
+                    for entry in entries {
+                        let version = entry.file_name().to_string_lossy().to_string();
+
+                        let exists: (bool,) = sqlx::query_as(
+                            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)",
+                        )
+                        .bind(&version)
+                        .fetch_one(&pool)
+                        .await?;
+
+                        if exists.0 {
+                            println!("  - {} (already applied)", version);
+                            continue;
+                        }
+
                         let sql = std::fs::read_to_string(entry.path())?;
                         for stmt in sql.split(';') {
                             if !stmt.trim().is_empty() {
-                                sqlx::query(stmt).execute(&pool).await?;
+                                sqlx::query(stmt)
+                                    .execute(&pool)
+                                    .await
+                                    .map_err(|e| format!("Migration {} failed: {}", version, e))?;
                             }
                         }
-                        println!("  ✓ {}", entry.file_name().to_string_lossy());
+
+                        sqlx::query("INSERT INTO schema_migrations (version, applied_at) VALUES ($1, NOW())")
+                            .bind(&version)
+                            .execute(&pool)
+                            .await?;
+
+                        println!("  ✓ {}", version);
+                        applied += 1;
+                    }
+
+                    if applied == 0 {
+                        println!("No new migrations to apply.");
+                    } else {
+                        println!("Applied {} migration(s).", applied);
                     }
                 }
                 Some(DbCommands::Reset { force }) => {
@@ -216,22 +273,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("This will delete ALL data. Use --force to confirm.");
                         return Ok(());
                     }
-                    let pool = sqlx::postgres::PgPoolOptions::new()
-                        .max_connections(1)
-                        .connect(&db)
+                    let pool = connect_db(&db_url)
+                        .await
+                        .map_err(|e| format!("Database connection failed: {}", e))?;
+                    sqlx::query("DROP SCHEMA public CASCADE")
+                        .execute(&pool)
                         .await?;
-                    sqlx::query("DROP SCHEMA public CASCADE").execute(&pool).await?;
                     sqlx::query("CREATE SCHEMA public").execute(&pool).await?;
+                    sqlx::query(
+                        "CREATE TABLE IF NOT EXISTS schema_migrations (version VARCHAR(20) PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL)"
+                    ).execute(&pool).await?;
                     println!("Database reset complete.");
                 }
                 Some(DbCommands::Status) => {
-                    let pool = sqlx::postgres::PgPoolOptions::new()
-                        .max_connections(1)
-                        .connect(&db)
-                        .await?;
-                    let tables = sqlx::query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
-                        .fetch_all(&pool)
-                        .await?;
+                    let pool = connect_db(&db_url)
+                        .await
+                        .map_err(|e| format!("Database connection failed: {}", e))?;
+                    let tables =
+                        sqlx::query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                            .fetch_all(&pool)
+                            .await
+                            .map_err(|e| format!("Failed to get database status: {}", e))?;
                     for row in tables {
                         println!("  - {}", row.get::<String, _>("tablename"));
                     }
@@ -254,16 +316,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
-}
-
-fn generate_keypair() -> (String, String) {
-    use x25519_dalek::{EphemeralSecret, PublicKey};
-    use rand::rngs::OsRng;
-    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-
-    let secret = EphemeralSecret::random_from_rng(OsRng);
-    let public = PublicKey::from(&secret);
-    let public_key = BASE64.encode(public.as_bytes());
-    let private_key = String::new();
-    (public_key, private_key)
 }
