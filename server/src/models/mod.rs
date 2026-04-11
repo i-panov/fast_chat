@@ -8,6 +8,7 @@ pub mod thread;
 pub mod topic;
 pub mod user;
 pub mod bot;
+pub mod channel;
 
 pub use chat::Chat;
 pub use file::File;
@@ -17,3 +18,4 @@ pub use thread::Thread;
 pub use topic::Topic;
 pub use user::User;
 pub use bot::{Bot, BotCommand, BotChat};
+pub use channel::{Channel, ChannelSubscriber};

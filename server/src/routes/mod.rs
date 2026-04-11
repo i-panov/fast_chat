@@ -7,6 +7,7 @@ pub mod signaling;
 pub mod sse;
 pub mod admin;
 pub mod bots;
+pub mod channels;
 
 use std::sync::Arc;
 use axum::{Router, middleware::from_fn_with_state, routing};
@@ -82,6 +83,18 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/bots/:id/commands/:cmd", routing::delete(bots::delete_command))
         .route("/bots/:id/chats", routing::get(bots::list_bot_chats).post(bots::add_to_chat))
         .route("/bots/:id/chats/:chat_id", routing::delete(bots::remove_from_chat))
+        // Channels (JWT protected)
+        .route("/channels", routing::post(channels::create_channel).get(channels::list_channels))
+        .route("/channels/search", routing::get(channels::search_channels))
+        .route("/channels/:id", routing::get(channels::get_channel).put(channels::update_channel).delete(channels::delete_channel))
+        .route("/channels/:id/messages", routing::post(channels::send_message).get(channels::get_messages))
+        .route("/channels/:id/subscribe", routing::post(channels::subscribe))
+        .route("/channels/:id/unsubscribe", routing::post(channels::unsubscribe))
+        .route("/channels/:id/subscribers", routing::get(channels::list_subscribers))
+        .route("/channels/:id/subscribers/:user_id", routing::delete(channels::remove_subscriber))
+        .route("/channels/:id/requests", routing::get(channels::list_requests))
+        .route("/channels/:id/requests/:user_id/approve", routing::post(channels::approve_request))
+        .route("/channels/:id/requests/:user_id/reject", routing::post(channels::reject_request))
         .route_layer(from_fn_with_state(state.clone(), jwt_auth));
 
     // Bot API (token auth — no JWT)
