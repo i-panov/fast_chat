@@ -1,49 +1,58 @@
 # QWEN.md — Fast Chat Project Context
 
-## Project Overview
+## Overview
 
-**Fast Chat** is a self-hosted real-time messenger application with end-to-end (E2E) encryption, file transfers, audio/video calls, and group chats. It features a gRPC backend built with Rust, PostgreSQL + Redis for data/storage, and planned Vue 3 PWA web clients with full offline support.
+Self-hosted real-time messenger with E2E encryption, file transfers, audio/video calls, group chats, bots, and broadcast channels. PWA with Web Push notifications.
 
 ### Architecture
 
 | Layer | Technology |
 |-------|------------|
-| **Backend** | Rust, Tonic (gRPC), Prost (protobuf), Tokio (async runtime) |
+| **Backend** | Rust, Axum, Tokio |
 | **Database** | PostgreSQL 16 + Redis 7 |
-| **Auth** | JWT access/refresh tokens + TOTP 2FA (argon2 password hashing) |
-| **Messaging** | gRPC streaming with Redis pub/sub for real-time delivery |
-| **WebRTC** | coturn (STUN/TURN) + Ion SFU (group calls) |
-| **CLI** | Rust + clap (admin user/DB management) |
-| **Admin Panel** | Vue 3 + Vuetify SPA (fully implemented — CRUD, dashboard, settings) |
-| **Admin API** | REST (Axum) — JWT-protected, admin-only routes |
-| **Web Client** | Vue 3 + Vuetify PWA (stub — not implemented) |
+| **Auth** | Passwordless email-code + JWT + TOTP 2FA |
+| **Messaging** | REST + SSE (Server-Sent Events) |
+| **Push** | Web Push (VAPID + p256 ECDSA) |
+| **WebRTC** | coturn (STUN/TURN) + Ion SFU |
+| **HTTP** | HTTP/1.1 or HTTP/2 (TLS via rustls) |
+| **CLI** | Rust + clap |
+| **Admin Panel** | Vue 3 + Vuetify SPA |
 
 ### Directory Structure
 
 ```
 fast_chat/
-├── proto/                      # Protobuf definitions (7 files)
-├── migrations/                 # SQL migrations (001_initial.sql, 002_features.sql)
-├── server/                     # Tonic gRPC server (Rust)
+├── proto/                      # (DELETED — was protobuf)
+├── migrations/                 # SQL migrations (001–010)
+├── server/                     # Axum REST + SSE server
 │   ├── src/
-│   │   ├── main.rs             # Entry point + CLI commands
-│   │   ├── config.rs           # Settings/configuration
-│   │   ├── error.rs            # Custom error types (thiserror)
-│   │   ├── cli/                # CLI command definitions
-│   │   ├── crypto/             # CryptoService (X25519, Argon2, ChaCha20Poly1305)
-│   │   ├── db/                 # PostgreSQL + Redis connection pools
-│   │   ├── middleware/         # JWT authentication helpers
-│   │   ├── models/             # SQLx models (User, Chat, Message, etc.)
-│   │   ├── proto/              # Generated Rust code from proto files
-│   │   └── services/           # gRPC service implementations
-│   └── Dockerfile
-├── cli/                        # CLI binary (admin operations)
-├── web-client/                 # Vue 3 PWA stub
-├── admin-panel/                # Vue 3 admin UI stub
-├── wasm-sdk/                   # WebAssembly SDK (for web client crypto)
-├── coturn/                     # TURN server config
-├── ion-sfu/                    # SFU config for group calls
-└── docker-compose.yml
+│   │   ├── main.rs             # Entry + CLI + master bot init
+│   │   ├── config.rs           # Settings
+│   │   ├── error.rs            # Custom errors (IntoResponse for Axum)
+│   │   ├── cli/                # CLI commands
+│   │   ├── crypto/             # CryptoService
+│   │   ├── db/                 # PostgreSQL + Redis pools
+│   │   ├── middleware/
+│   │   │   └── jwt.rs          # JWT middleware + UserId extractor
+│   │   ├── models/             # SQLx models
+│   │   └── routes/             # All route handlers
+│   │       ├── auth.rs         # Passwordless auth + 2FA
+│   │       ├── users.rs        # User CRUD (admin)
+│   │       ├── messaging.rs    # Chats, messages, threads, topics
+│   │       ├── files.rs        # File upload/download
+│   │       ├── signaling.rs    # WebRTC calls
+│   │       ├── bots.rs         # Bot management + Bot API
+│   │       ├── channels.rs     # Broadcast channels
+│   │       ├── push.rs         # Web Push + notification settings
+│   │       ├── admin.rs        # Server settings API
+│   │       └── sse.rs          # SSE event stream
+├── cli/                        # CLI binary
+├── web-client/                 # Vue 3 PWA (stub)
+├── admin-panel/                # Vue 3 admin SPA
+├── wasm-sdk/                   # (DELETED — was WebAssembly SDK)
+├── envoy/                      # (DELETED — was gRPC proxy)
+├── coturn/                     # TURN config
+└── ion-sfu/                    # SFU config
 ```
 
 ## Building and Running
@@ -51,13 +60,6 @@ fast_chat/
 ### Prerequisites
 
 ```bash
-# Install protobuf compiler
-# Ubuntu/Debian:
-sudo apt-get install protobuf-compiler
-
-# macOS:
-brew install protobuf
-
 # Rust toolchain (1.78+)
 rustup toolchain install stable
 ```
@@ -67,169 +69,133 @@ rustup toolchain install stable
 ```bash
 cd server
 cargo build --release
-cargo run --release                    # Start gRPC server on :50051
+cargo run --release                    # Start on :8080
 ```
 
 ### CLI
 
 ```bash
-cd cli
-cargo build --release
+cd cli && cargo build --release
 
-# Or use the server binary (includes CLI commands):
-cd server
-cargo run --release -- <command>
-```
-
-### CLI Commands
-
-```bash
-# User management
-fast-chat-cli user create --username alice --email alice@example.com --password <pass>
+# Commands:
+fast-chat-cli user create --username alice --email alice@example.com [--admin]
 fast-chat-cli user list
-fast-chat-cli user update --id <uuid> --username newname
-fast-chat-cli user delete --id <uuid>
 fast-chat-cli user set-admin --id <uuid> --yes true
-fast-chat-cli user init-admin --username admin --email admin@example.com --password <pass>
-
-# Database
-fast-chat-cli db migrate               # Apply migrations from ../migrations/
-fast-chat-cli db reset --force         # Drop and recreate schema
+fast-chat-cli user set-disabled --id <uuid> --yes true
+fast-chat-cli user init-admin --username admin --email admin@example.com
+fast-chat-cli db migrate
+fast-chat-cli db reset --force
+fast-chat-cli db status
 ```
 
 ### Docker Compose
 
 ```bash
-# Start all services
 docker-compose up -d
-
-# Services and ports:
-#   PostgreSQL: 5432
-#   Redis:      6379
-#   coturn:     3478 (TCP/UDP), 5349 (TCP/UDP)
-#   Ion SFU:    5000
-#   Server:     50051
-#   Web Client: 8080
-#   Admin Panel: 8081
+# server: 8080, postgres: 5432, redis: 6379, coturn: 3478, ion-sfu: 5000
 ```
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `postgres://fast_chat:changeme@localhost:5432/fast_chat` |
-| `REDIS_URL` | Redis connection string | `redis://localhost:6379` |
-| `JWT_SECRET` | JWT signing secret | `changeme` |
-| `POSTGRES_PASSWORD` | PostgreSQL password | `changeme` |
-| `EXTERNAL_IP` | External IP for coturn/SFU | `0.0.0.0` |
-| `COTURN_HOST` | coturn hostname | `coturn` |
-| `ION_SFU_URL` | Ion SFU URL | `ion-sfu:5000` |
-| `FILES_DIR` | File upload directory | `./files` |
+| `DATABASE_URL` | PostgreSQL connection | `postgres://fast_chat:changeme@localhost:5432/fast_chat` |
+| `REDIS_URL` | Redis connection | `redis://localhost:6379` |
+| `JWT_SECRET` | JWT signing secret | **Required** — server refuses to start without it |
+| `ALLOW_REGISTRATION` | Self-registration on login | `false` |
+| `REQUIRE_2FA` | Mandatory 2FA for all users | `false` |
+| `TLS_CERT_PATH` | TLS cert for HTTP/2 | — |
+| `TLS_KEY_PATH` | TLS key for HTTP/2 | — |
+| `VAPID_PUBLIC_KEY` | Web Push public key (base64url) | — |
+| `VAPID_PRIVATE_KEY` | Web Push private key (base64url) | — |
+| `VAPID_SUBJECT` | VAPID subject | `mailto:admin@localhost` |
 
 ### Code Quality
 
 ```bash
-# Server
 cd server && cargo fmt --check && cargo clippy --all-targets --all-features
-
-# CLI
 cd cli && cargo fmt --check && cargo clippy --all-targets --all-features
 ```
 
-## gRPC Services
+## API Overview
 
-### Proto Files (`proto/`)
+### Authentication (passwordless)
+1. `POST /api/auth/request-code` → `{email}` → server sends 6-digit code
+2. `POST /api/auth/verify-code` → `{email, code, totp_code?}` → JWT tokens
+3. If 2FA needed but no TOTP provided → `{need_2fa: true, user_id}` → call `POST /api/auth/verify-2fa`
 
-| File | Service | Purpose |
-|------|---------|---------|
-| `common.proto` | — | Shared messages (User, Chat, Message, FileMetadata, Ack, etc.) |
-| `auth.proto` | `AuthService` | register, login, refresh_token, get_current_user |
-| `users.proto` | `UsersService` | User CRUD, 2FA setup/verify/enable/disable |
-| `messaging.proto` | `MessagingService` | Chats, messages, threads, topics, pinned messages |
-| `files.proto` | `FilesService` | Streaming file upload/download |
-| `signaling.proto` | `SignalingService` | WebRTC call management (1:1 + group) |
-| `admin.proto` | `AdminService` | Health check with uptime metrics |
+### JWT Middleware
+- Global middleware on all protected routes
+- Validates JWT from `Authorization: Bearer <token>`
+- Inserts `user_id` into request extensions (`UserId` extractor)
+- **Blocks admins without `two_fa_verified`** — returns 412
+- **Blocks all users when `require_2fa=true`** without 2FA
+
+### SSE
+- `GET /api/sse/connect` — single long-lived stream
+- Events: `new_message`, `typing`, `channel_message`, `channel_subscription_approved`, etc.
+- Backed by Redis pub/sub
+
+### Bot API
+- Management: `/api/bots/*` (JWT auth)
+- Runtime: `/api/bot-api/*` (Bearer token auth, no JWT)
+- Delivery: long-polling (`/updates`) or webhook (POST to bot's URL with HMAC signature)
 
 ## Database Schema
 
-### Core Tables
+See `AGENTS.md` for full schema. Key tables: `users`, `chats`, `messages`, `channels`, `bots`, `push_subscriptions`, `notification_settings`, `muted_chats`, `email_codes`, `server_settings`, `bot_updates`.
 
-- **users** — Authentication, public keys, 2FA settings (argon2 password hashing, TOTP)
-- **user_sessions** — Refresh token tracking (currently not validated)
-- **chats** — Direct and group chats
-- **chat_participants** — Many-to-many chat membership (composite PK)
-- **messages** — E2E encrypted messages with content_type, topic/thread support
-- **files** — File metadata for uploads
-- **active_calls** — WebRTC call state
+## Migrations
 
-### Feature Tables (002_features.sql)
-
-- **pinned_messages** — Per-user and global message pins
-- **threads** — Message reply threads
-- **topics** — Group chat channels
-
-### Full Schema Reference
-
-See `AGENTS.md` for the complete SQL schema with all columns, constraints, and indexes.
-
-## Crypto & Security
-
-- **Password hashing**: argon2 (argon2 crate v0.5)
-- **E2E encryption**: X25519 keypairs (x25519-dalek), ChaCha20Poly1305 for message encryption
-- **2FA**: TOTP with SHA1 (totp-lite crate v2)
-- **JWT**: HS256 access tokens (jsonwebtoken crate v9), refresh tokens tracked in DB
-- **No public registration**: All users created by admin via CLI
+| File | Purpose |
+|------|---------|
+| `001_initial.sql` | users, sessions, chats, participants, messages, files, calls |
+| `002_features.sql` | pinned_messages, threads, topics, favorites, disabled users |
+| `003_unread_counts.sql` | per-user per-chat unread counts |
+| `006_passwordless_auth.sql` | nullable password_hash, email_codes table |
+| `007_server_settings.sql` | server_settings table (allow_registration, require_2fa) |
+| `008_bots.sql` | bots, bot_chats, bot_commands, bot_updates |
+| `009_channels.sql` | channels, channel_subscribers |
+| `010_push_notifications.sql` | push_subscriptions, notification_settings, muted_chats |
 
 ## Current Status
 
 ### Implemented ✅
-
-- All 7 proto files and gRPC service definitions
-- PostgreSQL schema with migrations (001_initial.sql, 002_features.sql)
-- AuthService — JWT auth with TOTP 2FA and backup codes
-- UsersService — User CRUD, 2FA setup/verify/enable/disable
-- MessagingService — Chats, messages, threads, topics, pinned messages
-- FilesService — Streaming file upload/download
-- SignalingService — 1:1 and group call management
-- AdminService — Health check with uptime metrics
-- CLI — User management and database operations
-- Redis pub/sub for real-time messaging
+- Passwordless email-code auth with TOTP 2FA
+- JWT middleware with admin 2FA enforcement
+- Server settings API (registration, mandatory 2FA)
+- Messaging: chats, messages, threads, topics, pins, unread counts
+- Channels: public/private/approval, owner-only posting, subscriptions
+- Bots: master bot, user bots, webhook/polling delivery, commands
+- Web Push: VAPID-based, per-user/per-chat settings, auto-push on messages
+- Files: streaming upload/download with access control
+- WebRTC signaling: 1:1 and group calls
+- SSE real-time events via Redis pub/sub
+- Admin panel: Vue 3 SPA with CRUD, dashboard, settings
+- CLI: user management, database operations
+- HTTP/2 via TLS (rustls)
 - Docker Compose with all services
-- Chat participation checks enforced
 
 ### Not Implemented / Known Issues ⚠️
 
-| Feature | Status | Details |
-|---------|--------|---------|
-| Web Client | Stub | Vue 3 + Vuetify PWA not created |
-| Admin Panel | Stub | Vue 3 admin UI not created |
-| Backup codes API | Stub | `get_backup_codes` returns dummy `"XXXX-XXXX"` |
-| ICE candidate relay | Missing | Logged but not relayed to peers (`signaling.rs:180-187`) |
-| Refresh token validation | Partial | JWT signature checked but not DB session validation |
-| Unread counts | Missing | Not tracked in database |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Web Client | Stub | Vue 3 PWA not created |
 | Delivery/read status | Partial | Only 'sent' status stored |
-| Typing indicators | Partial | Proto exists but not implemented |
+| Typing indicators | Partial | Published via Redis, not persisted |
+| File encryption at rest | No | UUID filenames, no content encryption |
+| Group call architecture | Limitation | Per-participant records |
+| Rate limiting | No | No brute-force protection |
+| Web Push encryption | Simplified | VAPID auth only; full ECDH + HTTP-ECE pending |
 
 ## Development Conventions
 
-- **No `unwrap()` in production code** — use `?` or `expect()` with messages
-- **Error handling**: `thiserror` for custom error types, gRPC `Status` for transport
-- **Logging**: `tracing` crate with JSON formatter for production
-- **Timestamps**: UTC everywhere (`TIMESTAMPTZ` in Postgres, `chrono::Utc` in Rust)
-- **Proto files**: Located in `proto/`, compiled by `server/build.rs` into `server/src/proto/`
-- **Self-hosted**: No public registration — admin creates all users via CLI
-- **E2E encryption**: X25519 keypairs generated on registration, private keys stored client-side only
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `server/src/main.rs` | Server entry point, CLI command dispatcher |
-| `server/src/config.rs` | Settings/configuration loading |
-| `server/src/error.rs` | Centralized error types with gRPC Status mapping |
-| `server/src/services/*.rs` | All gRPC service implementations |
-| `server/src/crypto/` | Crypto utilities (hashing, keypairs, encryption) |
-| `server/src/db/` | PostgreSQL and Redis connection pool wrappers |
-| `server/src/middleware/` | JWT authentication middleware |
-| `docker-compose.yml` | Full service orchestration |
-| `migrations/*.sql` | Database schema migrations |
+- **No `unwrap()`** — use `?` or `expect()` with messages
+- **Error handling**: `thiserror` for custom errors, Axum `IntoResponse` for HTTP
+- **Logging**: `tracing` crate with JSON formatter
+- **Timestamps**: UTC (`TIMESTAMPTZ` + `chrono::Utc`)
+- **Self-hosted**: no public registration unless `ALLOW_REGISTRATION=true`
+- **E2E encryption**: X25519 keypairs on registration (server-trusted)
+- **TOTP**: SHA1, AES-GCM encrypted at rest
+- **Backup codes**: individually argon2-hashed
+- **Admin TOTP mandatory**: cannot access any API without it
