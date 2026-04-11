@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package files;
+
+import "common.proto";
+
+service Files {
+  rpc Upload(stream UploadRequest) returns (UploadResponse);
+  rpc Download(DownloadRequest) returns (stream DataChunk);
+  rpc GetMetadata(FileRequest) returns (common.FileMetadata);
+}
+
+message UploadRequest {
+  oneof data {
+    UploadMetadata metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+message UploadMetadata {
+  string filename = 1;
+  string mime_type = 2;
+}
+
+message UploadResponse {
+  common.FileMetadata metadata = 1;
+}
+
+message DownloadRequest {
+  string file_id = 1;
+}
+
+message DataChunk {
+  bytes data = 1;
+  int64 offset = 2;
+  int64 total_size = 3;
+}
+
+message FileRequest {
+  string file_id = 1;
+}

@@ -1,0 +1,126 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fast_chat
+      POSTGRES_USER: fast_chat
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fast_chat"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  coturn:
+    image: coturn/coturn:latest
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "5349:5349/udp"
+      - "5349:5349/tcp"
+    environment:
+      - EXTERNAL_IP=${EXTERNAL_IP:-0.0.0.0}
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - coturn_data:/var/lib/coturn
+    depends_on:
+      - server
+
+  ion-sfu:
+    image: pionion/ion-sfu:latest
+    ports:
+      - "5000:5000/tcp"
+      - "5000:5000/udp"
+    volumes:
+      - ./ion-sfu/config.toml:/etc/ion-sfu/config.toml:ro
+    environment:
+      - CONFIG_PATH=/etc/ion-sfu/config.toml
+      - EXTERNAL_IP=${EXTERNAL_IP:-}
+    depends_on:
+      - coturn
+    networks:
+      - fastchat
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "50051:50051"
+    environment:
+      DATABASE_URL: postgres://fast_chat:${POSTGRES_PASSWORD:-changeme}@postgres:5432/fast_chat
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-changeme}
+      COTURN_HOST: coturn
+      COTURN_PORT: 3478
+      ION_SFU_URL: ion-sfu:5000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fastchat
+
+  envoy:
+    image: envoyproxy/envoy:v1.31-latest
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    depends_on:
+      - server
+    networks:
+      - fastchat
+
+  web-client:
+    build:
+      context: ./web-client
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - server
+    networks:
+      - fastchat
+
+  admin-panel:
+    build:
+      context: ./admin-panel
+      dockerfile: Dockerfile
+    ports:
+      - "8081:80"
+    environment:
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@localhost}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-changeme}
+    depends_on:
+      - server
+    networks:
+      - fastchat
+
+networks:
+  fastchat:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  coturn_data:

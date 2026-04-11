@@ -1,0 +1,30 @@
+# Ion SFU Configuration
+# Fast Chat - Group Video Calls
+
+[ion]
+listen = "127.0.0.1:5000"
+
+[webrtc]
+# Use single port mode for better NAT traversal
+single-port = true
+min-port = 50000
+max-port = 60000
+
+# NAT 1:1 mapping (set EXTERNAL_IP in docker-compose)
+# nat1to1 = ["EXTERNAL_IP"]
+
+# ICE Lite mode (works with coturn)
+icelite = true
+
+# WebRTC configuration
+[webrtc.iceserver]
+urls = ["stun:stun.l.google.com:19302"]
+
+# Enable all codecs
+[webrtc.codecs]
+video = ["VP8", "VP9", "H264"]
+audio = ["opus", "G711"]
+
+# Logging
+[logging]
+level = "info"

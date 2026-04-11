@@ -1,0 +1,221 @@
+syntax = "proto3";
+
+package messaging;
+
+import "common.proto";
+
+message Chat {
+  string id = 1;
+  bool is_group = 2;
+  string name = 3;
+  repeated string participants = 4;
+  string created_at = 5;
+  string created_by = 6;
+  bool is_favorites = 7;
+}
+
+message Message {
+  string id = 1;
+  string chat_id = 2;
+  string sender_id = 3;
+  string encrypted_content = 4;
+  string content_type = 5;
+  string file_metadata_id = 6;
+  string status = 7;
+  bool edited = 8;
+  bool deleted = 9;
+  string created_at = 10;
+  string edited_at = 11;
+  string topic_id = 12;
+  string thread_id = 13;
+}
+
+message FileMetadata {
+  string id = 1;
+  string original_name = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+}
+
+message MessagesPage {
+  repeated Message messages = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+}
+
+message CreateChatRequest {
+  repeated string participants = 1;
+  bool is_group = 2;
+  string name = 3;
+}
+
+message GetMessagesRequest {
+  string chat_id = 1;
+  string cursor = 2;
+  int32 limit = 3;
+  optional string topic_id = 4;
+}
+
+message SendMessageRequest {
+  string chat_id = 1;
+  string content = 2;
+  string content_type = 3;
+  string file_metadata_id = 4;
+  optional string topic_id = 5;
+}
+
+message EditMessageRequest {
+  string message_id = 1;
+  string content = 2;
+}
+
+message DeleteMessageRequest {
+  string message_id = 1;
+}
+
+message StreamRequest {
+  string chat_id = 1;
+}
+
+message StreamingMessage {
+  oneof event {
+    Message message = 1;
+    string typing = 2;
+    string presence = 3;
+  }
+}
+
+service Messaging {
+  rpc CreateChat(CreateChatRequest) returns (Chat);
+  rpc GetChats(common.Empty) returns (stream Chat);
+  rpc GetMessages(GetMessagesRequest) returns (MessagesPage);
+  rpc SendMessage(SendMessageRequest) returns (Message);
+  rpc StreamMessages(StreamRequest) returns (stream StreamingMessage);
+  rpc EditMessage(EditMessageRequest) returns (Message);
+  rpc DeleteMessage(DeleteMessageRequest) returns (common.Ack);
+
+  // Pinned messages
+  rpc PinMessage(PinMessageRequest) returns (common.Ack);
+  rpc UnpinMessage(UnpinMessageRequest) returns (common.Ack);
+  rpc GetPinnedMessages(GetPinnedMessagesRequest) returns (GetPinnedMessagesResponse);
+
+  // Threads
+  rpc CreateThread(CreateThreadRequest) returns (Thread);
+  rpc GetThread(GetThreadRequest) returns (Thread);
+  rpc GetThreadMessages(GetThreadMessagesRequest) returns (MessagesPage);
+
+  // Topics
+  rpc CreateTopic(CreateTopicRequest) returns (Topic);
+  rpc GetTopics(GetTopicsRequest) returns (TopicsResponse);
+
+  // Unread counts
+  rpc GetUnreadCounts(common.Empty) returns (UnreadCountsResponse);
+  rpc MarkChatRead(MarkChatReadRequest) returns (common.Ack);
+  rpc MarkAllRead(common.Empty) returns (common.Ack);
+
+  // Message delivery/read status
+  rpc MarkMessageRead(MarkMessageReadRequest) returns (common.Ack);
+
+  // Typing indicators
+  rpc SendTyping(SendTypingRequest) returns (common.Ack);
+}
+
+// --- Pinned messages ---
+
+message PinMessageRequest {
+  string message_id = 1;
+  bool personal = 2;  // true = only for me, false = for everyone
+}
+
+message UnpinMessageRequest {
+  string message_id = 1;
+  bool personal = 2;
+}
+
+message GetPinnedMessagesRequest {
+  string chat_id = 1;
+}
+
+message GetPinnedMessagesResponse {
+  repeated PinnedMessage pinned_messages = 1;
+}
+
+message PinnedMessage {
+  Message message = 1;
+  bool personal = 2;
+}
+
+// --- Threads ---
+
+message CreateThreadRequest {
+  string message_id = 1;  // the message being replied to
+  string content = 2;
+  string content_type = 3;
+}
+
+message GetThreadRequest {
+  string thread_id = 1;
+}
+
+message GetThreadMessagesRequest {
+  string thread_id = 1;
+  string cursor = 2;
+}
+
+message Thread {
+  string id = 1;
+  string chat_id = 2;
+  string root_message_id = 3;
+  int32 reply_count = 4;
+  string created_at = 5;
+}
+
+// --- Topics ---
+
+message CreateTopicRequest {
+  string chat_id = 1;
+  string name = 2;
+}
+
+message GetTopicsRequest {
+  string chat_id = 1;
+}
+
+message TopicsResponse {
+  repeated Topic topics = 1;
+}
+
+message Topic {
+  string id = 1;
+  string chat_id = 2;
+  string name = 3;
+  string created_at = 4;
+}
+
+// --- Unread counts ---
+
+message ChatUnreadCount {
+  string chat_id = 1;
+  int32 count = 2;
+  string last_message_at = 3;  // RFC3339 timestamp
+}
+
+message UnreadCountsResponse {
+  repeated ChatUnreadCount counts = 1;
+}
+
+message MarkChatReadRequest {
+  string chat_id = 1;
+}
+
+// --- Message read status ---
+
+message MarkMessageReadRequest {
+  string message_id = 1;  // Mark this message and all earlier messages as read
+}
+
+// --- Typing indicators ---
+
+message SendTypingRequest {
+  string chat_id = 1;
+}

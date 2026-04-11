@@ -1,0 +1,10 @@
+# Rust build artifacts
+target/
+Cargo.lock
+
+# WASM output
+pkg/
+
+# Environment files
+.env
+.env.*
