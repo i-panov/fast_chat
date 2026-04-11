@@ -1,0 +1,29 @@
+{
+  "name": "fast-chat-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.5",
+    "vue-router": "^4.5",
+    "pinia": "^2.3",
+    "vuetify": "^3.7",
+    "@mdi/font": "^7.4",
+    "idb": "^8.0",
+    "date-fns": "^4.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2",
+    "typescript": "^5.7",
+    "vue-tsc": "^2.2",
+    "vite": "^6.1",
+    "vite-plugin-vuetify": "^2.1",
+    "vite-plugin-pwa": "^0.21",
+    "workbox-window": "^7.3"
+  }
+}
