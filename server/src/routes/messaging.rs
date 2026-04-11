@@ -286,6 +286,23 @@ pub async fn send_message(
     .execute(state.db.get_pool())
     .await?;
 
+    // Send push notifications to other participants
+    let participants: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM chat_participants WHERE chat_id = $1 AND user_id != $2"
+    ).bind(chat_id).bind(user_id).fetch_all(state.db.get_pool()).await?;
+
+    for participant_id in &participants {
+        let is_muted = crate::routes::push::is_chat_muted(&state, *participant_id, Some(chat_id), None).await.unwrap_or(false);
+        if !is_muted {
+            let _ = crate::routes::push::send_push_notification(
+                &state, *participant_id,
+                "New message",
+                "You have a new message",
+                Some(&serde_json::json!({"chat_id": chat_id.to_string(), "message_id": id.to_string()}))
+            ).await;
+        }
+    }
+
     Ok(Json(MessageResponse::from(&message)))
 }
 

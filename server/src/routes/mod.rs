@@ -8,6 +8,7 @@ pub mod sse;
 pub mod admin;
 pub mod bots;
 pub mod channels;
+pub mod push;
 
 use std::sync::Arc;
 use axum::{Router, middleware::from_fn_with_state, routing};
@@ -95,6 +96,16 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/channels/:id/requests", routing::get(channels::list_requests))
         .route("/channels/:id/requests/:user_id/approve", routing::post(channels::approve_request))
         .route("/channels/:id/requests/:user_id/reject", routing::post(channels::reject_request))
+        // Push notifications
+        .route("/push/subscribe", routing::post(push::subscribe))
+        .route("/push/subscriptions", routing::get(push::list_subscriptions))
+        .route("/push/subscriptions/:id", routing::delete(push::unsubscribe))
+        .route("/push/vapid-public-key", routing::get(push::get_vapid_public_key))
+        .route("/notifications/settings", routing::get(push::get_settings).put(push::update_settings))
+        .route("/notifications/muted", routing::get(push::list_muted))
+        .route("/notifications/mute", routing::post(push::mute_chat))
+        .route("/notifications/unmute", routing::post(push::unmute_chat))
+        .route("/notifications/test-push", routing::post(push::test_push))
         .route_layer(from_fn_with_state(state.clone(), jwt_auth));
 
     // Bot API (token auth — no JWT)

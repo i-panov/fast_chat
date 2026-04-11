@@ -17,6 +17,9 @@ pub struct Settings {
     pub tls_key_path: Option<String>,
     pub allow_registration: bool,
     pub require_2fa: bool,
+    pub vapid_public_key: Option<String>,
+    pub vapid_private_key: Option<String>,
+    pub vapid_subject: Option<String>,
 }
 
 impl Default for Settings {
@@ -36,6 +39,9 @@ impl Default for Settings {
             tls_key_path: None,
             allow_registration: false,
             require_2fa: false,
+            vapid_public_key: None,
+            vapid_private_key: None,
+            vapid_subject: None,
         }
     }
 }

@@ -325,6 +325,22 @@ pub async fn send_message(
     let channel = format!("channel:{}:events", ch_id);
     let _ = state.redis.publish(&channel, &event.to_string()).await;
 
+    // Send push notifications to subscribers
+    let subscribers: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM channel_subscribers WHERE channel_id = $1 AND status = 'active'"
+    ).bind(ch_id).fetch_all(state.db.get_pool()).await?;
+
+    for sub_id in &subscribers {
+        if *sub_id == user_id { continue; }
+        let is_muted = crate::routes::push::is_chat_muted(&state, *sub_id, None, Some(ch_id)).await.unwrap_or(false);
+        if !is_muted {
+            let _ = crate::routes::push::send_push_notification(
+                &state, *sub_id, &ch.title, "New channel message",
+                Some(&serde_json::json!({"channel_id": ch_id.to_string(), "message_id": msg_id.to_string()}))
+            ).await;
+        }
+    }
+
     Ok(Json(serde_json::json!({
         "id": msg_id.to_string(),
         "channel_id": ch_id.to_string(),

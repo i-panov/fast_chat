@@ -93,6 +93,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tls_key_path: std::env::var("TLS_KEY_PATH").ok(),
         allow_registration: std::env::var("ALLOW_REGISTRATION").ok().map(|v| v == "true" || v == "1").unwrap_or(false),
         require_2fa: std::env::var("REQUIRE_2FA").ok().map(|v| v == "true" || v == "1").unwrap_or(false),
+        vapid_public_key: std::env::var("VAPID_PUBLIC_KEY").ok(),
+        vapid_private_key: std::env::var("VAPID_PRIVATE_KEY").ok(),
+        vapid_subject: std::env::var("VAPID_SUBJECT").ok().or_else(|| Some("mailto:admin@localhost".to_string())),
     };
 
     info!("Starting Fast Chat server on {}", settings.server_addr);

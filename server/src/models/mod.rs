@@ -9,6 +9,7 @@ pub mod topic;
 pub mod user;
 pub mod bot;
 pub mod channel;
+pub mod push;
 
 pub use chat::Chat;
 pub use file::File;
@@ -19,3 +20,4 @@ pub use topic::Topic;
 pub use user::User;
 pub use bot::{Bot, BotCommand, BotChat};
 pub use channel::{Channel, ChannelSubscriber};
+pub use push::{PushSubscription, NotificationSettings, MutedChat};
