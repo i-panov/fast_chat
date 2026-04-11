@@ -535,6 +535,24 @@ ION_SFU_URL=ion-sfu:5000
 FILES_DIR=./files
 ```
 
+**Generating VAPID keys (for Web Push):**
+```bash
+# Generate a P-256 key pair
+openssl ecparam -genkey -name prime256v1 -noout -out vapid.pem
+
+# Extract private key as raw bytes, encode base64url
+openssl pkey -in vapid.pem -outform DER | \
+  tail -c +16 | head -c 32 | \
+  base64 | tr '+/' '-_' | tr -d '='
+
+# Extract public key as uncompressed point (65 bytes), skip first byte (0x04), encode base64url
+openssl pkey -in vapid.pem -pubout -outform DER | \
+  tail -c 65 | tail -c +2 | \
+  base64 | tr '+/' '-_' | tr -d '='
+```
+
+Set the outputs as `VAPID_PRIVATE_KEY` and `VAPID_PUBLIC_KEY` respectively.
+
 ---
 
 ## CLI Tool

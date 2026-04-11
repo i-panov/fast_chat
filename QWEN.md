@@ -110,6 +110,15 @@ docker-compose up -d
 | `VAPID_PRIVATE_KEY` | Web Push private key (base64url) | — |
 | `VAPID_SUBJECT` | VAPID subject | `mailto:admin@localhost` |
 
+**Generating VAPID keys:**
+```bash
+openssl ecparam -genkey -name prime256v1 -noout -out vapid.pem
+# Private key (32 bytes, base64url):
+openssl pkey -in vapid.pem -outform DER | tail -c +16 | head -c 32 | base64 | tr '+/' '-_' | tr -d '='
+# Public key (64 bytes, base64url):
+openssl pkey -in vapid.pem -pubout -outform DER | tail -c 65 | tail -c +2 | base64 | tr '+/' '-_' | tr -d '='
+```
+
 ### Code Quality
 
 ```bash
