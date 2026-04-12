@@ -49,7 +49,8 @@ pub async fn get_chats(
         r#"
         SELECT c.* FROM chats c
         JOIN chat_participants cp ON c.id = cp.chat_id
-        WHERE cp.user_id = $1
+        LEFT JOIN hidden_chats hc ON c.id = hc.chat_id AND hc.user_id = $1
+        WHERE cp.user_id = $1 AND hc.user_id IS NULL
         ORDER BY c.created_at DESC
         "#,
     )
@@ -213,6 +214,32 @@ pub async fn get_chat(
     Ok(Json(resp))
 }
 
+pub async fn hide_chat(
+    State(state): State<std::sync::Arc<AppState>>,
+    Path(chat_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Ack>, AppError> {
+    let user_id = get_user_id(&headers, &state).await?;
+    let chat_id: Uuid = chat_id.parse().map_err(|_| AppError::ChatNotFound)?;
+
+    if !check_chat_participation(&state, chat_id, user_id).await? {
+        return Err(AppError::NotAuthorized);
+    }
+
+    sqlx::query(
+        "INSERT INTO hidden_chats (user_id, chat_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(chat_id)
+    .execute(state.db.get_pool())
+    .await?;
+
+    Ok(Json(Ack {
+        success: true,
+        message: "Chat hidden".to_string(),
+    }))
+}
+
 pub async fn get_messages(
     State(state): State<std::sync::Arc<AppState>>,
     Path(chat_id): Path<String>,
@@ -221,6 +248,23 @@ pub async fn get_messages(
 ) -> Result<Json<MessagesPage>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
     let chat_id: Uuid = chat_id.parse().map_err(|_| AppError::ChatNotFound)?;
+
+    // If chat is hidden for this user, return empty list
+    let is_hidden: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM hidden_chats WHERE chat_id = $1 AND user_id = $2)",
+    )
+    .bind(chat_id)
+    .bind(user_id)
+    .fetch_one(state.db.get_pool())
+    .await?;
+
+    if is_hidden {
+        return Ok(Json(MessagesPage {
+            messages: vec![],
+            has_more: false,
+            next_cursor: "0".to_string(),
+        }));
+    }
 
     if !check_chat_participation(&state, chat_id, user_id).await? {
         return Err(AppError::NotAuthorized);
@@ -335,6 +379,66 @@ pub async fn send_message(
     .bind(chat_id)
     .fetch_all(state.db.get_pool())
     .await?;
+
+    // Check if this is the first message in the chat
+    let message_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE chat_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(chat_id)
+    .fetch_one(state.db.get_pool())
+    .await?;
+
+    let is_first_message = message_count == 1;
+
+    // If this is the first message, also send new_chat event to all participants
+    if is_first_message {
+        let chat = sqlx::query_as::<_, Chat>("SELECT * FROM chats WHERE id = $1")
+            .bind(chat_id)
+            .fetch_one(state.db.get_pool())
+            .await?;
+
+        let participant_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT user_id::text FROM chat_participants WHERE chat_id = $1",
+        )
+        .bind(chat_id)
+        .fetch_all(state.db.get_pool())
+        .await?;
+
+        let mut chat_resp = ChatResponse::from(&chat);
+        chat_resp.participants = participant_ids.clone();
+
+        // For direct chats (not group, 2 participants), show the other user's name
+        if !chat.is_group && participant_ids.len() == 2 {
+            let other_user_id = participant_ids.iter()
+                .find(|p| p.as_str() != user_id.to_string())
+                .and_then(|p| Uuid::parse_str(p).ok());
+
+            if let Some(other_id) = other_user_id {
+                let username: Option<String> = sqlx::query_scalar(
+                    "SELECT username FROM users WHERE id = $1"
+                )
+                .bind(other_id)
+                .fetch_optional(state.db.get_pool())
+                .await?;
+
+                if let Some(name) = username {
+                    chat_resp.name = Some(name);
+                }
+            }
+        }
+
+        let new_chat_event = serde_json::json!({
+            "type": "new_chat",
+            "data": chat_resp,
+        });
+        let new_chat_event_str = new_chat_event.to_string();
+
+        for participant_id in &participants {
+            let user_channel = format!("user:{}:events", participant_id);
+            let result = state.redis.publish(&user_channel, &new_chat_event_str).await;
+            tracing::info!("SSE publish new_chat to {}: {:?}", user_channel, result.as_ref().map(|_| "ok").map_err(|e| e.to_string()));
+        }
+    }
 
     for participant_id in &participants {
         let user_channel = format!("user:{}:events", participant_id);

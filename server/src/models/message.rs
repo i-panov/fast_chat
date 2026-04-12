@@ -8,7 +8,8 @@ use super::user::ContentType;
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Message {
     pub id: Uuid,
-    pub chat_id: Uuid,
+    pub chat_id: Option<Uuid>,
+    pub channel_id: Option<Uuid>,
     pub sender_id: Uuid,
     pub encrypted_content: String,
     pub content_type: String,

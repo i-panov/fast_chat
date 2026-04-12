@@ -68,7 +68,8 @@ impl From<&crate::models::Chat> for ChatResponse {
 #[derive(Debug, Serialize, Clone)]
 pub struct MessageResponse {
     pub id: String,
-    pub chat_id: String,
+    pub chat_id: Option<String>,
+    pub channel_id: Option<String>,
     pub sender_id: String,
     pub encrypted_content: String,
     pub content_type: String,
@@ -86,7 +87,8 @@ impl From<&crate::models::Message> for MessageResponse {
     fn from(msg: &crate::models::Message) -> Self {
         Self {
             id: msg.id.to_string(),
-            chat_id: msg.chat_id.to_string(),
+            chat_id: msg.chat_id.map(|id| id.to_string()),
+            channel_id: msg.channel_id.map(|id| id.to_string()),
             sender_id: msg.sender_id.to_string(),
             encrypted_content: msg.encrypted_content.clone(),
             content_type: msg.content_type.clone(),

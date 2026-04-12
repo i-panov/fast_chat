@@ -1,0 +1,13 @@
+warning: struct `Enable2faRequest` is never constructed
+  --> src/routes/auth.rs:47:12
+   |
+47 | pub struct Enable2faRequest {
+   |            ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `fast-chat-server` (bin "fast-chat-server") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 1.03s
+     Running `target/release/fast-chat-server`
+[2m2026-04-12T13:00:03.761394Z[0m [32m INFO[0m [2mfast_chat_server[0m[2m:[0m Starting Fast Chat server on 0.0.0.0:8080
+Error: PoolTimedOut

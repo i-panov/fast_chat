@@ -79,7 +79,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/chats",
             routing::get(messaging::get_chats).post(messaging::create_chat),
         )
-        .route("/chats/{id}", routing::get(messaging::get_chat))
+        .route(
+            "/chats/{id}",
+            routing::get(messaging::get_chat),
+        )
+        .route("/chats/{id}/hide", routing::post(messaging::hide_chat))
         .route(
             "/chats/{chat_id}/messages",
             routing::get(messaging::get_messages),
