@@ -4,6 +4,8 @@
       title="FastChat Admin"
       prepend-avatar="mdi-shield-check"
       class="font-weight-bold"
+      @click="router.push('/admin')"
+      style="cursor: pointer"
     />
     <v-divider />
     <div class="nav-links">
@@ -12,7 +14,7 @@
         :key="item.path"
         :to="item.path"
         class="nav-link"
-        :class="{ 'nav-link-active': route.path === item.path }"
+        :class="{ 'nav-link-active': route.path === item.path || (item.path === '/' && route.path === '/admin') }"
       >
         <v-icon>{{ item.icon }}</v-icon>
         <span class="nav-link-text">{{ item.title }}</span>
@@ -21,6 +23,10 @@
     <template #append>
       <v-divider />
       <div class="nav-links pb-4">
+        <router-link to="/chat" class="nav-link">
+          <v-icon>mdi-arrow-left</v-icon>
+          <span class="nav-link-text">Back to Chat</span>
+        </router-link>
         <a class="nav-link" @click="handleLogout" style="cursor: pointer;">
           <v-icon>mdi-logout</v-icon>
           <span class="nav-link-text">Logout</span>
@@ -59,13 +65,16 @@ const drawer = ref(true)
 const rail = ref(false)
 
 const navItems = [
-  { title: 'Dashboard', path: '/', icon: 'mdi-view-dashboard' },
-  { title: 'Users', path: '/users', icon: 'mdi-account-multiple' },
-  { title: 'Settings', path: '/settings', icon: 'mdi-cog' },
+  { title: 'Dashboard', path: '/admin', icon: 'mdi-view-dashboard' },
+  { title: 'Users', path: '/admin/users', icon: 'mdi-account-multiple' },
+  { title: 'Settings', path: '/admin/settings', icon: 'mdi-cog' },
 ]
 
 const currentTitle = computed(() => {
-  const item = navItems.find(i => i.path === route.path)
+  const item = navItems.find(i => {
+    if (i.path === '/admin') return route.path === '/admin' || route.path === '/admin/'
+    return route.path.startsWith(i.path)
+  })
   return item?.title || 'Dashboard'
 })
 

@@ -9,6 +9,7 @@ mod routes;
 mod sse;
 
 use clap::Parser;
+use dotenv::dotenv;
 use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -66,12 +67,12 @@ async fn init_master_bot(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,fast_chat_server=debug".into()),
-        )
         .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::EnvFilter::new(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into())))
         .init();
+
+    // Load .env file if present
+    dotenv().ok();
 
     let cli = Cli::parse();
 

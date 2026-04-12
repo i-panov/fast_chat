@@ -76,12 +76,12 @@
               <v-icon>{{ chat.is_group ? 'mdi-account-group' : 'mdi-account' }}</v-icon>
             </v-avatar>
           </template>
-          <v-list-item-title>{{ chat.name || 'Chat' }}</v-list-item-title>
+          <v-list-item-title>{{ getChatDisplayName(chat) }}</v-list-item-title>
           <v-list-item-subtitle>
             <template v-if="chat.last_message">
               {{ chat.last_message.encrypted_content.substring(0, 30) }}...
             </template>
-            <template v-else>No messages yet</template>
+            <template v-else-if="chat.unread_count === 0">No messages yet</template>
           </v-list-item-subtitle>
           <template v-slot:append>
             <v-chip v-if="chat.unread_count" color="primary" size="x-small">
@@ -106,7 +106,7 @@
         <!-- Chat header -->
         <v-app-bar elevation="1" density="compact">
           <v-app-bar-nav-icon @click="drawer = !drawer" />
-          <v-toolbar-title>{{ activeChat?.name || 'Chat' }}</v-toolbar-title>
+          <v-toolbar-title>{{ activeChat ? getChatDisplayName(activeChat) : 'Chat' }}</v-toolbar-title>
           <v-spacer />
           <v-chip v-if="typingText" color="info" size="small" class="mr-2">{{ typingText }}</v-chip>
           <v-btn v-if="appStore.user?.is_admin" icon="mdi-shield-check" size="small" variant="text" @click="router.push('/admin')" title="Admin Panel" />
@@ -114,7 +114,10 @@
 
         <!-- Messages -->
         <v-sheet ref="messagesContainer" class="flex-grow-1 overflow-auto pa-4" style="background: #0a0a0a">
-          <v-infinite-scroll @load="loadMore" :empty-text="''">
+          <div v-if="appStore.activeMessages.length === 0" class="text-center text-grey pa-8">
+            No messages yet
+          </div>
+          <v-infinite-scroll v-else @load="loadMore" :empty-text="''">
             <template v-for="msg in appStore.activeMessages" :key="msg.id">
               <!-- Pending/failed messages -->
               <div
@@ -135,9 +138,6 @@
                   </div>
                 </v-card>
               </div>
-            </template>
-            <template v-slot:empty>
-              <div class="text-center text-grey pa-8">No messages yet</div>
             </template>
           </v-infinite-scroll>
         </v-sheet>
@@ -266,6 +266,14 @@ const activeChat = computed(() => {
   if (!appStore.activeChatId) return null
   return appStore.chats.find(c => c.id === appStore.activeChatId)
 })
+
+function getChatDisplayName(chat: { name: string | null, is_group: boolean, participants: string[] }): string {
+  if (chat.name) return chat.name
+  if (chat.is_group) return 'Group Chat'
+  // For direct chats, show the other participant
+  const otherParticipant = chat.participants.find(p => p !== appStore.user?.id)
+  return otherParticipant || 'Chat'
+}
 
 const typingText = computed(() => {
   if (!appStore.activeChatId) return ''
