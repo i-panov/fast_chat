@@ -84,34 +84,44 @@ pub async fn jwt_auth(
 
     // Check 2FA requirement
     let two_fa_verified = token_data.claims.two_fa_verified;
+
+    // Check user 2FA status
+    let (is_admin, totp_enabled): (bool, bool) =
+        sqlx::query_as("SELECT is_admin, COALESCE(totp_enabled, FALSE) FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(state.db.get_pool())
+            .await
+            .map(|r| r.unwrap_or((false, false)))
+            .unwrap_or((false, false));
+
+    // Check server-level require_2fa setting
+    let require_2fa_global: Option<String> =
+        sqlx::query_scalar("SELECT value FROM server_settings WHERE key = 'require_2fa'")
+            .fetch_optional(state.db.get_pool())
+            .await
+            .ok()
+            .flatten();
+    let require_2fa_global = require_2fa_global.as_deref() == Some("true")
+        || (require_2fa_global.is_none() && state.settings.require_2fa);
+
+    // Admins always require 2FA, or global setting
+    let need_2fa = is_admin || require_2fa_global;
+
     if !two_fa_verified {
-        // Check if 2FA is required for this user
-        let (is_admin, _totp_enabled): (bool, bool) = sqlx::query_as(
-            "SELECT is_admin, COALESCE(totp_enabled, FALSE) FROM users WHERE id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(state.db.get_pool())
-        .await
-        .map(|r| r.unwrap_or((false, false)))
-        .unwrap_or((false, false));
-
-        // Check server-level require_2fa setting
-        let require_2fa_global: Option<String> =
-            sqlx::query_scalar("SELECT value FROM server_settings WHERE key = 'require_2fa'")
-                .fetch_optional(state.db.get_pool())
-                .await
-                .ok()
-                .flatten();
-        let require_2fa_global = require_2fa_global.as_deref() == Some("true")
-            || (require_2fa_global.is_none() && state.settings.require_2fa);
-
-        // Admins always require 2FA
-        let need_2fa = is_admin || require_2fa_global;
-
         if need_2fa {
             return Err((
                 StatusCode::PRECONDITION_FAILED,
                 Json(json!({"error": "2FA verification required", "need_2fa": true})),
+            ));
+        }
+    } else {
+        // Even if token claims verified, re-check if user disabled 2FA but now required
+        if need_2fa && !totp_enabled {
+            return Err((
+                StatusCode::PRECONDITION_FAILED,
+                Json(
+                    json!({"error": "2FA verification required (settings changed)", "need_2fa": true}),
+                ),
             ));
         }
     }

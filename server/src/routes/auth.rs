@@ -3,8 +3,8 @@ use axum::{
     http::{header::AUTHORIZATION, HeaderMap},
     Json,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use base32;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -41,12 +41,6 @@ pub struct VerifyCodeRequest {
 pub struct Verify2faRequest {
     pub user_id: String,
     pub totp_code: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Enable2faRequest {
-    pub user_id: Option<String>,
-    pub code: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,6 +221,8 @@ pub async fn request_code(
     State(state): State<std::sync::Arc<AppState>>,
     Json(req): Json<RequestCodeRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    tracing::info!("request_code called for email: {}", req.email);
+
     let email = req.email.trim().to_lowercase();
 
     // Check if user exists
@@ -238,6 +234,7 @@ pub async fn request_code(
 
     // If registration is disabled and user doesn't exist — reject
     if !user_exists && !state.settings.allow_registration {
+        tracing::warn!("Registration disabled for email: {}", email);
         return Err(AppError::NotAuthorized);
     }
 
@@ -260,6 +257,8 @@ pub async fn verify_code(
     State(state): State<std::sync::Arc<AppState>>,
     Json(req): Json<VerifyCodeRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    tracing::info!("verify_code called for email: {}", req.email);
+
     let email = req.email.trim().to_lowercase();
 
     // Atomically claim the code: UPDATE returns id only if code was unused
@@ -271,7 +270,40 @@ pub async fn verify_code(
     .fetch_optional(state.db.get_pool())
     .await?;
 
-    let code_id = used_id.ok_or(AppError::InvalidCredentials)?;
+    let code_id = match used_id {
+        Some(id) => id,
+        None => {
+            // Debug: check if code exists at all
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_codes WHERE email = $1)")
+                    .bind(&email)
+                    .fetch_one(state.db.get_pool())
+                    .await?;
+
+            let expired: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM email_codes WHERE email = $1 AND expires_at <= NOW())",
+            )
+            .bind(&email)
+            .fetch_one(state.db.get_pool())
+            .await?;
+
+            let already_used: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM email_codes WHERE email = $1 AND used = TRUE)",
+            )
+            .bind(&email)
+            .fetch_one(state.db.get_pool())
+            .await?;
+
+            tracing::error!(
+                "Code not found for {}: exists={}, expired={}, used={}",
+                email,
+                exists,
+                expired,
+                already_used
+            );
+            return Err(AppError::InvalidCredentials);
+        }
+    };
 
     // Fetch the code hash AFTER claiming it (to verify the specific code)
     let code_hash: String = sqlx::query_scalar("SELECT code_hash FROM email_codes WHERE id = $1")
@@ -302,14 +334,17 @@ pub async fn verify_code(
 
             let id = uuid::Uuid::new_v4();
             let now = Utc::now();
-            let username = email.split('@').next().unwrap_or("user").to_string();
+            let base_username = email.split('@').next().unwrap_or("user").to_string();
             let (public_key, _) = CryptoService::generate_keypair();
 
+            // Insert; if email already exists, ignore (user already exists)
             sqlx::query(
-                "INSERT INTO users (id, username, email, public_key, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)",
+                "INSERT INTO users (id, username, email, public_key, created_at, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6) \
+                 ON CONFLICT (email) DO NOTHING",
             )
             .bind(id)
-            .bind(&username)
+            .bind(&base_username)
             .bind(&email)
             .bind(&public_key)
             .bind(now)
@@ -317,10 +352,8 @@ pub async fn verify_code(
             .execute(state.db.get_pool())
             .await?;
 
-            tracing::info!("New user registered: {} ({})", username, email);
-
-            sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
-                .bind(id)
+            sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
+                .bind(&email)
                 .fetch_one(state.db.get_pool())
                 .await?
         }
@@ -604,9 +637,10 @@ pub async fn setup_2fa(
     let user_id = extract_user_id_or_body(&headers, body_user_id, &state.settings.jwt_secret)?;
 
     let secret = generate_totp_secret();
-    // Store secret as Base32 directly (no encryption needed for pet project)
+    let encrypted_secret = CryptoService::encrypt_totp_secret(&secret, &state.settings.jwt_secret)
+        .map_err(|_| AppError::Internal)?;
     sqlx::query("UPDATE users SET totp_secret = $1 WHERE id = $2")
-        .bind(&secret)
+        .bind(&encrypted_secret)
         .bind(user_id)
         .execute(state.db.get_pool())
         .await?;
@@ -652,16 +686,24 @@ pub async fn verify_2fa_setup(
         .totp_secret
         .as_ref()
         .ok_or(AppError::TwoFactorNotConfigured)?;
-    // Secret is stored as Base32 directly (no encryption)
-    let secret = encrypted_secret.clone();
+    let secret = CryptoService::decrypt_totp_secret(encrypted_secret, &state.settings.jwt_secret)
+        .map_err(|_| AppError::Internal)?;
 
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("System time before UNIX epoch")
         .as_secs();
-    let secret_bytes = base32::decode(base32::Alphabet::Rfc4648 { padding: false }, &secret).unwrap_or_default();
+    let secret_bytes =
+        base32::decode(base32::Alphabet::Rfc4648 { padding: false }, &secret).unwrap_or_default();
     let expected = totp::<Sha1>(&secret_bytes, seconds);
-    tracing::info!("TOTP debug: secret={} ({} bytes), time={}, expected_code={}, user_code={}", secret.chars().take(12).collect::<String>(), secret.len(), seconds, expected, code);
+    tracing::info!(
+        "TOTP debug: secret={} ({} bytes), time={}, expected_code={}, user_code={}",
+        secret.chars().take(12).collect::<String>(),
+        secret.len(),
+        seconds,
+        expected,
+        code
+    );
 
     if !verify_totp(&secret, code) {
         return Err(AppError::InvalidTwoFactorCode);
@@ -697,16 +739,24 @@ pub async fn enable_2fa(
         .totp_secret
         .as_ref()
         .ok_or(AppError::TwoFactorNotConfigured)?;
-    // Secret is stored as Base32 directly (no encryption)
-    let secret = encrypted_secret.clone();
+    let secret = CryptoService::decrypt_totp_secret(encrypted_secret, &state.settings.jwt_secret)
+        .map_err(|_| AppError::Internal)?;
 
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("System time before UNIX epoch")
         .as_secs();
-    let secret_bytes = base32::decode(base32::Alphabet::Rfc4648 { padding: false }, &secret).unwrap_or_default();
+    let secret_bytes =
+        base32::decode(base32::Alphabet::Rfc4648 { padding: false }, &secret).unwrap_or_default();
     let expected = totp::<Sha1>(&secret_bytes, seconds);
-    tracing::info!("TOTP debug: secret={} ({} bytes), time={}, expected_code={}, user_code={}", secret.chars().take(12).collect::<String>(), secret.len(), seconds, expected, code);
+    tracing::info!(
+        "TOTP debug: secret={} ({} bytes), time={}, expected_code={}, user_code={}",
+        secret.chars().take(12).collect::<String>(),
+        secret.len(),
+        seconds,
+        expected,
+        code
+    );
 
     if !verify_totp(&secret, code) {
         return Err(AppError::InvalidTwoFactorCode);

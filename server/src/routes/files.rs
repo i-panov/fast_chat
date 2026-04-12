@@ -7,6 +7,7 @@ use axum::{
 };
 use chrono::Utc;
 use tokio::fs::File as TokioFile;
+use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -32,28 +33,36 @@ pub async fn upload_file(
 
     let mut files = Vec::new();
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::Validation(e.to_string()))?
     {
         let file_name = field.file_name().unwrap_or("unknown").to_string();
         let content_type = field.content_type().map(|s| s.to_string());
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| AppError::Validation(e.to_string()))?;
-
-        let size_bytes = data.len() as i64;
+        let mut size_bytes = 0i64;
         let id = Uuid::new_v4();
-        let stored_path = format!(
-            "{}.{}",
-            id,
-            file_name.split('.').next_back().unwrap_or("bin")
-        );
+        let extension = file_name
+            .split('.')
+            .next_back()
+            .unwrap_or("bin")
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>();
+        let extension = if extension.is_empty() {
+            "bin".to_string()
+        } else {
+            extension
+        };
+        let stored_path = format!("{}.{}", id, extension);
         let full_path = state.settings.files_dir.join(&stored_path);
 
-        tokio::fs::write(&full_path, &data).await?;
+        let mut file_handle = TokioFile::create(&full_path).await?;
+        while let Some(chunk) = field.chunk().await? {
+            size_bytes += chunk.len() as i64;
+            file_handle.write_all(&chunk).await?;
+        }
+        file_handle.flush().await?;
 
         let now = Utc::now();
         let file = sqlx::query_as::<_, DbFile>(
@@ -101,28 +110,36 @@ pub async fn upload_file_for_chat(
 
     let mut files = Vec::new();
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::Validation(e.to_string()))?
     {
         let file_name = field.file_name().unwrap_or("unknown").to_string();
         let content_type = field.content_type().map(|s| s.to_string());
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| AppError::Validation(e.to_string()))?;
-
-        let size_bytes = data.len() as i64;
+        let mut size_bytes = 0i64;
         let id = Uuid::new_v4();
-        let stored_path = format!(
-            "{}.{}",
-            id,
-            file_name.split('.').next_back().unwrap_or("bin")
-        );
+        let extension = file_name
+            .split('.')
+            .next_back()
+            .unwrap_or("bin")
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>();
+        let extension = if extension.is_empty() {
+            "bin".to_string()
+        } else {
+            extension
+        };
+        let stored_path = format!("{}.{}", id, extension);
         let full_path = state.settings.files_dir.join(&stored_path);
 
-        tokio::fs::write(&full_path, &data).await?;
+        let mut file_handle = TokioFile::create(&full_path).await?;
+        while let Some(chunk) = field.chunk().await? {
+            size_bytes += chunk.len() as i64;
+            file_handle.write_all(&chunk).await?;
+        }
+        file_handle.flush().await?;
 
         let now = Utc::now();
         let file = sqlx::query_as::<_, DbFile>(

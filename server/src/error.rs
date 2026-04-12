@@ -89,3 +89,9 @@ impl From<redis::RedisError> for AppError {
         AppError::Redis(err.to_string())
     }
 }
+
+impl From<axum::extract::multipart::MultipartError> for AppError {
+    fn from(err: axum::extract::multipart::MultipartError) -> Self {
+        AppError::Validation(err.to_string())
+    }
+}

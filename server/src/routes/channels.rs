@@ -354,11 +354,28 @@ pub async fn send_message(
     let content_type = req.content_type.unwrap_or("text".to_string());
 
     sqlx::query(
-        "INSERT INTO messages (id, chat_id, sender_id, encrypted_content, content_type, status, created_at) \
+        "INSERT INTO messages (id, channel_id, sender_id, encrypted_content, content_type, status, created_at) \
          VALUES ($1, $2, $3, $4, $5, 'sent', $6)"
     )
     .bind(msg_id).bind(ch_id).bind(user_id).bind(&req.content).bind(&content_type).bind(now)
     .execute(state.db.get_pool()).await?;
+
+    // Update unread counts for subscribers (excluding sender)
+    sqlx::query(
+        r#"
+        INSERT INTO unread_counts (user_id, channel_id, count, last_message_at)
+        SELECT cs.user_id, $1, 1, $2
+        FROM channel_subscribers cs
+        WHERE cs.channel_id = $1 AND cs.status = 'active' AND cs.user_id != $3
+        ON CONFLICT (user_id, COALESCE(chat_id, channel_id))
+        DO UPDATE SET count = unread_counts.count + 1, last_message_at = $2
+        "#,
+    )
+    .bind(ch_id)
+    .bind(now)
+    .bind(user_id)
+    .execute(state.db.get_pool())
+    .await?;
 
     // Notify all subscribers via SSE
     let event = serde_json::json!({
@@ -433,7 +450,7 @@ pub async fn get_messages(
 
     let messages = sqlx::query_as::<_, (Uuid, String, String, String, String, chrono::DateTime<Utc>)>(
         "SELECT id, encrypted_content, content_type, status, created_at::text, sender_id::text \
-         FROM messages WHERE chat_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+         FROM messages WHERE channel_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT $2 OFFSET $3"
     ).bind(ch_id).bind(limit).bind(offset).fetch_all(state.db.get_pool()).await?;
 
     Ok(Json(
