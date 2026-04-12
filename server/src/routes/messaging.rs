@@ -66,7 +66,28 @@ pub async fn get_chats(
                 .await?;
 
         let mut resp = ChatResponse::from(chat);
-        resp.participants = participants;
+        resp.participants = participants.clone();
+
+        // For direct chats (not group, 2 participants), show the other user's name
+        if !chat.is_group && participants.len() == 2 {
+            let other_user_id = participants.iter()
+                .find(|p| p.as_str() != user_id.to_string())
+                .and_then(|p| Uuid::parse_str(p).ok());
+
+            if let Some(other_id) = other_user_id {
+                let username: Option<String> = sqlx::query_scalar(
+                    "SELECT username FROM users WHERE id = $1"
+                )
+                .bind(other_id)
+                .fetch_optional(state.db.get_pool())
+                .await?;
+
+                if let Some(name) = username {
+                    resp.name = Some(name);
+                }
+            }
+        }
+
         result.push(resp);
     }
 
