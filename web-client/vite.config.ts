@@ -10,9 +10,13 @@ export default defineConfig({
     vuetify({ autoImport: false }),
     VitePWA({
       registerType: 'autoUpdate',
-      injectRegister: 'auto',
+      injectRegister: null, // Disabled during development
+      devOptions: {
+        enabled: false, // PWA disabled in dev mode
+      },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // Don't cache API responses — always fetch fresh data
         runtimeCaching: [
           {
             urlPattern: /^https?.*\/api\/files\/.*/i,
@@ -20,15 +24,6 @@ export default defineConfig({
             options: {
               cacheName: 'files-cache',
               expiration: { maxEntries: 500, maxAgeSeconds: 30 * 24 * 60 * 60 },
-            },
-          },
-          {
-            urlPattern: /^https?.*\/api\/.*/i,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'api-cache',
-              networkTimeoutSeconds: 10,
-              expiration: { maxEntries: 200, maxAgeSeconds: 7 * 24 * 60 * 60 },
             },
           },
         ],

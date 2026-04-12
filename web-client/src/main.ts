@@ -8,6 +8,16 @@ import * as directives from 'vuetify/directives'
 import '@mdi/font/css/materialdesignicons.css'
 import 'vuetify/styles'
 
+// Kill any lingering Service Workers from previous PWA sessions
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(registrations => {
+    for (const reg of registrations) {
+      reg.unregister()
+      console.log('[SW] Unregistered:', reg.scope)
+    }
+  }).catch(() => {})
+}
+
 const vuetify = createVuetify({
   components,
   directives,

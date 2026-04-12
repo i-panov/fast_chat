@@ -64,31 +64,50 @@
 
       <!-- Chat list -->
       <v-list density="compact" nav v-if="searchResults.length === 0">
-        <v-list-item
+        <v-menu
           v-for="chat in filteredChats"
           :key="chat.id"
-          :active="appStore.activeChatId === chat.id"
-          @click="selectChat(chat.id)"
-          lines="two"
+          v-model="contextMenus[chat.id]"
+          :close-on-content-click="true"
+          :offset="5"
         >
-          <template v-slot:prepend>
-            <v-avatar :color="chat.is_group ? 'teal' : 'blue'" size="36">
-              <v-icon>{{ chat.is_group ? 'mdi-account-group' : 'mdi-account' }}</v-icon>
-            </v-avatar>
+          <template v-slot:activator="{ props }">
+            <v-list-item
+              v-bind="props"
+              :active="appStore.activeChatId === chat.id"
+              @click="selectChat(chat.id)"
+              @contextmenu.prevent="openContextMenu(chat.id, $event)"
+              lines="two"
+            >
+              <template v-slot:prepend>
+                <v-avatar :color="chat.is_group ? 'teal' : 'blue'" size="36">
+                  <v-icon>{{ chat.is_group ? 'mdi-account-group' : 'mdi-account' }}</v-icon>
+                </v-avatar>
+              </template>
+              <v-list-item-title>{{ getChatDisplayName(chat) }}</v-list-item-title>
+              <v-list-item-subtitle>
+                <template v-if="chat.last_message">
+                  {{ chat.last_message.encrypted_content.substring(0, 30) }}...
+                </template>
+                <template v-else-if="chat.unread_count === 0">No messages yet</template>
+              </v-list-item-subtitle>
+              <template v-slot:append>
+                <v-chip v-if="chat.unread_count" color="primary" size="x-small">
+                  {{ chat.unread_count }}
+                </v-chip>
+              </template>
+            </v-list-item>
           </template>
-          <v-list-item-title>{{ getChatDisplayName(chat) }}</v-list-item-title>
-          <v-list-item-subtitle>
-            <template v-if="chat.last_message">
-              {{ chat.last_message.encrypted_content.substring(0, 30) }}...
-            </template>
-            <template v-else-if="chat.unread_count === 0">No messages yet</template>
-          </v-list-item-subtitle>
-          <template v-slot:append>
-            <v-chip v-if="chat.unread_count" color="primary" size="x-small">
-              {{ chat.unread_count }}
-            </v-chip>
-          </template>
-        </v-list-item>
+
+          <v-list density="compact" min-width="180">
+            <v-list-item @click="confirmDeleteChat(chat.id)" class="text-red">
+              <template v-slot:prepend>
+                <v-icon icon="mdi-delete" color="red" />
+              </template>
+              <v-list-item-title>Удалить чат</v-list-item-title>
+            </v-list-item>
+          </v-list>
+        </v-menu>
       </v-list>
     </v-navigation-drawer>
 
@@ -145,25 +164,29 @@
         <!-- Message input -->
         <v-sheet class="pa-2" border>
           <v-form @submit.prevent="sendMessage" class="d-flex align-center ga-2">
-            <v-btn icon="mdi-attachment" variant="text" />
-            <v-text-field
-              v-model="messageText"
-              placeholder="Type a message..."
-              density="compact"
-              variant="plain"
-              hide-details
-              :disabled="sending"
-              @keydown.enter.exact.prevent="sendMessage"
-            />
-            <v-btn
-              icon="mdi-send"
-              color="primary"
-              variant="flat"
-              :loading="sending"
-              :disabled="!messageText.trim()"
-              type="submit"
-            />
-          </v-form>
+          <v-btn icon="mdi-attachment" variant="text" @click="fileInput && fileInput.click()" />
+          <input ref="fileInput" type="file" style="display: none" @change="onFileSelect" />
+          <v-text-field
+            v-model="messageText"
+            placeholder="Type a message..."
+            density="compact"
+            variant="plain"
+            hide-details
+            :disabled="sending"
+            @keydown.enter.exact.prevent="sendMessage"
+          />
+          <v-btn
+            icon="mdi-send"
+            color="primary"
+            variant="flat"
+            :loading="sending"
+            :disabled="(!messageText.trim() && !selectedFile) || sending"
+            type="submit"
+          />
+        </v-form>
+        <div v-if="selectedFile" class="mt-2">
+          <v-chip closable @click:close="selectedFile = null">{{ selectedFile.name }}</v-chip>
+        </div>
         </v-sheet>
       </div>
     </v-main>
@@ -175,6 +198,7 @@ import { ref, computed, nextTick, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
+import type { FileMeta } from '@/types'
 
 const appStore = useAppStore()
 const router = useRouter()
@@ -183,7 +207,19 @@ const drawer = ref(true)
 const search = ref('')
 const searchResults = ref<{ id: string; username: string; email: string; is_admin: boolean }[]>([])
 const isCreatingChat = ref(false)
+const contextMenus = ref<Record<string, boolean>>({})
 let searchTimeout: ReturnType<typeof setTimeout> | null = null
+
+function openContextMenu(chatId: string, _event: MouseEvent) {
+  contextMenus.value[chatId] = true
+}
+
+async function confirmDeleteChat(chatId: string) {
+  // Close menu
+  contextMenus.value[chatId] = false
+  if (!confirm('Удалить чат? История сообщений будет потеряна.')) return
+  await appStore.deleteChat(chatId)
+}
 
 function onSearchInput() {
   if (searchTimeout) clearTimeout(searchTimeout)
@@ -247,6 +283,9 @@ const sending = ref(false)
 const messagesContainer = ref<HTMLElement | null>(null)
 const messagesCursor = ref<string | null>(null)
 const messagesLoading = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
+const selectedFile = ref<File | null>(null)
+const selectedFileMeta = ref<FileMeta | null>(null)
 
 const pendingCount = computed(() => {
   let count = 0
@@ -255,6 +294,19 @@ const pendingCount = computed(() => {
   }
   return count
 })
+
+async function onFileSelect(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+  try {
+    const meta = await api.uploadFile(appStore.activeChatId!, file)
+    selectedFile.value = file
+    selectedFileMeta.value = meta
+  } catch (e) {
+    console.error('Upload failed:', e)
+  }
+}
 
 const filteredChats = computed(() => {
   if (!search.value) return appStore.chats
@@ -298,12 +350,15 @@ watch(() => appStore.activeMessages.length, () => {
 })
 
 async function sendMessage() {
-  if (!messageText.value.trim() || !appStore.activeChatId) return
+  if ((!messageText.value.trim() && !selectedFile.value) || !appStore.activeChatId) return
   const text = messageText.value.trim()
   messageText.value = ''
+  const fileMeta = selectedFileMeta.value
+  selectedFile.value = null
+  selectedFileMeta.value = null
   sending.value = true
   try {
-    await appStore.sendLocalMessage(appStore.activeChatId, text)
+    await appStore.sendLocalMessage(appStore.activeChatId, text, 'text', undefined, undefined, fileMeta?.id)
     nextTick(scrollToBottom)
   } finally {
     sending.value = false
@@ -320,7 +375,7 @@ async function loadMore({ done }: { done: (status: 'empty' | 'ok' | 'error') => 
   try {
     const result = await api.getMessages(appStore.activeChatId, 50, messagesCursor.value ?? undefined)
     const chatMsgs = appStore.messages.get(appStore.activeChatId) || []
-    
+
     // Add messages to the beginning (older messages)
     const newMsgs = result.messages.filter(m => !chatMsgs.find(existing => existing.id === m.id))
     if (newMsgs.length > 0) {

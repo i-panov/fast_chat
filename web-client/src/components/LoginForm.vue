@@ -111,8 +111,18 @@ async function apiFetch(path: string, opts: RequestInit = {}) {
     ...opts,
     headers: { 'Content-Type': 'application/json', ...opts.headers },
   })
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.error || data.details || `HTTP ${response.status}`)
+  
+  // Check content type before parsing
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.includes('application/json')) {
+    const text = await response.text()
+    throw new Error(text || `HTTP ${response.status}: Server returned non-JSON response`)
+  }
+  
+  const data = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new Error(data?.error || data?.details || `HTTP ${response.status}`)
+  }
   return data
 }
 
