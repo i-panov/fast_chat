@@ -1,6 +1,6 @@
-use thiserror::Error;
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde_json::json;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -12,9 +12,6 @@ pub enum AppError {
 
     #[error("Invalid credentials")]
     InvalidCredentials,
-
-    #[error("User already exists")]
-    UserExists,
 
     #[error("Token expired")]
     TokenExpired,
@@ -52,9 +49,6 @@ pub enum AppError {
     #[error("JWT error: {0}")]
     Jwt(#[from] jsonwebtoken::errors::Error),
 
-    #[error("Argon2 error")]
-    Argon2,
-
     #[error("Internal server error")]
     Internal,
 
@@ -73,8 +67,9 @@ impl IntoResponse for AppError {
             AppError::MessageNotFound => (StatusCode::NOT_FOUND, "Message not found"),
             AppError::FileNotFound => (StatusCode::NOT_FOUND, "File not found"),
             AppError::NotAuthorized => (StatusCode::FORBIDDEN, "Not authorized"),
-            AppError::UserExists => (StatusCode::CONFLICT, "User already exists"),
-            AppError::TwoFactorNotConfigured => (StatusCode::PRECONDITION_FAILED, "2FA not configured"),
+            AppError::TwoFactorNotConfigured => {
+                (StatusCode::PRECONDITION_FAILED, "2FA not configured")
+            }
             AppError::InvalidTwoFactorCode => (StatusCode::BAD_REQUEST, "Invalid 2FA code"),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),

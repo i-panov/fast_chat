@@ -1,5 +1,9 @@
 # QWEN.md — Fast Chat Project Context
 
+## Правила
+
+- **Язык ответов: всегда русский.** Все комментарии, объяснения, summary — строго на русском языке. Код, CLI-команды, логи, JSON-ключи, идентификаторы — без изменений (не переводить).
+
 ## Overview
 
 Self-hosted real-time messenger with E2E encryption, file transfers, audio/video calls, group chats, bots, and broadcast channels. PWA with Web Push notifications.

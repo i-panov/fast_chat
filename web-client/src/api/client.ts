@@ -23,6 +23,12 @@ class ApiClient {
   }
 
   async getTokens() {
+    // Always refresh from IndexedDB to ensure we have latest
+    const auth = await db.getAuth()
+    if (auth?.access_token) {
+      this.accessToken = auth.access_token
+      this.refreshToken = auth.refresh_token
+    }
     return { access: this.accessToken, refresh: this.refreshToken }
   }
 
@@ -119,21 +125,32 @@ class ApiClient {
   }
 
   // ─── 2FA ───
-  async setup2fa(): Promise<{ secret: string; qr_code_url: string }> {
-    return this.request('/api/auth/2fa/setup', { method: 'POST' })
+  async setup2fa(userId?: string): Promise<{ secret: string; qr_code_url: string }> {
+    const body: Record<string, unknown> = {}
+    if (userId) body.user_id = userId
+    return this.request('/api/auth/2fa/setup', { method: 'POST', body: JSON.stringify(body) })
   }
 
-  async verify2faSetup(code: string): Promise<{ success: boolean }> {
-    return this.request('/api/auth/2fa/verify-setup', { method: 'POST', body: JSON.stringify({ code }) })
+  async verify2faSetup(userId: string | undefined, code: string): Promise<{ success: boolean }> {
+    const body: Record<string, unknown> = { code }
+    if (userId) body.user_id = userId
+    return this.request('/api/auth/2fa/verify-setup', { method: 'POST', body: JSON.stringify(body) })
   }
 
-  async enable2fa(code: string): Promise<{ success: boolean; backup_codes?: string[] }> {
-    return this.request('/api/auth/2fa/enable', { method: 'POST', body: JSON.stringify({ code }) })
+  async enable2fa(userId: string | undefined, code: string): Promise<{ success: boolean; backup_codes?: string[] }> {
+    const body: Record<string, unknown> = { code }
+    if (userId) body.user_id = userId
+    return this.request('/api/auth/2fa/enable', { method: 'POST', body: JSON.stringify(body) })
   }
 
   // ─── Chats ───
   async getChats(): Promise<Chat[]> {
     return this.request('/api/chats')
+  }
+
+  // ─── Users ───
+  async searchUsers(q: string): Promise<{ id: string; username: string; email: string; is_admin: boolean }[]> {
+    return this.request(`/api/users/search?q=${encodeURIComponent(q)}&limit=10`)
   }
 
   async createChat(isGroup: boolean, name: string, participants: string[]): Promise<Chat> {

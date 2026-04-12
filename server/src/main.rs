@@ -21,13 +21,19 @@ use crate::db::redis::RedisPool;
 use crate::models::User;
 
 /// Initialize the master bot if it doesn't exist
-async fn init_master_bot(pool: &crate::db::postgres::PostgresPool) -> Result<Option<String>, Box<dyn std::error::Error>> {
+async fn init_master_bot(
+    pool: &crate::db::postgres::PostgresPool,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    use base64::{
+        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+        Engine,
+    };
     use sha2::{Digest, Sha256};
-    use base64::{engine::general_purpose::{URL_SAFE_NO_PAD, STANDARD}, Engine};
 
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM bots WHERE is_master = TRUE)")
-        .fetch_one(pool.get_pool())
-        .await?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM bots WHERE is_master = TRUE)")
+            .fetch_one(pool.get_pool())
+            .await?;
 
     if exists {
         return Ok(None);
@@ -91,19 +97,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ion_sfu_url: std::env::var("ION_SFU_URL").ok(),
         tls_cert_path: std::env::var("TLS_CERT_PATH").ok(),
         tls_key_path: std::env::var("TLS_KEY_PATH").ok(),
-        allow_registration: std::env::var("ALLOW_REGISTRATION").ok().map(|v| v == "true" || v == "1").unwrap_or(false),
-        require_2fa: std::env::var("REQUIRE_2FA").ok().map(|v| v == "true" || v == "1").unwrap_or(false),
+        allow_registration: std::env::var("ALLOW_REGISTRATION")
+            .ok()
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false),
+        require_2fa: std::env::var("REQUIRE_2FA")
+            .ok()
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false),
+        allow_admin_no_2fa: std::env::var("ALLOW_ADMIN_NO_2FA")
+            .ok()
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false),
         vapid_public_key: std::env::var("VAPID_PUBLIC_KEY").ok(),
         vapid_private_key: std::env::var("VAPID_PRIVATE_KEY").ok(),
-        vapid_subject: std::env::var("VAPID_SUBJECT").ok().or_else(|| Some("mailto:admin@localhost".to_string())),
-        allowed_origins: std::env::var("ALLOWED_ORIGINS").ok()
+        vapid_subject: std::env::var("VAPID_SUBJECT")
+            .ok()
+            .or_else(|| Some("mailto:admin@localhost".to_string())),
+        allowed_origins: std::env::var("ALLOWED_ORIGINS")
+            .ok()
             .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
             .unwrap_or_default(),
     };
 
     // Validate JWT secret
     if settings.jwt_secret.len() < 32 {
-        tracing::error!("JWT_SECRET must be at least 32 bytes (got {})", settings.jwt_secret.len());
+        tracing::error!(
+            "JWT_SECRET must be at least 32 bytes (got {})",
+            settings.jwt_secret.len()
+        );
         std::process::exit(1);
     }
 
@@ -130,7 +152,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = routes::create_router(state.clone());
 
-    if let (Some(ref cert_path), Some(ref key_path)) = (&settings.tls_cert_path, &settings.tls_key_path) {
+    if let (Some(ref cert_path), Some(ref key_path)) =
+        (&settings.tls_cert_path, &settings.tls_key_path)
+    {
         info!("Starting with TLS (HTTP/2 enabled) on https://{}", addr);
         info!("  TLS cert: {}", cert_path);
         info!("  TLS key:  {}", key_path);
@@ -139,11 +163,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .expect("Failed to load TLS certificates");
 
-        axum_server::bind_rustls(addr.into(), tls_config)
+        axum_server::bind_rustls(std::net::SocketAddr::from(addr), tls_config)
             .serve(app.into_make_service())
             .await?;
     } else {
-        info!("REST + SSE server listening on http://{} (HTTP/1.1, no TLS)", addr);
+        info!(
+            "REST + SSE server listening on http://{} (HTTP/1.1, no TLS)",
+            addr
+        );
         info!("  To enable HTTP/2, set TLS_CERT_PATH and TLS_KEY_PATH env vars");
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -194,10 +221,7 @@ async fn run_cli_command(
                 .fetch_all(db.get_pool())
                 .await?;
 
-            println!(
-                "{:<36} {:<20} {:<10}",
-                "ID", "USERNAME", "ADMIN"
-            );
+            println!("{:<36} {:<20} {:<10}", "ID", "USERNAME", "ADMIN");
             println!("{}", "-".repeat(66));
             for user in users {
                 println!(
@@ -229,21 +253,57 @@ async fn run_cli_command(
 
         cli::Commands::Migrate => {
             info!("Running migrations...");
+
+            // Create migrations tracking table
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TIMESTAMPTZ DEFAULT NOW()
+                )",
+            )
+            .execute(db.get_pool())
+            .await?;
+
+            // Get already applied migrations
+            let applied: Vec<i32> = sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
+                .fetch_all(db.get_pool())
+                .await?;
+
             let mut files = std::fs::read_dir("../migrations")?.collect::<Result<Vec<_>, _>>()?;
             files.sort_by_key(|f| f.file_name());
 
             for file in files {
                 let path = file.path();
-                if path.extension().map(|e| e == "sql").unwrap_or(false) {
-                    info!("Applying: {}", path.display());
-                    let sql = std::fs::read_to_string(&path)?;
-                    for statement in sql.split(';') {
-                        let statement = statement.trim();
-                        if !statement.is_empty() {
-                            sqlx::query(statement).execute(db.get_pool()).await?;
-                        }
+                if !path.extension().map(|e| e == "sql").unwrap_or(false) {
+                    continue;
+                }
+
+                // Extract version number from filename (e.g. "001_initial.sql" -> 1)
+                let version: i32 = path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.split('_').next())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+
+                if applied.contains(&version) {
+                    info!("Skipping (already applied): {}", path.display());
+                    continue;
+                }
+
+                info!("Applying: {}", path.display());
+                let sql = std::fs::read_to_string(&path)?;
+                for statement in sql.split(';') {
+                    let statement = statement.trim();
+                    if !statement.is_empty() {
+                        sqlx::query(statement).execute(db.get_pool()).await?;
                     }
                 }
+
+                // Mark as applied
+                sqlx::query("INSERT INTO schema_migrations (version) VALUES ($1)")
+                    .bind(version)
+                    .execute(db.get_pool())
+                    .await?;
             }
             println!("Migrations completed");
         }

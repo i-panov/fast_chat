@@ -32,15 +32,38 @@
       <v-text-field
         v-model="search"
         prepend-inner-icon="mdi-magnify"
-        placeholder="Search chats..."
+        placeholder="Search users or chats..."
         variant="plain"
         density="compact"
         hide-details
         class="px-3"
+        @update:model-value="onSearchInput"
       />
 
+      <!-- Search results: users -->
+      <v-list density="compact" nav v-if="searchResults.length > 0">
+        <v-list-subheader>Users</v-list-subheader>
+        <v-list-item
+          v-for="user in searchResults"
+          :key="user.id"
+          @click="startChatWith(user)"
+          lines="one"
+        >
+          <template v-slot:prepend>
+            <v-avatar color="grey" size="36">
+              <v-icon>mdi-account</v-icon>
+            </v-avatar>
+          </template>
+          <v-list-item-title>{{ user.username }}</v-list-item-title>
+          <v-list-item-subtitle>{{ user.email }}</v-list-item-subtitle>
+          <template v-slot:append>
+            <v-icon icon="mdi-plus" color="primary" />
+          </template>
+        </v-list-item>
+      </v-list>
+
       <!-- Chat list -->
-      <v-list density="compact" nav>
+      <v-list density="compact" nav v-if="searchResults.length === 0">
         <v-list-item
           v-for="chat in filteredChats"
           :key="chat.id"
@@ -86,6 +109,7 @@
           <v-toolbar-title>{{ activeChat?.name || 'Chat' }}</v-toolbar-title>
           <v-spacer />
           <v-chip v-if="typingText" color="info" size="small" class="mr-2">{{ typingText }}</v-chip>
+          <v-btn v-if="appStore.user?.is_admin" icon="mdi-shield-check" size="small" variant="text" @click="router.push('/admin')" title="Admin Panel" />
         </v-app-bar>
 
         <!-- Messages -->
@@ -150,6 +174,7 @@
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import { api } from '@/api/client'
 import type { Chat, Message } from '@/types'
 
 const appStore = useAppStore()
@@ -157,6 +182,67 @@ const router = useRouter()
 
 const drawer = ref(true)
 const search = ref('')
+const searchResults = ref<{ id: string; username: string; email: string; is_admin: boolean }[]>([])
+const isCreatingChat = ref(false)
+let searchTimeout: ReturnType<typeof setTimeout> | null = null
+
+function onSearchInput() {
+  if (searchTimeout) clearTimeout(searchTimeout)
+  searchResults.value = []
+  if (search.value.length < 2) return
+  searchTimeout = setTimeout(async () => {
+    try {
+      const tokens = await api.getTokens()
+      console.log('[search] tokens:', tokens.access ? 'yes' : 'no', 'query:', search.value)
+      if (!tokens.access) return
+      const url = `/api/users/search?q=${encodeURIComponent(search.value)}&limit=10`
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${tokens.access}` } })
+      if (!res.ok) { console.log('[search] HTTP', res.status); return }
+      const users = await res.json()
+      console.log('[search] users:', users.length, users.map((u: any) => u.username))
+      // Filter out users already in chats
+      const existingUsernames = new Set(appStore.chats.map(c => c.name))
+      searchResults.value = users.filter((u: any) => !existingUsernames.has(u.username) && u.id !== appStore.user?.id)
+      console.log('[search] filtered:', searchResults.value.length, searchResults.value.map((u: any) => u.username))
+    } catch (e) {
+      console.log('[search] error:', e)
+      searchResults.value = []
+    }
+  }, 400)
+}
+
+async function startChatWith(user: { id: string; username: string }) {
+  if (isCreatingChat.value) return
+  isCreatingChat.value = true
+  if (searchTimeout) clearTimeout(searchTimeout)
+
+  try {
+    const existingChat = appStore.chats.find(c => c.name === user.username)
+    if (existingChat) {
+      selectChat(existingChat.id)
+      search.value = ''
+      searchResults.value = []
+      return
+    }
+    const tokens = await api.getTokens()
+    const res = await fetch('/api/chats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokens.access}` },
+      body: JSON.stringify({ is_group: false, name: user.username, participants: [user.id] }),
+    })
+    if (!res.ok) return
+    const chat = await res.json()
+    appStore.chats.unshift(chat)
+    await appStore.openChat(chat.id)
+    search.value = ''
+    searchResults.value = []
+  } catch (e: any) {
+    console.error('Failed to create chat:', e)
+  } finally {
+    isCreatingChat.value = false
+  }
+}
+
 const messageText = ref('')
 const sending = ref(false)
 const messagesContainer = ref<HTMLElement | null>(null)

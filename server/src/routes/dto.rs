@@ -1,26 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-// ============ Auth ============
-
-#[derive(Debug, Deserialize)]
-pub struct LoginRequest {
-    pub username: String,
-    pub password: String,
-    pub totp_code: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RefreshRequest {
-    pub refresh_token: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AuthResponse {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub user: UserResponse,
-}
-
 // ============ Users ============
 
 #[derive(Debug, Serialize, Clone)]
@@ -30,7 +9,6 @@ pub struct UserResponse {
     pub email: String,
     pub is_admin: bool,
     pub totp_enabled: bool,
-    pub require_2fa: bool,
     pub created_at: String,
 }
 
@@ -42,7 +20,6 @@ impl From<&crate::models::User> for UserResponse {
             email: user.email.clone(),
             is_admin: user.is_admin,
             totp_enabled: user.totp_enabled,
-            require_2fa: user.require_2fa,
             created_at: user.created_at.to_rfc3339(),
         }
     }
@@ -52,7 +29,6 @@ impl From<&crate::models::User> for UserResponse {
 pub struct CreateUserRequest {
     pub username: String,
     pub email: Option<String>,
-    pub password: String,
     pub is_admin: Option<bool>,
 }
 
@@ -239,22 +215,7 @@ pub struct CreateCallRequest {
     pub callee_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct SignalRequest {
-    pub call_id: String,
-    #[serde(flatten)]
-    pub data: serde_json::Value,
-}
-
 // ============ SSE ============
-
-#[derive(Debug, Serialize)]
-pub struct SseEvent {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    #[serde(flatten)]
-    pub data: serde_json::Value,
-}
 
 // ============ Common ============
 

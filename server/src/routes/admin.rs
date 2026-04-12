@@ -1,24 +1,11 @@
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, header::AUTHORIZATION},
+    http::{header::AUTHORIZATION, HeaderMap},
     Json,
 };
 use chrono::Utc;
 
-use crate::{
-    error::AppError,
-    middleware::jwt::get_user_id_from_request,
-    AppState,
-};
-
-pub fn router(state: std::sync::Arc<AppState>) -> axum::Router<std::sync::Arc<AppState>> {
-    axum::Router::new()
-        .route("/health", axum::routing::get(health_check))
-        .route("/settings", axum::routing::get(get_settings))
-        .route("/settings", axum::routing::put(update_settings))
-        .route("/settings/:key", axum::routing::put(update_setting_key))
-        .with_state(state)
-}
+use crate::{error::AppError, middleware::jwt::get_user_id_from_request, AppState};
 
 /// GET /api/admin/health
 pub async fn health_check(
@@ -51,13 +38,27 @@ pub async fn get_settings(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id = require_admin(&state, &headers).await?;
 
-    let allow_registration = get_setting_async(&state, "allow_registration").await.unwrap_or_else(|| {
-        if state.settings.allow_registration { "true".to_string() } else { "false".to_string() }
-    }) == "true";
+    let allow_registration = get_setting_async(&state, "allow_registration")
+        .await
+        .unwrap_or_else(|| {
+            if state.settings.allow_registration {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        })
+        == "true";
 
-    let require_2fa = get_setting_async(&state, "require_2fa").await.unwrap_or_else(|| {
-        if state.settings.require_2fa { "true".to_string() } else { "false".to_string() }
-    }) == "true";
+    let require_2fa = get_setting_async(&state, "require_2fa")
+        .await
+        .unwrap_or_else(|| {
+            if state.settings.require_2fa {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        })
+        == "true";
 
     Ok(Json(serde_json::json!({
         "allow_registration": allow_registration,
@@ -72,7 +73,7 @@ pub async fn update_settings(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id = require_admin(&state, &headers).await?;
+    let _user_id = require_admin(&state, &headers).await?;
     let now = Utc::now();
 
     if let Some(val) = body.get("allow_registration").and_then(|v| v.as_bool()) {
@@ -113,12 +114,17 @@ pub async fn update_setting_key(
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_admin(&state, &headers).await?;
 
-    let val = body.get("value").and_then(|v| v.as_bool())
+    let val = body
+        .get("value")
+        .and_then(|v| v.as_bool())
         .ok_or_else(|| AppError::Validation("value (boolean) is required".to_string()))?;
 
     let valid_keys = &["allow_registration", "require_2fa"];
     if !valid_keys.contains(&key.as_str()) {
-        return Err(AppError::Validation(format!("Unknown setting: {}. Valid keys: {:?}", key, valid_keys)));
+        return Err(AppError::Validation(format!(
+            "Unknown setting: {}. Valid keys: {:?}",
+            key, valid_keys
+        )));
     }
 
     let val_str = if val { "true" } else { "false" };
@@ -166,7 +172,9 @@ async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<uuid::Uu
         .unwrap_or(false);
 
     if !totp_enabled {
-        return Err(AppError::Validation("Admin must have 2FA enabled".to_string()));
+        return Err(AppError::Validation(
+            "Admin must have 2FA enabled".to_string(),
+        ));
     }
 
     Ok(user_id)

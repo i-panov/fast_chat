@@ -132,7 +132,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { serverApi } from '@/api/serverApi'
+import { serverApi } from '@/api/admin'
 
 const stats = ref({
   total_users: 0,

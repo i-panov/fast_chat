@@ -121,7 +121,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { serverApi } from '@/api/serverApi'
+import { serverApi } from '@/api/admin'
 
 const router = useRouter()
 

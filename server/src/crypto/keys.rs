@@ -171,6 +171,30 @@ impl CryptoService {
         Ok(false)
     }
 
+    /// Verify a backup code and return the index of the matching hash
+    pub fn verify_backup_code_and_get_index(
+        code: &str,
+        hashes_json: &str,
+    ) -> Result<usize, CryptoError> {
+        let hashes: Vec<String> =
+            serde_json::from_str(hashes_json).map_err(|_| CryptoError::PasswordHashFailed)?;
+
+        let argon2 = argon2::Argon2::default();
+
+        for (idx, hash_str) in hashes.iter().enumerate() {
+            let parsed_hash =
+                argon2::PasswordHash::new(hash_str).map_err(|_| CryptoError::PasswordHashFailed)?;
+            if argon2
+                .verify_password(code.as_bytes(), &parsed_hash)
+                .is_ok()
+            {
+                return Ok(idx);
+            }
+        }
+
+        Err(CryptoError::PasswordHashFailed)
+    }
+
     /// Find the index of a matching backup code (for removal)
     pub fn find_backup_code_index(codes: &[String], target: &str) -> Option<usize> {
         codes.iter().position(|c| c == target)

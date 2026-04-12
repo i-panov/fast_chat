@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, header::AUTHORIZATION},
+    http::{header::AUTHORIZATION, HeaderMap},
     Json,
 };
 use chrono::Utc;
@@ -104,7 +104,9 @@ pub async fn accept_call(
     headers: HeaderMap,
 ) -> Result<Json<CallResponse>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
-    let id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid call ID".to_string()))?;
+    let id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid call ID".to_string()))?;
 
     sqlx::query("UPDATE active_calls SET status = 'active' WHERE id = $1")
         .bind(id)
@@ -136,7 +138,9 @@ pub async fn reject_call(
     headers: HeaderMap,
 ) -> Result<Json<Ack>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
-    let id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid call ID".to_string()))?;
+    let id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid call ID".to_string()))?;
 
     let call: ActiveCall = sqlx::query_as("SELECT * FROM active_calls WHERE id = $1")
         .bind(id)
@@ -159,7 +163,10 @@ pub async fn reject_call(
         let _ = state.redis.publish(&channel, &event.to_string()).await;
     }
 
-    Ok(Json(Ack { success: true, message: "Call rejected".to_string() }))
+    Ok(Json(Ack {
+        success: true,
+        message: "Call rejected".to_string(),
+    }))
 }
 
 pub async fn end_call(
@@ -168,14 +175,19 @@ pub async fn end_call(
     headers: HeaderMap,
 ) -> Result<Json<Ack>, AppError> {
     let _user_id = get_user_id(&headers, &state).await?;
-    let id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid call ID".to_string()))?;
+    let id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid call ID".to_string()))?;
 
     sqlx::query("UPDATE active_calls SET status = 'ended', ended_at = NOW() WHERE id = $1 AND status = 'active'")
         .bind(id)
         .execute(state.db.get_pool())
         .await?;
 
-    Ok(Json(Ack { success: true, message: "Call ended".to_string() }))
+    Ok(Json(Ack {
+        success: true,
+        message: "Call ended".to_string(),
+    }))
 }
 
 pub async fn send_signal(
@@ -185,13 +197,18 @@ pub async fn send_signal(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<Ack>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
-    let call_id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid call ID".to_string()))?;
+    let call_id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid call ID".to_string()))?;
 
-    let call: ActiveCall = sqlx::query_as("SELECT * FROM active_calls WHERE id = $1 AND status = 'active'")
-        .bind(call_id)
-        .fetch_optional(state.db.get_pool())
-        .await?
-        .ok_or(AppError::Validation("Call not found or not active".to_string()))?;
+    let call: ActiveCall =
+        sqlx::query_as("SELECT * FROM active_calls WHERE id = $1 AND status = 'active'")
+            .bind(call_id)
+            .fetch_optional(state.db.get_pool())
+            .await?
+            .ok_or(AppError::Validation(
+                "Call not found or not active".to_string(),
+            ))?;
 
     let target_id = if call.caller_id == user_id {
         call.callee_id
@@ -221,7 +238,10 @@ pub async fn send_signal(
         let _ = state.redis.publish(&channel, &event.to_string()).await;
     }
 
-    Ok(Json(Ack { success: true, message: "Signal sent".to_string() }))
+    Ok(Json(Ack {
+        success: true,
+        message: "Signal sent".to_string(),
+    }))
 }
 
 pub async fn send_ice_candidate(
@@ -231,13 +251,18 @@ pub async fn send_ice_candidate(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<Ack>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
-    let call_id: Uuid = call_id.parse().map_err(|_| AppError::Validation("Invalid call ID".to_string()))?;
+    let call_id: Uuid = call_id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid call ID".to_string()))?;
 
-    let call: ActiveCall = sqlx::query_as("SELECT * FROM active_calls WHERE id = $1 AND status = 'active'")
-        .bind(call_id)
-        .fetch_optional(state.db.get_pool())
-        .await?
-        .ok_or(AppError::Validation("Call not found or not active".to_string()))?;
+    let call: ActiveCall =
+        sqlx::query_as("SELECT * FROM active_calls WHERE id = $1 AND status = 'active'")
+            .bind(call_id)
+            .fetch_optional(state.db.get_pool())
+            .await?
+            .ok_or(AppError::Validation(
+                "Call not found or not active".to_string(),
+            ))?;
 
     let target_id = if call.caller_id == user_id {
         call.callee_id
@@ -267,7 +292,10 @@ pub async fn send_ice_candidate(
         let _ = state.redis.publish(&channel, &event.to_string()).await;
     }
 
-    Ok(Json(Ack { success: true, message: "ICE candidate sent".to_string() }))
+    Ok(Json(Ack {
+        success: true,
+        message: "ICE candidate sent".to_string(),
+    }))
 }
 
 impl From<&ActiveCall> for CallResponse {

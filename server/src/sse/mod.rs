@@ -1,3 +1,1 @@
-pub mod manager;
-#[allow(unused_imports)]
-pub use manager::SseManager;
+// SSE module — routes/sse.rs handles SSE via direct Redis pub/sub

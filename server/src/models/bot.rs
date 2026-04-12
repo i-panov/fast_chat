@@ -11,6 +11,7 @@ pub struct Bot {
     pub display_name: Option<String>,
     pub description: Option<String>,
     #[serde(skip_serializing)]
+    #[allow(dead_code)]
     pub access_token_hash: String,
     pub avatar_url: Option<String>,
     pub webhook_url: Option<String>,

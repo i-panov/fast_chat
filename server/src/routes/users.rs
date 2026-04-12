@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, header::AUTHORIZATION},
+    http::{header::AUTHORIZATION, HeaderMap},
     Json,
 };
 use chrono::Utc;
@@ -9,16 +9,33 @@ use uuid::Uuid;
 use crate::{
     crypto::CryptoService,
     error::AppError,
-    middleware::jwt::get_user_id_from_request,
+    middleware::jwt::{get_user_id_from_request, UserId},
     models::User,
     routes::dto::{self, Ack, UserResponse},
     AppState,
 };
 
-pub async fn require_admin(
-    headers: &HeaderMap,
-    state: &AppState,
-) -> Result<Uuid, AppError> {
+/// Search users by username/email (JWT required, no admin check)
+pub async fn search_users(
+    State(state): State<std::sync::Arc<AppState>>,
+    UserId(_user_id): UserId,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Vec<UserResponse>>, AppError> {
+    let q = params.get("q").cloned().unwrap_or_default();
+    let limit: i32 = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(20);
+
+    let users = sqlx::query_as::<_, User>(
+        "SELECT * FROM users WHERE (username ILIKE $1 OR email ILIKE $1) AND disabled = FALSE ORDER BY username LIMIT $2",
+    )
+    .bind(format!("%{}%", q))
+    .bind(limit)
+    .fetch_all(state.db.get_pool())
+    .await?;
+
+    Ok(Json(users.iter().map(UserResponse::from).collect()))
+}
+
+pub async fn require_admin(headers: &HeaderMap, state: &AppState) -> Result<Uuid, AppError> {
     let auth_header = headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -46,8 +63,14 @@ pub async fn list_users(
 ) -> Result<Json<Vec<UserResponse>>, AppError> {
     require_admin(&headers, &state).await?;
 
-    let page = params.get("page").and_then(|p| p.parse::<i32>().ok()).unwrap_or(1);
-    let page_size = params.get("page_size").and_then(|p| p.parse::<i32>().ok()).unwrap_or(50);
+    let page = params
+        .get("page")
+        .and_then(|p| p.parse::<i32>().ok())
+        .unwrap_or(1);
+    let page_size = params
+        .get("page_size")
+        .and_then(|p| p.parse::<i32>().ok())
+        .unwrap_or(50);
     let offset = (page - 1) * page_size;
 
     let users = sqlx::query_as::<_, User>(
@@ -68,8 +91,6 @@ pub async fn create_user(
 ) -> Result<Json<UserResponse>, AppError> {
     require_admin(&headers, &state).await?;
 
-    let password_hash = CryptoService::hash_password(&req.password)
-        .map_err(|_| AppError::Internal)?;
     let (public_key, _) = CryptoService::generate_keypair();
     let id = Uuid::new_v4();
     let now = Utc::now();
@@ -77,15 +98,14 @@ pub async fn create_user(
 
     sqlx::query(
         r#"
-        INSERT INTO users (id, username, email, password_hash, public_key, is_admin, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO users (id, username, email, public_key, is_admin, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (username) DO NOTHING
         "#,
     )
     .bind(id)
     .bind(&req.username)
     .bind(req.email.as_deref().unwrap_or(""))
-    .bind(&password_hash)
     .bind(&public_key)
     .bind(is_admin)
     .bind(now)
@@ -164,7 +184,10 @@ pub async fn delete_user(
         .execute(state.db.get_pool())
         .await?;
 
-    Ok(Json(Ack { success: true, message: "User deleted".to_string() }))
+    Ok(Json(Ack {
+        success: true,
+        message: "User deleted".to_string(),
+    }))
 }
 
 pub async fn set_admin(

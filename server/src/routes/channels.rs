@@ -1,10 +1,10 @@
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, header::AUTHORIZATION},
+    http::{header::AUTHORIZATION, HeaderMap},
     Json,
 };
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
@@ -54,19 +54,36 @@ pub struct SearchQuery {
 // ─── Helpers ───
 
 fn extract_user_id(headers: &HeaderMap, state: &AppState) -> Result<Uuid, AppError> {
-    let auth = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()).ok_or(AppError::InvalidToken)?;
+    let auth = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or(AppError::InvalidToken)?;
     get_user_id_from_request(auth, &state.settings.jwt_secret)
 }
 
-async fn verify_channel_owner(state: &AppState, channel_id: Uuid, user_id: Uuid) -> Result<Channel, AppError> {
-    let ch = sqlx::query_as::<_, Channel>("SELECT * FROM channels WHERE id = $1 AND owner_id = $2 AND is_active = TRUE")
-        .bind(channel_id).bind(user_id)
-        .fetch_optional(state.db.get_pool()).await?
-        .ok_or(AppError::Validation("Channel not found or you are not the owner".to_string()))?;
+async fn verify_channel_owner(
+    state: &AppState,
+    channel_id: Uuid,
+    user_id: Uuid,
+) -> Result<Channel, AppError> {
+    let ch = sqlx::query_as::<_, Channel>(
+        "SELECT * FROM channels WHERE id = $1 AND owner_id = $2 AND is_active = TRUE",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .fetch_optional(state.db.get_pool())
+    .await?
+    .ok_or(AppError::Validation(
+        "Channel not found or you are not the owner".to_string(),
+    ))?;
     Ok(ch)
 }
 
-async fn verify_subscriber(state: &AppState, channel_id: Uuid, user_id: Uuid) -> Result<ChannelSubscriber, AppError> {
+async fn verify_subscriber(
+    state: &AppState,
+    channel_id: Uuid,
+    user_id: Uuid,
+) -> Result<ChannelSubscriber, AppError> {
     let sub = sqlx::query_as::<_, ChannelSubscriber>(
         "SELECT * FROM channel_subscribers WHERE channel_id = $1 AND user_id = $2 AND status = 'active'"
     ).bind(channel_id).bind(user_id)
@@ -90,28 +107,6 @@ fn channel_to_json(ch: &Channel, is_subscriber: bool) -> serde_json::Value {
     })
 }
 
-// ─── Router ───
-
-pub fn router(state: std::sync::Arc<AppState>) -> axum::Router<std::sync::Arc<AppState>> {
-    axum::Router::new()
-        .route("/channels", axum::routing::post(create_channel))
-        .route("/channels", axum::routing::get(list_channels))
-        .route("/channels/search", axum::routing::get(search_channels))
-        .route("/channels/:id", axum::routing::get(get_channel))
-        .route("/channels/:id", axum::routing::put(update_channel))
-        .route("/channels/:id", axum::routing::delete(delete_channel))
-        .route("/channels/:id/messages", axum::routing::post(send_message))
-        .route("/channels/:id/messages", axum::routing::get(get_messages))
-        .route("/channels/:id/subscribe", axum::routing::post(subscribe))
-        .route("/channels/:id/unsubscribe", axum::routing::post(unsubscribe))
-        .route("/channels/:id/subscribers", axum::routing::get(list_subscribers))
-        .route("/channels/:id/subscribers/:user_id", axum::routing::delete(remove_subscriber))
-        .route("/channels/:id/requests", axum::routing::get(list_requests))
-        .route("/channels/:id/requests/:user_id/approve", axum::routing::post(approve_request))
-        .route("/channels/:id/requests/:user_id/reject", axum::routing::post(reject_request))
-        .with_state(state)
-}
-
 // ─── Channel CRUD ───
 
 /// POST /api/channels — Create a channel
@@ -124,17 +119,26 @@ pub async fn create_channel(
 
     let valid_levels = &["public", "private", "private_with_approval"];
     if !valid_levels.contains(&req.access_level.as_str()) {
-        return Err(AppError::Validation(format!("Invalid access_level. Must be one of: {:?}", valid_levels)));
+        return Err(AppError::Validation(format!(
+            "Invalid access_level. Must be one of: {:?}",
+            valid_levels
+        )));
     }
 
     let username = req.username.as_ref().map(|u| {
         let u = u.trim().to_lowercase();
-        if u.starts_with('@') { u[1..].to_string() } else { u }
+        if let Some(stripped) = u.strip_prefix('@') {
+            stripped.to_string()
+        } else {
+            u
+        }
     });
 
     if let Some(ref u) = username {
         if !u.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return Err(AppError::Validation("Username must be alphanumeric + underscores".to_string()));
+            return Err(AppError::Validation(
+                "Username must be alphanumeric + underscores".to_string(),
+            ));
         }
     }
 
@@ -165,13 +169,19 @@ pub async fn list_channels(
         "SELECT DISTINCT c.* FROM channels c
          LEFT JOIN channel_subscribers cs ON c.id = cs.channel_id
          WHERE c.owner_id = $1 OR (cs.user_id = $1 AND cs.status = 'active')
-         ORDER BY c.updated_at DESC"
-    ).bind(user_id).fetch_all(state.db.get_pool()).await?;
+         ORDER BY c.updated_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(state.db.get_pool())
+    .await?;
 
-    let result: Vec<serde_json::Value> = channels.iter().map(|ch| {
-        let is_sub = ch.owner_id != user_id;
-        channel_to_json(ch, is_sub)
-    }).collect();
+    let result: Vec<serde_json::Value> = channels
+        .iter()
+        .map(|ch| {
+            let is_sub = ch.owner_id != user_id;
+            channel_to_json(ch, is_sub)
+        })
+        .collect();
 
     Ok(Json(result))
 }
@@ -187,10 +197,18 @@ pub async fn search_channels(
     let query = format!("%{}%", q.q);
     let channels = sqlx::query_as::<_, Channel>(
         "SELECT * FROM channels WHERE access_level = 'public' AND is_active = TRUE \
-         AND (title ILIKE $1 OR username ILIKE $1) ORDER BY subscribers_count DESC LIMIT 50"
-    ).bind(&query).fetch_all(state.db.get_pool()).await?;
+         AND (title ILIKE $1 OR username ILIKE $1) ORDER BY subscribers_count DESC LIMIT 50",
+    )
+    .bind(&query)
+    .fetch_all(state.db.get_pool())
+    .await?;
 
-    Ok(Json(channels.iter().map(|ch| channel_to_json(ch, false)).collect()))
+    Ok(Json(
+        channels
+            .iter()
+            .map(|ch| channel_to_json(ch, false))
+            .collect(),
+    ))
 }
 
 /// GET /api/channels/:id
@@ -200,11 +218,16 @@ pub async fn get_channel(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let ch_id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
 
-    let ch = sqlx::query_as::<_, Channel>("SELECT * FROM channels WHERE id = $1 AND is_active = TRUE")
-        .bind(ch_id).fetch_optional(state.db.get_pool()).await?
-        .ok_or(AppError::Validation("Channel not found".to_string()))?;
+    let ch =
+        sqlx::query_as::<_, Channel>("SELECT * FROM channels WHERE id = $1 AND is_active = TRUE")
+            .bind(ch_id)
+            .fetch_optional(state.db.get_pool())
+            .await?
+            .ok_or(AppError::Validation("Channel not found".to_string()))?;
 
     // Private channels: only subscribers or owner can see details
     if ch.access_level != "public" {
@@ -224,7 +247,10 @@ pub async fn get_channel(
 
     let is_owner = ch.owner_id == user_id;
 
-    Ok(Json(channel_to_json(&ch, is_subscriber.is_some() || is_owner)))
+    Ok(Json(channel_to_json(
+        &ch,
+        is_subscriber.is_some() || is_owner,
+    )))
 }
 
 /// PUT /api/channels/:id
@@ -235,25 +261,36 @@ pub async fn update_channel(
     Json(req): Json<UpdateChannelRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let ch_id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
 
     verify_channel_owner(&state, ch_id, user_id).await?;
 
-    let mut username = req.username.as_ref().map(|u| {
+    let username = req.username.as_ref().map(|u| {
         let u = u.trim().to_lowercase();
-        if u.starts_with('@') { u[1..].to_string() } else { u }
+        if let Some(stripped) = u.strip_prefix('@') {
+            stripped.to_string()
+        } else {
+            u
+        }
     });
 
     if let Some(ref u) = username {
         if !u.is_empty() && !u.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return Err(AppError::Validation("Username must be alphanumeric + underscores".to_string()));
+            return Err(AppError::Validation(
+                "Username must be alphanumeric + underscores".to_string(),
+            ));
         }
     }
 
     let valid_levels = &["public", "private", "private_with_approval"];
     if let Some(ref level) = req.access_level {
         if !valid_levels.contains(&level.as_str()) {
-            return Err(AppError::Validation(format!("Invalid access_level. Must be one of: {:?}", valid_levels)));
+            return Err(AppError::Validation(format!(
+                "Invalid access_level. Must be one of: {:?}",
+                valid_levels
+            )));
         }
     }
 
@@ -268,7 +305,9 @@ pub async fn update_channel(
     .execute(state.db.get_pool()).await?;
 
     let ch = sqlx::query_as::<_, Channel>("SELECT * FROM channels WHERE id = $1")
-        .bind(ch_id).fetch_one(state.db.get_pool()).await?;
+        .bind(ch_id)
+        .fetch_one(state.db.get_pool())
+        .await?;
 
     Ok(Json(channel_to_json(&ch, true)))
 }
@@ -280,12 +319,16 @@ pub async fn delete_channel(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let ch_id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
 
     verify_channel_owner(&state, ch_id, user_id).await?;
 
     sqlx::query("UPDATE channels SET is_active = FALSE, updated_at = NOW() WHERE id = $1")
-        .bind(ch_id).execute(state.db.get_pool()).await?;
+        .bind(ch_id)
+        .execute(state.db.get_pool())
+        .await?;
 
     Ok(Json(serde_json::json!({"success": true})))
 }
@@ -300,7 +343,9 @@ pub async fn send_message(
     Json(req): Json<SendChannelMessageRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let ch_id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
 
     let ch = verify_channel_owner(&state, ch_id, user_id).await?;
 
@@ -331,12 +376,19 @@ pub async fn send_message(
 
     // Send push notifications to subscribers
     let subscribers: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT user_id FROM channel_subscribers WHERE channel_id = $1 AND status = 'active'"
-    ).bind(ch_id).fetch_all(state.db.get_pool()).await?;
+        "SELECT user_id FROM channel_subscribers WHERE channel_id = $1 AND status = 'active'",
+    )
+    .bind(ch_id)
+    .fetch_all(state.db.get_pool())
+    .await?;
 
     for sub_id in &subscribers {
-        if *sub_id == user_id { continue; }
-        let is_muted = crate::routes::push::is_chat_muted(&state, *sub_id, None, Some(ch_id)).await.unwrap_or(false);
+        if *sub_id == user_id {
+            continue;
+        }
+        let is_muted = crate::routes::push::is_chat_muted(&state, *sub_id, None, Some(ch_id))
+            .await
+            .unwrap_or(false);
         if !is_muted {
             let _ = crate::routes::push::send_push_notification(
                 &state, *sub_id, &ch.title, "New channel message",
@@ -360,12 +412,17 @@ pub async fn get_messages(
     Query(params): Query<GetMessagesQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
     let user_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let ch_id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
 
     // Owner can always read
-    let ch = sqlx::query_as::<_, Channel>("SELECT * FROM channels WHERE id = $1 AND is_active = TRUE")
-        .bind(ch_id).fetch_optional(state.db.get_pool()).await?
-        .ok_or(AppError::Validation("Channel not found".to_string()))?;
+    let ch =
+        sqlx::query_as::<_, Channel>("SELECT * FROM channels WHERE id = $1 AND is_active = TRUE")
+            .bind(ch_id)
+            .fetch_optional(state.db.get_pool())
+            .await?
+            .ok_or(AppError::Validation("Channel not found".to_string()))?;
 
     if ch.owner_id != user_id {
         verify_subscriber(&state, ch_id, user_id).await?;
@@ -379,14 +436,21 @@ pub async fn get_messages(
          FROM messages WHERE chat_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT $2 OFFSET $3"
     ).bind(ch_id).bind(limit).bind(offset).fetch_all(state.db.get_pool()).await?;
 
-    Ok(Json(messages.iter().map(|(id, content, ctype, status, created_at, sender)| serde_json::json!({
-        "id": id.to_string(),
-        "encrypted_content": content,
-        "content_type": ctype,
-        "status": status,
-        "created_at": created_at,
-        "sender_id": sender,
-    })).collect()))
+    Ok(Json(
+        messages
+            .iter()
+            .map(|(id, content, ctype, status, created_at, sender)| {
+                serde_json::json!({
+                    "id": id.to_string(),
+                    "encrypted_content": content,
+                    "content_type": ctype,
+                    "status": status,
+                    "created_at": created_at,
+                    "sender_id": sender,
+                })
+            })
+            .collect(),
+    ))
 }
 
 // ─── Subscriptions ───
@@ -398,29 +462,52 @@ pub async fn subscribe(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let ch_id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
 
-    let ch = sqlx::query_as::<_, Channel>("SELECT * FROM channels WHERE id = $1 AND is_active = TRUE")
-        .bind(ch_id).fetch_optional(state.db.get_pool()).await?
-        .ok_or(AppError::Validation("Channel not found".to_string()))?;
+    let ch =
+        sqlx::query_as::<_, Channel>("SELECT * FROM channels WHERE id = $1 AND is_active = TRUE")
+            .bind(ch_id)
+            .fetch_optional(state.db.get_pool())
+            .await?
+            .ok_or(AppError::Validation("Channel not found".to_string()))?;
 
     // Check if already subscribed
     let existing: Option<String> = sqlx::query_scalar(
-        "SELECT status FROM channel_subscribers WHERE channel_id = $1 AND user_id = $2"
-    ).bind(ch_id).bind(user_id).fetch_optional(state.db.get_pool()).await?;
+        "SELECT status FROM channel_subscribers WHERE channel_id = $1 AND user_id = $2",
+    )
+    .bind(ch_id)
+    .bind(user_id)
+    .fetch_optional(state.db.get_pool())
+    .await?;
 
     if existing.is_some() {
-        return Err(AppError::Validation("Already subscribed or request pending".to_string()));
+        return Err(AppError::Validation(
+            "Already subscribed or request pending".to_string(),
+        ));
     }
 
-    let status = if ch.access_level == "private_with_approval" { "pending" } else { "active" };
+    let status = if ch.access_level == "private_with_approval" {
+        "pending"
+    } else {
+        "active"
+    };
 
-    sqlx::query("INSERT INTO channel_subscribers (channel_id, user_id, status) VALUES ($1, $2, $3)")
-        .bind(ch_id).bind(user_id).bind(&status).execute(state.db.get_pool()).await?;
+    sqlx::query(
+        "INSERT INTO channel_subscribers (channel_id, user_id, status) VALUES ($1, $2, $3)",
+    )
+    .bind(ch_id)
+    .bind(user_id)
+    .bind(status)
+    .execute(state.db.get_pool())
+    .await?;
 
     if status == "active" {
         sqlx::query("UPDATE channels SET subscribers_count = subscribers_count + 1 WHERE id = $1")
-            .bind(ch_id).execute(state.db.get_pool()).await?;
+            .bind(ch_id)
+            .execute(state.db.get_pool())
+            .await?;
     }
 
     if status == "pending" {
@@ -431,7 +518,9 @@ pub async fn subscribe(
         })));
     }
 
-    Ok(Json(serde_json::json!({"success": true, "status": "active"})))
+    Ok(Json(
+        serde_json::json!({"success": true, "status": "active"}),
+    ))
 }
 
 /// POST /api/channels/:id/unsubscribe
@@ -441,13 +530,19 @@ pub async fn unsubscribe(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let ch_id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
 
     sqlx::query("DELETE FROM channel_subscribers WHERE channel_id = $1 AND user_id = $2 AND user_id != (SELECT owner_id FROM channels WHERE id = $1)")
         .bind(ch_id).bind(user_id).execute(state.db.get_pool()).await?;
 
-    sqlx::query("UPDATE channels SET subscribers_count = GREATEST(subscribers_count - 1, 0) WHERE id = $1")
-        .bind(ch_id).execute(state.db.get_pool()).await?;
+    sqlx::query(
+        "UPDATE channels SET subscribers_count = GREATEST(subscribers_count - 1, 0) WHERE id = $1",
+    )
+    .bind(ch_id)
+    .execute(state.db.get_pool())
+    .await?;
 
     Ok(Json(serde_json::json!({"success": true})))
 }
@@ -459,7 +554,9 @@ pub async fn list_subscribers(
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
     let user_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let ch_id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
 
     verify_channel_owner(&state, ch_id, user_id).await?;
 
@@ -470,8 +567,12 @@ pub async fn list_subscribers(
     // Enrich with user info
     let mut result = Vec::new();
     for sub in subs {
-        let username: Option<String> = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
-            .bind(sub.user_id).fetch_optional(state.db.get_pool()).await?.flatten();
+        let username: Option<String> =
+            sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+                .bind(sub.user_id)
+                .fetch_optional(state.db.get_pool())
+                .await?
+                .flatten();
         result.push(serde_json::json!({
             "user_id": sub.user_id.to_string(),
             "username": username,
@@ -490,16 +591,24 @@ pub async fn remove_subscriber(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let owner_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = ch_id_str.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
-    let sub_user_id: Uuid = user_id_str.parse().map_err(|_| AppError::Validation("Invalid user ID".to_string()))?;
+    let ch_id: Uuid = ch_id_str
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let sub_user_id: Uuid = user_id_str
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid user ID".to_string()))?;
 
     verify_channel_owner(&state, ch_id, owner_id).await?;
 
     sqlx::query("DELETE FROM channel_subscribers WHERE channel_id = $1 AND user_id = $2 AND status = 'active'")
         .bind(ch_id).bind(sub_user_id).execute(state.db.get_pool()).await?;
 
-    sqlx::query("UPDATE channels SET subscribers_count = GREATEST(subscribers_count - 1, 0) WHERE id = $1")
-        .bind(ch_id).execute(state.db.get_pool()).await?;
+    sqlx::query(
+        "UPDATE channels SET subscribers_count = GREATEST(subscribers_count - 1, 0) WHERE id = $1",
+    )
+    .bind(ch_id)
+    .execute(state.db.get_pool())
+    .await?;
 
     Ok(Json(serde_json::json!({"success": true})))
 }
@@ -513,7 +622,9 @@ pub async fn list_requests(
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
     let user_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = id.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let ch_id: Uuid = id
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
 
     verify_channel_owner(&state, ch_id, user_id).await?;
 
@@ -523,8 +634,12 @@ pub async fn list_requests(
 
     let mut result = Vec::new();
     for req in requests {
-        let username: Option<String> = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
-            .bind(req.user_id).fetch_optional(state.db.get_pool()).await?.flatten();
+        let username: Option<String> =
+            sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+                .bind(req.user_id)
+                .fetch_optional(state.db.get_pool())
+                .await?
+                .flatten();
         result.push(serde_json::json!({
             "user_id": req.user_id.to_string(),
             "username": username,
@@ -542,8 +657,12 @@ pub async fn approve_request(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let owner_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = ch_id_str.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
-    let req_user_id: Uuid = user_id_str.parse().map_err(|_| AppError::Validation("Invalid user ID".to_string()))?;
+    let ch_id: Uuid = ch_id_str
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let req_user_id: Uuid = user_id_str
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid user ID".to_string()))?;
 
     verify_channel_owner(&state, ch_id, owner_id).await?;
 
@@ -552,11 +671,15 @@ pub async fn approve_request(
     ).bind(ch_id).bind(req_user_id).execute(state.db.get_pool()).await?;
 
     if updated.rows_affected() == 0 {
-        return Err(AppError::Validation("No pending request found for this user".to_string()));
+        return Err(AppError::Validation(
+            "No pending request found for this user".to_string(),
+        ));
     }
 
     sqlx::query("UPDATE channels SET subscribers_count = subscribers_count + 1 WHERE id = $1")
-        .bind(ch_id).execute(state.db.get_pool()).await?;
+        .bind(ch_id)
+        .execute(state.db.get_pool())
+        .await?;
 
     // Notify user via SSE
     let event = serde_json::json!({
@@ -576,8 +699,12 @@ pub async fn reject_request(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let owner_id = extract_user_id(&headers, &state)?;
-    let ch_id: Uuid = ch_id_str.parse().map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
-    let req_user_id: Uuid = user_id_str.parse().map_err(|_| AppError::Validation("Invalid user ID".to_string()))?;
+    let ch_id: Uuid = ch_id_str
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid channel ID".to_string()))?;
+    let req_user_id: Uuid = user_id_str
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid user ID".to_string()))?;
 
     verify_channel_owner(&state, ch_id, owner_id).await?;
 
@@ -586,7 +713,9 @@ pub async fn reject_request(
     ).bind(ch_id).bind(req_user_id).execute(state.db.get_pool()).await?;
 
     if updated.rows_affected() == 0 {
-        return Err(AppError::Validation("No pending request found for this user".to_string()));
+        return Err(AppError::Validation(
+            "No pending request found for this user".to_string(),
+        ));
     }
 
     // Notify user

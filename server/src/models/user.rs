@@ -8,16 +8,12 @@ pub struct User {
     pub id: Uuid,
     pub username: String,
     pub email: String,
-    #[serde(skip_serializing)]
-    pub password_hash: Option<String>,
     pub public_key: Option<String>,
     pub is_admin: bool,
     pub disabled: bool,
     pub totp_secret: Option<String>,
     pub totp_enabled: bool,
-    pub backup_codes_hash: Option<String>,
     pub backup_codes_encrypted: Option<String>,
-    pub require_2fa: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -30,7 +26,6 @@ pub struct UserPublic {
     pub public_key: Option<String>,
     pub is_admin: bool,
     pub totp_enabled: bool,
-    pub require_2fa: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -42,7 +37,6 @@ impl From<User> for UserPublic {
             public_key: user.public_key,
             is_admin: user.is_admin,
             totp_enabled: user.totp_enabled,
-            require_2fa: user.require_2fa,
             created_at: user.created_at,
         }
     }
@@ -55,7 +49,6 @@ pub enum ContentType {
     File,
     Image,
 }
-
 
 impl std::fmt::Display for ContentType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

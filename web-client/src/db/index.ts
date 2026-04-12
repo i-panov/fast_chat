@@ -113,11 +113,27 @@ export async function updateAuthField(field: string, value: unknown): Promise<vo
 }
 
 // ─── Chats ───
+/**
+ * Replace all chats in cache with a fresh server list.
+ * Deletes any cached chats not present in the server response.
+ */
+export async function syncChats(chats: Chat[]): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction('chats', 'readwrite')
+  // Delete all existing chats
+  await tx.store.clear()
+  // Write fresh ones
+  for (const chat of chats) {
+    await tx.store.put(chat, chat.id)
+  }
+  await tx.done
+}
+
 export async function saveChat(chat: Chat): Promise<void> {
   const db = await getDb()
   const existing = await db.get('chats', chat.id)
   const merged = { ...existing, ...chat, updated_at: chat.created_at }
-  await db.put('chats', merged)
+  await db.put('chats', merged, merged.id)
 }
 
 export async function saveChats(chats: Chat[]): Promise<void> {
@@ -126,7 +142,7 @@ export async function saveChats(chats: Chat[]): Promise<void> {
   for (const chat of chats) {
     const existing = await tx.store.get(chat.id)
     const merged = { ...existing, ...chat, updated_at: chat.created_at }
-    await tx.store.put(merged)
+    await tx.store.put(merged, merged.id)
   }
   await tx.done
 }
@@ -146,7 +162,7 @@ export async function updateChatUnread(chatId: string, count: number): Promise<v
   const chat = await db.get('chats', chatId)
   if (chat) {
     chat.unread_count = count
-    await db.put('chats', chat)
+    await db.put('chats', chat, chat.id)
   }
 }
 
@@ -158,7 +174,7 @@ export async function saveMessages(messages: Message[]): Promise<void> {
     const existing = await tx.store.get(msg.id)
     // Don't overwrite local_pending messages with server response
     if (!existing?.local_pending) {
-      await tx.store.put(msg)
+      await tx.store.put(msg, msg.id)
     }
   }
   await tx.done
@@ -176,14 +192,14 @@ export async function saveMessage(msg: Message): Promise<void> {
   const db = await getDb()
   const existing = await db.get('messages', msg.id)
   if (!existing?.local_pending) {
-    await db.put('messages', msg)
+    await db.put('messages', msg, msg.id)
   }
 }
 
 // ─── Pending Messages (offline queue) ───
 export async function addPendingMessage(msg: PendingMessage): Promise<void> {
   const db = await getDb()
-  await db.put('pending_messages', msg)
+  await db.put('pending_messages', msg, msg.id)
 }
 
 export async function getPendingMessages(): Promise<PendingMessage[]> {
@@ -207,7 +223,7 @@ export async function updatePendingRetry(id: string, retryCount: number, lastAtt
   if (msg) {
     msg.retry_count = retryCount
     msg.last_attempt = lastAttempt
-    await db.put('pending_messages', msg)
+    await db.put('pending_messages', msg, msg.id)
   }
 }
 
@@ -216,7 +232,17 @@ export async function saveChannels(channels: Channel[]): Promise<void> {
   const db = await getDb()
   const tx = db.transaction('channels', 'readwrite')
   for (const ch of channels) {
-    await tx.store.put(ch)
+    await tx.store.put(ch, ch.id)
+  }
+  await tx.done
+}
+
+export async function syncChannels(channels: Channel[]): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction('channels', 'readwrite')
+  await tx.store.clear()
+  for (const ch of channels) {
+    await tx.store.put(ch, ch.id)
   }
   await tx.done
 }

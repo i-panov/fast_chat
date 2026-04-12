@@ -51,7 +51,10 @@ impl RedisPool {
         }
     }
 
-    pub async fn subscribe(&self, channel: &str) -> Result<broadcast::Receiver<String>, redis::RedisError> {
+    pub async fn subscribe(
+        &self,
+        channel: &str,
+    ) -> Result<broadcast::Receiver<String>, redis::RedisError> {
         let client = Client::open(self.redis_url.as_str())?;
         let mut pubsub = client.get_async_pubsub().await?;
 

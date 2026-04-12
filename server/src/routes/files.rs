@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
-    extract::{Path, State, Multipart},
-    http::{HeaderMap, header::AUTHORIZATION},
+    extract::{Multipart, Path, State},
+    http::{header::AUTHORIZATION, HeaderMap},
     response::IntoResponse,
     Json,
 };
@@ -11,11 +11,8 @@ use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::{
-    error::AppError,
-    middleware::jwt::get_user_id_from_request,
-    models::File as DbFile,
-    routes::dto::FileResponse,
-    AppState,
+    error::AppError, middleware::jwt::get_user_id_from_request, models::File as DbFile,
+    routes::dto::FileResponse, AppState,
 };
 
 pub async fn get_user_id(headers: &HeaderMap, state: &AppState) -> Result<Uuid, AppError> {
@@ -35,14 +32,25 @@ pub async fn upload_file(
 
     let mut files = Vec::new();
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Validation(e.to_string()))? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Validation(e.to_string()))?
+    {
         let file_name = field.file_name().unwrap_or("unknown").to_string();
         let content_type = field.content_type().map(|s| s.to_string());
-        let data = field.bytes().await.map_err(|e| AppError::Validation(e.to_string()))?;
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::Validation(e.to_string()))?;
 
         let size_bytes = data.len() as i64;
         let id = Uuid::new_v4();
-        let stored_path = format!("{}.{}", id, file_name.split('.').last().unwrap_or("bin"));
+        let stored_path = format!(
+            "{}.{}",
+            id,
+            file_name.split('.').next_back().unwrap_or("bin")
+        );
         let full_path = state.settings.files_dir.join(&stored_path);
 
         tokio::fs::write(&full_path, &data).await?;
@@ -65,7 +73,9 @@ pub async fn upload_file(
     }
 
     // Return the first file if multiple uploaded
-    Ok(Json(files.into_iter().next().ok_or(AppError::Validation("No files in request".to_string()))?))
+    Ok(Json(files.into_iter().next().ok_or(
+        AppError::Validation("No files in request".to_string()),
+    )?))
 }
 
 pub async fn upload_file_for_chat(
@@ -91,14 +101,25 @@ pub async fn upload_file_for_chat(
 
     let mut files = Vec::new();
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Validation(e.to_string()))? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Validation(e.to_string()))?
+    {
         let file_name = field.file_name().unwrap_or("unknown").to_string();
         let content_type = field.content_type().map(|s| s.to_string());
-        let data = field.bytes().await.map_err(|e| AppError::Validation(e.to_string()))?;
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::Validation(e.to_string()))?;
 
         let size_bytes = data.len() as i64;
         let id = Uuid::new_v4();
-        let stored_path = format!("{}.{}", id, file_name.split('.').last().unwrap_or("bin"));
+        let stored_path = format!(
+            "{}.{}",
+            id,
+            file_name.split('.').next_back().unwrap_or("bin")
+        );
         let full_path = state.settings.files_dir.join(&stored_path);
 
         tokio::fs::write(&full_path, &data).await?;
@@ -120,7 +141,9 @@ pub async fn upload_file_for_chat(
         files.push(FileResponse::from(&file));
     }
 
-    Ok(Json(files.into_iter().next().ok_or(AppError::Validation("No files in request".to_string()))?))
+    Ok(Json(files.into_iter().next().ok_or(
+        AppError::Validation("No files in request".to_string()),
+    )?))
 }
 
 pub async fn download_file(
@@ -166,7 +189,10 @@ pub async fn download_file(
     let body = Body::from_stream(stream);
 
     let headers = [
-        ("Content-Disposition", format!("attachment; filename=\"{}\"", file.original_name)),
+        (
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", file.original_name),
+        ),
         ("Content-Length", file.size_bytes.to_string()),
     ];
 

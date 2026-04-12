@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, header::AUTHORIZATION},
+    http::{header::AUTHORIZATION, HeaderMap},
     Json,
 };
 use chrono::Utc;
@@ -9,8 +9,10 @@ use uuid::Uuid;
 use crate::{
     error::AppError,
     middleware::jwt::get_user_id_from_request,
-    models::{Chat, Message, Thread, Topic, PinnedMessage},
-    routes::dto::{self, Ack, ChatResponse, MessageResponse, MessagesPage, ThreadResponse, TopicResponse},
+    models::{Chat, Message, PinnedMessage, Thread, Topic},
+    routes::dto::{
+        self, Ack, ChatResponse, MessageResponse, MessagesPage, ThreadResponse, TopicResponse,
+    },
     AppState,
 };
 
@@ -57,12 +59,11 @@ pub async fn get_chats(
 
     let mut result = Vec::new();
     for chat in &chats {
-        let participants: Vec<String> = sqlx::query_scalar(
-            "SELECT user_id::text FROM chat_participants WHERE chat_id = $1",
-        )
-        .bind(chat.id)
-        .fetch_all(state.db.get_pool())
-        .await?;
+        let participants: Vec<String> =
+            sqlx::query_scalar("SELECT user_id::text FROM chat_participants WHERE chat_id = $1")
+                .bind(chat.id)
+                .fetch_all(state.db.get_pool())
+                .await?;
 
         let mut resp = ChatResponse::from(chat);
         resp.participants = participants;
@@ -78,6 +79,38 @@ pub async fn create_chat(
     Json(req): Json<dto::CreateChatRequest>,
 ) -> Result<Json<ChatResponse>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
+
+    // For direct (non-group) chats with exactly 1 participant,
+    // check if a chat already exists between these two users
+    if !req.is_group && req.participants.len() == 1 {
+        let other_id = Uuid::parse_str(&req.participants[0]).ok();
+        if let Some(other_id) = other_id {
+            // Find existing direct chat between user_id and other_id
+            let existing_chat: Option<Chat> = sqlx::query_as(
+                "SELECT c.* FROM chats c
+                 INNER JOIN chat_participants p1 ON p1.chat_id = c.id AND p1.user_id = $1
+                 INNER JOIN chat_participants p2 ON p2.chat_id = c.id AND p2.user_id = $2
+                 WHERE c.is_group = FALSE
+                 LIMIT 1",
+            )
+            .bind(user_id)
+            .bind(other_id)
+            .fetch_optional(state.db.get_pool())
+            .await?;
+
+            if let Some(chat) = existing_chat {
+                let participants: Vec<String> =
+                    sqlx::query_scalar("SELECT user_id::text FROM chat_participants WHERE chat_id = $1")
+                        .bind(chat.id)
+                        .fetch_all(state.db.get_pool())
+                        .await?;
+
+                let mut resp = ChatResponse::from(&chat);
+                resp.participants = participants;
+                return Ok(Json(resp));
+            }
+        }
+    }
 
     let id = Uuid::new_v4();
     let now = Utc::now();
@@ -117,12 +150,11 @@ pub async fn create_chat(
         .fetch_one(state.db.get_pool())
         .await?;
 
-    let participants: Vec<String> = sqlx::query_scalar(
-        "SELECT user_id::text FROM chat_participants WHERE chat_id = $1",
-    )
-    .bind(id)
-    .fetch_all(state.db.get_pool())
-    .await?;
+    let participants: Vec<String> =
+        sqlx::query_scalar("SELECT user_id::text FROM chat_participants WHERE chat_id = $1")
+            .bind(id)
+            .fetch_all(state.db.get_pool())
+            .await?;
 
     let mut resp = ChatResponse::from(&chat);
     resp.participants = participants;
@@ -148,12 +180,11 @@ pub async fn get_chat(
         .await?
         .ok_or(AppError::ChatNotFound)?;
 
-    let participants: Vec<String> = sqlx::query_scalar(
-        "SELECT user_id::text FROM chat_participants WHERE chat_id = $1",
-    )
-    .bind(chat_id)
-    .fetch_all(state.db.get_pool())
-    .await?;
+    let participants: Vec<String> =
+        sqlx::query_scalar("SELECT user_id::text FROM chat_participants WHERE chat_id = $1")
+            .bind(chat_id)
+            .fetch_all(state.db.get_pool())
+            .await?;
 
     let mut resp = ChatResponse::from(&chat);
     resp.participants = participants;
@@ -177,7 +208,9 @@ pub async fn get_messages(
     let page_size = params.limit.unwrap_or(50).clamp(1, 100);
     let cursor = params.cursor.unwrap_or(0);
 
-    let topic_filter = params.topic_id.as_ref()
+    let topic_filter = params
+        .topic_id
+        .as_ref()
         .filter(|s| !s.is_empty())
         .and_then(|s| Uuid::parse_str(s).ok());
 
@@ -226,14 +259,20 @@ pub async fn send_message(
     let now = Utc::now();
     let content_type = req.content_type.unwrap_or("text".to_string());
 
-    let file_metadata_id = req.file_metadata_id.as_ref()
+    let file_metadata_id = req
+        .file_metadata_id
+        .as_ref()
         .and_then(|s| Uuid::parse_str(s).ok());
 
-    let topic_id = req.topic_id.as_ref()
+    let topic_id = req
+        .topic_id
+        .as_ref()
         .filter(|s| !s.is_empty())
         .and_then(|s| Uuid::parse_str(s).ok());
 
-    let thread_id = req.thread_id.as_ref()
+    let thread_id = req
+        .thread_id
+        .as_ref()
         .filter(|s| !s.is_empty())
         .and_then(|s| Uuid::parse_str(s).ok());
 
@@ -260,14 +299,27 @@ pub async fn send_message(
         .fetch_one(state.db.get_pool())
         .await?;
 
-    // Publish event to Redis for SSE
+    // Publish event to Redis for SSE — publish to ALL participants' user channels
     let event = serde_json::json!({
         "type": "new_message",
         "chat_id": chat_id.to_string(),
         "data": MessageResponse::from(&message),
     });
-    let channel = format!("chat:{}:events", chat_id);
-    let _ = state.redis.publish(&channel, &event.to_string()).await;
+    let event_str = event.to_string();
+
+    // Get all participants and publish to each user's channel
+    let participants: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM chat_participants WHERE chat_id = $1",
+    )
+    .bind(chat_id)
+    .fetch_all(state.db.get_pool())
+    .await?;
+
+    for participant_id in &participants {
+        let user_channel = format!("user:{}:events", participant_id);
+        let result = state.redis.publish(&user_channel, &event_str).await;
+        tracing::info!("SSE publish to {}: {:?}", user_channel, result.as_ref().map(|_| "ok").map_err(|e| e.to_string()));
+    }
 
     // Increment unread counts for other participants
     sqlx::query(
@@ -288,11 +340,18 @@ pub async fn send_message(
 
     // Send push notifications to other participants
     let participants: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT user_id FROM chat_participants WHERE chat_id = $1 AND user_id != $2"
-    ).bind(chat_id).bind(user_id).fetch_all(state.db.get_pool()).await?;
+        "SELECT user_id FROM chat_participants WHERE chat_id = $1 AND user_id != $2",
+    )
+    .bind(chat_id)
+    .bind(user_id)
+    .fetch_all(state.db.get_pool())
+    .await?;
 
     for participant_id in &participants {
-        let is_muted = crate::routes::push::is_chat_muted(&state, *participant_id, Some(chat_id), None).await.unwrap_or(false);
+        let is_muted =
+            crate::routes::push::is_chat_muted(&state, *participant_id, Some(chat_id), None)
+                .await
+                .unwrap_or(false);
         if !is_muted {
             let _ = crate::routes::push::send_push_notification(
                 &state, *participant_id,
@@ -315,13 +374,12 @@ pub async fn edit_message(
     let user_id = get_user_id(&headers, &state).await?;
     let message_id: Uuid = id.parse().map_err(|_| AppError::MessageNotFound)?;
 
-    let (sender_id, chat_id): (Uuid, Uuid) = sqlx::query_as(
-        "SELECT sender_id, chat_id FROM messages WHERE id = $1",
-    )
-    .bind(message_id)
-    .fetch_optional(state.db.get_pool())
-    .await?
-    .ok_or(AppError::MessageNotFound)?;
+    let (sender_id, chat_id): (Uuid, Uuid) =
+        sqlx::query_as("SELECT sender_id, chat_id FROM messages WHERE id = $1")
+            .bind(message_id)
+            .fetch_optional(state.db.get_pool())
+            .await?
+            .ok_or(AppError::MessageNotFound)?;
 
     if sender_id != user_id {
         return Err(AppError::NotAuthorized);
@@ -353,13 +411,12 @@ pub async fn delete_message(
     let user_id = get_user_id(&headers, &state).await?;
     let message_id: Uuid = id.parse().map_err(|_| AppError::MessageNotFound)?;
 
-    let (sender_id, chat_id): (Uuid, Uuid) = sqlx::query_as(
-        "SELECT sender_id, chat_id FROM messages WHERE id = $1",
-    )
-    .bind(message_id)
-    .fetch_optional(state.db.get_pool())
-    .await?
-    .ok_or(AppError::MessageNotFound)?;
+    let (sender_id, _chat_id): (Uuid, Uuid) =
+        sqlx::query_as("SELECT sender_id, chat_id FROM messages WHERE id = $1")
+            .bind(message_id)
+            .fetch_optional(state.db.get_pool())
+            .await?
+            .ok_or(AppError::MessageNotFound)?;
 
     if sender_id != user_id {
         return Err(AppError::NotAuthorized);
@@ -370,7 +427,10 @@ pub async fn delete_message(
         .execute(state.db.get_pool())
         .await?;
 
-    Ok(Json(Ack { success: true, message: "Message deleted".to_string() }))
+    Ok(Json(Ack {
+        success: true,
+        message: "Message deleted".to_string(),
+    }))
 }
 
 pub async fn get_pinned_messages(
@@ -420,10 +480,15 @@ pub async fn pin_message(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<Ack>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
-    let message_id: Uuid = body["message_id"].as_str()
+    let message_id: Uuid = body["message_id"]
+        .as_str()
         .ok_or_else(|| AppError::Validation("message_id required".to_string()))?
-        .parse().map_err(|_| AppError::MessageNotFound)?;
-    let personal = body.get("personal").and_then(|v| v.as_bool()).unwrap_or(false);
+        .parse()
+        .map_err(|_| AppError::MessageNotFound)?;
+    let personal = body
+        .get("personal")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let chat_id: Uuid = sqlx::query_scalar("SELECT chat_id FROM messages WHERE id = $1")
         .bind(message_id)
@@ -446,7 +511,10 @@ pub async fn pin_message(
     .execute(state.db.get_pool())
     .await?;
 
-    Ok(Json(Ack { success: true, message: "Message pinned".to_string() }))
+    Ok(Json(Ack {
+        success: true,
+        message: "Message pinned".to_string(),
+    }))
 }
 
 pub async fn unpin_message(
@@ -455,10 +523,15 @@ pub async fn unpin_message(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<Ack>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
-    let message_id: Uuid = body["message_id"].as_str()
+    let message_id: Uuid = body["message_id"]
+        .as_str()
         .ok_or_else(|| AppError::Validation("message_id required".to_string()))?
-        .parse().map_err(|_| AppError::MessageNotFound)?;
-    let personal = body.get("personal").and_then(|v| v.as_bool()).unwrap_or(false);
+        .parse()
+        .map_err(|_| AppError::MessageNotFound)?;
+    let personal = body
+        .get("personal")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let chat_id: Uuid = sqlx::query_scalar("SELECT chat_id FROM messages WHERE id = $1")
         .bind(message_id)
@@ -480,7 +553,10 @@ pub async fn unpin_message(
     .execute(state.db.get_pool())
     .await?;
 
-    Ok(Json(Ack { success: true, message: "Message unpinned".to_string() }))
+    Ok(Json(Ack {
+        success: true,
+        message: "Message unpinned".to_string(),
+    }))
 }
 
 pub async fn create_thread(
@@ -490,7 +566,10 @@ pub async fn create_thread(
 ) -> Result<Json<ThreadResponse>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
     let chat_id: Uuid = req.chat_id.parse().map_err(|_| AppError::ChatNotFound)?;
-    let root_message_id: Uuid = req.root_message_id.parse().map_err(|_| AppError::MessageNotFound)?;
+    let root_message_id: Uuid = req
+        .root_message_id
+        .parse()
+        .map_err(|_| AppError::MessageNotFound)?;
 
     if !check_chat_participation(&state, chat_id, user_id).await? {
         return Err(AppError::NotAuthorized);
@@ -598,12 +677,17 @@ pub async fn get_topics(
     .fetch_all(state.db.get_pool())
     .await?;
 
-    Ok(Json(topics.iter().map(|t| TopicResponse {
-        id: t.id.to_string(),
-        chat_id: t.chat_id.to_string(),
-        name: t.name.clone(),
-        created_at: t.created_at.to_rfc3339(),
-    }).collect()))
+    Ok(Json(
+        topics
+            .iter()
+            .map(|t| TopicResponse {
+                id: t.id.to_string(),
+                chat_id: t.chat_id.to_string(),
+                name: t.name.clone(),
+                created_at: t.created_at.to_rfc3339(),
+            })
+            .collect(),
+    ))
 }
 
 pub async fn create_topic(
@@ -651,9 +735,11 @@ pub async fn send_typing(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<Ack>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
-    let chat_id: Uuid = body["chat_id"].as_str()
+    let chat_id: Uuid = body["chat_id"]
+        .as_str()
         .ok_or_else(|| AppError::Validation("chat_id required".to_string()))?
-        .parse().map_err(|_| AppError::ChatNotFound)?;
+        .parse()
+        .map_err(|_| AppError::ChatNotFound)?;
 
     if !check_chat_participation(&state, chat_id, user_id).await? {
         return Err(AppError::NotAuthorized);
@@ -667,7 +753,10 @@ pub async fn send_typing(
     let channel = format!("chat:{}:events", chat_id);
     let _ = state.redis.publish(&channel, &event.to_string()).await;
 
-    Ok(Json(Ack { success: true, message: "Typing indicator sent".to_string() }))
+    Ok(Json(Ack {
+        success: true,
+        message: "Typing indicator sent".to_string(),
+    }))
 }
 
 pub async fn mark_chat_read(
@@ -690,7 +779,10 @@ pub async fn mark_chat_read(
     .execute(state.db.get_pool())
     .await?;
 
-    Ok(Json(Ack { success: true, message: "Chat marked as read".to_string() }))
+    Ok(Json(Ack {
+        success: true,
+        message: "Chat marked as read".to_string(),
+    }))
 }
 
 pub async fn get_unread_counts(
@@ -706,8 +798,15 @@ pub async fn get_unread_counts(
     .fetch_all(state.db.get_pool())
     .await?;
 
-    Ok(Json(counts.iter().map(|(chat_id, count)| serde_json::json!({
-        "chat_id": chat_id.to_string(),
-        "count": count,
-    })).collect()))
+    Ok(Json(
+        counts
+            .iter()
+            .map(|(chat_id, count)| {
+                serde_json::json!({
+                    "chat_id": chat_id.to_string(),
+                    "count": count,
+                })
+            })
+            .collect(),
+    ))
 }

@@ -182,7 +182,16 @@ export const useAppStore = defineStore('app', () => {
     const auth = await db.getAuth()
     if (auth?.access_token) {
       isAuthenticated.value = true
-      user.value = auth.user
+      // Always fetch fresh user data from server — is_admin can change
+      try {
+        const freshUser = await api.getMe()
+        user.value = freshUser
+        // Update cached user with fresh data
+        await db.saveAuth({ ...auth, user: freshUser })
+      } catch {
+        // API error — fall back to cached user
+        user.value = auth.user
+      }
       await loadChats()
       startSse()
       retryPendingMessages()
@@ -199,18 +208,19 @@ export const useAppStore = defineStore('app', () => {
       const unreadMap = new Map(unreadCounts.map(u => [u.chat_id, u.count]))
       for (const chat of fetchedChats) {
         chat.unread_count = unreadMap.get(chat.id) || 0
-        await db.saveChat(chat)
       }
+      // Replace entire chat cache with server data (removes stale/duplicate entries)
+      await db.syncChats(fetchedChats)
       chats.value = fetchedChats
     } catch {
-      // Load from DB (offline)
+      // Network error — use cached chats (offline-first)
       chats.value = await db.getAllChats()
     }
 
-    // Load channels
+    // Load channels — same approach
     try {
       const fetchedChannels = await api.getChannels()
-      await db.saveChannels(fetchedChannels)
+      await db.syncChannels(fetchedChannels)
       channels.value = fetchedChannels
     } catch {
       channels.value = await db.getAllChannels()
@@ -225,22 +235,21 @@ export const useAppStore = defineStore('app', () => {
     const chat = chats.value.find(c => c.id === chatId)
     if (chat) chat.unread_count = 0
 
-    // Load from DB first (instant)
-    const dbMsgs = await db.getMessagesByChat(chatId, 50)
-    messages.value.set(chatId, dbMsgs)
-
-    // Then fetch from server
+    // Fetch from server
+    let serverMsgs: Message[] = []
     try {
-      const { messages: serverMsgs } = await api.getMessages(chatId, 50)
+      const result = await api.getMessages(chatId, 50)
+      serverMsgs = result.messages
+      // Save to IndexedDB for offline access
       await db.saveMessages(serverMsgs)
-      messages.value.set(chatId, serverMsgs)
     } catch {
-      // Use cached messages
+      // Use cached messages from IndexedDB
+      serverMsgs = await db.getMessagesByChat(chatId, 50)
     }
 
-    // Also load pending messages for this chat
+    // Add pending messages (not yet sent to server)
     const pending = await db.getPendingByChat(chatId)
-    const allMsgs = [...dbMsgs, ...pending.map(p => ({
+    const pendingMsgs = pending.map(p => ({
       id: p.id,
       chat_id: p.chat_id,
       sender_id: '',
@@ -255,7 +264,12 @@ export const useAppStore = defineStore('app', () => {
       topic_id: p.topic_id,
       thread_id: p.thread_id,
       local_pending: true,
-    } as Message))]
+    } as Message))
+
+    // Merge: server messages + pending (deduplicate by id)
+    const serverIds = new Set(serverMsgs.map(m => m.id))
+    const uniquePending = pendingMsgs.filter(p => !serverIds.has(p.id))
+    const allMsgs = [...serverMsgs, ...uniquePending]
     allMsgs.sort((a, b) => a.created_at.localeCompare(b.created_at))
     messages.value.set(chatId, allMsgs)
   }
@@ -293,7 +307,7 @@ export const useAppStore = defineStore('app', () => {
 
     const localMsg: Message = {
       id: localId,
-      chat_id,
+      chat_id: chatId,
       sender_id: user.value?.id || '',
       encrypted_content: content,
       content_type: contentType,
@@ -315,6 +329,13 @@ export const useAppStore = defineStore('app', () => {
     const chatMsgs = messages.value.get(chatId) || []
     chatMsgs.push(localMsg)
     messages.value.set(chatId, chatMsgs)
+
+    // Update sidebar: set last_message and unread for this chat
+    const chat = chats.value.find(c => c.id === chatId)
+    if (chat) {
+      chat.last_message = localMsg
+      chat.unread_count = chat.unread_count || 0
+    }
 
     // Try to send immediately if online
     if (isOnline.value) {
@@ -354,7 +375,7 @@ export const useAppStore = defineStore('app', () => {
 
   return {
     user, isAuthenticated, isOnline, sseConnected, is2faSetup,
-    chats, channels, activeChatId, activeChannelId, activeChat, activeMessages,
+    api, chats, channels, activeChatId, activeChannelId, activeChat, activeMessages,
     messages, channelMessages, typingUsers,
     init, loadChats, openChat, openChannel, sendLocalMessage, logout,
     startSse, stopSse, retryPendingMessages,

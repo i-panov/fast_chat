@@ -119,8 +119,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { userApi } from '@/api/userApi'
-import type { User, CreateUserRequest, UpdateUserRequest } from '@/api/types'
+import { userApi } from '@/api/admin'
+import type { User, CreateUserRequest, UpdateUserRequest } from '@/api/admin/types'
 
 const headers = [
   { title: 'Username', key: 'username' },

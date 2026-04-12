@@ -7,7 +7,7 @@ import { resolve } from 'path'
 export default defineConfig({
   plugins: [
     vue(),
-    vuetify({ autoImport: true }),
+    vuetify({ autoImport: false }),
     VitePWA({
       registerType: 'autoUpdate',
       injectRegister: 'auto',

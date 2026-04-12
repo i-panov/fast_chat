@@ -5,7 +5,7 @@ use axum::{
     response::Response,
     Json,
 };
-use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
@@ -25,9 +25,9 @@ pub struct JwtClaims {
 
 /// Typed extractor for authenticated user ID.
 /// Use as: `UserId(user_id): UserId` in route handlers.
+#[allow(dead_code)]
 pub struct UserId(pub Uuid);
 
-#[axum::async_trait]
 impl<S> axum::extract::FromRequestParts<S> for UserId
 where
     S: Send + Sync,
@@ -38,15 +38,10 @@ where
         parts: &mut axum::http::request::Parts,
         _state: &S,
     ) -> Result<Self, Self::Rejection> {
-        parts
-            .extensions
-            .get::<Uuid>()
-            .copied()
-            .map(UserId)
-            .ok_or((
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"error": "Not authenticated"})),
-            ))
+        parts.extensions.get::<Uuid>().copied().map(UserId).ok_or((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Not authenticated"})),
+        ))
     }
 }
 
@@ -66,35 +61,32 @@ pub async fn jwt_auth(
             Json(json!({"error": "Missing Authorization header"})),
         ))?;
 
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "Invalid Authorization header format"})),
-        ))?;
+    let token = auth_header.strip_prefix("Bearer ").ok_or((
+        StatusCode::UNAUTHORIZED,
+        Json(json!({"error": "Invalid Authorization header format"})),
+    ))?;
 
     let key = DecodingKey::from_secret(state.settings.jwt_secret.as_bytes());
-    let token_data = decode::<JwtClaims>(token, &key, &Validation::new(Algorithm::HS256))
-        .map_err(|e| {
-            let status = if matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature) {
-                StatusCode::UNAUTHORIZED
-            } else {
-                StatusCode::UNAUTHORIZED
-            };
-            (status, Json(json!({"error": e.to_string()})))
+    let token_data =
+        decode::<JwtClaims>(token, &key, &Validation::new(Algorithm::HS256)).map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": e.to_string()})),
+            )
         })?;
 
-    let user_id: Uuid = token_data
-        .claims
-        .sub
-        .parse()
-        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(json!({"error": "Invalid token subject"}))))?;
+    let user_id: Uuid = token_data.claims.sub.parse().map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Invalid token subject"})),
+        )
+    })?;
 
     // Check 2FA requirement
     let two_fa_verified = token_data.claims.two_fa_verified;
     if !two_fa_verified {
         // Check if 2FA is required for this user
-        let (is_admin, totp_enabled): (bool, bool) = sqlx::query_as(
+        let (is_admin, _totp_enabled): (bool, bool) = sqlx::query_as(
             "SELECT is_admin, COALESCE(totp_enabled, FALSE) FROM users WHERE id = $1",
         )
         .bind(user_id)
@@ -104,13 +96,12 @@ pub async fn jwt_auth(
         .unwrap_or((false, false));
 
         // Check server-level require_2fa setting
-        let require_2fa_global: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM server_settings WHERE key = 'require_2fa'",
-        )
-        .fetch_optional(state.db.get_pool())
-        .await
-        .ok()
-        .flatten();
+        let require_2fa_global: Option<String> =
+            sqlx::query_scalar("SELECT value FROM server_settings WHERE key = 'require_2fa'")
+                .fetch_optional(state.db.get_pool())
+                .await
+                .ok()
+                .flatten();
         let require_2fa_global = require_2fa_global.as_deref() == Some("true")
             || (require_2fa_global.is_none() && state.settings.require_2fa);
 
@@ -131,17 +122,14 @@ pub async fn jwt_auth(
 }
 
 /// Extract user_id from JWT token in Authorization header (for public routes that still need auth)
-pub fn get_user_id_from_request(
-    auth_header: &str,
-    jwt_secret: &str,
-) -> Result<Uuid, AppError> {
+pub fn get_user_id_from_request(auth_header: &str, jwt_secret: &str) -> Result<Uuid, AppError> {
     let token = auth_header
         .strip_prefix("Bearer ")
         .ok_or(AppError::InvalidToken)?;
 
     let key = DecodingKey::from_secret(jwt_secret.as_bytes());
-    let token_data = decode::<JwtClaims>(token, &key, &Validation::new(Algorithm::HS256))
-        .map_err(|e| {
+    let token_data =
+        decode::<JwtClaims>(token, &key, &Validation::new(Algorithm::HS256)).map_err(|e| {
             if matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature) {
                 AppError::TokenExpired
             } else {

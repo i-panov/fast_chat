@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(name = "fast-chat-server")]
 #[command(about = "Fast Chat Server", long_about = None)]
 pub struct Cli {
-    #[arg(short, long, default_value = "0.0.0.0:50051")]
+    #[arg(short, long, default_value = "0.0.0.0:8080")]
     pub addr: String,
 
     #[arg(long, env = "DATABASE_URL")]
