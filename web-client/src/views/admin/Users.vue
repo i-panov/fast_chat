@@ -119,8 +119,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { userApi } from '@/api/admin'
-import type { User, CreateUserRequest, UpdateUserRequest } from '@/api/admin/types'
+import { userApi, type AdminUser } from '@/api/admin'
 
 const headers = [
   { title: 'Username', key: 'username' },
@@ -130,7 +129,7 @@ const headers = [
   { title: 'Actions', key: 'actions', sortable: false },
 ]
 
-const users = ref<User[]>([])
+const users = ref<AdminUser[]>([])
 const loading = ref(false)
 
 // Dialog state
@@ -138,7 +137,7 @@ const dialogOpen = ref(false)
 const isEditing = ref(false)
 const formValid = ref(false)
 const dialogLoading = ref(false)
-const selectedUser = ref<User | null>(null)
+const selectedUser = ref<AdminUser | null>(null)
 const formRef = ref<InstanceType<typeof import('vuetify/components/VForm')['VForm']> | null>(null)
 
 const form = ref({
@@ -176,7 +175,7 @@ function openCreateDialog() {
   dialogOpen.value = true
 }
 
-function openEditDialog(user: User) {
+function openEditDialog(user: AdminUser) {
   isEditing.value = true
   selectedUser.value = user
   form.value = {
@@ -193,21 +192,17 @@ async function saveUser() {
 
   try {
     if (isEditing.value && selectedUser.value) {
-      const update: UpdateUserRequest = {
-        username: form.value.username,
-      }
-      await userApi.update(selectedUser.value.id, update)
+      await userApi.update(selectedUser.value.id, { username: form.value.username })
       if (form.value.is_admin !== selectedUser.value.is_admin) {
         await userApi.setAdmin(selectedUser.value.id, form.value.is_admin)
       }
       showSnackbar('User updated successfully')
     } else {
-      const create: CreateUserRequest = {
+      await userApi.create({
         username: form.value.username,
-        password: form.value.password,
+        email: `${form.value.username}@localhost`,
         is_admin: form.value.is_admin,
-      }
-      await userApi.create(create)
+      })
       showSnackbar('User created successfully')
     }
     dialogOpen.value = false
@@ -220,7 +215,7 @@ async function saveUser() {
   }
 }
 
-function confirmDelete(user: User) {
+function confirmDelete(user: AdminUser) {
   selectedUser.value = user
   deleteDialogOpen.value = true
 }
@@ -244,7 +239,7 @@ async function deleteUser() {
   }
 }
 
-async function toggleDisabled(user: User) {
+async function toggleDisabled(user: AdminUser) {
   try {
     await userApi.setDisabled(user.id, !user.disabled)
     showSnackbar(`User ${user.disabled ? 'enabled' : 'disabled'}`)

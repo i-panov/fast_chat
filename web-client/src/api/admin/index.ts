@@ -59,11 +59,11 @@ export interface ServerSettings {
 }
 
 export const serverApi = {
-  async health(): Promise<{ status: string; database: string }> {
+  async health(): Promise<{ status: string; version: string; uptime_seconds: number; active_calls: number }> {
     return fetchJson('/admin/health')
   },
 
-  async stats(): Promise<{ users: number; chats: number }> {
+  async stats(): Promise<{ total_users: number; total_chats: number; total_messages: number; active_calls: number; uptime_seconds: number }> {
     return fetchJson('/stats')
   },
 

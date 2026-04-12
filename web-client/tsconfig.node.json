@@ -5,7 +5,9 @@
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "composite": true,
-    "noEmit": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist-node",
     "strict": true,
     "skipLibCheck": true
   },

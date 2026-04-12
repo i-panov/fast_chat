@@ -49,9 +49,11 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useAppStore } from '@/stores/app'
 
 const router = useRouter()
 const route = useRoute()
+const appStore = useAppStore()
 
 const drawer = ref(true)
 const rail = ref(false)
@@ -68,7 +70,7 @@ const currentTitle = computed(() => {
 })
 
 function handleLogout() {
-  localStorage.removeItem('admin_token')
+  appStore.logout()
   router.push('/login')
 }
 </script>

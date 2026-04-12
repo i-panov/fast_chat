@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import LoginForm from '@/components/LoginForm.vue'
 import { useRouter } from 'vue-router'
-import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import * as db from '@/db'
 

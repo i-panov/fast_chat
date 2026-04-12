@@ -171,11 +171,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
-import type { Chat, Message } from '@/types'
 
 const appStore = useAppStore()
 const router = useRouter()
@@ -246,6 +245,8 @@ async function startChatWith(user: { id: string; username: string }) {
 const messageText = ref('')
 const sending = ref(false)
 const messagesContainer = ref<HTMLElement | null>(null)
+const messagesCursor = ref<string | null>(null)
+const messagesLoading = ref(false)
 
 const pendingCount = computed(() => {
   let count = 0
@@ -274,6 +275,7 @@ const typingText = computed(() => {
 })
 
 function selectChat(chatId: string) {
+  messagesCursor.value = null
   appStore.openChat(chatId)
   nextTick(scrollToBottom)
 }
@@ -301,9 +303,35 @@ async function sendMessage() {
 }
 
 async function loadMore({ done }: { done: (status: 'empty' | 'ok' | 'error') => void }) {
-  if (!appStore.activeChatId) { done('empty'); return }
-  // Load more messages from server (pagination)
-  done('empty')
+  if (!appStore.activeChatId || messagesLoading.value) {
+    done('empty')
+    return
+  }
+
+  messagesLoading.value = true
+  try {
+    const result = await api.getMessages(appStore.activeChatId, 50, messagesCursor.value ?? undefined)
+    const chatMsgs = appStore.messages.get(appStore.activeChatId) || []
+    
+    // Add messages to the beginning (older messages)
+    const newMsgs = result.messages.filter(m => !chatMsgs.find(existing => existing.id === m.id))
+    if (newMsgs.length > 0) {
+      chatMsgs.unshift(...newMsgs)
+      appStore.messages.set(appStore.activeChatId, chatMsgs)
+    }
+
+    if (result.has_more && result.next_cursor) {
+      messagesCursor.value = result.next_cursor
+      done('ok')
+    } else {
+      done('empty')
+    }
+  } catch (err) {
+    console.error('Failed to load more messages:', err)
+    done('error')
+  } finally {
+    messagesLoading.value = false
+  }
 }
 
 function formatTime(iso: string): string {

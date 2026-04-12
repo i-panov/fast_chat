@@ -36,22 +36,37 @@ class ApiClient {
     return this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}
   }
 
+  private mergeHeaders(opts: RequestInit = {}): Record<string, string> {
+    const base: Record<string, string> = { 'Content-Type': 'application/json' }
+    const auth = this.authHeaders()
+    if (opts.headers) {
+      const custom = opts.headers as Record<string, string>
+      return { ...base, ...auth, ...custom }
+    }
+    return { ...base, ...auth }
+  }
+
   private async request<T>(path: string, opts: RequestInit = {}): Promise<T> {
     const url = `${API_BASE}${path}`
-    const headers = { 'Content-Type': 'application/json', ...this.authHeaders(), ...opts.headers }
+    const headers = this.mergeHeaders(opts)
 
     let response = await fetch(url, { ...opts, headers })
 
-    if (response.status === 401 && this.refreshToken && !this.refreshPromise) {
-      this.refreshPromise = this.doRefresh()
-      try {
-        this.accessToken = await this.refreshPromise
-      } finally {
-        this.refreshPromise = null
+    if (response.status === 401 && this.refreshToken) {
+      // Prevent concurrent refresh attempts - use existing promise or create new one
+      if (!this.refreshPromise) {
+        this.refreshPromise = this.doRefresh()
       }
-      // Retry with new token
-      headers.Authorization = `Bearer ${this.accessToken}`
-      response = await fetch(url, { ...opts, headers })
+      try {
+        const newToken = await this.refreshPromise
+        this.refreshPromise = null
+        // Retry with new token
+        headers.Authorization = `Bearer ${newToken}`
+        response = await fetch(url, { ...opts, headers })
+      } catch {
+        this.refreshPromise = null
+        throw new Error('AUTH_REQUIRED')
+      }
     }
 
     if (response.status === 401) {
@@ -263,8 +278,9 @@ export const api = new ApiClient()
 
 // ─── SSE Connection ───
 export class SseConnection {
-  private eventSource: EventSource | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempts = 0
+  private maxReconnectDelay = 60000 // 1 minute max
   private onMessage: (event: SseEvent) => void
   private onConnected: () => void
   private onDisconnected: () => void
@@ -277,11 +293,7 @@ export class SseConnection {
 
   connect(token: string) {
     this.disconnect()
-    const url = `${API_BASE}/api/sse/connect`
-    // EventSource doesn't support custom headers, so we use the token as query param
-    // Server should accept ?token= as alternative to Authorization header
-    // Since our server uses Authorization header, we need a workaround.
-    // For now, we'll use a fetch-based SSE approach that supports headers.
+    // EventSource doesn't support custom headers, so we use fetch-based SSE
     this.connectWithFetch(token)
   }
 
@@ -291,16 +303,17 @@ export class SseConnection {
         headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
       })
       if (!response.ok) {
-        this.scheduleReconnect(token)
+        this.scheduleReconnect()
         return
       }
 
       await db.updateAuthField('sse_connected', true)
       this.onConnected()
+      this.reconnectAttempts = 0 // Reset backoff on successful connection
 
       const reader = response.body?.getReader()
       if (!reader) {
-        this.scheduleReconnect(token)
+        this.scheduleReconnect()
         return
       }
 
@@ -333,25 +346,32 @@ export class SseConnection {
 
     await db.updateAuthField('sse_connected', false)
     this.onDisconnected()
-    this.scheduleReconnect(token)
+    this.scheduleReconnect()
   }
 
-  private scheduleReconnect(token: string) {
+  private scheduleReconnect() {
     if (this.reconnectTimer) return
+
+    // Exponential backoff: 3s, 6s, 12s, 24s, 48s, 60s (max)
+    const delay = Math.min(3000 * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay)
+    this.reconnectAttempts++
+
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      const tokens = { access: null as string | null, refresh: null as string | null }
       // Get fresh token from DB
       db.getAuth().then(auth => {
         if (auth?.access_token) {
           this.connect(auth.access_token)
         }
       })
-    }, 3000)
+    }, delay)
   }
 
   disconnect() {
-    this.reconnectTimer && clearTimeout(this.reconnectTimer)
-    this.reconnectTimer = null
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    this.reconnectAttempts = 0
   }
 }

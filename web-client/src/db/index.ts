@@ -95,7 +95,8 @@ export async function saveAuth(data: { access_token: string; refresh_token: stri
 
 export async function getAuth(): Promise<{ access_token: string; refresh_token: string; user: User; sse_connected: boolean } | null> {
   const db = await getDb()
-  return db.get('auth', 'current') ?? null
+  const result = await db.get('auth', 'current')
+  return result ?? null
 }
 
 export async function clearAuth(): Promise<void> {
@@ -114,17 +115,33 @@ export async function updateAuthField(field: string, value: unknown): Promise<vo
 
 // ─── Chats ───
 /**
- * Replace all chats in cache with a fresh server list.
- * Deletes any cached chats not present in the server response.
+ * Merge fresh server chats with existing cache.
+ * Updates existing chats, keeps untracked local-only chats.
  */
 export async function syncChats(chats: Chat[]): Promise<void> {
   const db = await getDb()
+
+  // Get existing chats first
+  const existingChats = await db.getAll('chats')
+  const existingIds = new Set(existingChats.map(c => c.id))
+  const serverIds = new Set(chats.map(c => c.id))
+
   const tx = db.transaction('chats', 'readwrite')
-  // Delete all existing chats
-  await tx.store.clear()
-  // Write fresh ones
+
+  // Remove chats that no longer exist on server
+  for (const id of existingIds) {
+    if (!serverIds.has(id)) {
+      await tx.store.delete(id)
+    }
+  }
+
+  // Update or insert server chats
   for (const chat of chats) {
-    await tx.store.put(chat, chat.id)
+    const existing = existingChats.find(c => c.id === chat.id)
+    const merged = existing
+      ? { ...existing, ...chat, updated_at: chat.created_at }
+      : { ...chat, updated_at: chat.created_at }
+    await tx.store.put(merged, chat.id)
   }
   await tx.done
 }
@@ -154,7 +171,8 @@ export async function getAllChats(): Promise<Chat[]> {
 
 export async function getChat(id: string): Promise<Chat | null> {
   const db = await getDb()
-  return db.get('chats', id) ?? null
+  const result = await db.get('chats', id)
+  return result ?? null
 }
 
 export async function updateChatUnread(chatId: string, count: number): Promise<void> {
@@ -260,7 +278,8 @@ export async function saveFile(id: string, meta: FileMeta, blob: Blob): Promise<
 
 export async function getFile(id: string): Promise<{ meta: FileMeta; blob: Blob } | null> {
   const db = await getDb()
-  return db.get('files', id) ?? null
+  const result = await db.get('files', id)
+  return result ?? null
 }
 
 export async function getFileBlob(id: string): Promise<Blob | null> {
