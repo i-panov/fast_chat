@@ -70,9 +70,25 @@ rustup toolchain install stable
 ### Server
 
 ```bash
-cd server
-cargo build --release
-cargo run --release                    # Start on :8080
+cd server && cargo build --release
+
+# ⚠️ ВАЖНО: как правильно запускать сервер
+# Проблема: run_shell_command убивает process group по таймауту,
+# включая запущенный сервер. Используйте disown для отделения процесса.
+
+# Правильный способ (background, не будет убит):
+cd server && nohup ./target/debug/fast-chat-server > /dev/null 2>&1 &
+disown
+
+# Или напрямую через бинарник (после cargo build):
+nohup server/target/debug/fast-chat-server > /dev/null 2>&1 &
+disown
+
+# НЕ используйте is_background:true для cargo run — сервер будет убит!
+# НЕ используйте cargo run --release в фоне — cargo завершится и убьёт дочерний процесс.
+
+# Проверка:
+curl http://localhost:8080/api/health
 ```
 
 ### CLI

@@ -607,6 +607,39 @@ cd cli && cargo fmt --check && cargo clippy --all-targets --all-features
 
 ---
 
+## Running the Server
+
+**⚠️ CRITICAL: правильный способ запуска сервера**
+
+`run_shell_command` убивает всю process group по таймауту, включая дочерние процессы.
+Если запустить сервер через `is_background: true` или `cargo run` — он будет убит.
+
+**Правильный способ:**
+
+```bash
+# 1. Собрать (если ещё не собран)
+cd server && cargo build
+
+# 2. Запустить с disown (отделяет от process group)
+cd server && nohup ./target/debug/fast-chat-server > /dev/null 2>&1 &
+disown
+
+# 3. Проверить
+curl http://localhost:8080/api/health
+```
+
+**НЕ делай:**
+- `cargo run` в фоне (is_background: true) — cargo завершится, процесс будет убит
+- `is_background: true` для long-running сервера — tool убьёт process group
+
+**Веб-клиент (Vite):**
+```bash
+cd web-client && npm run dev
+# работает на :5173, можно через is_background:true
+```
+
+---
+
 ## Known Issues
 
 1. **Delivery/read status** — Only 'sent' status stored, no delivery receipts
