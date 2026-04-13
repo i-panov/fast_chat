@@ -51,8 +51,7 @@ fast_chat/
 │   │       ├── admin.rs        # Server settings API
 │   │       └── sse.rs          # SSE event stream
 ├── cli/                        # CLI binary
-├── web-client/                 # Vue 3 PWA (stub)
-├── admin-panel/                # Vue 3 admin SPA
+├── web-client/                 # Vue 3 PWA (включает админку)
 ├── wasm-sdk/                   # (DELETED — was WebAssembly SDK)
 ├── envoy/                      # (DELETED — was gRPC proxy)
 ├── coturn/                     # TURN config

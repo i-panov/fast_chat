@@ -235,7 +235,7 @@ pub async fn request_code(
     // If registration is disabled and user doesn't exist — reject
     if !user_exists && !state.settings.allow_registration {
         tracing::warn!("Registration disabled for email: {}", email);
-        return Err(AppError::NotAuthorized);
+        return Err(AppError::RegistrationDisabled);
     }
 
     // Generate and store code

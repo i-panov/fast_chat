@@ -1,1 +1,0 @@
-CREATE TABLE IF NOT EXISTS schema_migrations (version VARCHAR(20) PRIMARY KEY, applied_at TIMESTAMPTZ DEFAULT NOW());

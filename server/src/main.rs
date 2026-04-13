@@ -131,6 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("Starting Fast Chat server on {}", settings.server_addr);
+    info!("Registration: {}, Require 2FA: {}", settings.allow_registration, settings.require_2fa);
 
     let postgres_pool = PostgresPool::new(&settings.database_url).await?;
     let redis_pool = RedisPool::new(&settings.redis_url).await?;

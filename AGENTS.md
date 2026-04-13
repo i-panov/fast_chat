@@ -61,8 +61,7 @@ fast_chat/
 │   │       └── sse.rs          # SSE event stream
 ├── cli/                        # CLI binary (admin DB/user operations)
 │   └── src/main.rs
-├── web-client/                 # Vue 3 PWA (stub)
-├── admin-panel/                # Vue 3 admin UI SPA
+├── web-client/                 # Vue 3 PWA (включает админку)
 ├── coturn/                     # TURN server config
 └── ion-sfu/                    # Ion SFU config
 ```
@@ -595,9 +594,6 @@ services:
   web-client:
     build: ./web-client
     ports: "8080:80"
-  admin-panel:
-    build: ./admin-panel
-    ports: "8081:80"
 ```
 
 ---

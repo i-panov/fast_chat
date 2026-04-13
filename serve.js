@@ -34,5 +34,4 @@ function serveSPA(baseDir, port) {
   });
 }
 
-serveSPA(path.join(__dirname, 'admin-panel/dist'), 3000);
 serveSPA(path.join(__dirname, 'web-client/dist'), 5173);

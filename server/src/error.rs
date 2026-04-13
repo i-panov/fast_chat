@@ -34,6 +34,9 @@ pub enum AppError {
     #[error("Not authorized")]
     NotAuthorized,
 
+    #[error("Registration is disabled")]
+    RegistrationDisabled,
+
     #[error("2FA not configured")]
     TwoFactorNotConfigured,
 
@@ -67,6 +70,7 @@ impl IntoResponse for AppError {
             AppError::MessageNotFound => (StatusCode::NOT_FOUND, "Message not found"),
             AppError::FileNotFound => (StatusCode::NOT_FOUND, "File not found"),
             AppError::NotAuthorized => (StatusCode::FORBIDDEN, "Not authorized"),
+            AppError::RegistrationDisabled => (StatusCode::FORBIDDEN, "Registration is disabled. Please contact your administrator."),
             AppError::TwoFactorNotConfigured => {
                 (StatusCode::PRECONDITION_FAILED, "2FA not configured")
             }

@@ -91,20 +91,6 @@ services:
     networks:
       - fastchat
 
-  admin-panel:
-    build:
-      context: ./admin-panel
-      dockerfile: Dockerfile
-    ports:
-      - "8081:80"
-    environment:
-      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@localhost}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-changeme}
-    depends_on:
-      - server
-    networks:
-      - fastchat
-
 networks:
   fastchat:
     driver: bridge
