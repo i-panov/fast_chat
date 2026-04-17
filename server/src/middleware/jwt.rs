@@ -9,11 +9,12 @@ use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
-use tracing::error;
 use uuid::Uuid;
 
+use crate::constants;
 use crate::{error::AppError, AppState};
 
+/// JWT Claims structure
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JwtClaims {
     pub sub: String,
@@ -26,7 +27,6 @@ pub struct JwtClaims {
 
 /// Typed extractor for authenticated user ID.
 /// Use as: `UserId(user_id): UserId` in route handlers.
-#[allow(dead_code)]
 pub struct UserId(pub Uuid);
 
 impl<S> axum::extract::FromRequestParts<S> for UserId
@@ -47,12 +47,13 @@ where
 }
 
 /// JWT middleware — validates token and puts user_id into request extensions.
-/// Used with `from_fn_with_state(state, jwt_auth)`.
+/// Optimized: uses cached server settings instead of DB query on every request.
 pub async fn jwt_auth(
     State(state): State<Arc<AppState>>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
+    // Extract Authorization header
     let auth_header = request
         .headers()
         .get(AUTHORIZATION)
@@ -67,6 +68,7 @@ pub async fn jwt_auth(
         Json(json!({"error": "Invalid Authorization header format"})),
     ))?;
 
+    // Decode JWT token
     let key = DecodingKey::from_secret(state.settings.jwt_secret.as_bytes());
     let token_data =
         decode::<JwtClaims>(token, &key, &Validation::new(Algorithm::HS256)).map_err(|e| {
@@ -83,39 +85,28 @@ pub async fn jwt_auth(
         )
     })?;
 
-    // Check 2FA requirement
     let two_fa_verified = token_data.claims.two_fa_verified;
 
-    // Check user 2FA status
+    // Use cached settings instead of DB query
+    let require_2fa_global = {
+        let cache = state.settings_cache.read().unwrap();
+        cache.require_2fa
+    };
+
+    // Check user 2FA status (single optimized query)
     let user_row: Option<(bool, bool)> =
         sqlx::query_as("SELECT is_admin, COALESCE(totp_enabled, FALSE) FROM users WHERE id = $1")
             .bind(user_id)
             .fetch_optional(state.db.get_pool())
             .await
             .map_err(|e| {
-                error!("JWT auth user lookup failed: {}", e);
+                tracing::error!("JWT auth user lookup failed: {}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({"error": "Internal server error"})),
                 )
             })?;
     let (is_admin, totp_enabled) = user_row.unwrap_or((false, false));
-
-    // Check server-level require_2fa setting
-    let require_2fa_global: Option<String> =
-        sqlx::query_scalar("SELECT value FROM server_settings WHERE key = 'require_2fa'")
-            .fetch_optional(state.db.get_pool())
-            .await
-            .map_err(|e| {
-                error!("JWT auth settings lookup failed: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "Internal server error"})),
-                )
-            })?
-            .flatten();
-    let require_2fa_global = require_2fa_global.as_deref() == Some("true")
-        || (require_2fa_global.is_none() && state.settings.require_2fa);
 
     // Admins always require 2FA, or global setting
     let need_2fa = is_admin || require_2fa_global;
@@ -127,18 +118,17 @@ pub async fn jwt_auth(
                 Json(json!({"error": "2FA verification required", "need_2fa": true})),
             ));
         }
-    } else {
+    } else if need_2fa && !totp_enabled {
         // Even if token claims verified, re-check if user disabled 2FA but now required
-        if need_2fa && !totp_enabled {
-            return Err((
-                StatusCode::PRECONDITION_FAILED,
-                Json(
-                    json!({"error": "2FA verification required (settings changed)", "need_2fa": true}),
-                ),
-            ));
-        }
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
+            Json(
+                json!({"error": "2FA verification required (settings changed)", "need_2fa": true}),
+            ),
+        ));
     }
 
+    // Insert user_id into request extensions for downstream handlers
     request.extensions_mut().insert(user_id);
 
     Ok(next.run(request).await)

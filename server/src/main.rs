@@ -1,11 +1,16 @@
 mod cli;
 mod config;
+mod constants;
 mod crypto;
 mod db;
+mod domain;
+mod dto;
 mod error;
 mod middleware;
 mod models;
+mod repositories;
 mod routes;
+mod services;
 mod sse;
 
 use clap::Parser;
@@ -157,6 +162,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings: settings.clone(),
         db: postgres_pool,
         redis: redis_pool,
+        settings_cache: std::sync::RwLock::new(ServerSettingsCache {
+            require_2fa: settings.require_2fa,
+            allow_registration: settings.allow_registration,
+        }),
     });
 
     let addr: std::net::SocketAddrV4 = settings.server_addr.parse().expect("Invalid server_addr");
@@ -339,4 +348,20 @@ pub struct AppState {
     pub settings: Settings,
     pub db: PostgresPool,
     pub redis: RedisPool,
+    /// Cached server settings for performance (avoids DB query on every request)
+    pub settings_cache: std::sync::RwLock<ServerSettingsCache>,
+}
+
+/// Cached server settings loaded at startup and refreshed on updates
+#[derive(Debug, Clone, Default)]
+pub struct ServerSettingsCache {
+    pub require_2fa: bool,
+    pub allow_registration: bool,
+}
+
+impl ServerSettingsCache {
+    pub fn refresh(&mut self, require_2fa: bool, allow_registration: bool) {
+        self.require_2fa = require_2fa;
+        self.allow_registration = allow_registration;
+    }
 }
