@@ -9,6 +9,7 @@ use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
+use tracing::error;
 use uuid::Uuid;
 
 use crate::{error::AppError, AppState};
@@ -86,20 +87,32 @@ pub async fn jwt_auth(
     let two_fa_verified = token_data.claims.two_fa_verified;
 
     // Check user 2FA status
-    let (is_admin, totp_enabled): (bool, bool) =
+    let user_row: Option<(bool, bool)> =
         sqlx::query_as("SELECT is_admin, COALESCE(totp_enabled, FALSE) FROM users WHERE id = $1")
             .bind(user_id)
             .fetch_optional(state.db.get_pool())
             .await
-            .map(|r| r.unwrap_or((false, false)))
-            .unwrap_or((false, false));
+            .map_err(|e| {
+                error!("JWT auth user lookup failed: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "Internal server error"})),
+                )
+            })?;
+    let (is_admin, totp_enabled) = user_row.unwrap_or((false, false));
 
     // Check server-level require_2fa setting
     let require_2fa_global: Option<String> =
         sqlx::query_scalar("SELECT value FROM server_settings WHERE key = 'require_2fa'")
             .fetch_optional(state.db.get_pool())
             .await
-            .ok()
+            .map_err(|e| {
+                error!("JWT auth settings lookup failed: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "Internal server error"})),
+                )
+            })?
             .flatten();
     let require_2fa_global = require_2fa_global.as_deref() == Some("true")
         || (require_2fa_global.is_none() && state.settings.require_2fa);

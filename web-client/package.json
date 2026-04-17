@@ -4,13 +4,14 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "dev": "vite",
+        "dev": "npm run generate-certs && vite",
         "build": "vue-tsc && vite build",
         "preview": "vite preview",
         "test": "vitest",
         "test:unit": "vitest run",
         "test:login": "node test/login.test.js",
-        "test:e2e-chat": "node test/e2e-chat.test.js"
+        "test:e2e-chat": "node test/e2e-chat.test.js",
+        "generate-certs": "bash certs/generate-dev-certs.sh"
     },
     "dependencies": {
         "@mdi/font": "^7.4.47",

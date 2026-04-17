@@ -8,11 +8,6 @@ import type {
     FileMeta,
 } from "@/types";
 
-interface KeyPair {
-    publicKey: Uint8Array;
-    secretKey: Uint8Array;
-}
-
 interface FastChatDB extends DBSchema {
     users: {
         key: string;
@@ -44,68 +39,67 @@ interface FastChatDB extends DBSchema {
     auth: {
         key: string;
         value: {
-            access_token: string;
-            refresh_token: string;
+            encrypted_access_token: string;
+            encrypted_refresh_token: string;
             user: User;
             sse_connected: boolean;
         };
     };
     keys: {
         key: string;
-        value: KeyPair;
+        value: {
+            publicKey: string;
+            secretKey: string;
+        };
+    };
+    csrf_token: {
+        key: string;
+        value: {
+            token: string;
+            expires: number;
+        };
     };
 }
 
 const DB_NAME = "fast-chat-db";
-const DB_VERSION = 1;
+const DB_VERSION = 3;
 
 let dbPromise: Promise<IDBPDatabase<FastChatDB>> | null = null;
 
 export function getDb(): Promise<IDBPDatabase<FastChatDB>> {
     if (!dbPromise) {
         dbPromise = openDB<FastChatDB>(DB_NAME, DB_VERSION, {
-            upgrade(db) {
-                // Users — single record keyed by 'current'
+            upgrade(db, _oldVersion) {
+                // Always create stores for fresh install
                 if (!db.objectStoreNames.contains("users")) {
                     db.createObjectStore("users");
                 }
-
-                // Chats
                 if (!db.objectStoreNames.contains("chats")) {
                     const store = db.createObjectStore("chats");
                     store.createIndex("by-updated", "updated_at");
                 }
-
-                // Messages — composite index for chat+time ordering
                 if (!db.objectStoreNames.contains("messages")) {
                     const store = db.createObjectStore("messages");
                     store.createIndex("by-chat", ["chat_id", "created_at"]);
                 }
-
-                // Channels
                 if (!db.objectStoreNames.contains("channels")) {
                     db.createObjectStore("channels");
                 }
-
-                // Pending messages (offline queue)
                 if (!db.objectStoreNames.contains("pending_messages")) {
                     const store = db.createObjectStore("pending_messages");
                     store.createIndex("by-chat", "chat_id");
                 }
-
-                // Files (blob storage for offline viewing)
                 if (!db.objectStoreNames.contains("files")) {
                     db.createObjectStore("files");
                 }
-
-                // Auth state
                 if (!db.objectStoreNames.contains("auth")) {
                     db.createObjectStore("auth");
                 }
-
-                // Crypto keys
                 if (!db.objectStoreNames.contains("keys")) {
                     db.createObjectStore("keys");
+                }
+                if (!db.objectStoreNames.contains("csrf_token")) {
+                    db.createObjectStore("csrf_token");
                 }
             },
         });
@@ -114,13 +108,44 @@ export function getDb(): Promise<IDBPDatabase<FastChatDB>> {
 }
 
 // ─── Auth ───
+// Tokens are encrypted with NaCl keypair (self-encryption)
 export async function saveAuth(data: {
     access_token: string;
     refresh_token: string;
     user: User;
 }): Promise<void> {
     const db = await getDb();
-    await db.put("auth", { ...data, sse_connected: false }, "current");
+    const { CryptoService } = await import("@/crypto");
+    const { getKeypair } = await import("@/crypto");
+
+    const keypair = await getKeypair();
+
+    if (keypair) {
+        // Encrypt tokens with NaCl box (self-encryption)
+        const encryptedAccessToken = CryptoService.encryptWithKeypair(
+            new TextEncoder().encode(data.access_token),
+            keypair
+        );
+        const encryptedRefreshToken = CryptoService.encryptWithKeypair(
+            new TextEncoder().encode(data.refresh_token),
+            keypair
+        );
+
+        await db.put("auth", {
+            encrypted_access_token: encryptedAccessToken,
+            encrypted_refresh_token: encryptedRefreshToken,
+            user: data.user,
+            sse_connected: false,
+        }, "current");
+    } else {
+        // No keypair yet - store tokens unencrypted (will be re-encrypted on next login)
+        await db.put("auth", {
+            encrypted_access_token: data.access_token,
+            encrypted_refresh_token: data.refresh_token,
+            user: data.user,
+            sse_connected: false,
+        }, "current");
+    }
 }
 
 export async function getAuth(): Promise<{
@@ -130,13 +155,55 @@ export async function getAuth(): Promise<{
     sse_connected: boolean;
 } | null> {
     const db = await getDb();
-    const result = await db.get("auth", "current");
-    return result ?? null;
+    const result = await db.get("auth", "current") as {
+        encrypted_access_token: string;
+        encrypted_refresh_token: string;
+        user: User;
+        sse_connected: boolean;
+    } | null;
+
+    if (!result) return null;
+
+    // Try to decrypt with keypair, but handle case where keys don't exist yet
+    try {
+        const { CryptoService } = await import("@/crypto");
+        const { getKeypair } = await import("@/crypto");
+        const keypair = await getKeypair();
+
+        if (keypair) {
+            const accessTokenBytes = CryptoService.decryptWithKeypair(
+                result.encrypted_access_token,
+                keypair
+            );
+            const refreshTokenBytes = CryptoService.decryptWithKeypair(
+                result.encrypted_refresh_token,
+                keypair
+            );
+
+            return {
+                access_token: new TextDecoder().decode(accessTokenBytes),
+                refresh_token: new TextDecoder().decode(refreshTokenBytes),
+                user: result.user,
+                sse_connected: result.sse_connected
+            };
+        }
+    } catch (e) {
+        // Keypair doesn't exist yet or decryption failed
+    }
+
+    // No keypair or decryption failed - return as-is (may be unencrypted or old format)
+    return {
+        access_token: result.encrypted_access_token,
+        refresh_token: result.encrypted_refresh_token,
+        user: result.user,
+        sse_connected: result.sse_connected
+    };
 }
 
 export async function clearAuth(): Promise<void> {
     const db = await getDb();
     await db.delete("auth", "current");
+    await clearCsrfToken();
 }
 
 export async function updateAuthField(
@@ -152,28 +219,20 @@ export async function updateAuthField(
 }
 
 // ─── Chats ───
-/**
- * Merge fresh server chats with existing cache.
- * Updates existing chats, keeps untracked local-only chats.
- */
 export async function syncChats(chats: Chat[]): Promise<void> {
     const db = await getDb();
-
-    // Get existing chats first
     const existingChats = await db.getAll("chats");
     const existingIds = new Set(existingChats.map((c) => c.id));
     const serverIds = new Set(chats.map((c) => c.id));
 
     const tx = db.transaction("chats", "readwrite");
 
-    // Remove chats that no longer exist on server
     for (const id of existingIds) {
         if (!serverIds.has(id)) {
             await tx.store.delete(id);
         }
     }
 
-    // Update or insert server chats
     for (const chat of chats) {
         const existing = existingChats.find((c) => c.id === chat.id);
         const merged = existing
@@ -228,9 +287,7 @@ export async function updateChatUnread(
 export async function deleteChatLocally(chatId: string): Promise<void> {
     const db = await getDb();
     const tx = db.transaction(["chats", "messages"], "readwrite");
-    // Delete chat
     await tx.objectStore("chats").delete(chatId);
-    // Delete all messages in this chat
     const msgs = await tx.objectStore("messages").getAll();
     for (const msg of msgs) {
         if (msg.chat_id === chatId) {
@@ -246,7 +303,6 @@ export async function saveMessages(messages: Message[]): Promise<void> {
     const tx = db.transaction("messages", "readwrite");
     for (const msg of messages) {
         const existing = await tx.store.get(msg.id);
-        // Don't overwrite local_pending messages with server response
         if (!existing?.local_pending) {
             await tx.store.put(msg, msg.id);
         }
@@ -370,4 +426,33 @@ export async function getFileBlob(id: string): Promise<Blob | null> {
     const db = await getDb();
     const entry = await db.get("files", id);
     return entry?.blob ?? null;
+}
+
+// ─── CSRF Token ───
+export async function saveCsrfToken(data: { token: string; expires: number }): Promise<void> {
+    try {
+        const db = await getDb();
+        await db.put("csrf_token", data, "current");
+    } catch (e) {
+        // DB not ready yet
+    }
+}
+
+export async function getCsrfToken(): Promise<{ token: string; expires: number } | null> {
+    try {
+        const db = await getDb();
+        const result = await db.get("csrf_token", "current");
+        return result ?? null;
+    } catch (e) {
+        return null;
+    }
+}
+
+export async function clearCsrfToken(): Promise<void> {
+    try {
+        const db = await getDb();
+        await db.delete("csrf_token", "current");
+    } catch (e) {
+        // DB not ready yet
+    }
 }

@@ -89,7 +89,11 @@ impl From<&crate::models::Message> for MessageResponse {
             id: msg.id.to_string(),
             chat_id: msg.chat_id.map(|id| id.to_string()),
             channel_id: msg.channel_id.map(|id| id.to_string()),
-            sender_id: msg.sender_id.to_string(),
+            sender_id: msg
+                .sender_id
+                .map(|id| id.to_string())
+                .or_else(|| msg.bot_sender_id.map(|id| id.to_string()))
+                .unwrap_or_default(),
             encrypted_content: msg.encrypted_content.clone(),
             content_type: msg.content_type.clone(),
             file_metadata_id: msg.file_metadata_id.map(|id| id.to_string()),

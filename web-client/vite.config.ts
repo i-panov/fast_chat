@@ -48,11 +48,25 @@ export default defineConfig({
     },
   },
   server: {
+    https: false,
+    host: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: 'https://localhost:8080',
         changeOrigin: true,
+        secure: false,
       },
+      '/sse': {
+        target: 'https://localhost:8080',
+        changeOrigin: true,
+        secure: false,
+        ws: true,
+      },
+    },
+    headers: {
+      'X-Frame-Options': 'DENY',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin-when-cross-origin',
     },
   },
 })

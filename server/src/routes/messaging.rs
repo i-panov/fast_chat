@@ -4,6 +4,7 @@ use axum::{
     Json,
 };
 use chrono::Utc;
+use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::{
@@ -314,9 +315,16 @@ pub async fn send_message(
     Json(req): Json<dto::SendMessageRequest>,
 ) -> Result<Json<MessageResponse>, AppError> {
     let user_id = get_user_id(&headers, &state).await?;
-    let chat_id: Uuid = req.chat_id.parse().map_err(|_| AppError::ChatNotFound)?;
+    let chat_id: Uuid = req.chat_id.parse().map_err(|_| {
+        info!("send_message: failed to parse chat_id: {}", req.chat_id);
+        AppError::ChatNotFound
+    })?;
 
-    if !check_chat_participation(&state, chat_id, user_id).await? {
+    info!("send_message: user_id={}, chat_id={}", user_id, chat_id);
+
+    let is_participant = check_chat_participation(&state, chat_id, user_id).await?;
+    if !is_participant {
+        info!("send_message: user {} not participant in chat {}", user_id, chat_id);
         return Err(AppError::NotAuthorized);
     }
 
@@ -341,6 +349,8 @@ pub async fn send_message(
         .filter(|s| !s.is_empty())
         .and_then(|s| Uuid::parse_str(s).ok());
 
+    info!("send_message: inserting message id={}, chat_id={}, content_len={}", id, chat_id, req.content.len());
+
     sqlx::query(
         r#"
         INSERT INTO messages (id, chat_id, sender_id, encrypted_content, content_type, file_metadata_id, topic_id, thread_id, status, created_at)
@@ -359,10 +369,18 @@ pub async fn send_message(
     .execute(state.db.get_pool())
     .await?;
 
+    info!("send_message: message inserted, fetching back");
+
     let message = sqlx::query_as::<_, Message>("SELECT * FROM messages WHERE id = $1")
         .bind(id)
         .fetch_one(state.db.get_pool())
-        .await?;
+        .await
+        .map_err(|e| {
+            error!("send_message: failed to fetch message: {}", e);
+            AppError::Database(e)
+        })?;
+
+    info!("send_message: message fetched successfully");
 
     // Publish event to Redis for SSE — publish to ALL participants' user channels
     let event = serde_json::json!({
@@ -453,13 +471,25 @@ pub async fn send_message(
         SELECT cp.user_id, $1, 1, $2
         FROM chat_participants cp
         WHERE cp.chat_id = $1 AND cp.user_id != $3
-        ON CONFLICT (user_id, chat_id)
-        DO UPDATE SET count = unread_counts.count + 1, last_message_at = $2
+        ON CONFLICT DO NOTHING
         "#,
     )
     .bind(chat_id)
     .bind(now)
     .bind(user_id)
+    .execute(state.db.get_pool())
+    .await?;
+
+    // Update existing unread counts
+    sqlx::query(
+        r#"
+        UPDATE unread_counts SET count = count + 1, last_message_at = $1
+        WHERE user_id = $2 AND chat_id = $3
+        "#,
+    )
+    .bind(now)
+    .bind(user_id)
+    .bind(chat_id)
     .execute(state.db.get_pool())
     .await?;
 
@@ -499,14 +529,14 @@ pub async fn edit_message(
     let user_id = get_user_id(&headers, &state).await?;
     let message_id: Uuid = id.parse().map_err(|_| AppError::MessageNotFound)?;
 
-    let (sender_id, chat_id): (Uuid, Uuid) =
+    let row: Option<(Option<Uuid>, Uuid)> =
         sqlx::query_as("SELECT sender_id, chat_id FROM messages WHERE id = $1")
             .bind(message_id)
             .fetch_optional(state.db.get_pool())
-            .await?
-            .ok_or(AppError::MessageNotFound)?;
+            .await?;
+    let (sender_id, chat_id) = row.ok_or(AppError::MessageNotFound)?;
 
-    if sender_id != user_id {
+    if sender_id != Some(user_id) {
         return Err(AppError::NotAuthorized);
     }
 
@@ -536,14 +566,14 @@ pub async fn delete_message(
     let user_id = get_user_id(&headers, &state).await?;
     let message_id: Uuid = id.parse().map_err(|_| AppError::MessageNotFound)?;
 
-    let (sender_id, _chat_id): (Uuid, Uuid) =
+    let row: Option<(Option<Uuid>, Uuid)> =
         sqlx::query_as("SELECT sender_id, chat_id FROM messages WHERE id = $1")
             .bind(message_id)
             .fetch_optional(state.db.get_pool())
-            .await?
-            .ok_or(AppError::MessageNotFound)?;
+            .await?;
+    let (sender_id, _chat_id) = row.ok_or(AppError::MessageNotFound)?;
 
-    if sender_id != user_id {
+    if sender_id != Some(user_id) {
         return Err(AppError::NotAuthorized);
     }
 
@@ -934,4 +964,37 @@ pub async fn get_unread_counts(
             })
             .collect(),
     ))
+}
+
+pub async fn get_chat_public_keys(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(chat_id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let user_id = get_user_id(&headers, &state).await?;
+    let chat_id: Uuid = chat_id.parse().map_err(|_| AppError::ChatNotFound)?;
+
+    if !check_chat_participation(&state, chat_id, user_id).await? {
+        return Err(AppError::NotAuthorized);
+    }
+
+    let keys: Vec<(Uuid, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT u.id, u.public_key
+        FROM users u
+        JOIN chat_participants cp ON cp.user_id = u.id
+        WHERE cp.chat_id = $1
+        "#,
+    )
+    .bind(chat_id)
+    .fetch_all(state.db.get_pool())
+    .await?;
+
+    let result: serde_json::Value = keys
+        .into_iter()
+        .filter_map(|(uid, key)| key.map(|k| (uid.to_string(), serde_json::Value::String(k))))
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+
+    Ok(Json(result))
 }

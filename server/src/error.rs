@@ -31,6 +31,9 @@ pub enum AppError {
     #[error("File not found")]
     FileNotFound,
 
+    #[error("Not found: {0}")]
+    NotFound(String),
+
     #[error("Not authorized")]
     NotAuthorized,
 
@@ -69,8 +72,12 @@ impl IntoResponse for AppError {
             AppError::ChatNotFound => (StatusCode::NOT_FOUND, "Chat not found"),
             AppError::MessageNotFound => (StatusCode::NOT_FOUND, "Message not found"),
             AppError::FileNotFound => (StatusCode::NOT_FOUND, "File not found"),
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.as_str()),
             AppError::NotAuthorized => (StatusCode::FORBIDDEN, "Not authorized"),
-            AppError::RegistrationDisabled => (StatusCode::FORBIDDEN, "Registration is disabled. Please contact your administrator."),
+            AppError::RegistrationDisabled => (
+                StatusCode::FORBIDDEN,
+                "Registration is disabled. Please contact your administrator.",
+            ),
             AppError::TwoFactorNotConfigured => {
                 (StatusCode::PRECONDITION_FAILED, "2FA not configured")
             }

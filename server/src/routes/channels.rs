@@ -367,13 +367,24 @@ pub async fn send_message(
         SELECT cs.user_id, $1, 1, $2
         FROM channel_subscribers cs
         WHERE cs.channel_id = $1 AND cs.status = 'active' AND cs.user_id != $3
-        ON CONFLICT (user_id, COALESCE(chat_id, channel_id))
-        DO UPDATE SET count = unread_counts.count + 1, last_message_at = $2
+        ON CONFLICT DO NOTHING
         "#,
     )
     .bind(ch_id)
     .bind(now)
     .bind(user_id)
+    .execute(state.db.get_pool())
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE unread_counts SET count = count + 1, last_message_at = $1
+        WHERE user_id = $2 AND channel_id = $3
+        "#,
+    )
+    .bind(now)
+    .bind(user_id)
+    .bind(ch_id)
     .execute(state.db.get_pool())
     .await?;
 

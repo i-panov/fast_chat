@@ -39,7 +39,6 @@ pub struct VerifyCodeRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct Verify2faRequest {
-    pub user_id: String,
     pub totp_code: String,
 }
 
@@ -77,6 +76,21 @@ fn generate_tokens(
     let refresh_token = encode(&Header::default(), &refresh_claims, &key)?;
 
     Ok((access_token, refresh_token))
+}
+
+fn generate_challenge_token(state: &AppState, user_id: Uuid) -> Result<String, AppError> {
+    let now = Utc::now();
+    let expiry = now + Duration::minutes(15);
+
+    let claims = Claims {
+        sub: user_id.to_string(),
+        exp: expiry.timestamp(),
+        iat: now.timestamp(),
+        two_fa_verified: false,
+    };
+
+    let key = EncodingKey::from_secret(state.settings.jwt_secret.as_bytes());
+    Ok(encode(&Header::default(), &claims, &key)?)
 }
 
 fn hash_refresh_token(token: &str) -> String {
@@ -261,19 +275,16 @@ pub async fn verify_code(
 
     let email = req.email.trim().to_lowercase();
 
-    // Atomically claim the code: UPDATE returns id only if code was unused
-    // This prevents race conditions where two requests verify the same code
-    let used_id: Option<Uuid> = sqlx::query_scalar(
-        "UPDATE email_codes SET used = TRUE WHERE email = $1 AND expires_at > NOW() AND used = FALSE RETURNING id",
+    let code_record: Option<(Uuid, String, bool)> = sqlx::query_as(
+        "SELECT id, code_hash, used FROM email_codes WHERE email = $1 AND expires_at > NOW()",
     )
     .bind(&email)
     .fetch_optional(state.db.get_pool())
     .await?;
 
-    let code_id = match used_id {
-        Some(id) => id,
+    let (code_id, code_hash, used) = match code_record {
+        Some(record) => record,
         None => {
-            // Debug: check if code exists at all
             let exists: bool =
                 sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_codes WHERE email = $1)")
                     .bind(&email)
@@ -305,11 +316,9 @@ pub async fn verify_code(
         }
     };
 
-    // Fetch the code hash AFTER claiming it (to verify the specific code)
-    let code_hash: String = sqlx::query_scalar("SELECT code_hash FROM email_codes WHERE id = $1")
-        .bind(code_id)
-        .fetch_one(state.db.get_pool())
-        .await?;
+    if used {
+        return Err(AppError::InvalidCredentials);
+    }
 
     let valid = CryptoService::verify_password(&req.code, &code_hash)
         .map_err(|_| AppError::InvalidCredentials)?;
@@ -317,6 +326,11 @@ pub async fn verify_code(
     if !valid {
         return Err(AppError::InvalidCredentials);
     }
+
+    sqlx::query("UPDATE email_codes SET used = TRUE WHERE id = $1")
+        .bind(code_id)
+        .execute(state.db.get_pool())
+        .await?;
 
     // Fetch user (might not exist if registration is enabled)
     let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
@@ -365,10 +379,12 @@ pub async fn verify_code(
 
     // Admins must always have TOTP enabled (unless disabled via env)
     if user.is_admin && !user.totp_enabled && !state.settings.allow_admin_no_2fa {
+        let challenge_token = generate_challenge_token(&state, user.id)?;
         return Ok(Json(serde_json::json!({
             "need_2fa": true,
             "require_2fa": true,
             "user_id": user.id.to_string(),
+            "challenge_token": challenge_token,
             "message": "Admin accounts require 2FA. Please set up TOTP first.",
         })));
     }
@@ -446,10 +462,12 @@ pub async fn verify_code(
     }
 
     if needs_2fa {
+        let challenge_token = generate_challenge_token(&state, user.id)?;
         return Ok(Json(serde_json::json!({
             "need_2fa": true,
             "require_2fa": require_2fa_globally && !user.totp_enabled,
             "user_id": user.id.to_string(),
+            "challenge_token": challenge_token,
         })));
     }
 
@@ -468,9 +486,10 @@ pub async fn verify_code(
 /// Completes 2FA flow after verify-code returned need_2fa.
 pub async fn verify_2fa(
     State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<Verify2faRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let user_id: Uuid = req.user_id.parse().map_err(|_| AppError::UserNotFound)?;
+    let user_id = extract_user_id_from_headers(&headers, &state.settings.jwt_secret)?;
 
     let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
         .bind(user_id)
@@ -609,21 +628,16 @@ pub async fn get_current_user(
 }
 
 /// Extract user_id from JWT header OR from request body (for 2FA setup flow)
-fn extract_user_id_or_body(
+fn extract_user_id_from_headers(
     headers: &HeaderMap,
-    body_user_id: Option<&str>,
     jwt_secret: &str,
 ) -> Result<Uuid, AppError> {
-    // Try JWT first
-    if let Some(auth_header) = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()) {
-        if let Ok(uid) = get_user_id_from_request(auth_header, jwt_secret) {
-            return Ok(uid);
-        }
-    }
-    // Fallback to body
-    body_user_id
-        .and_then(|s| s.parse().ok())
-        .ok_or(AppError::InvalidToken)
+    let auth_header = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or(AppError::InvalidToken)?;
+
+    get_user_id_from_request(auth_header, jwt_secret)
 }
 
 /// POST /api/auth/2fa/setup
@@ -631,10 +645,9 @@ fn extract_user_id_or_body(
 pub async fn setup_2fa(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
+    Json(_body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let body_user_id = body["user_id"].as_str();
-    let user_id = extract_user_id_or_body(&headers, body_user_id, &state.settings.jwt_secret)?;
+    let user_id = extract_user_id_from_headers(&headers, &state.settings.jwt_secret)?;
 
     let secret = generate_totp_secret();
     let encrypted_secret = CryptoService::encrypt_totp_secret(&secret, &state.settings.jwt_secret)
@@ -669,8 +682,7 @@ pub async fn verify_2fa_setup(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let body_user_id = body["user_id"].as_str();
-    let user_id = extract_user_id_or_body(&headers, body_user_id, &state.settings.jwt_secret)?;
+    let user_id = extract_user_id_from_headers(&headers, &state.settings.jwt_secret)?;
 
     let code = body["code"]
         .as_str()
@@ -688,22 +700,6 @@ pub async fn verify_2fa_setup(
         .ok_or(AppError::TwoFactorNotConfigured)?;
     let secret = CryptoService::decrypt_totp_secret(encrypted_secret, &state.settings.jwt_secret)
         .map_err(|_| AppError::Internal)?;
-
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("System time before UNIX epoch")
-        .as_secs();
-    let secret_bytes =
-        base32::decode(base32::Alphabet::Rfc4648 { padding: false }, &secret).unwrap_or_default();
-    let expected = totp::<Sha1>(&secret_bytes, seconds);
-    tracing::info!(
-        "TOTP debug: secret={} ({} bytes), time={}, expected_code={}, user_code={}",
-        secret.chars().take(12).collect::<String>(),
-        secret.len(),
-        seconds,
-        expected,
-        code
-    );
 
     if !verify_totp(&secret, code) {
         return Err(AppError::InvalidTwoFactorCode);
@@ -722,8 +718,7 @@ pub async fn enable_2fa(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let body_user_id = body["user_id"].as_str();
-    let user_id = extract_user_id_or_body(&headers, body_user_id, &state.settings.jwt_secret)?;
+    let user_id = extract_user_id_from_headers(&headers, &state.settings.jwt_secret)?;
 
     let code = body["code"]
         .as_str()
@@ -741,22 +736,6 @@ pub async fn enable_2fa(
         .ok_or(AppError::TwoFactorNotConfigured)?;
     let secret = CryptoService::decrypt_totp_secret(encrypted_secret, &state.settings.jwt_secret)
         .map_err(|_| AppError::Internal)?;
-
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("System time before UNIX epoch")
-        .as_secs();
-    let secret_bytes =
-        base32::decode(base32::Alphabet::Rfc4648 { padding: false }, &secret).unwrap_or_default();
-    let expected = totp::<Sha1>(&secret_bytes, seconds);
-    tracing::info!(
-        "TOTP debug: secret={} ({} bytes), time={}, expected_code={}, user_code={}",
-        secret.chars().take(12).collect::<String>(),
-        secret.len(),
-        seconds,
-        expected,
-        code
-    );
 
     if !verify_totp(&secret, code) {
         return Err(AppError::InvalidTwoFactorCode);
@@ -819,19 +798,23 @@ pub async fn disable_2fa(
         .await?
         .ok_or(AppError::UserNotFound)?;
 
+    if user.email != email {
+        return Err(AppError::InvalidCredentials);
+    }
+
     if !user.totp_enabled {
         return Err(AppError::TwoFactorNotConfigured);
     }
 
     // Verify email code
-    let code_record: Option<(String, bool)> = sqlx::query_as(
-        "SELECT code_hash, used FROM email_codes WHERE email = $1 AND expires_at > NOW()",
+    let code_record: Option<(Uuid, String, bool)> = sqlx::query_as(
+        "SELECT id, code_hash, used FROM email_codes WHERE email = $1 AND expires_at > NOW()",
     )
     .bind(email)
     .fetch_optional(state.db.get_pool())
     .await?;
 
-    let (code_hash, was_used) = code_record.ok_or(AppError::InvalidCredentials)?;
+    let (code_id, code_hash, was_used) = code_record.ok_or(AppError::InvalidCredentials)?;
 
     if was_used {
         return Err(AppError::InvalidCredentials);
@@ -844,8 +827,8 @@ pub async fn disable_2fa(
         return Err(AppError::InvalidCredentials);
     }
 
-    sqlx::query("UPDATE email_codes SET used = TRUE WHERE email = $1")
-        .bind(email)
+    sqlx::query("UPDATE email_codes SET used = TRUE WHERE id = $1")
+        .bind(code_id)
         .execute(state.db.get_pool())
         .await?;
 
@@ -928,4 +911,30 @@ fn generate_totp_secret() -> String {
     let mut secret = [0u8; 20];
     rand::rngs::OsRng.fill_bytes(&mut secret);
     base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &secret)
+}
+
+/// POST /api/auth/update-public-key
+pub async fn update_public_key(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let auth_header = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or(AppError::InvalidToken)?;
+    let user_id = get_user_id_from_request(auth_header, &state.settings.jwt_secret)?;
+
+    let public_key = req
+        .get("public_key")
+        .and_then(|v| v.as_str())
+        .ok_or(AppError::Validation("public_key is required".to_string()))?;
+
+    sqlx::query("UPDATE users SET public_key = $1 WHERE id = $2")
+        .bind(public_key)
+        .bind(user_id)
+        .execute(state.db.get_pool())
+        .await?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
 }

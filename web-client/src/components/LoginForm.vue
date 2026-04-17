@@ -111,19 +111,52 @@ async function apiFetch(path: string, opts: RequestInit = {}) {
     ...opts,
     headers: { 'Content-Type': 'application/json', ...opts.headers },
   })
-  
+
   // Check content type before parsing
   const contentType = response.headers.get('content-type') || ''
   if (!contentType.includes('application/json')) {
     const text = await response.text()
     throw new Error(text || `HTTP ${response.status}: Server returned non-JSON response`)
   }
-  
+
   const data = await response.json().catch(() => null)
   if (!response.ok) {
-    throw new Error(data?.error || data?.details || `HTTP ${response.status}`)
+    // Sanitize error message to prevent XSS
+    const rawError = data?.error || data?.details || `HTTP ${response.status}`
+    const sanitizedError = sanitizeErrorMessage(rawError)
+    throw new Error(sanitizedError)
   }
   return data
+}
+
+function sanitizeErrorMessage(error: string): string {
+  if (typeof error !== 'string') return 'An error occurred'
+
+  // Remove potentially dangerous HTML/script content
+  const div = document.createElement('div')
+  div.textContent = error
+  const sanitized = div.textContent
+
+  // Limit length and remove sensitive patterns
+  const sensitivePatterns = [
+    /token/i,
+    /password/i,
+    /secret/i,
+    /key/i,
+    /auth/i,
+    /jwt/i,
+    /bearer/i,
+    /<script/i,
+    /javascript:/i,
+    /on\w+=/i, // Event handlers
+  ]
+
+  let clean = sanitized
+  for (const pattern of sensitivePatterns) {
+    clean = clean.replace(pattern, '[REDACTED]')
+  }
+
+  return clean.length > 100 ? clean.substring(0, 100) + '...' : clean
 }
 
 async function requestCode() {

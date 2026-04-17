@@ -10,17 +10,19 @@ import type {
 } from "@/types";
 import * as db from "@/db";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 // ─── HTTP Client ───
 class ApiClient {
     private accessToken: string | null = null;
     private refreshToken: string | null = null;
     private refreshPromise: Promise<string> | null = null;
+    private csrfToken: string | null = null;
 
     constructor() {
         // Restore tokens from DB
         this.init();
+        this.initCsrfToken();
     }
 
     private async init() {
@@ -29,6 +31,25 @@ class ApiClient {
             this.accessToken = auth.access_token;
             this.refreshToken = auth.refresh_token;
         }
+    }
+
+    private async initCsrfToken() {
+        // Generate or retrieve CSRF token
+        const stored = await db.getCsrfToken();
+        if (stored && this.isTokenValid(stored)) {
+            this.csrfToken = stored.token;
+        } else {
+            this.csrfToken = this.generateCsrfToken();
+            await db.saveCsrfToken({ token: this.csrfToken, expires: Date.now() + 3600000 }); // 1 hour
+        }
+    }
+
+    private generateCsrfToken(): string {
+        return btoa(crypto.getRandomValues(new Uint8Array(32)).toString());
+    }
+
+    private isTokenValid(tokenData: { token: string; expires: number }): boolean {
+        return Date.now() < tokenData.expires;
     }
 
     async getTokens() {
@@ -42,9 +63,14 @@ class ApiClient {
     }
 
     private authHeaders(): Record<string, string> {
-        return this.accessToken
-            ? { Authorization: `Bearer ${this.accessToken}` }
-            : {};
+        const headers: Record<string, string> = {};
+        if (this.accessToken) {
+            headers.Authorization = `Bearer ${this.accessToken}`;
+        }
+        if (this.csrfToken) {
+            headers['X-CSRF-Token'] = this.csrfToken;
+        }
+        return headers;
     }
 
     private mergeHeaders(opts: RequestInit = {}): Record<string, string> {
@@ -91,10 +117,42 @@ class ApiClient {
 
         if (!response.ok) {
             const body = await response.json().catch(() => ({}));
-            throw new Error(body.error || `HTTP ${response.status}`);
+            // Sanitize error messages to prevent information disclosure
+            const errorMessage = this.sanitizeError(body.error || body.details || `HTTP ${response.status}`);
+            throw new Error(errorMessage);
         }
 
         return response.json();
+    }
+
+    private sanitizeError(error: string): string {
+        // Remove sensitive information from error messages
+        const sensitivePatterns = [
+            /token/i,
+            /password/i,
+            /secret/i,
+            /key/i,
+            /auth/i,
+            /jwt/i,
+            /bearer/i,
+            /stack trace/i,
+            /at\s+\w+\.\w+\(/i, // Stack trace patterns
+            /file:\/\//i, // File paths
+            /c:\\\\/i, // Windows paths
+            /\/home\//i, // Unix paths
+        ];
+
+        let sanitized = error;
+        for (const pattern of sensitivePatterns) {
+            sanitized = sanitized.replace(pattern, '[REDACTED]');
+        }
+
+        // Limit error message length
+        if (sanitized.length > 200) {
+            sanitized = sanitized.substring(0, 200) + '...';
+        }
+
+        return sanitized || 'An error occurred';
     }
 
     private async doRefresh(): Promise<string> {
@@ -113,6 +171,11 @@ class ApiClient {
             user: data.user,
         });
         return data.access_token;
+    }
+
+    setTokens(accessToken: string, refreshToken: string) {
+        this.accessToken = accessToken;
+        this.refreshToken = refreshToken;
     }
 
     // ─── Auth ───
@@ -404,6 +467,42 @@ class ApiClient {
         } catch {
             return null;
         }
+    }
+
+    // ─── E2E Key Sync ───
+    async checkKeyStatus(): Promise<boolean> {
+        const res = await this.request<{ has_encrypted_key: boolean }>("/api/keys/status");
+        return res.has_encrypted_key === true;
+    }
+
+    async uploadEncryptedKey(encryptedKey: string): Promise<void> {
+        return this.request("/api/keys/upload", {
+            method: "POST",
+            body: JSON.stringify({ encrypted_private_key: encryptedKey }),
+        });
+    }
+
+    async downloadEncryptedKey(): Promise<string> {
+        const res = await this.request<{ encrypted_private_key: string }>("/api/keys/download");
+        return res.encrypted_private_key;
+    }
+
+    async requestKeySync(deviceName?: string): Promise<void> {
+        return this.request("/api/keys/request-sync", {
+            method: "POST",
+            body: JSON.stringify({ device_name: deviceName || "New device" }),
+        });
+    }
+
+    async getPendingSyncs(): Promise<Array<{ id: string; device_name: string; created_at: string; expires_at: string }>> {
+        return this.request("/api/keys/pending");
+    }
+
+    async approveKeySync(code: string, encryptedKey: string): Promise<void> {
+        return this.request("/api/keys/approve-sync", {
+            method: "POST",
+            body: JSON.stringify({ code, encrypted_private_key: encryptedKey }),
+        });
     }
 }
 

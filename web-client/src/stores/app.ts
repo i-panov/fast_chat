@@ -91,7 +91,9 @@ export const useAppStore = defineStore("app", () => {
         try {
             let chatKeys = publicKeysCache.value.get(chatId);
             if (!chatKeys) {
+                console.log("[decryptMessage] Fetching keys for chat:", chatId);
                 const keys = await api.getChatPublicKeys(chatId);
+                console.log("[decryptMessage] Got keys:", Object.keys(keys));
                 chatKeys = new Map();
                 Object.entries(keys).forEach(([userId, key]) => {
                     chatKeys!.set(userId, naclUtil.decodeBase64(key));
@@ -99,17 +101,33 @@ export const useAppStore = defineStore("app", () => {
                 publicKeysCache.value.set(chatId, chatKeys);
             }
             const senderKey = chatKeys.get(senderId);
+            console.log("[decryptMessage] senderId:", senderId, "has key:", !!senderKey);
+            
+            // Fallback: try with own key if sender key not found (for self-sent messages or key sync issues)
+            const ownKey = await getOrCreateKeypair();
             if (senderKey) {
-                const ownKey = await getOrCreateKeypair();
-                return await CryptoService.decryptMessage(
+                console.log("[decryptMessage] Decrypting with sender key...");
+                const result = await CryptoService.decryptMessage(
                     content,
                     senderKey,
                     ownKey.secretKey,
                 );
+                console.log("[decryptMessage] Decrypted with sender key:", result.substring(0, 50));
+                return result;
+            } else {
+                console.log("[decryptMessage] Trying self-decryption as fallback...");
+                const result = await CryptoService.decryptMessage(
+                    content,
+                    ownKey.publicKey,
+                    ownKey.secretKey,
+                );
+                console.log("[decryptMessage] Self-decryption result:", result);
+                return result;
             }
         } catch (e) {
             console.error("Failed to decrypt message:", e);
         }
+        console.log("[decryptMessage] Returning original content");
         return content;
     }
 

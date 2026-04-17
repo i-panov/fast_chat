@@ -546,8 +546,16 @@ pub async fn bot_api_send_message(
     let msg_id = Uuid::new_v4();
     let now = Utc::now();
     let content_type = req.content_type.unwrap_or("text".to_string());
-    sqlx::query("INSERT INTO messages (id, chat_id, sender_id, encrypted_content, content_type, status, created_at) VALUES ($1, $2, $3, $4, $5, 'sent', $6)")
-        .bind(msg_id).bind(chat_id).bind(bot.id).bind(&req.content).bind(&content_type).bind(now).execute(state.db.get_pool()).await?;
+    sqlx::query("INSERT INTO messages (id, chat_id, sender_id, bot_sender_id, encrypted_content, content_type, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, 'sent', $7)")
+        .bind(msg_id)
+        .bind(chat_id)
+        .bind(Option::<Uuid>::None)
+        .bind(bot.id)
+        .bind(&req.content)
+        .bind(&content_type)
+        .bind(now)
+        .execute(state.db.get_pool())
+        .await?;
     let event = serde_json::json!({"type": "new_message", "chat_id": chat_id.to_string(), "sender_id": bot.id.to_string(), "is_bot": true, "data": {"id": msg_id.to_string(), "encrypted_content": req.content, "content_type": content_type, "created_at": now.to_rfc3339()}});
     let channel = format!("chat:{}:events", chat_id);
     let _ = state.redis.publish(&channel, &event.to_string()).await;

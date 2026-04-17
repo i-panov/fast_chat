@@ -4,6 +4,7 @@ pub mod bots;
 pub mod channels;
 pub mod dto;
 pub mod files;
+pub mod keys;
 pub mod messaging;
 pub mod push;
 pub mod signaling;
@@ -13,6 +14,7 @@ pub mod users;
 use axum::{middleware::from_fn_with_state, routing, Router};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
 
 use crate::{middleware::jwt::jwt_auth, AppState};
 
@@ -58,10 +60,17 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/auth/2fa/backup-codes",
             routing::get(auth::get_backup_codes),
         )
-        .route(
-            "/auth/2fa/backup-codes/regenerate",
+        .route("/auth/2fa/backup-codes/regenerate",
             routing::post(auth::regenerate_backup_codes),
         )
+        .route("/auth/update-public-key", routing::post(auth::update_public_key))
+        // Key sync
+        .route("/keys/upload", routing::post(keys::upload_key))
+        .route("/keys/download", routing::get(keys::download_key))
+        .route("/keys/request-sync", routing::post(keys::request_sync))
+        .route("/keys/approve-sync", routing::post(keys::approve_sync))
+        .route("/keys/pending", routing::get(keys::get_pending_syncs))
+        .route("/keys/status", routing::get(keys::get_key_status))
         .route(
             "/users",
             routing::get(users::list_users).post(users::create_user),
@@ -83,6 +92,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/chats/{id}",
             routing::get(messaging::get_chat),
         )
+        .route("/chats/{id}/public-keys", routing::get(messaging::get_chat_public_keys))
         .route("/chats/{id}/hide", routing::post(messaging::hide_chat))
         .route(
             "/chats/{chat_id}/messages",
@@ -251,6 +261,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .nest("/api", Router::new().merge(public).merge(protected))
         .nest("/api/bot-api", bot_api)
         .layer(cors)
+        .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 

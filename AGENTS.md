@@ -158,6 +158,7 @@ CREATE TABLE users (
     email VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255),                  -- nullable, deprecated
     public_key TEXT,
+    encrypted_private_key BYTEA,                 -- зашифрованный E2E ключ
     is_admin BOOLEAN DEFAULT FALSE,
     disabled BOOLEAN DEFAULT FALSE,
     totp_secret VARCHAR(255),                    -- encrypted with AES-GCM
@@ -512,6 +513,16 @@ CREATE TABLE muted_chats (
 | GET/PUT | `/api/admin/settings` | JWT (admin + 2FA) | Server settings |
 | GET | `/api/admin/health` | JWT (admin + 2FA) | Admin health |
 
+### E2E Keys (JWT required)
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/auth/update-public-key` | Upload public key |
+| GET | `/api/chats/:chat_id/keys` | Get participant public keys |
+| POST | `/api/keys/upload` | Upload encrypted private key |
+| GET | `/api/keys/download` | Download encrypted private key |
+| POST | `/api/keys/request-sync` | Request key sync (new device) |
+| POST | `/api/keys/approve-sync` | Approve key sync (from first device) |
+
 ---
 
 ## Server Configuration
@@ -653,6 +664,86 @@ cd web-client && npm run dev
 
 ---
 
+## E2E Encryption Architecture
+
+### Overview
+
+E2E encryption использует NaCl (Curve25519) для шифрования сообщений. Приватный ключ генерируется локально и никогда не покидает устройство в открытом виде.
+
+### E2E Key Management
+
+```
+Приватный ключ NaCl (локально, никогда на сервере)
+    ↓
+Публичный ключ → отправляется на сервер
+    ↓
+Зашифрованный приватный ключ → сервер (blob, сервер не может расшифровать)
+```
+
+### Client-Side Token Storage (IndexedDB)
+
+Токены в IndexedDB шифруются **приватным ключом NaCl** (self-encryption):
+
+```
+Токен (access/refresh)
+    ↓ nacl.box (публичный ключ = приватный ключ, т.к. self)
+Зашифрованный blob → IndexedDB
+```
+
+**Свойства:**
+- На этом устройстве — токены работают автоматически
+- На другом устройстве — токены бесполезны без приватного ключа
+- Сервер не может расшифровать токены
+
+### Key Sync Between Devices
+
+Для доступа к старым сообщениям на новом устройстве используется подтверждение устройством:
+
+```
+Новое устройство → POST /api/keys/request-sync → Сервер
+Сервер → генерирует код подтверждения
+Первое устройство → вводит код → POST /api/keys/approve-sync → Сервер
+Сервер → передаёт зашифрованный blob → Новое устройство
+Новое устройство → расшифровывает локально
+```
+
+**Без подтверждения:** старые сообщения недоступны (генерируется новый ключ).
+
+### Optional Backup Password
+
+Для случая когда первое устройство недоступно, пользователь может установить пароль:
+- Пароль используется как дополнительный ключ шифрования приватного ключа NaCl
+- При входе на новое устройство: email + код + TOTP + пароль (если установлен)
+
+### API для работы с ключами
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/auth/update-public-key` | Upload публичный ключ |
+| GET | `/api/chats/:chat_id/keys` | Get публичные ключи участников |
+| POST | `/api/keys/upload` | Upload зашифрованный приватный ключ |
+| GET | `/api/keys/download` | Download зашифрованный ключ |
+| POST | `/api/keys/request-sync` | Request sync (new device) |
+| POST | `/api/keys/approve-sync` | Approve sync (code from first device) |
+
+### Database Schema (для ключей)
+
+```sql
+-- Зашифрованный приватный ключ (сервер не может расшифровать)
+ALTER TABLE users ADD COLUMN encrypted_private_key BYTEA;
+
+-- Запросы на синхронизацию ключей
+CREATE TABLE key_sync_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    device_name VARCHAR(100),
+    code VARCHAR(20),
+    status VARCHAR(20) DEFAULT 'pending',  -- pending, approved, rejected
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '10 minutes'
+);
+```
+
 ## Notes
 
 - **No passwords** — authentication is email-code based (10-min TTL, single-use, argon2-hashed)
@@ -668,3 +759,6 @@ cd web-client && npm run dev
 - **File access** — restricted to chat participants or uploader
 - **File downloads** — streamed from disk in 64KB chunks
 - **Redis pub/sub** — `ConnectionManager` with automatic reconnection
+- **E2E Encryption** — NaCl (Curve25519), ключи генерируются локально
+- **E2E Sync** — синхронизация ключей через подтверждение устройством
+- **CSRF Protection** — все запросы включают X-CSRF-Token

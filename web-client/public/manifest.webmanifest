@@ -1,0 +1,9 @@
+{
+  "name": "Fast Chat",
+  "short_name": "FastChat",
+  "description": "Real-time messenger with E2E encryption",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1976D2"
+}

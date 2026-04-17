@@ -148,7 +148,7 @@
                   :elevation="1"
                   class="px-3 py-2"
                 >
-                  <div class="text-body-2 text-break">{{ msg.encrypted_content }}</div>
+                  <div class="text-body-2 text-break">{{ getMessageContent(msg) }}</div>
                   <div class="d-flex align-center justify-end mt-1">
                     <span class="text-caption text-grey">{{ formatTime(msg.created_at) }}</span>
                     <v-icon v-if="msg.local_failed" icon="mdi-alert-circle" size="14" color="error" class="ml-1" />
@@ -202,6 +202,10 @@ import type { FileMeta } from '@/types'
 
 const appStore = useAppStore()
 const router = useRouter()
+
+function getMessageContent(msg: any): string {
+  return msg.encrypted_content
+}
 
 const drawer = ref(true)
 const search = ref('')

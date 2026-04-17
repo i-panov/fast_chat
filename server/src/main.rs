@@ -13,6 +13,7 @@ use dotenv::dotenv;
 use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use rustls::crypto::aws_lc_rs;
 
 use crate::cli::Cli;
 use crate::config::Settings;
@@ -71,7 +72,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::EnvFilter::new(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into())))
         .init();
 
-    // Load .env file if present
+    // Install default crypto provider for rustls
+    rustls::crypto::aws_lc_rs::default_provider().install_default().unwrap();
+
+    // Load .env file if present — try server directory first, then current dir
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            dotenv::from_path(exe_dir.join(".env")).ok();
+        }
+    }
     dotenv().ok();
 
     let cli = Cli::parse();

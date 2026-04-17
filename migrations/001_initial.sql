@@ -143,9 +143,11 @@ CREATE TABLE IF NOT EXISTS messages (
     chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
     channel_id UUID REFERENCES channels(id) ON DELETE CASCADE,
     sender_id UUID REFERENCES users(id),
+    bot_sender_id UUID,
     encrypted_content TEXT NOT NULL,
     content_type VARCHAR(20) DEFAULT 'text',
     file_metadata_id UUID,
+    CHECK ((sender_id IS NOT NULL) OR (bot_sender_id IS NOT NULL)),
     topic_id UUID REFERENCES topics(id) ON DELETE SET NULL,
     thread_id UUID REFERENCES threads(id) ON DELETE SET NULL,
     status VARCHAR(20) DEFAULT 'sent',
@@ -272,6 +274,9 @@ CREATE TABLE IF NOT EXISTS bots (
 );
 CREATE INDEX idx_bots_owner_id ON bots(owner_id);
 CREATE INDEX idx_bots_username ON bots(username);
+
+ALTER TABLE messages ADD CONSTRAINT messages_bot_sender_id_fkey FOREIGN KEY (bot_sender_id) REFERENCES bots(id);
+CREATE INDEX idx_messages_bot_sender_id ON messages(bot_sender_id);
 
 -- ── Bot chats ───────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS bot_chats (
