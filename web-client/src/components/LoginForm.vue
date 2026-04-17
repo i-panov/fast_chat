@@ -84,13 +84,26 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import type { User } from '@/types'
+
+interface AuthData {
+  user: User
+  access_token: string
+  refresh_token: string
+}
+
+interface ApiOptions {
+  method?: string
+  headers?: Record<string, string>
+  body?: string
+}
 
 const props = defineProps<{
   appTitle: string
   appIcon: string
   apiPrefix?: string
-  saveAuth?: (data: { user: any; access_token: string; refresh_token: string }) => void | Promise<void>
-  onLoginSuccess: (data: { user: any; access_token: string; refresh_token: string }) => void
+  saveAuth?: (_data: AuthData) => void | Promise<void>
+  onLoginSuccess: (_data: AuthData) => void
 }>()
 
 const apiPrefix = props.apiPrefix || '/api'
@@ -105,7 +118,7 @@ const loading = ref(false)
 const qrDataUrl = ref('')
 const pending2faUserId = ref('')
 
-async function apiFetch(path: string, opts: RequestInit = {}) {
+async function apiFetch(path: string, opts: ApiOptions = {}) {
   const url = `${apiPrefix}${path}`
   const response = await fetch(url, {
     ...opts,
@@ -237,7 +250,7 @@ async function setupTotp() {
     })
     if (!sd.secret) throw new Error('No secret returned')
     qrDataUrl.value = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(sd.qr_code_url)}&size=200x200`
-  } catch (e: unknown) {
+  } catch {
     error.value = 'Failed to setup 2FA'
   }
 }

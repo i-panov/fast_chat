@@ -141,7 +141,7 @@ async function subscribe(id: string) {
     await api.subscribeChannel(id)
     // Refresh channels
     await appStore.loadChats()
-  } catch (e: any) {
+  } catch {
     // Show error
   } finally {
     subscribing.value = null

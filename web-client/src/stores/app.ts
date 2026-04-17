@@ -15,7 +15,6 @@ import type {
     SseChannelMessageEvent,
 } from "@/types";
 import { SseConnection } from "@/api/client";
-// @ts-ignore
 import naclUtil from "tweetnacl-util";
 
 export const useAppStore = defineStore("app", () => {
@@ -371,7 +370,7 @@ export const useAppStore = defineStore("app", () => {
         }
 
         // Fetch from server
-        let serverMsgs: Message[] = [];
+        let serverMsgs: Message[];
         try {
             const result = await api.getMessages(chatId, 50);
             serverMsgs = result.messages;

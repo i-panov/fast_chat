@@ -187,7 +187,7 @@ export async function getAuth(): Promise<{
                 sse_connected: result.sse_connected
             };
         }
-    } catch (e) {
+    } catch {
         // Keypair doesn't exist yet or decryption failed
     }
 
@@ -433,7 +433,7 @@ export async function saveCsrfToken(data: { token: string; expires: number }): P
     try {
         const db = await getDb();
         await db.put("csrf_token", data, "current");
-    } catch (e) {
+    } catch {
         // DB not ready yet
     }
 }
@@ -443,7 +443,7 @@ export async function getCsrfToken(): Promise<{ token: string; expires: number }
         const db = await getDb();
         const result = await db.get("csrf_token", "current");
         return result ?? null;
-    } catch (e) {
+    } catch {
         return null;
     }
 }
@@ -452,7 +452,7 @@ export async function clearCsrfToken(): Promise<void> {
     try {
         const db = await getDb();
         await db.delete("csrf_token", "current");
-    } catch (e) {
+    } catch {
         // DB not ready yet
     }
 }

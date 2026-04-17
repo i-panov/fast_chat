@@ -76,7 +76,7 @@
               v-bind="props"
               :active="appStore.activeChatId === chat.id"
               @click="selectChat(chat.id)"
-              @contextmenu.prevent="openContextMenu(chat.id, $event)"
+              @contextmenu.prevent="openContextMenu(chat.id)"
               lines="two"
             >
               <template v-slot:prepend>
@@ -198,23 +198,25 @@ import { ref, computed, nextTick, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
-import type { FileMeta } from '@/types'
+import type { FileMeta, Message, User } from '@/types'
+
+type SearchUser = Pick<User, 'id' | 'username' | 'email' | 'is_admin'>
 
 const appStore = useAppStore()
 const router = useRouter()
 
-function getMessageContent(msg: any): string {
+function getMessageContent(msg: Message): string {
   return msg.encrypted_content
 }
 
 const drawer = ref(true)
 const search = ref('')
-const searchResults = ref<{ id: string; username: string; email: string; is_admin: boolean }[]>([])
+const searchResults = ref<SearchUser[]>([])
 const isCreatingChat = ref(false)
 const contextMenus = ref<Record<string, boolean>>({})
 let searchTimeout: ReturnType<typeof setTimeout> | null = null
 
-function openContextMenu(chatId: string, _event: MouseEvent) {
+function openContextMenu(chatId: string) {
   contextMenus.value[chatId] = true
 }
 
@@ -238,11 +240,11 @@ function onSearchInput() {
       const res = await fetch(url, { headers: { Authorization: `Bearer ${tokens.access}` } })
       if (!res.ok) { console.log('[search] HTTP', res.status); return }
       const users = await res.json()
-      console.log('[search] users:', users.length, users.map((u: any) => u.username))
+      console.log('[search] users:', users.length, users.map((u: SearchUser) => u.username))
       // Filter out users already in chats
       const existingUsernames = new Set(appStore.chats.map(c => c.name))
-      searchResults.value = users.filter((u: any) => !existingUsernames.has(u.username) && u.id !== appStore.user?.id)
-      console.log('[search] filtered:', searchResults.value.length, searchResults.value.map((u: any) => u.username))
+      searchResults.value = users.filter((u: SearchUser) => !existingUsernames.has(u.username) && u.id !== appStore.user?.id)
+      console.log('[search] filtered:', searchResults.value.length, searchResults.value.map((u: SearchUser) => u.username))
     } catch (e) {
       console.log('[search] error:', e)
       searchResults.value = []
@@ -275,7 +277,7 @@ async function startChatWith(user: { id: string; username: string }) {
     await appStore.openChat(chat.id)
     search.value = ''
     searchResults.value = []
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error('Failed to create chat:', e)
   } finally {
     isCreatingChat.value = false
@@ -369,7 +371,7 @@ async function sendMessage() {
   }
 }
 
-async function loadMore({ done }: { done: (status: 'empty' | 'ok' | 'error') => void }) {
+async function loadMore({ done }: { done: (_status: 'empty' | 'ok' | 'error') => void }) {
   if (!appStore.activeChatId || messagesLoading.value) {
     done('empty')
     return

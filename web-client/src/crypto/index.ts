@@ -1,7 +1,5 @@
 // fast_chat/web-client/src/crypto/index.ts
-// @ts-ignore
 import nacl from "tweetnacl";
-// @ts-ignore
 import naclUtil from "tweetnacl-util";
 
 export interface KeyPair {
@@ -108,7 +106,7 @@ export async function getOrCreateKeypair(): Promise<KeyPair> {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ public_key: naclUtil.encodeBase64(newPair.publicKey) }),
         });
-    } catch (e) {
+    } catch {
         // Silently fail - key will be uploaded on next request
     }
 
@@ -127,7 +125,7 @@ export async function getKeypair(): Promise<KeyPair | null> {
             publicKey: naclUtil.decodeBase64(stored.publicKey),
             secretKey: naclUtil.decodeBase64(stored.secretKey),
         };
-    } catch (e) {
+    } catch {
         return null;
     }
 }
@@ -141,7 +139,7 @@ export async function checkKeyStatus(): Promise<boolean> {
     try {
         const { api } = await import("@/api/client");
         return await api.checkKeyStatus();
-    } catch (e) {
+    } catch {
         return false;
     }
 }
