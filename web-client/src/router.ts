@@ -1,9 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { getAuth } from '@/db'
-import LoginView from '@/views/LoginView.vue'
-import ChatView from '@/views/ChatView.vue'
-import ChannelView from '@/views/ChannelView.vue'
 
+const LoginView = () => import('@/views/LoginView.vue')
+const ChatView = () => import('@/views/ChatView.vue')
+const ChannelView = () => import('@/views/ChannelView.vue')
 const AdminLayout = () => import('@/views/admin/DashboardLayout.vue')
 const AdminDashboard = () => import('@/views/admin/Dashboard.vue')
 const AdminUsers = () => import('@/views/admin/Users.vue')

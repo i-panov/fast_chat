@@ -1,31 +1,35 @@
 <script setup lang="ts">
-import LoginForm from '@/components/LoginForm.vue'
+import LoginForm from '@/features/auth/components/LoginForm.vue'
 import { useRouter } from 'vue-router'
-import { useAppStore } from '@/stores/app'
-import * as db from '@/db'
-import { initializeKeys } from '@/crypto'
-import { api } from '@/api/client'
-import type { User } from '@/types'
+import { useAuthStore } from '@/features/auth/stores/auth.store'
+import { useNetworkStore } from '@/core/network/stores/network.store'
+import { useChatStore } from '@/features/chat/stores/chat.store'
+import { useChannelStore } from '@/features/channel/stores/channel.store'
+import { useCryptoStore } from '@/core/crypto/stores/crypto.store'
+import type { AuthResponse } from '@/features/auth/types'
 
 const router = useRouter()
-const appStore = useAppStore()
+const authStore = useAuthStore()
+const networkStore = useNetworkStore()
+const chatStore = useChatStore()
+const channelStore = useChannelStore()
+const cryptoStore = useCryptoStore()
 
-interface AuthData {
-  user: User
-  access_token: string
-  refresh_token: string
+async function saveAuth(data: AuthResponse) {
+  // Используем auth store для сохранения аутентификации
+  await authStore.handleAuthResponse(data)
+  // Инициализируем ключи (если нужно)
+  await cryptoStore.init()
 }
 
-async function saveAuth(data: AuthData) {
-  await db.saveAuth({ access_token: data.access_token, refresh_token: data.refresh_token, user: data.user })
-  api.setTokens(data.access_token, data.refresh_token)
-  await initializeKeys()
-}
-
-function onLoginSuccess(data: AuthData) {
-  appStore.user = data.user
-  appStore.isAuthenticated = true
-  appStore.startSse()
+async function onLoginSuccess(_data: AuthResponse) {
+  // Пользователь уже сохранён в auth store через saveAuth
+  // Инициализируем остальные stores
+  await Promise.all([
+    chatStore.init(),
+    channelStore.init(),
+    networkStore.init()
+  ])
   router.replace('/chat')
 }
 </script>

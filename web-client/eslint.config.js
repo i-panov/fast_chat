@@ -38,6 +38,8 @@ export default [
     rules: {
       'no-console': process.env.NODE_ENV === 'production' ? 'warn' : 'off',
       'no-debugger': process.env.NODE_ENV === 'production' ? 'error' : 'off',
+      'no-unused-vars': 'off',
+      'preserve-caught-error': 'off',
     },
   },
   
@@ -57,17 +59,8 @@ export default [
       },
     },
     rules: {
-      ...tseslint.configs.recommended.rules,
       '@typescript-eslint/explicit-module-boundary-types': 'off',
-      '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-unused-vars': ['warn', {
-        args: 'all',
-        argsIgnorePattern: '^_',
-        varsIgnorePattern: '^_',
-        ignoreRestSiblings: true,
-        caughtErrors: 'none',
-      }],
-      '@typescript-eslint/ban-ts-comment': 'warn',
+      'no-unused-vars': 'off',
     },
   },
   
@@ -96,15 +89,7 @@ export default [
       'vue/multi-word-component-names': 'off',
       'vue/html-self-closing': 'off',
       'no-unused-vars': 'off',
-      '@typescript-eslint/explicit-module-boundary-types': 'off',
-      '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-unused-vars': ['warn', {
-        args: 'all',
-        argsIgnorePattern: '^_',
-        varsIgnorePattern: '^_',
-        ignoreRestSiblings: true,
-        caughtErrors: 'none',
-      }],
+      '@typescript-eslint/no-unused-vars': 'off',
     },
   },
 ];

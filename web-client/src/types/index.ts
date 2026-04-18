@@ -1,127 +1,44 @@
-export interface User {
-    id: string;
-    username: string;
-    email: string;
-    is_admin: boolean;
-    totp_enabled: boolean;
-    require_2fa: boolean;
-    public_key: string | null;
-    created_at: string;
-}
+// Реэкспорт всех типов для обратной совместимости
+export * from '@/shared/types';
+export * from '@/features/auth/types';
+export * from '@/features/chat/types';
+export * from '@/features/channel/types';
+// export * from '@/features/files/types'; // Удалено, так как модуль отсутствует
+export * from '@/core/network/types';
+export * from '@/core/crypto/types';
+export * from '@/core/db/types';
 
-export interface AuthResponse {
-    access_token: string;
-    refresh_token: string;
-    user: User;
-}
+// Legacy типы для обратной совместимости (будут удалены постепенно)
+import type { User as NewUser, AuthResponse as NewAuthResponse } from '@/features/auth/types';
+import type { Chat as NewChat, Message as NewMessage, PendingMessage as NewPendingMessage } from '@/features/chat/types';
+import type { Channel as NewChannel } from '@/features/channel/types';
+import type { SseEvent as NewSseEvent, SseMessageEvent as NewSseMessageEvent, SseTypingEvent as NewSseTypingEvent, SseChannelMessageEvent as NewSseChannelMessageEvent } from '@/core/network/types';
 
-export interface Chat {
-    id: string;
-    is_group: boolean;
-    name: string | null;
-    created_by: string;
-    is_favorites: boolean;
-    participants: string[];
-    created_at: string;
-    unread_count?: number;
-    last_message?: Message;
-}
+export type User = NewUser;
+export type AuthResponse = NewAuthResponse;
+export type Chat = NewChat;
+export type Message = NewMessage;
+export type PendingMessage = NewPendingMessage;
+export type Channel = NewChannel;
+export type SseEvent = NewSseEvent;
+export type SseMessageEvent = NewSseMessageEvent;
+export type SseTypingEvent = NewSseTypingEvent;
+export type SseChannelMessageEvent = NewSseChannelMessageEvent;
 
-export interface Message {
-    id: string;
-    chat_id: string;
-    sender_id: string;
-    encrypted_content: string;
-    content_type: string;
-    file_metadata_id: string | null;
-    status: string;
-    edited: boolean;
-    deleted: boolean;
-    created_at: string;
-    edited_at: string | null;
-    topic_id: string | null;
-    thread_id: string | null;
-    // Local fields (not from server)
-    local_pending?: boolean;
-    local_failed?: boolean;
-    local_error?: string;
-}
-
-export interface Channel {
-    id: string;
-    owner_id: string;
-    title: string;
-    description: string | null;
-    username: string | null;
-    access_level: "public" | "private" | "private_with_approval";
-    avatar_url: string | null;
-    subscribers_count: number;
-    is_subscriber: boolean;
-    created_at: string;
-}
-
-export interface FileMeta {
+// Определение FileMeta, так как модуль @/features/files/types отсутствует
+export interface FileMetadata {
     id: string;
     original_name: string;
-    mime_type: string | null;
+    stored_path: string;
+    mime_type: string;
     size_bytes: number;
+    uploader_id: string;
     uploaded_at: string;
+    // Дополнительные поля
+    width?: number;
+    height?: number;
+    duration?: number; // для видео/аудио
+    thumbnail_url?: string;
 }
 
-export interface Topic {
-    id: string;
-    chat_id: string;
-    name: string;
-    created_at: string;
-}
-
-export interface Thread {
-    id: string;
-    chat_id: string;
-    root_message_id: string;
-    reply_count: number;
-    created_at: string;
-}
-
-// ─── SSE Events ───
-export interface SseMessageEvent {
-    type: "new_message";
-    chat_id: string;
-    data: Partial<Message> & { id: string };
-}
-
-export interface SseTypingEvent {
-    type: "typing";
-    user_id: string;
-    chat_id: string;
-}
-
-export interface SseChannelMessageEvent {
-    type: "channel_message";
-    channel_id: string;
-    data: {
-        id: string;
-        encrypted_content: string;
-        content_type: string;
-        created_at: string;
-    };
-}
-
-export type SseEvent =
-    | SseMessageEvent
-    | SseTypingEvent
-    | SseChannelMessageEvent;
-
-// ─── Retry Queue ───
-export interface PendingMessage {
-    id: string; // local ID (uuid)
-    chat_id: string;
-    encrypted_content: string;
-    content_type: string;
-    file_metadata_id: string | null;
-    topic_id: string | null;
-    thread_id: string | null;
-    created_at: string;
-    retry_count: number;
-    last_attempt: number; // timestamp
-}
+export type FileMeta = FileMetadata;

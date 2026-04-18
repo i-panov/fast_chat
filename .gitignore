@@ -41,3 +41,6 @@ web-client/certs/dev-*.pem
 # Server logs
 server/server.log
 .aider*
+
+.codeassistant/
+.codeassistantmodes

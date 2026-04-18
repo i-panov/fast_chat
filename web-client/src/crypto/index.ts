@@ -1,6 +1,7 @@
 // fast_chat/web-client/src/crypto/index.ts
 import nacl from "tweetnacl";
 import naclUtil from "tweetnacl-util";
+import { cryptoApi } from "@/features/crypto/api/crypto-api";
 
 export interface KeyPair {
     publicKey: Uint8Array;
@@ -99,13 +100,7 @@ export async function getOrCreateKeypair(): Promise<KeyPair> {
 
     // Upload public key to server
     try {
-        const { api } = await import("@/api/client");
-        await api.getMe(); // Ensure we have auth
-        await fetch("/api/auth/update-public-key", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ public_key: naclUtil.encodeBase64(newPair.publicKey) }),
-        });
+        await cryptoApi.updatePublicKey(naclUtil.encodeBase64(newPair.publicKey));
     } catch {
         // Silently fail - key will be uploaded on next request
     }
@@ -137,8 +132,8 @@ export async function getKeypair(): Promise<KeyPair | null> {
  */
 export async function checkKeyStatus(): Promise<boolean> {
     try {
-        const { api } = await import("@/api/client");
-        return await api.checkKeyStatus();
+        const result = await cryptoApi.checkKeyStatus();
+        return result.has_encrypted_key;
     } catch {
         return false;
     }
@@ -154,21 +149,19 @@ export async function uploadEncryptedKey(): Promise<void> {
     // Encrypt private key with its own public key (self-encryption)
     const encryptedKey = CryptoService.encryptWithKeypair(keypair.secretKey, keypair);
 
-    const { api } = await import("@/api/client");
-    await api.uploadEncryptedKey(encryptedKey);
+    await cryptoApi.uploadEncryptedKey(encryptedKey);
 }
 
 /**
  * Download encrypted private key from server
  */
 export async function downloadEncryptedKey(): Promise<Uint8Array> {
-    const { api } = await import("@/api/client");
-    const encryptedKey = await api.downloadEncryptedKey();
+    const encryptedKeyRes = await cryptoApi.downloadEncryptedKey();
     
     const keypair = await getKeypair();
     if (!keypair) throw new Error("No keypair found");
     
-    return CryptoService.decryptWithKeypair(encryptedKey, keypair);
+    return CryptoService.decryptWithKeypair(encryptedKeyRes.encrypted_private_key, keypair);
 }
 
 /**
@@ -192,8 +185,7 @@ export async function restoreKeyFromServer(): Promise<void> {
  * Request key sync from new device
  */
 export async function requestKeySync(deviceName?: string): Promise<void> {
-    const { api } = await import("@/api/client");
-    await api.requestKeySync(deviceName);
+    await cryptoApi.requestKeySync(deviceName);
 }
 
 /**
@@ -205,8 +197,7 @@ export async function getPendingSyncs(): Promise<Array<{
     created_at: string;
     expires_at: string;
 }>> {
-    const { api } = await import("@/api/client");
-    return await api.getPendingSyncs();
+    return await cryptoApi.getPendingSyncs();
 }
 
 /**
@@ -220,8 +211,7 @@ export async function approveKeySync(code: string): Promise<void> {
     // Encrypt private key with its own public key
     const encryptedKey = CryptoService.encryptWithKeypair(keypair.secretKey, keypair);
 
-    const { api } = await import("@/api/client");
-    await api.approveKeySync(code, encryptedKey);
+    await cryptoApi.approveKeySync({ code, encrypted_private_key: encryptedKey });
 }
 
 /**

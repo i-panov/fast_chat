@@ -55,11 +55,11 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/features/auth/stores/auth.store'
 
 const router = useRouter()
 const route = useRoute()
-const appStore = useAppStore()
+const authStore = useAuthStore()
 
 const drawer = ref(true)
 const rail = ref(false)
@@ -79,7 +79,7 @@ const currentTitle = computed(() => {
 })
 
 function handleLogout() {
-  appStore.logout()
+  authStore.logout()
   router.push('/login')
 }
 </script>
