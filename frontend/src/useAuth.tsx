@@ -29,7 +29,8 @@ interface AuthContextValue {
 }
 
 const ACCOUNTS_KEY = "accounts";
-const ACTIVE_TOKEN_KEY = "activeToken";
+const SS_ACTIVE_TOKEN_KEY = "activeToken";
+const LS_ACTIVE_TOKEN_KEY = "activeToken";
 
 function readAccounts(): StoredAccount[] {
 	try {
@@ -45,14 +46,33 @@ function writeAccounts(accounts: StoredAccount[]) {
 	localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
 }
 
+function readActiveToken(): string | null {
+	return sessionStorage.getItem(SS_ACTIVE_TOKEN_KEY);
+}
+
+function writeActiveToken(token: string) {
+	sessionStorage.setItem(SS_ACTIVE_TOKEN_KEY, token);
+	localStorage.setItem(LS_ACTIVE_TOKEN_KEY, token);
+}
+
+function removeActiveToken() {
+	sessionStorage.removeItem(SS_ACTIVE_TOKEN_KEY);
+	localStorage.removeItem(LS_ACTIVE_TOKEN_KEY);
+}
+
 function resolveActiveToken(stored: StoredAccount[]): string | null {
-	const saved = localStorage.getItem(ACTIVE_TOKEN_KEY);
+	const sessionToken = readActiveToken();
+	if (sessionToken !== null && stored.some((a) => a.token === sessionToken)) {
+		return sessionToken;
+	}
+	const saved = localStorage.getItem(LS_ACTIVE_TOKEN_KEY);
 	if (saved !== null && stored.some((a) => a.token === saved)) {
+		writeActiveToken(saved);
 		return saved;
 	}
 	const first = stored[0]?.token ?? null;
 	if (first !== null) {
-		localStorage.setItem(ACTIVE_TOKEN_KEY, first);
+		writeActiveToken(first);
 	}
 	return first;
 }
@@ -67,7 +87,7 @@ function useAuthCallbacks(
 	const switchAccount = useCallback(
 		(token: string) => {
 			setActiveToken(token);
-			localStorage.setItem(ACTIVE_TOKEN_KEY, token);
+			writeActiveToken(token);
 		},
 		[setActiveToken],
 	);
@@ -81,7 +101,7 @@ function useAuthCallbacks(
 				setAccounts(updated);
 			}
 			setActiveToken(token);
-			localStorage.setItem(ACTIVE_TOKEN_KEY, token);
+			writeActiveToken(token);
 		},
 		[setActiveToken, setAccounts],
 	);
@@ -95,10 +115,10 @@ function useAuthCallbacks(
 				const next = updated[0]?.token ?? null;
 				setActiveToken(next);
 				if (next === null) {
-					localStorage.removeItem(ACTIVE_TOKEN_KEY);
+					removeActiveToken();
 					window.location.href = "/login";
 				} else {
-					localStorage.setItem(ACTIVE_TOKEN_KEY, next);
+					writeActiveToken(next);
 				}
 			}
 		},
