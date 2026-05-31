@@ -336,6 +336,38 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
 }
 
+// DeleteMessage deletes a message if the requesting user is the author.
+func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	chatID := r.PathValue("id")
+	messageID := r.PathValue("messageId")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if !isMember(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return
+	}
+
+	if err := h.store.DeleteMessage(chatID, messageID, user.ID); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: err.Error()})
+
+		return
+	}
+
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "message_deleted", Data: map[string]string{"chatId": chatID, "messageId": messageID}})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 // SSE handles the server-sent events connection for real-time updates.
 func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")

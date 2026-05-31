@@ -43,6 +43,15 @@ export function useSse(token: string, onEvent: EventHandler) {
 			}
 		});
 
+		source.addEventListener("message_deleted", (e) => {
+			try {
+				const data = JSON.parse(e.data as string) as Record<string, unknown>;
+				onEventRef.current("message_deleted", data);
+			} catch {
+				/* ignore */
+			}
+		});
+
 		source.addEventListener("connected", () => {
 			onEventRef.current("connected", null);
 		});

@@ -100,3 +100,15 @@ export function sendMessage(token: string, chatId: string, text: string) {
 		body: JSON.stringify({ text }),
 	});
 }
+
+export function deleteMessage(
+	token: string,
+	chatId: string,
+	messageId: string,
+) {
+	return request<{ status: string }>(
+		`/api/chats/${chatId}/messages/${messageId}`,
+		token,
+		{ method: "DELETE" },
+	);
+}

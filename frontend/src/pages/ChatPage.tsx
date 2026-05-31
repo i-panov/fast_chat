@@ -1,5 +1,6 @@
 import {
 	ActionIcon,
+	Anchor,
 	Badge,
 	Button,
 	Center,
@@ -8,16 +9,21 @@ import {
 	ScrollArea,
 	Stack,
 	Text,
-	TextInput,
 	Textarea,
+	TextInput,
+	UnstyledButton,
 } from "@mantine/core";
 import { useNavigate } from "@tanstack/react-router";
+import { Check, Copy } from "lucide-react";
 import type { FormEvent } from "react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
 import type { Chat, MemberInfo, Message, User } from "../api.ts";
 import {
 	createChat,
+	deleteMessage,
 	getChats,
 	getMessages,
 	searchUsers,
@@ -132,6 +138,15 @@ function useSseMessages(
 					if (prev.some((c) => c.id === chat.id)) return prev;
 					return [...prev, chat];
 				});
+			} else if (event === "message_deleted") {
+				const { chatId, messageId } = data as {
+					chatId: string;
+					messageId: string;
+				};
+				setMessages((prev) => ({
+					...prev,
+					[chatId]: (prev[chatId] ?? []).filter((m) => m.id !== messageId),
+				}));
 			}
 		},
 		[setMessages, setChats],
@@ -186,6 +201,12 @@ function useSendMessage(opts: {
 			setInputText(text);
 		}
 	};
+}
+
+function extractCodeText(children: unknown): string {
+	if (typeof children === "string") return children;
+	if (Array.isArray(children)) return children.map(String).join("");
+	return String(children);
 }
 
 interface ChatInteraction {
@@ -469,26 +490,204 @@ function DateSeparator({ dateStr }: { dateStr: string }) {
 	);
 }
 
+function CodeBlock({
+	className,
+	code,
+	lang,
+}: {
+	className?: string;
+	code: string;
+	lang: string;
+}) {
+	const [copied, setCopied] = useState(false);
+
+	return (
+		<div
+			style={{
+				maxHeight: "300px",
+				overflow: "auto",
+				background: "var(--mantine-color-dark-7)",
+				borderRadius: "4px",
+				marginTop: "4px",
+				marginBottom: "2px",
+			}}
+		>
+			<div
+				style={{
+					display: "flex",
+					justifyContent: "space-between",
+					alignItems: "center",
+					position: "sticky",
+					top: 0,
+					background: "var(--mantine-color-dark-6)",
+					padding: "2px 8px",
+					borderBottom: "1px solid var(--mantine-color-dark-4)",
+					zIndex: 1,
+				}}
+			>
+				{lang ? (
+					<Text size="xs" c="gray.6">
+						{lang}
+					</Text>
+				) : (
+					<div />
+				)}
+				<ActionIcon
+					variant="subtle"
+					color="gray"
+					size="sm"
+					onClick={() => {
+						navigator.clipboard.writeText(code).then(() => {
+							setCopied(true);
+							setTimeout(() => setCopied(false), 2000);
+						});
+					}}
+				>
+					{copied ? <Check size={14} /> : <Copy size={14} />}
+				</ActionIcon>
+			</div>
+			<pre style={{ padding: "8px", margin: 0 }}>
+				<code className={className}>{code}</code>
+			</pre>
+		</div>
+	);
+}
+
 function MessageBubble({
 	text,
 	isOwn,
 	time,
+	chatId,
+	msgId,
+	onDelete,
 }: {
 	text: string;
 	isOwn: boolean;
 	time: string;
+	chatId: string;
+	msgId: string;
+	onDelete: (chatId: string, messageId: string) => void;
 }) {
+	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+
 	return (
-		<Paper className={isOwn ? "bubble-own" : "bubble-other"}>
-			<Group gap={6} wrap="nowrap" align="end">
-				<Text size="sm" className="break-words" style={{ whiteSpace: "pre-wrap" }}>
-					{text}
-				</Text>
-				<Text size="xs" c="gray.5" className="shrink-0">
-					{time}
-				</Text>
-			</Group>
-		</Paper>
+		<>
+			<Paper
+				className={isOwn ? "bubble-own" : "bubble-other"}
+				onContextMenu={(e) => {
+					e.preventDefault();
+					setMenuPos({ x: e.clientX, y: e.clientY });
+				}}
+			>
+				<Group gap={6} wrap="nowrap" align="end">
+					<div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+						<Markdown
+							remarkPlugins={[remarkGfm]}
+							components={{
+								p: ({ children }) => <span>{children}</span>,
+								a: ({ href, children }) => (
+									<Anchor href={href} target="_blank" rel="noreferrer">
+										{children}
+									</Anchor>
+								),
+								code: ({ className, children }) => {
+									const lang = className?.replace("language-", "");
+									if (lang) {
+										return <code className={className}>{children}</code>;
+									}
+									return (
+										<code
+											style={{
+												background: "var(--mantine-color-dark-7)",
+												padding: "1px 4px",
+												borderRadius: "3px",
+												fontSize: "0.85em",
+											}}
+										>
+											{children}
+										</code>
+									);
+								},
+								pre: ({ children }) => {
+									const codeEl = children as {
+										props: { className?: string; children: unknown };
+									};
+									const className = codeEl.props.className ?? "";
+									const lang = className.replace("language-", "");
+									const codeText = extractCodeText(codeEl.props.children);
+									return (
+										<CodeBlock
+											className={className}
+											code={codeText}
+											lang={lang}
+										/>
+									);
+								},
+							}}
+						>
+							{text}
+						</Markdown>
+					</div>
+					<Text size="xs" c="gray.5" className="shrink-0">
+						{time}
+					</Text>
+				</Group>
+			</Paper>
+			{menuPos && (
+				<>
+					<UnstyledButton
+						style={{
+							position: "fixed",
+							inset: 0,
+							zIndex: 999,
+							cursor: "default",
+						}}
+						onClick={() => setMenuPos(null)}
+						aria-label="Close menu"
+					/>
+					<Paper
+						style={{
+							position: "fixed",
+							left: menuPos.x,
+							top: menuPos.y,
+							zIndex: 1000,
+							minWidth: "140px",
+						}}
+					>
+						<Stack gap={0}>
+							<Button
+								variant="subtle"
+								color="gray"
+								fullWidth
+								justify="flex-start"
+								className="rounded-none"
+								onClick={() => {
+									navigator.clipboard.writeText(text);
+									setMenuPos(null);
+								}}
+							>
+								Копировать
+							</Button>
+							{isOwn && (
+								<Button
+									variant="subtle"
+									color="red"
+									fullWidth
+									justify="flex-start"
+									className="rounded-none"
+									onClick={() => {
+										onDelete(chatId, msgId);
+										setMenuPos(null);
+									}}
+								>
+									Удалить
+								</Button>
+							)}
+						</Stack>
+					</Paper>
+				</>
+			)}
+		</>
 	);
 }
 
@@ -513,9 +712,11 @@ function ChatHeader({ title, badge }: { title: string; badge?: string }) {
 function MessageList({
 	messages,
 	userId,
+	onDelete,
 }: {
 	messages: Message[];
 	userId: string;
+	onDelete: (chatId: string, messageId: string) => void;
 }) {
 	if (messages.length === 0) {
 		return (
@@ -544,13 +745,14 @@ function MessageList({
 
 				return (
 					<Fragment key={msg.id}>
-						{showSeparator && (
-							<DateSeparator dateStr={msg.createdAt} />
-						)}
+						{showSeparator && <DateSeparator dateStr={msg.createdAt} />}
 						<MessageBubble
 							text={msg.text}
 							isOwn={msg.fromId === userId}
 							time={formatTime(msg.createdAt)}
+							chatId={msg.chatId}
+							msgId={msg.id}
+							onDelete={onDelete}
 						/>
 					</Fragment>
 				);
@@ -598,6 +800,14 @@ function InputBar({
 
 export function ChatPage() {
 	const s = useChatPage();
+
+	const handleDeleteMessage = useCallback(
+		(chatId: string, messageId: string) => {
+			if (s.activeAccount === null) return;
+			deleteMessage(s.activeAccount.token, chatId, messageId).catch(() => {});
+		},
+		[s.activeAccount],
+	);
 
 	if (s.activeAccount === null || s.user === null) {
 		return null;
@@ -667,7 +877,11 @@ export function ChatPage() {
 									title={otherNick(s.activeChat.members, s.user.id)}
 								/>
 								<ScrollArea className="flex-1 p-4">
-									<MessageList messages={s.activeMessages} userId={s.user.id} />
+									<MessageList
+										messages={s.activeMessages}
+										userId={s.user.id}
+										onDelete={handleDeleteMessage}
+									/>
 								</ScrollArea>
 								<InputBar
 									text={s.inputText}

@@ -203,6 +203,28 @@ func (s *Store) GetMessages(chatID string) []model.Message {
 	return result
 }
 
+// DeleteMessage removes a message if it belongs to the requesting user.
+func (s *Store) DeleteMessage(chatID, messageID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msgs := s.messages[chatID]
+
+	for idx, msg := range msgs {
+		if msg.ID == messageID {
+			if msg.FromID != userID {
+				return errors.New("not your message")
+			}
+
+			s.messages[chatID] = append(msgs[:idx], msgs[idx+1:]...)
+
+			return nil
+		}
+	}
+
+	return errors.New("message not found")
+}
+
 // AddConnection increments the connection count for a user and marks them online.
 func (s *Store) AddConnection(userID string) {
 	s.mu.Lock()
