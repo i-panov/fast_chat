@@ -26,6 +26,7 @@ type Store struct {
 	nicks    map[string]string
 	chats    map[string]*model.Chat
 	messages map[string][]model.Message
+	conns    map[string]int
 }
 
 // New creates a new empty Store.
@@ -35,6 +36,7 @@ func New() *Store {
 		nicks:    make(map[string]string),
 		chats:    make(map[string]*model.Chat),
 		messages: make(map[string][]model.Message),
+		conns:    make(map[string]int),
 	}
 }
 
@@ -201,12 +203,29 @@ func (s *Store) GetMessages(chatID string) []model.Message {
 	return result
 }
 
-// SetUserOnline updates the online status of a user.
-func (s *Store) SetUserOnline(userID string, online bool) {
+// AddConnection increments the connection count for a user and marks them online.
+func (s *Store) AddConnection(userID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.conns[userID]++
 	if u, ok := s.users[userID]; ok {
-		u.Online = online
+		u.Online = true
+	}
+}
+
+// RemoveConnection decrements the connection count and marks the user offline
+// when no connections remain.
+func (s *Store) RemoveConnection(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.conns[userID]--
+	if s.conns[userID] <= 0 {
+		s.conns[userID] = 0
+
+		if u, ok := s.users[userID]; ok {
+			u.Online = false
+		}
 	}
 }

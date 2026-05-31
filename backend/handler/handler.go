@@ -33,13 +33,13 @@ type SSEEvent struct {
 // SSEHub manages client subscriptions for server-sent events.
 type SSEHub struct {
 	mu      sync.RWMutex
-	clients map[string]chan SSEEvent
+	clients map[string][]chan SSEEvent
 }
 
 // NewSSEHub creates a new SSE hub.
 func NewSSEHub() *SSEHub {
 	return &SSEHub{
-		clients: make(map[string]chan SSEEvent),
+		clients: make(map[string][]chan SSEEvent),
 	}
 }
 
@@ -49,28 +49,38 @@ func (h *SSEHub) Subscribe(userID string) chan SSEEvent {
 	defer h.mu.Unlock()
 
 	ch := make(chan SSEEvent, 128)
-	h.clients[userID] = ch
+	h.clients[userID] = append(h.clients[userID], ch)
 
 	return ch
 }
 
-// Unsubscribe removes a user's SSE subscription and closes their channel.
-func (h *SSEHub) Unsubscribe(userID string) {
+// Unsubscribe removes a specific channel for a user and closes it.
+func (h *SSEHub) Unsubscribe(userID string, ch chan SSEEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if ch, ok := h.clients[userID]; ok {
-		close(ch)
+	channels := h.clients[userID]
+	for i, c := range channels {
+		if c == ch {
+			close(c)
+
+			h.clients[userID] = append(channels[:i], channels[i+1:]...)
+
+			break
+		}
+	}
+
+	if len(h.clients[userID]) == 0 {
 		delete(h.clients, userID)
 	}
 }
 
-// Send delivers an event to a specific user if they are connected.
+// Send delivers an event to all channels for a given user.
 func (h *SSEHub) Send(userID string, event SSEEvent) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	if ch, ok := h.clients[userID]; ok {
+	for _, ch := range h.clients[userID] {
 		select {
 		case ch <- event:
 		default:
@@ -342,11 +352,11 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.store.SetUserOnline(user.ID, true)
+	h.store.AddConnection(user.ID)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		h.store.SetUserOnline(user.ID, false)
+		h.store.RemoveConnection(user.ID)
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 
 		return
@@ -360,8 +370,8 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 	ch := h.hub.Subscribe(user.ID)
 
 	defer func() {
-		h.hub.Unsubscribe(user.ID)
-		h.store.SetUserOnline(user.ID, false)
+		h.hub.Unsubscribe(user.ID, ch)
+		h.store.RemoveConnection(user.ID)
 	}()
 
 	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"ok\"}\n\n") //nolint:errcheck // write errors on SSE are unrecoverable
