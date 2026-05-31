@@ -1,154 +1,160 @@
 import {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  useCallback,
-  type ReactNode,
+	createContext,
+	type ReactNode,
+	useCallback,
+	useContext,
+	useEffect,
+	useState,
 } from "react";
-import { register as apiRegister } from "./api";
+import { register as apiRegister } from "./api.ts";
 
 interface StoredUser {
-  id: string;
-  nick: string;
+	id: string;
+	nick: string;
 }
 
 interface StoredAccount {
-  token: string;
-  user: StoredUser;
+	token: string;
+	user: StoredUser;
 }
 
 interface AuthContextValue {
-  accounts: StoredAccount[];
-  activeAccount: StoredAccount | null;
-  switchAccount: (token: string) => void;
-  addAccount: (token: string, user: StoredUser) => void;
-  removeAccount: (token: string) => void;
-  login: (nick: string) => Promise<void>;
-  logout: () => void;
+	accounts: StoredAccount[];
+	activeAccount: StoredAccount | null;
+	switchAccount: (token: string) => void;
+	addAccount: (token: string, user: StoredUser) => void;
+	removeAccount: (token: string) => void;
+	login: (nick: string) => Promise<void>;
+	logout: () => void;
 }
 
 const ACCOUNTS_KEY = "accounts";
 const ACTIVE_TOKEN_KEY = "activeToken";
 
 function readAccounts(): StoredAccount[] {
-  try {
-    return JSON.parse(localStorage.getItem(ACCOUNTS_KEY) ?? "[]") as StoredAccount[];
-  } catch {
-    return [];
-  }
+	try {
+		return JSON.parse(
+			localStorage.getItem(ACCOUNTS_KEY) ?? "[]",
+		) as StoredAccount[];
+	} catch {
+		return [];
+	}
 }
 
 function writeAccounts(accounts: StoredAccount[]) {
-  localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
+	localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
 }
 
-function readActiveToken(): string | null {
-  return localStorage.getItem(ACTIVE_TOKEN_KEY);
-}
-
-function writeActiveToken(token: string | null) {
-  if (token === null) {
-    localStorage.removeItem(ACTIVE_TOKEN_KEY);
-  } else {
-    localStorage.setItem(ACTIVE_TOKEN_KEY, token);
-  }
+function resolveActiveToken(stored: StoredAccount[]): string | null {
+	const saved = localStorage.getItem(ACTIVE_TOKEN_KEY);
+	if (saved !== null && stored.some((a) => a.token === saved)) {
+		return saved;
+	}
+	const first = stored[0]?.token ?? null;
+	if (first !== null) {
+		localStorage.setItem(ACTIVE_TOKEN_KEY, first);
+	}
+	return first;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+function useAuthCallbacks(
+	activeToken: string | null,
+	setActiveToken: (v: string | null) => void,
+	setAccounts: React.Dispatch<React.SetStateAction<StoredAccount[]>>,
+) {
+	const switchAccount = useCallback(
+		(token: string) => {
+			setActiveToken(token);
+			localStorage.setItem(ACTIVE_TOKEN_KEY, token);
+		},
+		[setActiveToken],
+	);
+
+	const addAccount = useCallback(
+		(token: string, user: StoredUser) => {
+			const updated = readAccounts();
+			if (!updated.some((a) => a.token === token)) {
+				updated.push({ token, user });
+				writeAccounts(updated);
+				setAccounts(updated);
+			}
+			setActiveToken(token);
+			localStorage.setItem(ACTIVE_TOKEN_KEY, token);
+		},
+		[setActiveToken, setAccounts],
+	);
+
+	const removeAccount = useCallback(
+		(token: string) => {
+			const updated = readAccounts().filter((a) => a.token !== token);
+			writeAccounts(updated);
+			setAccounts(updated);
+			if (activeToken === token) {
+				const next = updated[0]?.token ?? null;
+				setActiveToken(next);
+				if (next === null) {
+					localStorage.removeItem(ACTIVE_TOKEN_KEY);
+					window.location.href = "/login";
+				} else {
+					localStorage.setItem(ACTIVE_TOKEN_KEY, next);
+				}
+			}
+		},
+		[activeToken, setActiveToken, setAccounts],
+	);
+
+	const login = useCallback(
+		async (nick: string) => {
+			const { user, token } = await apiRegister(nick);
+			addAccount(token, user);
+		},
+		[addAccount],
+	);
+
+	const logout = useCallback(() => {
+		removeAccount(activeToken ?? "");
+	}, [activeToken, removeAccount]);
+
+	return { switchAccount, addAccount, removeAccount, login, logout };
+}
+
+function useAuthState() {
+	const [accounts, setAccounts] = useState<StoredAccount[]>(readAccounts);
+	const [activeToken, setActiveToken] = useState<string | null>(() =>
+		resolveActiveToken(accounts),
+	);
+
+	useEffect(() => {
+		function handleStorage(e: StorageEvent) {
+			if (e.key === ACCOUNTS_KEY) {
+				setAccounts(readAccounts());
+			}
+		}
+		window.addEventListener("storage", handleStorage);
+		return () => window.removeEventListener("storage", handleStorage);
+	}, []);
+
+	const activeAccount =
+		activeToken !== null
+			? (accounts.find((a) => a.token === activeToken) ?? null)
+			: null;
+
+	const callbacks = useAuthCallbacks(activeToken, setActiveToken, setAccounts);
+
+	return { accounts, activeAccount, ...callbacks };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [accounts, setAccounts] = useState<StoredAccount[]>(() => readAccounts());
-  const [activeToken, setActiveToken] = useState<string | null>(() => {
-    const saved = readActiveToken();
-    const stored = readAccounts();
-    if (saved !== null && stored.some((a) => a.token === saved)) {
-      return saved;
-    }
-    const first = stored[0]?.token ?? null;
-    if (first !== null) {
-      writeActiveToken(first);
-    }
-    return first;
-  });
-
-  const activeAccount =
-    activeToken !== null
-      ? accounts.find((a) => a.token === activeToken) ?? null
-      : null;
-
-  useEffect(() => {
-    function handleStorage(e: StorageEvent) {
-      if (e.key === ACCOUNTS_KEY) {
-        setAccounts(readAccounts());
-      }
-    }
-    window.addEventListener("storage", handleStorage);
-    return () => {
-      window.removeEventListener("storage", handleStorage);
-    };
-  }, []);
-
-  const switchAccount = useCallback((token: string) => {
-    setActiveToken(token);
-    writeActiveToken(token);
-  }, []);
-
-  const addAccount = useCallback((token: string, user: StoredUser) => {
-    const updated = readAccounts();
-    if (!updated.some((a) => a.token === token)) {
-      updated.push({ token, user });
-      writeAccounts(updated);
-      setAccounts(updated);
-    }
-    setActiveToken(token);
-    writeActiveToken(token);
-  }, []);
-
-  const removeAccount = useCallback((token: string) => {
-    const updated = readAccounts().filter((a) => a.token !== token);
-    writeAccounts(updated);
-    setAccounts(updated);
-    if (activeToken === token) {
-      const next = updated[0]?.token ?? null;
-      setActiveToken(next);
-      writeActiveToken(next);
-      if (next === null) {
-        window.location.href = "/login";
-      }
-    }
-  }, [activeToken]);
-
-  const login = useCallback(async (nick: string) => {
-    const { user, token } = await apiRegister(nick);
-    addAccount(token, user);
-  }, [addAccount]);
-
-  const logout = useCallback(() => {
-    removeAccount(activeToken ?? "");
-  }, [activeToken, removeAccount]);
-
-  return (
-    <AuthContext.Provider
-      value={{
-        accounts,
-        activeAccount,
-        switchAccount,
-        addAccount,
-        removeAccount,
-        login,
-        logout,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  );
+	const value = useAuthState();
+	return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext);
-  if (ctx === null) {
-    throw new Error("useAuth must be used within AuthProvider");
-  }
-  return ctx;
+	const ctx = useContext(AuthContext);
+	if (ctx === null) {
+		throw new Error("useAuth must be used within AuthProvider");
+	}
+	return ctx;
 }

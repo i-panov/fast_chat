@@ -1,298 +1,684 @@
-import { useEffect, useState, type SubmitEvent, useCallback, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import {
-  getChats,
-  searchUsers,
-  createChat,
-  getMessages,
-  sendMessage,
-} from "../api";
-import type { User, Chat, Message, MemberInfo } from "../api";
-import { useSSE } from "../useSSE";
-import { useAuth } from "../useAuth";
-import AccountSwitcher from "../AccountSwitcher";
+	ActionIcon,
+	Badge,
+	Button,
+	Center,
+	Group,
+	Paper,
+	ScrollArea,
+	Stack,
+	Text,
+	TextInput,
+	Textarea,
+} from "@mantine/core";
+import { useNavigate } from "@tanstack/react-router";
+import type { FormEvent } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { AccountSwitcher } from "../AccountSwitcher.tsx";
+import type { Chat, MemberInfo, Message, User } from "../api.ts";
+import {
+	createChat,
+	getChats,
+	getMessages,
+	searchUsers,
+	sendMessage,
+} from "../api.ts";
+import { useAuth } from "../useAuth.tsx";
+import { useSse } from "../useSse.ts";
+
+const SEARCH_DEBOUNCE_MS = 300;
 
 function otherNick(members: MemberInfo[], myId: string): string {
-  return members.find((m) => m.id !== myId)?.nick ?? "Unknown";
+	return members.find((m) => m.id !== myId)?.nick ?? "Unknown";
 }
 
-export default function ChatPage() {
-  const navigate = useNavigate();
-  const { activeAccount, accounts, logout } = useAuth();
-  const [switcherOpen, setSwitcherOpen] = useState(false);
+function formatDateLabel(isoStr: string): string {
+	const d = new Date(isoStr);
+	const today = new Date();
+	const yesterday = new Date(today);
+	yesterday.setDate(yesterday.getDate() - 1);
 
-  const user = activeAccount !== null
-    ? { id: activeAccount.user.id, nick: activeAccount.user.nick }
-    : null;
+	const fmt: Intl.DateTimeFormatOptions = {
+		day: "2-digit",
+		month: "2-digit",
+		year: "numeric",
+	};
+	const dStr = d.toLocaleDateString("ru-RU", fmt);
+	const todayStr = today.toLocaleDateString("ru-RU", fmt);
+	const yesterdayStr = yesterday.toLocaleDateString("ru-RU", fmt);
 
-  const [chats, setChats] = useState<Chat[]>([]);
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Record<string, Message[]>>({});
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<User[]>([]);
-  const [inputText, setInputText] = useState("");
+	if (dStr === todayStr) return "Сегодня";
+	if (dStr === yesterdayStr) return "Вчера";
+	return dStr;
+}
 
-  const [pendingChatWith, setPendingChatWith] = useState<string | null>(null);
-  const [pendingChatNick, setPendingChatNick] = useState<string | null>(null);
+function formatTime(isoStr: string): string {
+	const d = new Date(isoStr);
+	return d.toLocaleTimeString("ru-RU", {
+		hour: "2-digit",
+		minute: "2-digit",
+	});
+}
 
-  const seenMessageIds = useRef(new Set<string>());
+function useAuthGuard(
+	activeAccount: unknown,
+	navigate: ReturnType<typeof useNavigate>,
+) {
+	useEffect(() => {
+		if (activeAccount === null) {
+			navigate({ to: "/login" });
+		}
+	}, [activeAccount, navigate]);
+}
 
-  useEffect(() => {
-    if (activeAccount === null) {
-      void navigate("/login", { replace: true });
-    }
-  }, [activeAccount, navigate]);
+function useTokenChange(
+	token: string | undefined,
+	setChats: (c: Chat[]) => void,
+) {
+	useEffect(() => {
+		if (token === undefined || token === "") {
+			return;
+		}
+		getChats(token)
+			.then(({ chats: fetchedChats }) => {
+				setChats(fetchedChats);
+			})
+			.catch(() => {});
+	}, [token, setChats]);
+}
 
-  useEffect(() => {
-    const token = activeAccount?.token;
-    if (token === undefined || token === "") { return; }
-    /* eslint-disable react-hooks/set-state-in-effect */
-    setChats([]);
-    setActiveChatId(null);
-    setMessages({});
-    setPendingChatWith(null);
-    setPendingChatNick(null);
-    setInputText("");
-    setSearchQuery("");
-    setSearchResults([]);
-    seenMessageIds.current = new Set();
+function useSearch(
+	token: string | undefined,
+	query: string,
+	setResults: (r: User[]) => void,
+) {
+	useEffect(() => {
+		if (query.length === 0 || token === undefined) {
+			return;
+		}
+		const timer = setTimeout(() => {
+			searchUsers(token, query)
+				.then(({ users }) => {
+					setResults(users);
+				})
+				.catch(() => {});
+		}, SEARCH_DEBOUNCE_MS);
+		return () => {
+			clearTimeout(timer);
+		};
+	}, [query, token, setResults]);
+}
 
-    void getChats(token).then(({ chats: fetchedChats }) => {
-      setChats(fetchedChats);
-    });
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [activeAccount?.token]);
+function useSseMessages(
+	token: string,
+	setChats: React.Dispatch<React.SetStateAction<Chat[]>>,
+	setMessages: React.Dispatch<React.SetStateAction<Record<string, Message[]>>>,
+) {
+	const seenIds = useRef(new Set<string>());
 
-  const handleSSEEvent = useCallback(
-    (event: string, data: unknown) => {
-      if (event === "new_message") {
-        const msg = data as Message;
-        if (seenMessageIds.current.has(msg.id)) { return; }
-        seenMessageIds.current.add(msg.id);
-        setMessages((prev) => ({
-          ...prev,
-          [msg.chat_id]: [...(prev[msg.chat_id] ?? []), msg],
-        }));
-      } else if (event === "chat_created") {
-        const chat = data as Chat;
-        setChats((prev) => {
-          if (prev.some((c) => c.id === chat.id)) { return prev; }
-          return [...prev, chat];
-        });
-      }
-    },
-    [],
-  );
+	const handler = useCallback(
+		(event: string, data: unknown) => {
+			if (event === "new_message") {
+				const msg = data as Message;
+				if (seenIds.current.has(msg.id)) return;
+				seenIds.current.add(msg.id);
+				setMessages((prev) => ({
+					...prev,
+					[msg.chatId]: [...(prev[msg.chatId] ?? []), msg],
+				}));
+			} else if (event === "chat_created") {
+				const chat = data as Chat;
+				setChats((prev) => {
+					if (prev.some((c) => c.id === chat.id)) return prev;
+					return [...prev, chat];
+				});
+			}
+		},
+		[setMessages, setChats],
+	);
 
-  useSSE(activeAccount?.token ?? "", handleSSEEvent);
+	useSse(token, handler);
+}
 
-  useEffect(() => {
-    if (searchQuery.length < 1 || activeAccount === null) { return; }
-    const timer = setTimeout(() => {
-      void searchUsers(activeAccount.token, searchQuery).then(({ users }) => {
-        setSearchResults(users);
-      });
-    }, 300);
-    return () => { clearTimeout(timer); };
-  }, [searchQuery, activeAccount]);
+function useSendMessage(opts: {
+	activeAccount: { token: string } | null;
+	inputText: string;
+	setInputText: (v: string) => void;
+	setChats: React.Dispatch<React.SetStateAction<Chat[]>>;
+	pendingChatWith: string | null;
+	setPendingChatWith: (v: string | null) => void;
+	setPendingChatNick: (v: string | null) => void;
+	setActiveChatId: (v: string | null) => void;
+	activeChatId: string | null;
+}) {
+	const {
+		activeAccount,
+		inputText,
+		setInputText,
+		setChats,
+		pendingChatWith,
+		setPendingChatWith,
+		setPendingChatNick,
+		setActiveChatId,
+		activeChatId: activeChatId2,
+	} = opts;
+	return async function handleSend(e: FormEvent<HTMLFormElement>) {
+		e.preventDefault();
+		if (activeAccount === null || inputText.trim().length === 0) return;
 
-  function selectChat(chatId: string) {
-    if (activeAccount === null) { return; }
-    setPendingChatWith(null);
-    setPendingChatNick(null);
-    setActiveChatId(chatId);
-    if (messages[chatId] === undefined) {
-      void getMessages(activeAccount.token, chatId).then(({ messages: msgs }) => {
-        setMessages((prev) => ({ ...prev, [chatId]: msgs }));
-      });
-    }
-  }
+		const text = inputText;
+		setInputText("");
 
-  function selectPendingChat(withUserId: string, withUserNick: string) {
-    setPendingChatWith(withUserId);
-    setPendingChatNick(withUserNick);
-    setActiveChatId(null);
-    setSearchQuery("");
-    setSearchResults([]);
-  }
+		try {
+			if (pendingChatWith !== null) {
+				const { chat } = await createChat(activeAccount.token, pendingChatWith);
+				setChats((prev) =>
+					prev.some((c) => c.id === chat.id) ? prev : [...prev, chat],
+				);
+				setActiveChatId(chat.id);
+				setPendingChatWith(null);
+				setPendingChatNick(null);
+				await sendMessage(activeAccount.token, chat.id, text);
+			} else if (activeChatId2 !== null) {
+				await sendMessage(activeAccount.token, activeChatId2, text);
+			}
+		} catch {
+			setInputText(text);
+		}
+	};
+}
 
-  async function handleSend(e: SubmitEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (activeAccount === null || inputText.trim().length === 0) { return; }
+interface ChatInteraction {
+	searchQuery: string;
+	searchResults: User[];
+	inputText: string;
+	pendingChatWith: string | null;
+	pendingChatNick: string | null;
+	showSearchResults: boolean;
+	setInputText: (v: string) => void;
+	handleSearchChange: (value: string) => void;
+	selectPendingChat: (withUserId: string, withUserNick: string) => void;
+	selectChat: (chatId: string) => void;
+	handleSend: (e: FormEvent<HTMLFormElement>) => Promise<void>;
+}
 
-    const text = inputText;
-    setInputText("");
+function useChatInteraction(
+	activeAccount: { token: string } | null,
+	setMessages: React.Dispatch<React.SetStateAction<Record<string, Message[]>>>,
+	setChats: React.Dispatch<React.SetStateAction<Chat[]>>,
+	activeChatId: string | null,
+	setActiveChatId: (v: string | null) => void,
+): ChatInteraction {
+	const [searchQuery, setSearchQuery] = useState("");
+	const [searchResults, setSearchResults] = useState<User[]>([]);
+	const [inputText, setInputText] = useState("");
+	const [pendingChatWith, setPendingChatWith] = useState<string | null>(null);
+	const [pendingChatNick, setPendingChatNick] = useState<string | null>(null);
+	const messagesRef = useRef<Record<string, Message[]>>({});
 
-    if (pendingChatWith !== null) {
-      try {
-        const { chat } = await createChat(activeAccount.token, pendingChatWith);
-        setChats((prev) =>
-          prev.some((c) => c.id === chat.id) ? prev : [...prev, chat],
-        );
-        setActiveChatId(chat.id);
-        setPendingChatWith(null);
-        setPendingChatNick(null);
-        await sendMessage(activeAccount.token, chat.id, text);
-      } catch {
-        setInputText(text);
-      }
-      return;
-    }
+	useSearch(activeAccount?.token, searchQuery, setSearchResults);
 
-    if (activeChatId === null) { return; }
+	function selectChat(chatId: string) {
+		if (activeAccount === null) return;
+		setPendingChatWith(null);
+		setPendingChatNick(null);
+		setActiveChatId(chatId);
+		if (messagesRef.current[chatId] === undefined) {
+			getMessages(activeAccount.token, chatId)
+				.then(({ messages: msgs }) => {
+					messagesRef.current[chatId] = msgs;
+					setMessages((prev) => ({ ...prev, [chatId]: msgs }));
+				})
+				.catch(() => {});
+		}
+	}
 
-    try {
-      await sendMessage(activeAccount.token, activeChatId, text);
-    } catch {
-      setInputText(text);
-    }
-  }
+	function selectPendingChat(withUserId: string, withUserNick: string) {
+		setPendingChatWith(withUserId);
+		setPendingChatNick(withUserNick);
+		setActiveChatId(null);
+		setSearchQuery("");
+		setSearchResults([]);
+	}
 
-  function handleLogout() {
-    logout();
-  }
+	const handleSend = useSendMessage({
+		activeAccount,
+		inputText,
+		setInputText,
+		setChats,
+		pendingChatWith,
+		setPendingChatWith,
+		setPendingChatNick,
+		setActiveChatId,
+		activeChatId,
+	});
 
-  const activeChat =
-    pendingChatWith !== null
-      ? undefined
-      : chats.find((c) => c.id === activeChatId);
+	function handleSearchChange(value: string) {
+		setSearchQuery(value);
+		if (value.length === 0) setSearchResults([]);
+	}
 
-  const activeMessages =
-    activeChatId !== null ? (messages[activeChatId] ?? []) : [];
+	const showSearchResults = searchQuery.length > 0 && searchResults.length > 0;
 
-  const showSearchResults =
-    searchQuery.length >= 1 && searchResults.length > 0;
+	return {
+		searchQuery,
+		searchResults,
+		inputText,
+		pendingChatWith,
+		pendingChatNick,
+		showSearchResults,
+		setInputText,
+		handleSearchChange,
+		selectPendingChat,
+		selectChat,
+		handleSend,
+	};
+}
 
-  if (activeAccount === null || user === null) { return null; }
+function useChatPage() {
+	const navigate = useNavigate();
+	const { activeAccount, accounts, logout } = useAuth();
+	const [switcherOpen, setSwitcherOpen] = useState(false);
 
-  return (
-    <div className="chat-layout">
-      <AccountSwitcher open={switcherOpen} onClose={() => { setSwitcherOpen(false); }} />
-      <header className="app-header">
-        <button className="switcher-toggle" onClick={() => { setSwitcherOpen(true); }}>
-          ☰
-        </button>
-        <span className="user-info">
-          @{activeAccount.user.nick}
-          {accounts.length > 1 && (
-            <span className="account-count">+{accounts.length - 1}</span>
-          )}
-        </span>
-        <button className="logout-btn" onClick={handleLogout}>
-          Logout
-        </button>
-      </header>
+	const [chats, setChats] = useState<Chat[]>([]);
+	const [activeChatId, setActiveChatId] = useState<string | null>(null);
+	const [messages, setMessages] = useState<Record<string, Message[]>>({});
 
-      <div className="chat-page">
-        <aside className="sidebar">
-          <div className="search-box">
-            <input
-              type="text"
-              placeholder="Search users..."
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                if (e.target.value.length < 1) { setSearchResults([]); }
-              }}
-              autoFocus
-            />
-            {showSearchResults && (
-              <div className="search-results">
-                {searchResults.map((u) => (
-                  <button
-                    key={u.id}
-                    className="search-result-item"
-                    onClick={() => { selectPendingChat(u.id, u.nick); }}
-                  >
-                    @{u.nick} {u.online ? "(online)" : ""}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+	const user =
+		activeAccount !== null
+			? { id: activeAccount.user.id, nick: activeAccount.user.nick }
+			: null;
 
-          <div className="chat-list">
-            {chats.length === 0 && (
-              <p className="empty-state">
-                No chats yet. Search for a user above to start one.
-              </p>
-            )}
-            {chats.map((chat) => (
-              <button
-                key={chat.id}
-                className={`chat-list-item ${chat.id === activeChatId ? "active" : ""}`}
-                onClick={() => { selectChat(chat.id); }}
-              >
-                @{otherNick(chat.members, user.id)}
-              </button>
-            ))}
-          </div>
-        </aside>
+	const token = activeAccount?.token;
 
-        <main className="chat-main">
-          {pendingChatWith !== null ? (
-            <>
-              <header className="chat-header">
-                @{pendingChatNick}
-                <span className="chat-header-badge">New chat</span>
-              </header>
-              <div className="messages">
-                <p className="empty-state">
-                  Send a message to start a chat with @{pendingChatNick}
-                </p>
-              </div>
-              <form className="input-bar" onSubmit={handleSend}>
-                <input
-                  type="text"
-                  placeholder="Type a message..."
-                  value={inputText}
-                  onChange={(e) => { setInputText(e.target.value); }}
-                  autoFocus
-                />
-                <button type="submit" disabled={inputText.trim().length === 0}>
-                  Send
-                </button>
-              </form>
-            </>
-          ) : activeChat === undefined ? (
-            <div className="no-chat">
-              <p>Select a chat or search for a user to start messaging</p>
-            </div>
-          ) : (
-            <>
-              <header className="chat-header">
-                @{otherNick(activeChat.members, user.id)}
-              </header>
-              <div className="messages">
-                {activeMessages.length === 0 && (
-                  <p className="empty-state">No messages yet</p>
-                )}
-                {activeMessages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className={`message ${msg.from_id === user.id ? "own" : ""}`}
-                  >
-                    <div className="message-nick">{msg.from_nick}</div>
-                    <div className="message-text">{msg.text}</div>
-                  </div>
-                ))}
-              </div>
-              <form className="input-bar" onSubmit={handleSend}>
-                <input
-                  type="text"
-                  placeholder="Type a message..."
-                  value={inputText}
-                  onChange={(e) => { setInputText(e.target.value); }}
-                  autoFocus
-                />
-                <button type="submit" disabled={inputText.trim().length === 0}>
-                  Send
-                </button>
-              </form>
-            </>
-          )}
-        </main>
-      </div>
-    </div>
-  );
+	useAuthGuard(activeAccount, navigate);
+	useTokenChange(token, setChats);
+	useSseMessages(token ?? "", setChats, setMessages);
+
+	const interaction = useChatInteraction(
+		activeAccount,
+		setMessages,
+		setChats,
+		activeChatId,
+		setActiveChatId,
+	);
+
+	const activeChat =
+		interaction.pendingChatWith !== null
+			? undefined
+			: chats.find((c) => c.id === activeChatId);
+
+	const activeMessages =
+		activeChatId !== null ? (messages[activeChatId] ?? []) : [];
+
+	return {
+		activeAccount,
+		user,
+		accounts,
+		chats,
+		switcherOpen,
+		activeChatId,
+		activeChat,
+		activeMessages,
+		logout,
+		setSwitcherOpen,
+		...interaction,
+	};
+}
+
+function AppHeader({
+	nick,
+	accountCount,
+	onSwitcherToggle,
+	onLogout,
+}: {
+	nick: string;
+	accountCount: number;
+	onSwitcherToggle: () => void;
+	onLogout: () => void;
+}) {
+	return (
+		<Paper
+			component="header"
+			className="rounded-none bg-[var(--mantine-color-dark-6)] border-b border-[var(--mantine-color-dark-4)]"
+		>
+			<Group justify="space-between" px="md" h={48}>
+				<ActionIcon
+					variant="subtle"
+					color="gray"
+					size="lg"
+					onClick={onSwitcherToggle}
+				>
+					☰
+				</ActionIcon>
+				<Text fw={600} size="sm">
+					@{nick}
+					{accountCount > 1 && (
+						<Badge size="xs" variant="filled" ml={4} color="gray">
+							+{accountCount - 1}
+						</Badge>
+					)}
+				</Text>
+				<Button variant="outline" size="compact-sm" onClick={onLogout}>
+					Logout
+				</Button>
+			</Group>
+		</Paper>
+	);
+}
+
+function SearchBox({
+	query,
+	results,
+	showResults,
+	onQueryChange,
+	onSelectUser,
+}: {
+	query: string;
+	results: User[];
+	showResults: boolean;
+	onQueryChange: (value: string) => void;
+	onSelectUser: (userId: string, nick: string) => void;
+}) {
+	return (
+		<div className="p-3 border-b border-[var(--mantine-color-dark-4)] relative">
+			<TextInput
+				placeholder="Search users..."
+				value={query}
+				onChange={(e) => onQueryChange(e.target.value)}
+				size="sm"
+			/>
+			{showResults && (
+				<Paper
+					className="absolute top-full left-0 right-0 z-10 max-h-50 overflow-y-auto"
+					style={{ background: "var(--mantine-color-dark-8)" }}
+					withBorder
+				>
+					{results.map((u) => (
+						<Button
+							key={u.id}
+							variant="subtle"
+							color="gray"
+							fullWidth
+							justify="flex-start"
+							className="rounded-none"
+							onClick={() => onSelectUser(u.id, u.nick)}
+						>
+							<Text size="sm">@{u.nick}</Text>
+							{u.online && (
+								<Text size="xs" c="dimmed" ml={4}>
+									(online)
+								</Text>
+							)}
+						</Button>
+					))}
+				</Paper>
+			)}
+		</div>
+	);
+}
+
+function ChatList({
+	chats,
+	activeChatId,
+	userId,
+	onSelectChat,
+}: {
+	chats: Chat[];
+	activeChatId: string | null;
+	userId: string;
+	onSelectChat: (chatId: string) => void;
+}) {
+	return (
+		<ScrollArea className="flex-1">
+			{chats.length === 0 && (
+				<Text ta="center" c="dimmed" size="sm" py={32}>
+					No chats yet. Search for a user above to start one.
+				</Text>
+			)}
+			{chats.map((chat) => (
+				<Button
+					key={chat.id}
+					variant="subtle"
+					color="gray"
+					fullWidth
+					justify="flex-start"
+					style={{
+						...(chat.id === activeChatId
+							? {
+									background: "var(--mantine-color-dark-5)",
+									borderLeft: "3px solid var(--mantine-color-blue-7)",
+								}
+							: {}),
+					}}
+					className="rounded-none border-b border-[var(--mantine-color-dark-4)] h-auto py-2"
+					onClick={() => onSelectChat(chat.id)}
+				>
+					<Text size="sm">@{otherNick(chat.members, userId)}</Text>
+				</Button>
+			))}
+		</ScrollArea>
+	);
+}
+
+function DateSeparator({ dateStr }: { dateStr: string }) {
+	return (
+		<Text ta="center" size="xs" c="dimmed" py={6}>
+			{formatDateLabel(dateStr)}
+		</Text>
+	);
+}
+
+function MessageBubble({
+	text,
+	isOwn,
+	time,
+}: {
+	text: string;
+	isOwn: boolean;
+	time: string;
+}) {
+	return (
+		<Paper className={isOwn ? "bubble-own" : "bubble-other"}>
+			<Group gap={6} wrap="nowrap" align="end">
+				<Text size="sm" className="break-words" style={{ whiteSpace: "pre-wrap" }}>
+					{text}
+				</Text>
+				<Text size="xs" c="gray.5" className="shrink-0">
+					{time}
+				</Text>
+			</Group>
+		</Paper>
+	);
+}
+
+function ChatHeader({ title, badge }: { title: string; badge?: string }) {
+	return (
+		<Paper
+			component="header"
+			className="px-4 py-3 rounded-none bg-[var(--mantine-color-dark-8)] border-b border-[var(--mantine-color-dark-4)]"
+		>
+			<Text fw={600}>
+				@{title}
+				{badge !== undefined && (
+					<Badge size="xs" color="gray" ml={8}>
+						{badge}
+					</Badge>
+				)}
+			</Text>
+		</Paper>
+	);
+}
+
+function MessageList({
+	messages,
+	userId,
+}: {
+	messages: Message[];
+	userId: string;
+}) {
+	if (messages.length === 0) {
+		return (
+			<Text ta="center" c="dimmed" size="sm" py={32}>
+				No messages yet
+			</Text>
+		);
+	}
+
+	const fmt: Intl.DateTimeFormatOptions = {
+		day: "2-digit",
+		month: "2-digit",
+		year: "numeric",
+	};
+	let lastDateKey = "";
+
+	return (
+		<div className="flex flex-col gap-2">
+			{messages.map((msg) => {
+				const dateKey = new Date(msg.createdAt).toLocaleDateString(
+					"ru-RU",
+					fmt,
+				);
+				const showSeparator = dateKey !== lastDateKey;
+				lastDateKey = dateKey;
+
+				return (
+					<Fragment key={msg.id}>
+						{showSeparator && (
+							<DateSeparator dateStr={msg.createdAt} />
+						)}
+						<MessageBubble
+							text={msg.text}
+							isOwn={msg.fromId === userId}
+							time={formatTime(msg.createdAt)}
+						/>
+					</Fragment>
+				);
+			})}
+		</div>
+	);
+}
+
+function InputBar({
+	text,
+	onTextChange,
+	onSubmit,
+}: {
+	text: string;
+	onTextChange: (value: string) => void;
+	onSubmit: (e: FormEvent<HTMLFormElement>) => void;
+}) {
+	return (
+		<form
+			className="flex gap-2 p-3 border-t border-[var(--mantine-color-dark-4)] bg-[var(--mantine-color-dark-8)]"
+			onSubmit={onSubmit}
+		>
+			<Textarea
+				placeholder="Type a message..."
+				value={text}
+				onChange={(e) => onTextChange(e.target.value)}
+				className="flex-1"
+				size="sm"
+				autosize
+				minRows={1}
+				maxRows={6}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" && !e.shiftKey) {
+						e.preventDefault();
+						e.currentTarget.form?.requestSubmit();
+					}
+				}}
+			/>
+			<Button type="submit" disabled={text.trim().length === 0} size="sm">
+				Send
+			</Button>
+		</form>
+	);
+}
+
+export function ChatPage() {
+	const s = useChatPage();
+
+	if (s.activeAccount === null || s.user === null) {
+		return null;
+	}
+
+	return (
+		<Stack h="100%" gap={0}>
+			<AccountSwitcher
+				open={s.switcherOpen}
+				onClose={() => s.setSwitcherOpen(false)}
+			/>
+			<AppHeader
+				nick={s.activeAccount.user.nick}
+				accountCount={s.accounts.length}
+				onSwitcherToggle={() => s.setSwitcherOpen(true)}
+				onLogout={s.logout}
+			/>
+			<div className="flex flex-1 min-h-0">
+				<Paper
+					component="aside"
+					className="w-[300px] min-w-[300px] rounded-none border-r border-[var(--mantine-color-dark-4)] bg-[var(--mantine-color-dark-8)]"
+				>
+					<Stack h="100%" gap={0}>
+						<SearchBox
+							query={s.searchQuery}
+							results={s.searchResults}
+							showResults={s.showSearchResults}
+							onQueryChange={s.handleSearchChange}
+							onSelectUser={s.selectPendingChat}
+						/>
+						<ChatList
+							chats={s.chats}
+							activeChatId={s.activeChatId}
+							userId={s.user.id}
+							onSelectChat={s.selectChat}
+						/>
+					</Stack>
+				</Paper>
+				<Paper
+					component="main"
+					className="flex-1 min-h-0 rounded-none bg-[var(--mantine-color-dark-9)]"
+				>
+					<Stack h="100%" gap={0}>
+						{s.pendingChatWith !== null ? (
+							<>
+								<ChatHeader title={s.pendingChatNick ?? ""} badge="New chat" />
+								<ScrollArea className="flex-1 p-4">
+									<Text ta="center" c="dimmed" size="sm" py={32}>
+										Send a message to start a chat with @{s.pendingChatNick}
+									</Text>
+								</ScrollArea>
+								<InputBar
+									text={s.inputText}
+									onTextChange={s.setInputText}
+									onSubmit={s.handleSend}
+								/>
+							</>
+						) : s.activeChat === undefined ? (
+							<Center className="flex-1">
+								<Text ta="center" c="dimmed" size="sm">
+									Select a chat or search for a user to start messaging
+								</Text>
+							</Center>
+						) : (
+							<>
+								<ChatHeader
+									title={otherNick(s.activeChat.members, s.user.id)}
+								/>
+								<ScrollArea className="flex-1 p-4">
+									<MessageList messages={s.activeMessages} userId={s.user.id} />
+								</ScrollArea>
+								<InputBar
+									text={s.inputText}
+									onTextChange={s.setInputText}
+									onSubmit={s.handleSend}
+								/>
+							</>
+						)}
+					</Stack>
+				</Paper>
+			</div>
+		</Stack>
+	);
 }

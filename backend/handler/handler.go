@@ -97,7 +97,7 @@ type memberInfo struct {
 type chatResponse struct {
 	ID        string       `json:"id"`
 	Members   []memberInfo `json:"members"`
-	CreatedAt time.Time    `json:"created_at"`
+	CreatedAt time.Time    `json:"createdAt"`
 }
 
 type contextKey string
@@ -226,7 +226,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 
 	var req struct {
-		WithUserID string `json:"with_user_id"`
+		WithUserID string `json:"withUserId"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

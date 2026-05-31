@@ -1,0 +1,6 @@
+{
+  "compilerOptions": {
+    "moduleResolution": "bundler",
+    "plugins": [{ "name": "typescript-plugin-css-modules" }]
+  }
+}

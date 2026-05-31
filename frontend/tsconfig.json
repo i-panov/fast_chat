@@ -1,21 +1,24 @@
 {
+  "include": ["**/*.ts", "**/*.tsx"],
   "compilerOptions": {
-    "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "target": "ES2022",
+    "jsx": "react-jsx",
     "module": "ESNext",
-    "skipLibCheck": true,
+    "paths": {
+      "#/*": ["./src/*"],
+      "@/*": ["./src/*"]
+    },
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
-    "isolatedModules": true,
-    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
     "noEmit": true,
-    "jsx": "react-jsx",
+    "skipLibCheck": true,
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedIndexedAccess": true
-  },
-  "include": ["src"]
+    "noUncheckedSideEffectImports": true
+  }
 }

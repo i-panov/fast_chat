@@ -1,0 +1,11 @@
+{
+  "dependencies": {
+    "@mantine/core": "^9.2.2",
+    "@mantine/hooks": "^9.2.2"
+  },
+  "devDependencies": {
+    "postcss": "^8.5.15",
+    "postcss-preset-mantine": "^1.18.0",
+    "postcss-simple-vars": "^7.0.1"
+  }
+}

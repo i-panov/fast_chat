@@ -9,3 +9,5 @@ dist/
 .DS_Store
 Thumbs.db
 *.log
+.tanstack
+AGENTS.md

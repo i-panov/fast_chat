@@ -1,9 +1,7 @@
-// Package model defines the core data structures for the chat application.
 package model
 
 import "time"
 
-// User represents a chat participant.
 type User struct {
 	ID     string `json:"id"`
 	Nick   string `json:"nick"`
@@ -11,19 +9,17 @@ type User struct {
 	Online bool   `json:"online"`
 }
 
-// Chat represents a private conversation between two users.
 type Chat struct {
 	ID        string    `json:"id"`
 	Members   []string  `json:"-"`
-	CreatedAt time.Time `json:"created_at"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
-// Message represents a single message within a chat.
 type Message struct {
 	ID        string    `json:"id"`
-	ChatID    string    `json:"chat_id"`
-	FromID    string    `json:"from_id"`
-	FromNick  string    `json:"from_nick"`
+	ChatID    string    `json:"chatId"`
+	FromID    string    `json:"fromId"`
+	FromNick  string    `json:"fromNick"`
 	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"created_at"`
+	CreatedAt time.Time `json:"createdAt"`
 }
