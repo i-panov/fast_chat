@@ -10,6 +10,7 @@ import {
 } from "@mantine/core";
 import { Check, Copy, Pencil, Trash2 } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { extractCodeText } from "../../utils/chat.ts";
@@ -110,6 +111,7 @@ export function MessageBubble({
 }: Props) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const menuRef = useRef<HTMLDivElement>(null);
+	const { t } = useTranslation();
 
 	const canEdit = isOwn && isWithinTTL(createdAt, editTTL);
 	const canDelete = isOwn && isWithinTTL(createdAt, deleteTTL);
@@ -129,7 +131,7 @@ export function MessageBubble({
 
 	const editedLabel =
 		editedAt !== undefined
-			? `ред. ${new Date(editedAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`
+			? `${t("message.edited")} ${new Date(editedAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`
 			: null;
 
 	return (
@@ -242,7 +244,7 @@ export function MessageBubble({
 								<ActionIcon variant="transparent" color="gray" size={18} mr={6}>
 									<Copy size={14} />
 								</ActionIcon>
-								Копировать
+								{t("message.copy")}
 							</Button>
 							{canEdit && (
 								<Button
@@ -264,7 +266,7 @@ export function MessageBubble({
 									>
 										<Pencil size={14} />
 									</ActionIcon>
-									Редактировать
+									{t("message.edit")}
 								</Button>
 							)}
 							{canDelete && (
@@ -287,7 +289,7 @@ export function MessageBubble({
 									>
 										<Trash2 size={14} />
 									</ActionIcon>
-									Удалить
+									{t("message.delete")}
 								</Button>
 							)}
 						</Stack>

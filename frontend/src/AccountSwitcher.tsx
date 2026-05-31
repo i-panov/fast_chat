@@ -12,6 +12,8 @@ import {
 } from "@mantine/core";
 import type { FormEvent } from "react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "./i18n.ts";
 import { useAuth } from "./useAuth.tsx";
 
 interface Props {
@@ -133,6 +135,8 @@ function Footer({
 	onCancel: () => void;
 	onAddClick: () => void;
 }) {
+	const { t } = useTranslation();
+
 	if (!adding) {
 		return (
 			<Button
@@ -140,7 +144,7 @@ function Footer({
 				style={{ width: "100%", borderStyle: "dashed" }}
 				onClick={onAddClick}
 			>
-				+ Add Account
+				{t("accounts.add")}
 			</Button>
 		);
 	}
@@ -148,7 +152,7 @@ function Footer({
 		<form onSubmit={onSubmit}>
 			<Stack gap="xs">
 				<TextInput
-					placeholder="Nickname"
+					placeholder={t("accounts.addNick")}
 					maxLength={20}
 					value={newNick}
 					onChange={(e) => setNewNick(e.target.value)}
@@ -164,10 +168,10 @@ function Footer({
 						disabled={loading || newNick.trim().length === 0}
 						loading={loading}
 					>
-						{loading ? "Adding..." : "Add"}
+						{loading ? t("accounts.adding") : t("accounts.addBtn")}
 					</Button>
 					<Button variant="default" onClick={onCancel}>
-						Cancel
+						{t("accounts.cancel")}
 					</Button>
 				</Group>
 			</Stack>
@@ -183,6 +187,7 @@ interface HandleSubmitOpts {
 	setError: (v: string) => void;
 	setLoading: (v: boolean) => void;
 	onClose: () => void;
+	registerError: string;
 }
 
 async function handleSubmit(
@@ -200,13 +205,14 @@ async function handleSubmit(
 		opts.setNewNick("");
 		opts.onClose();
 	} catch (err) {
-		opts.setError(err instanceof Error ? err.message : "Registration failed");
+		opts.setError(err instanceof Error ? err.message : opts.registerError);
 	} finally {
 		opts.setLoading(false);
 	}
 }
 
 export function AccountSwitcher({ open, onClose, onLogout }: Props) {
+	const { t } = useTranslation();
 	const { accounts, activeAccount, switchAccount, login } = useAuth();
 	const [adding, setAdding] = useState(false);
 	const [newNick, setNewNick] = useState("");
@@ -245,7 +251,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 						order={2}
 						style={{ margin: 0, fontSize: "16px", color: "white" }}
 					>
-						Accounts
+						{t("accounts.title")}
 					</Title>
 				</div>
 				<AccountList
@@ -275,6 +281,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 								setError,
 								setLoading,
 								onClose,
+								registerError: t("error.register"),
 							})
 						}
 						onCancel={() => {
@@ -289,21 +296,47 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 						style={{ width: "100%", marginTop: "8px" }}
 						onClick={() => setConfirmLogout(true)}
 					>
-						Logout
+						{t("accounts.logout")}
 					</Button>
+					<div
+						style={{
+							borderTop: "1px solid var(--mantine-color-dark-4)",
+							padding: "12px 0 0",
+							marginTop: "12px",
+						}}
+					>
+						<Group gap="xs" grow>
+							<Button
+								variant="subtle"
+								color="gray"
+								size="sm"
+								onClick={() => i18n.changeLanguage("en")}
+							>
+								{t("lang.en")}
+							</Button>
+							<Button
+								variant="subtle"
+								color="gray"
+								size="sm"
+								onClick={() => i18n.changeLanguage("ru")}
+							>
+								{t("lang.ru")}
+							</Button>
+						</Group>
+					</div>
 				</div>
 				<Modal
 					opened={confirmLogout}
 					onClose={() => setConfirmLogout(false)}
-					title="Logout"
+					title={t("accounts.logoutTitle")}
 					size="sm"
 				>
 					<Text size="sm" mb="md">
-						Are you sure you want to logout?
+						{t("accounts.logoutConfirm")}
 					</Text>
 					<Group justify="flex-end" gap="xs">
 						<Button variant="default" onClick={() => setConfirmLogout(false)}>
-							Cancel
+							{t("accounts.cancel")}
 						</Button>
 						<Button
 							color="red"
@@ -313,7 +346,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 								onClose();
 							}}
 						>
-							Logout
+							{t("accounts.logout")}
 						</Button>
 					</Group>
 				</Modal>

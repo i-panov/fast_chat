@@ -1,7 +1,8 @@
 import type { MemberInfo } from "../api.ts";
+import i18n from "../i18n.ts";
 
 export function otherNick(members: MemberInfo[], myId: string): string {
-	return members.find((m) => m.id !== myId)?.nick ?? "Unknown";
+	return members.find((m) => m.id !== myId)?.nick ?? i18n.t("chat.unknownUser");
 }
 
 export function formatDateLabel(isoStr: string): string {
@@ -19,8 +20,8 @@ export function formatDateLabel(isoStr: string): string {
 	const todayStr = today.toLocaleDateString("ru-RU", fmt);
 	const yesterdayStr = yesterday.toLocaleDateString("ru-RU", fmt);
 
-	if (dStr === todayStr) return "Сегодня";
-	if (dStr === yesterdayStr) return "Вчера";
+	if (dStr === todayStr) return i18n.t("date.today");
+	if (dStr === yesterdayStr) return i18n.t("date.yesterday");
 	return dStr;
 }
 

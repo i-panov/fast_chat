@@ -1,6 +1,7 @@
 import { ActionIcon, Button, Paper, Text, Textarea } from "@mantine/core";
 import { X } from "lucide-react";
 import type React from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
 	text: string;
@@ -17,6 +18,8 @@ export function InputBar({
 	editing,
 	onCancelEdit,
 }: Props) {
+	const { t } = useTranslation();
+
 	return (
 		<div>
 			{editing && (
@@ -32,7 +35,7 @@ export function InputBar({
 					}}
 				>
 					<Text size="sm" c="blue">
-						Редактирование
+						{t("input.editBanner")}
 					</Text>
 					<ActionIcon
 						variant="subtle"
@@ -57,7 +60,7 @@ export function InputBar({
 				onSubmit={onSubmit}
 			>
 				<Textarea
-					placeholder="Type a message..."
+					placeholder={t("input.placeholder")}
 					value={text}
 					onChange={(e) => onTextChange(e.target.value)}
 					style={{ flex: 1 }}
@@ -76,7 +79,7 @@ export function InputBar({
 					}}
 				/>
 				<Button type="submit" disabled={text.trim().length === 0} size="sm">
-					{editing ? "Save" : "Send"}
+					{editing ? t("input.save") : t("input.send")}
 				</Button>
 			</form>
 		</div>

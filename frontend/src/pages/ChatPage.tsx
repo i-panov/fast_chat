@@ -1,4 +1,5 @@
 import { Center, Paper, Stack, Text } from "@mantine/core";
+import { useTranslation } from "react-i18next";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
 import { AppHeader } from "../components/chat/AppHeader.tsx";
 import { ChatList } from "../components/chat/ChatList.tsx";
@@ -9,6 +10,8 @@ import { useChatPage } from "../hooks/useChatInteraction.ts";
 import { otherNick } from "../utils/chat.ts";
 
 function ChatHeader({ title, badge }: { title: string; badge?: string }) {
+	const { t } = useTranslation();
+
 	return (
 		<Paper
 			component="header"
@@ -23,7 +26,7 @@ function ChatHeader({ title, badge }: { title: string; badge?: string }) {
 				@{title}
 				{badge !== undefined && (
 					<Text component="span" size="xs" c="dimmed" ml={8}>
-						{badge}
+						{t("chat.newChat")}
 					</Text>
 				)}
 			</Text>
@@ -33,6 +36,7 @@ function ChatHeader({ title, badge }: { title: string; badge?: string }) {
 
 export function ChatPage() {
 	const s = useChatPage();
+	const { t } = useTranslation();
 
 	if (s.activeAccount === null || s.user === null) {
 		return null;
@@ -85,7 +89,7 @@ export function ChatPage() {
 					<Stack h="100%" gap={0}>
 						{s.pendingChatWith !== null ? (
 							<>
-								<ChatHeader title={s.pendingChatNick ?? ""} badge="New chat" />
+								<ChatHeader title={s.pendingChatNick ?? ""} badge="newChat" />
 								<div
 									style={{
 										flex: 1,
@@ -95,7 +99,7 @@ export function ChatPage() {
 									}}
 								>
 									<Text ta="center" c="dimmed" size="sm">
-										Send a message to start a chat with @{s.pendingChatNick}
+										{t("chat.sendTo", { nick: s.pendingChatNick ?? "" })}
 									</Text>
 								</div>
 								<InputBar
@@ -109,7 +113,7 @@ export function ChatPage() {
 						) : s.activeChat === undefined ? (
 							<Center style={{ flex: 1 }}>
 								<Text ta="center" c="dimmed" size="sm">
-									Select a chat or search for a user to start messaging
+									{t("chat.selectPrompt")}
 								</Text>
 							</Center>
 						) : (

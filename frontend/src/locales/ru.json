@@ -1,0 +1,51 @@
+{
+	"accounts.title": "Аккаунты",
+	"accounts.add": "+ Добавить аккаунт",
+	"accounts.addNick": "Никнейм",
+	"accounts.addBtn": "Добавить",
+	"accounts.adding": "Добавление...",
+	"accounts.cancel": "Отмена",
+	"accounts.logout": "Выйти",
+	"accounts.logoutConfirm": "Вы уверены, что хотите выйти?",
+	"accounts.logoutTitle": "Выход",
+
+	"chat.newChat": "Новый чат",
+	"chat.sendTo": "Напишите сообщение, чтобы начать чат с @{{nick}}",
+	"chat.selectPrompt": "Выберите чат или найдите пользователя для начала переписки",
+	"chat.noMessages": "Сообщений пока нет",
+	"chat.noChats": "Чатов пока нет. Найдите пользователя выше, чтобы начать.",
+	"chat.loading": "Загрузка...",
+	"chat.unknownUser": "Неизвестный",
+
+	"input.editBanner": "Редактирование",
+	"input.placeholder": "Напишите сообщение...",
+	"input.save": "Сохранить",
+	"input.send": "Отправить",
+
+	"search.placeholder": "Поиск пользователей...",
+	"search.online": "(в сети)",
+
+	"login.title": "Fast Chat",
+	"login.subtitle": "Введите никнейм чтобы присоединиться",
+	"login.nick": "Никнейм",
+	"login.join": "Присоединиться",
+
+	"message.copy": "Копировать",
+	"message.edit": "Редактировать",
+	"message.delete": "Удалить",
+	"message.edited": "ред.",
+
+	"date.today": "Сегодня",
+	"date.yesterday": "Вчера",
+
+	"error.loadChats": "Не удалось загрузить чаты",
+	"error.search": "Поиск не удался",
+	"error.send": "Не удалось отправить сообщение",
+	"error.loadMessages": "Не удалось загрузить сообщения",
+	"error.loadConfig": "Не удалось загрузить конфигурацию",
+	"error.delete": "Не удалось удалить сообщение",
+	"error.register": "Ошибка регистрации",
+
+	"lang.en": "English",
+	"lang.ru": "Русский"
+}

@@ -1,5 +1,6 @@
 import { ActionIcon, Button, Paper, Text, TextInput } from "@mantine/core";
 import { X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { User } from "../../api.ts";
 
 interface Props {
@@ -17,6 +18,8 @@ export function SearchBox({
 	onQueryChange,
 	onSelectUser,
 }: Props) {
+	const { t } = useTranslation();
+
 	return (
 		<div
 			style={{
@@ -26,7 +29,7 @@ export function SearchBox({
 			}}
 		>
 			<TextInput
-				placeholder="Search users..."
+				placeholder={t("search.placeholder")}
 				value={query}
 				onChange={(e) => onQueryChange(e.target.value)}
 				size="sm"
@@ -70,7 +73,7 @@ export function SearchBox({
 							<Text size="sm">@{u.nick}</Text>
 							{u.online && (
 								<Text size="xs" c="dimmed" ml={4}>
-									(online)
+									{t("search.online")}
 								</Text>
 							)}
 						</Button>

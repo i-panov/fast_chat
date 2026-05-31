@@ -11,6 +11,7 @@ import {
 	searchUsers,
 	sendMessage,
 } from "../api.ts";
+import i18n from "../i18n.ts";
 import { useAuth } from "../useAuth.tsx";
 import { useSse } from "../useSse.ts";
 import { emitNotification } from "../utils/notify.ts";
@@ -52,7 +53,7 @@ function useTokenChange(
 				setChats(fetchedChats);
 			})
 			.catch(() => {
-				emitNotification("Failed to load chats");
+				emitNotification(i18n.t("error.loadChats"));
 			});
 	}, [
 		token,
@@ -80,7 +81,7 @@ function useSearch(
 					setResults(users);
 				})
 				.catch(() => {
-					emitNotification("Search failed");
+					emitNotification(i18n.t("error.search"));
 				});
 		}, SEARCH_DEBOUNCE_MS);
 		return () => {
@@ -206,7 +207,7 @@ function useSendMessage(opts: {
 			}
 		} catch {
 			setInputText(text);
-			emitNotification("Failed to send message");
+			emitNotification(i18n.t("error.send"));
 		}
 	};
 }
@@ -276,7 +277,7 @@ function useChatInteraction(opts: {
 					}));
 				})
 				.catch(() => {
-					emitNotification("Failed to load messages");
+					emitNotification(i18n.t("error.loadMessages"));
 				});
 		}
 	}
@@ -367,7 +368,7 @@ export function useChatPage() {
 		getConfig()
 			.then(setConfig)
 			.catch(() => {
-				emitNotification("Failed to load config");
+				emitNotification(i18n.t("error.loadConfig"));
 			});
 	}, []);
 
@@ -388,7 +389,7 @@ export function useChatPage() {
 		(chatId: string, messageId: string) => {
 			if (activeAccount === null) return;
 			deleteMessage(activeAccount.token, chatId, messageId).catch(() => {
-				emitNotification("Failed to delete message");
+				emitNotification(i18n.t("error.delete"));
 			});
 		},
 		[activeAccount],
@@ -433,7 +434,7 @@ export function useChatPage() {
 					[chatId]: nxt != null && nxt !== "",
 				}));
 			} catch {
-				emitNotification("Failed to load messages");
+				emitNotification(i18n.t("error.loadMessages"));
 			} finally {
 				setIsLoadingMore(false);
 				loadingMoreRef.current = false;

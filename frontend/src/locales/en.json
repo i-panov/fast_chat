@@ -1,0 +1,51 @@
+{
+	"accounts.title": "Accounts",
+	"accounts.add": "+ Add Account",
+	"accounts.addNick": "Nickname",
+	"accounts.addBtn": "Add",
+	"accounts.adding": "Adding...",
+	"accounts.cancel": "Cancel",
+	"accounts.logout": "Logout",
+	"accounts.logoutConfirm": "Are you sure you want to logout?",
+	"accounts.logoutTitle": "Logout",
+
+	"chat.newChat": "New chat",
+	"chat.sendTo": "Send a message to start a chat with @{{nick}}",
+	"chat.selectPrompt": "Select a chat or search for a user to start messaging",
+	"chat.noMessages": "No messages yet",
+	"chat.noChats": "No chats yet. Search for a user above to start one.",
+	"chat.loading": "Loading...",
+	"chat.unknownUser": "Unknown",
+
+	"input.editBanner": "Editing",
+	"input.placeholder": "Type a message...",
+	"input.save": "Save",
+	"input.send": "Send",
+
+	"search.placeholder": "Search users...",
+	"search.online": "(online)",
+
+	"login.title": "Fast Chat",
+	"login.subtitle": "Enter your nickname to join",
+	"login.nick": "Nickname",
+	"login.join": "Join",
+
+	"message.copy": "Copy",
+	"message.edit": "Edit",
+	"message.delete": "Delete",
+	"message.edited": "edited",
+
+	"date.today": "Today",
+	"date.yesterday": "Yesterday",
+
+	"error.loadChats": "Failed to load chats",
+	"error.search": "Search failed",
+	"error.send": "Failed to send message",
+	"error.loadMessages": "Failed to load messages",
+	"error.loadConfig": "Failed to load config",
+	"error.delete": "Failed to delete message",
+	"error.register": "Registration failed",
+
+	"lang.en": "English",
+	"lang.ru": "Русский"
+}

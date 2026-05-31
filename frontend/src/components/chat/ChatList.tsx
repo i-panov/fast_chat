@@ -1,4 +1,5 @@
 import { Button, ScrollArea, Text } from "@mantine/core";
+import { useTranslation } from "react-i18next";
 import type { Chat } from "../../api.ts";
 import { otherNick } from "../../utils/chat.ts";
 
@@ -10,11 +11,13 @@ interface Props {
 }
 
 export function ChatList({ chats, activeChatId, userId, onSelectChat }: Props) {
+	const { t } = useTranslation();
+
 	return (
 		<ScrollArea style={{ flex: 1 }}>
 			{chats.length === 0 && (
 				<Text ta="center" c="dimmed" size="sm" py={32}>
-					No chats yet. Search for a user above to start one.
+					{t("chat.noChats")}
 				</Text>
 			)}
 			{chats.map((chat) => (

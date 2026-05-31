@@ -1,5 +1,6 @@
 import { Loader, Text } from "@mantine/core";
 import { Fragment, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { Message } from "../../api.ts";
 import { formatDateLabel, formatTime } from "../../utils/chat.ts";
 import { MessageBubble } from "./MessageBubble.tsx";
@@ -35,6 +36,7 @@ export function MessageList({
 	isLoadingMore,
 	onLoadMore,
 }: Props) {
+	const { t } = useTranslation();
 	const containerRef = useRef<HTMLDivElement>(null);
 	const sentinelRef = useRef<HTMLDivElement>(null);
 	const scrollAnchorRef = useRef(0);
@@ -82,7 +84,7 @@ export function MessageList({
 				}}
 			>
 				<Text ta="center" c="dimmed" size="sm">
-					No messages yet
+					{t("chat.noMessages")}
 				</Text>
 			</div>
 		);
@@ -107,6 +109,7 @@ export function MessageList({
 			{isLoadingMore && (
 				<Text ta="center" size="xs" c="dimmed" py={4}>
 					<Loader size="xs" type="dots" />
+					{t("chat.loading")}
 				</Text>
 			)}
 			<div ref={sentinelRef} style={{ height: 1 }} />

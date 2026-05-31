@@ -1,16 +1,15 @@
 import { Button, Center, Paper, Text, TextInput, Title } from "@mantine/core";
 import { Navigate, useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useAuth } from "../useAuth.tsx";
-
-const BRAND_TITLE = "Fast Chat";
-const JOIN_INSTRUCTION = "Enter your nickname to join";
 
 export function LoginPage() {
 	const [nick, setNick] = useState("");
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(false);
 	const navigate = useNavigate();
+	const { t } = useTranslation();
 	const { login, activeAccount } = useAuth();
 
 	if (activeAccount !== null) {
@@ -30,7 +29,7 @@ export function LoginPage() {
 			await login(trimmed);
 			navigate({ to: "/chat" });
 		} catch (err) {
-			setError(err instanceof Error ? err.message : "Registration failed");
+			setError(err instanceof Error ? err.message : t("error.register"));
 		} finally {
 			setLoading(false);
 		}
@@ -41,13 +40,13 @@ export function LoginPage() {
 			<Paper withBorder p="xl" className="w-80">
 				<form onSubmit={handleSubmit} className="flex flex-col gap-4">
 					<Title order={1} ta="center" c="blue">
-						{BRAND_TITLE}
+						{t("login.title")}
 					</Title>
 					<Text ta="center" size="sm" c="dimmed">
-						{JOIN_INSTRUCTION}
+						{t("login.subtitle")}
 					</Text>
 					<TextInput
-						placeholder="Nickname"
+						placeholder={t("login.nick")}
 						maxLength={20}
 						value={nick}
 						onChange={(e) => setNick(e.target.value)}
@@ -63,7 +62,7 @@ export function LoginPage() {
 						disabled={loading || nick.trim().length === 0}
 						loading={loading}
 					>
-						Join
+						{t("login.join")}
 					</Button>
 				</form>
 			</Paper>
