@@ -113,8 +113,15 @@ func main() {
 
 	rl := newRateLimiter(100, 1*time.Minute)
 
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	addr := ":" + port
+
 	server := &http.Server{
-		Addr:              ":8080",
+		Addr:              addr,
 		Handler:           corsMiddleware(rateLimitMiddleware(rl)(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -126,7 +133,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Println("Server starting on :8080")
+		log.Printf("Server starting on %s", addr) //nolint:gosec // addr is ":<port>" from env or default
 
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("Server error: %v", err)
