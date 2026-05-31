@@ -37,9 +37,17 @@ async function request<T>(
   }
   const res = await fetch(path, { ...init, headers });
   if (res.status === 401) {
-    sessionStorage.removeItem("token");
-    sessionStorage.removeItem("user");
-    window.location.href = "/login";
+    const raw = localStorage.getItem("accounts");
+    if (raw !== null) {
+      const accounts = JSON.parse(raw) as { token: string; user: { id: string; nick: string } }[];
+      const filtered = accounts.filter((a) => a.token !== token);
+      localStorage.setItem("accounts", JSON.stringify(filtered));
+      if (filtered.length === 0) {
+        window.location.href = "/login";
+      }
+    } else {
+      window.location.href = "/login";
+    }
     throw new Error("unauthorized");
   }
   if (!res.ok) {

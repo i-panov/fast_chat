@@ -1,12 +1,18 @@
 import { useState, type SubmitEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { register } from "../api";
+import { useAuth } from "../useAuth";
 
 export default function LoginPage() {
   const [nick, setNick] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { login, accounts } = useAuth();
+
+  if (accounts.length > 0) {
+    void navigate("/chat", { replace: true });
+    return null;
+  }
 
   async function handleSubmit(e: SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -18,9 +24,7 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const { user, token } = await register(trimmed);
-      sessionStorage.setItem("token", token);
-      sessionStorage.setItem("user", JSON.stringify(user));
+      await login(trimmed);
       void navigate("/chat", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
@@ -39,9 +43,7 @@ export default function LoginPage() {
           placeholder="Nickname"
           maxLength={20}
           value={nick}
-          onChange={(e) => {
-            setNick(e.target.value);
-          }}
+          onChange={(e) => { setNick(e.target.value); }}
           autoFocus
         />
         {error.length > 0 && <p className="error">{error}</p>}

@@ -18,6 +18,8 @@ export function useSSE(token: string, onEvent: EventHandler) {
   }, [onEvent]);
 
   useEffect(() => {
+    if (token === "") { return; }
+
     const url = `/api/events?token=${encodeURIComponent(token)}`;
     const source = new EventSource(url);
 
@@ -44,17 +46,13 @@ export function useSSE(token: string, onEvent: EventHandler) {
     });
 
     source.onerror = () => {
-      if (isClosed(source) && sessionStorage.getItem("token") !== null) {
-        sessionStorage.removeItem("token");
-        sessionStorage.removeItem("user");
-        window.location.href = "/login";
+      if (isClosed(source)) {
+        onEventRef.current("sse_closed", null);
         return;
       }
       onEventRef.current("error", null);
     };
 
-    return () => {
-      source.close();
-    };
+    return () => { source.close(); };
   }, [token]);
 }
