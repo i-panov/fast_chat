@@ -1,6 +1,7 @@
 import {
 	Button,
 	Group,
+	Modal,
 	Overlay,
 	ScrollArea,
 	Stack,
@@ -16,6 +17,7 @@ import { useAuth } from "./useAuth.tsx";
 interface Props {
 	open: boolean;
 	onClose: () => void;
+	onLogout: () => void;
 }
 
 function AccountRow({
@@ -204,12 +206,13 @@ async function handleSubmit(
 	}
 }
 
-export function AccountSwitcher({ open, onClose }: Props) {
+export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const { accounts, activeAccount, switchAccount, login } = useAuth();
 	const [adding, setAdding] = useState(false);
 	const [newNick, setNewNick] = useState("");
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(false);
+	const [confirmLogout, setConfirmLogout] = useState(false);
 
 	return (
 		<>
@@ -280,7 +283,40 @@ export function AccountSwitcher({ open, onClose }: Props) {
 						}}
 						onAddClick={() => setAdding(true)}
 					/>
+					<Button
+						variant="outline"
+						color="red"
+						style={{ width: "100%", marginTop: "8px" }}
+						onClick={() => setConfirmLogout(true)}
+					>
+						Logout
+					</Button>
 				</div>
+				<Modal
+					opened={confirmLogout}
+					onClose={() => setConfirmLogout(false)}
+					title="Logout"
+					size="sm"
+				>
+					<Text size="sm" mb="md">
+						Are you sure you want to logout?
+					</Text>
+					<Group justify="flex-end" gap="xs">
+						<Button variant="default" onClick={() => setConfirmLogout(false)}>
+							Cancel
+						</Button>
+						<Button
+							color="red"
+							onClick={() => {
+								setConfirmLogout(false);
+								onLogout();
+								onClose();
+							}}
+						>
+							Logout
+						</Button>
+					</Group>
+				</Modal>
 			</div>
 		</>
 	);

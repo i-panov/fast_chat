@@ -43,13 +43,9 @@ export function ChatPage() {
 			<AccountSwitcher
 				open={s.switcherOpen}
 				onClose={() => s.setSwitcherOpen(false)}
-			/>
-			<AppHeader
-				nick={s.activeAccount.user.nick}
-				accountCount={s.accounts.length}
-				onSwitcherToggle={() => s.setSwitcherOpen(true)}
 				onLogout={s.logout}
 			/>
+			<AppHeader onSwitcherToggle={() => s.setSwitcherOpen(true)} />
 			<div style={{ display: "flex", flex: 1, minHeight: 0 }}>
 				<Paper
 					component="aside"
