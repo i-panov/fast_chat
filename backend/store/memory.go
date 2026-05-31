@@ -215,7 +215,8 @@ func (s *Store) EditMessage(chatID, messageID, userID, newText string) (*model.M
 }
 
 // AddMessage stores a new message in the given chat.
-func (s *Store) AddMessage(chatID, fromID, fromNick, text string) (*model.Message, error) {
+// If messageID is non-empty, it is used as the message ID; otherwise one is generated.
+func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID string) (*model.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -223,8 +224,13 @@ func (s *Store) AddMessage(chatID, fromID, fromNick, text string) (*model.Messag
 		return nil, errors.New("chat not found")
 	}
 
+	id := messageID
+	if id == "" {
+		id = generateID()
+	}
+
 	msg := model.Message{
-		ID:        generateID(),
+		ID:        id,
 		ChatID:    chatID,
 		FromID:    fromID,
 		FromNick:  fromNick,
@@ -466,7 +472,8 @@ func (s *Store) GetThreadMessagesPaginated(threadID string, limit int, before st
 }
 
 // AddThreadMessage stores a new message in a thread.
-func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text string) (*model.Message, error) {
+// If messageID is non-empty, it is used as the message ID; otherwise one is generated.
+func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID string) (*model.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -475,8 +482,13 @@ func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text string) (*mode
 		return nil, errors.New("thread not found")
 	}
 
+	id := messageID
+	if id == "" {
+		id = generateID()
+	}
+
 	msg := model.Message{
-		ID:        generateID(),
+		ID:        id,
 		ChatID:    threadID,
 		FromID:    fromID,
 		FromNick:  fromNick,

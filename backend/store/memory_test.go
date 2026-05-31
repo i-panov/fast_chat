@@ -143,7 +143,7 @@ func TestAddMessage(t *testing.T) {
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
 
-	msg, err := s.AddMessage(chat.ID, "alice:test", "alice", "Hello!")
+	msg, err := s.AddMessage(chat.ID, "alice:test", "alice", "Hello!", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestAddMessage(t *testing.T) {
 		t.Errorf("expected %s, got %s", chat.ID, msg.ChatID)
 	}
 
-	_, err = s.AddMessage("nonexistent", "alice:test", "alice", "test")
+	_, err = s.AddMessage("nonexistent", "alice:test", "alice", "test", "")
 	if err == nil {
 		t.Error("expected error for nonexistent chat")
 	}
@@ -170,7 +170,7 @@ func TestEditMessage(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello")
+	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "")
 
 	updated, err := s.EditMessage(chat.ID, msg.ID, "alice:test", "Edited!")
 	if err != nil {
@@ -195,7 +195,7 @@ func TestDeleteMessage(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello")
+	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "")
 
 	err := s.DeleteMessage(chat.ID, msg.ID, "alice:test")
 	if err != nil {
@@ -216,7 +216,7 @@ func TestGetMessagesPaginated(t *testing.T) {
 	chat, _ := s.CreateChat("alice:test", "bob:test")
 
 	for i := 0; i < 10; i++ {
-		s.AddMessage(chat.ID, "alice:test", "alice", fmt.Sprintf("msg-%d", i))
+		s.AddMessage(chat.ID, "alice:test", "alice", fmt.Sprintf("msg-%d", i), "")
 	}
 
 	msgs, next, hasMore := s.GetMessagesPaginated(chat.ID, 4, "")

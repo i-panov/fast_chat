@@ -111,10 +111,10 @@ export function getMessages(
 	);
 }
 
-export function sendMessage(token: string, chatId: string, text: string) {
+export function sendMessage(token: string, chatId: string, text: string, id: string) {
 	return request<{ message: Message }>(`/api/chats/${chatId}/messages`, token, {
 		method: "POST",
-		body: JSON.stringify({ text }),
+		body: JSON.stringify({ id, text }),
 	});
 }
 
@@ -178,11 +178,12 @@ export function sendThreadMessage(
 	chatId: string,
 	threadId: string,
 	text: string,
+	id: string,
 ) {
 	return request<{ message: Message }>(
 		`/api/chats/${chatId}/threads/${threadId}/messages`,
 		token,
-		{ method: "POST", body: JSON.stringify({ text }) },
+		{ method: "POST", body: JSON.stringify({ id, text }) },
 	);
 }
 

@@ -456,6 +456,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
+		ID   string `json:"id"`
 		Text string `json:"text"`
 	}
 
@@ -472,7 +473,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg, err := h.store.AddMessage(chatID, user.ID, user.Nick, req.Text)
+	msg, err := h.store.AddMessage(chatID, user.ID, user.Nick, req.Text, req.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
 
@@ -942,6 +943,7 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
+		ID   string `json:"id"`
 		Text string `json:"text"`
 	}
 
@@ -956,7 +958,7 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg, err := h.store.AddThreadMessage(threadID, user.ID, user.Nick, req.Text)
+	msg, err := h.store.AddThreadMessage(threadID, user.ID, user.Nick, req.Text, req.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
 		return

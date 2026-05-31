@@ -224,6 +224,7 @@ function useSendMessage(opts: {
 
 		sendingRef.current = true;
 		const text = inputText;
+		const msgId = crypto.randomUUID();
 		setInputText("");
 
 		try {
@@ -243,9 +244,9 @@ function useSendMessage(opts: {
 				setActiveChatId(chat.id);
 				setPendingChatWith(null);
 				setPendingChatNick(null);
-				await sendMessage(activeAccount.token, chat.id, text);
+				await sendMessage(activeAccount.token, chat.id, text, msgId);
 			} else if (activeChatId2 !== null) {
-				await sendMessage(activeAccount.token, activeChatId2, text);
+				await sendMessage(activeAccount.token, activeChatId2, text, msgId);
 			}
 		} catch {
 			setInputText(text);
@@ -632,6 +633,7 @@ export function useChatPage() {
 
 			threadSendingRef.current = true;
 			const text = interaction.inputText;
+			const msgId = crypto.randomUUID();
 			interaction.setInputText("");
 
 			const thread = threads[activeThreadId];
@@ -647,6 +649,7 @@ export function useChatPage() {
 					thread.chatId,
 					activeThreadId,
 					text,
+					msgId,
 				);
 			} catch {
 				interaction.setInputText(text);
