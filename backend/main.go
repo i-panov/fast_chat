@@ -104,6 +104,13 @@ func main() {
 	mux.HandleFunc("PATCH /api/chats/{id}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.EditMessage))
 	mux.HandleFunc("DELETE /api/chats/{id}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.DeleteMessage))
 
+	// Federated endpoints (server-to-server, no auth)
+	mux.HandleFunc("GET /api/federated/users/search", handlerInstance.FederatedSearchUsers)
+	mux.HandleFunc("POST /api/federated/chats", handlerInstance.FederatedCreateChat)
+	mux.HandleFunc("POST /api/federated/chats/{id}/messages", handlerInstance.FederatedSendMessage)
+	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", handlerInstance.FederatedEditMessage)
+	mux.HandleFunc("DELETE /api/federated/chats/{id}/messages/{messageId}", handlerInstance.FederatedDeleteMessage)
+
 	rl := newRateLimiter(100, 1*time.Minute)
 
 	server := &http.Server{

@@ -2,12 +2,15 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -131,10 +134,65 @@ func (h *Handler) enrichChat(c *model.Chat) chatResponse {
 	for _, member := range c.Members {
 		if u, ok := h.store.GetUserByID(member); ok {
 			cr.Members = append(cr.Members, memberInfo{ID: member, Nick: u.Nick})
+		} else {
+			cr.Members = append(cr.Members, memberInfo{ID: member, Nick: member})
 		}
 	}
 
 	return cr
+}
+
+// remoteServerFromID extracts the server domain from a federated user ID ("nick:domain").
+func remoteServerFromID(id string) string {
+	if idx := strings.LastIndex(id, ":"); idx != -1 && idx < len(id)-1 {
+		return id[idx+1:]
+	}
+
+	return ""
+}
+
+func federatedURL(remoteServer, path string) string {
+	return fmt.Sprintf("http://%s%s", remoteServer, path)
+}
+
+func (h *Handler) doFederatedRequest(ctx context.Context, method, url string, body interface{}) ([]byte, error) {
+	var bodyReader io.Reader
+
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+
+		bodyReader = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("federated request failed: %w", err)
+	}
+
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode >= 400 {
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("federated request returned %d", resp.StatusCode)
+		}
+
+		return nil, fmt.Errorf("federated request returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	return io.ReadAll(resp.Body)
 }
 
 func (h *Handler) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -178,7 +236,15 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.CreateUser(req.Nick)
+	if strings.Contains(req.Nick, ":") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "nick must not contain ':'"})
+
+		return
+	}
+
+	fullID := req.Nick + ":" + h.cfg.ServerDomain
+
+	user, err := h.store.CreateUser(fullID, req.Nick)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{mapKeyError: err.Error()})
 
@@ -194,6 +260,38 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	query := r.URL.Query().Get("q")
+
+	if idx := strings.Index(query, ":"); idx != -1 {
+		remoteNick := query[:idx]
+		remoteDomain := query[idx+1:]
+
+		remoteURL := federatedURL(remoteDomain, "/api/federated/users/search?q="+url.QueryEscape(remoteNick))
+
+		data, err := h.doFederatedRequest(r.Context(), http.MethodGet, remoteURL, nil)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{mapKeyError: err.Error()})
+
+			return
+		}
+
+		var result struct {
+			Users []model.User `json:"users"`
+		}
+
+		if err := json.Unmarshal(data, &result); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to parse remote response"})
+
+			return
+		}
+
+		for i := range result.Users {
+			result.Users[i].Nick = result.Users[i].ID
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{"users": result.Users})
+
+		return
+	}
 
 	users := h.store.SearchUsers(query, user.ID)
 	if users == nil {
@@ -236,10 +334,14 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := h.store.GetUserByID(req.WithUserID); !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "user not found"})
+	remoteServer := remoteServerFromID(req.WithUserID)
 
-		return
+	if remoteServer == "" {
+		if _, ok := h.store.GetUserByID(req.WithUserID); !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "user not found"})
+
+			return
+		}
 	}
 
 	chat, err := h.store.CreateChat(user.ID, req.WithUserID)
@@ -251,7 +353,25 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 
 	enriched := h.enrichChat(chat)
 	h.hub.Send(user.ID, SSEEvent{Event: "chat_created", Data: enriched})
-	h.hub.Send(req.WithUserID, SSEEvent{Event: "chat_created", Data: enriched})
+
+	if remoteServer != "" {
+		chat.RemoteServer = remoteServer
+
+		h.hub.Send(req.WithUserID, SSEEvent{Event: "chat_created", Data: enriched})
+
+		fedURL := federatedURL(remoteServer, "/api/federated/chats")
+
+		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, map[string]interface{}{
+			"chatId":       chat.ID,
+			"members":      chat.Members,
+			"remoteServer": h.cfg.ServerDomain,
+		})
+		if fedErr != nil {
+			log.Printf("federated create chat failed: %v", fedErr)
+		}
+	} else {
+		h.hub.Send(req.WithUserID, SSEEvent{Event: "chat_created", Data: enriched})
+	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"chat": enriched})
 }
@@ -352,6 +472,20 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if chat.RemoteServer != "" {
+		fedURL := federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages")
+
+		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, map[string]interface{}{
+			"id":       msg.ID,
+			"fromId":   msg.FromID,
+			"fromNick": msg.FromNick,
+			"text":     msg.Text,
+		})
+		if fedErr != nil {
+			log.Printf("federated send message failed: %v", fedErr)
+		}
+	}
+
 	for _, memberID := range chat.Members {
 		h.hub.Send(memberID, SSEEvent{Event: "new_message", Data: msg})
 	}
@@ -364,6 +498,163 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		"messageEditTTL":   h.cfg.MessageEditTTL,
 		"messageDeleteTTL": h.cfg.MessageDeleteTTL,
 	})
+}
+
+// FederatedSearchUsers handles search requests from remote servers (no auth).
+func (h *Handler) FederatedSearchUsers(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	users := h.store.SearchUsers(query, "")
+
+	if users == nil {
+		users = []model.User{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
+}
+
+// FederatedCreateChat creates a chat on behalf of a remote server.
+func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	var req struct {
+		ChatID       string   `json:"chatId"`
+		Members      []string `json:"members"`
+		RemoteServer string   `json:"remoteServer"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		return
+	}
+
+	if _, ok := h.store.GetChat(req.ChatID); ok {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already exists"})
+		return
+	}
+
+	chat := &model.Chat{
+		ID:           req.ChatID,
+		Members:      req.Members,
+		CreatedAt:    time.Now(),
+		RemoteServer: req.RemoteServer,
+	}
+
+	h.store.CreateRemoteChat(chat)
+
+	enriched := h.enrichChat(chat)
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "chat_created", Data: enriched})
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"chat": enriched})
+}
+
+// FederatedSendMessage handles incoming messages from remote servers.
+func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	chatID := r.PathValue("id")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		return
+	}
+
+	var req struct {
+		ID       string `json:"id"`
+		FromID   string `json:"fromId"`
+		FromNick string `json:"fromNick"`
+		Text     string `json:"text"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		return
+	}
+
+	msg := model.Message{
+		ID:        req.ID,
+		ChatID:    chatID,
+		FromID:    req.FromID,
+		FromNick:  req.FromNick,
+		Text:      req.Text,
+		CreatedAt: time.Now(),
+	}
+
+	if err := h.store.AddRawMessage(&msg); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+		return
+	}
+
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "new_message", Data: &msg})
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
+}
+
+// FederatedEditMessage handles incoming message edits from remote servers.
+func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	chatID := r.PathValue("id")
+	messageID := r.PathValue("messageId")
+
+	var req struct {
+		Text string `json:"text"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		return
+	}
+
+	now := time.Now()
+	updated := &model.Message{
+		Text:     req.Text,
+		EditedAt: &now,
+	}
+
+	if err := h.store.EditRawMessage(chatID, messageID, req.Text, now); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: err.Error()})
+		return
+	}
+
+	updated.ID = messageID
+	updated.ChatID = chatID
+
+	chat, ok := h.store.GetChat(chatID)
+	if ok {
+		for _, memberID := range chat.Members {
+			h.hub.Send(memberID, SSEEvent{Event: "message_updated", Data: updated})
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": updated})
+}
+
+// FederatedDeleteMessage handles incoming message deletions from remote servers.
+func (h *Handler) FederatedDeleteMessage(w http.ResponseWriter, r *http.Request) {
+	chatID := r.PathValue("id")
+	messageID := r.PathValue("messageId")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		return
+	}
+
+	if err := h.store.DeleteRawMessage(chatID, messageID); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: err.Error()})
+		return
+	}
+
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "message_deleted", Data: map[string]string{"chatId": chatID, "messageId": messageID}})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
@@ -435,6 +726,17 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if chat.RemoteServer != "" {
+		fedURL := federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
+
+		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPatch, fedURL, map[string]string{
+			"text": req.Text,
+		})
+		if fedErr != nil {
+			log.Printf("federated edit message failed: %v", fedErr)
+		}
+	}
+
 	for _, memberID := range chat.Members {
 		h.hub.Send(memberID, SSEEvent{Event: "message_updated", Data: updated})
 	}
@@ -489,6 +791,15 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: err.Error()})
 
 		return
+	}
+
+	if chat.RemoteServer != "" {
+		fedURL := federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
+
+		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodDelete, fedURL, nil)
+		if fedErr != nil {
+			log.Printf("federated delete message failed: %v", fedErr)
+		}
 	}
 
 	for _, memberID := range chat.Members {

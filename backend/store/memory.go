@@ -42,17 +42,18 @@ func New() *Store {
 	}
 }
 
-// CreateUser registers a new user with the given nickname.
-func (s *Store) CreateUser(nick string) (*model.User, error) {
+// CreateUser registers a new user with the given full ID and display nickname.
+// fullID should be in "nick:domain" format, nick is the display name without domain.
+func (s *Store) CreateUser(fullID, nick string) (*model.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.nicks[nick]; exists {
+	if _, exists := s.nicks[fullID]; exists {
 		return nil, errors.New("nickname already taken")
 	}
 
 	user := &model.User{
-		ID:     generateID(),
+		ID:     fullID,
 		Nick:   nick,
 		Token:  generateID(),
 		Online: true,
@@ -60,7 +61,7 @@ func (s *Store) CreateUser(nick string) (*model.User, error) {
 
 	s.users[user.ID] = user
 	s.tokens[user.Token] = user
-	s.nicks[nick] = user.ID
+	s.nicks[fullID] = user.ID
 
 	return user, nil
 }
@@ -298,6 +299,66 @@ func (s *Store) DeleteMessage(chatID, messageID, userID string) error {
 				return errors.New("not your message")
 			}
 
+			s.messages[chatID] = append(msgs[:idx], msgs[idx+1:]...)
+
+			return nil
+		}
+	}
+
+	return errors.New("message not found")
+}
+
+// CreateRemoteChat stores a chat with a pre-generated ID (used by federated endpoints).
+func (s *Store) CreateRemoteChat(chat *model.Chat) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.chats[chat.ID] = chat
+	if _, ok := s.messages[chat.ID]; !ok {
+		s.messages[chat.ID] = []model.Message{}
+	}
+}
+
+// AddRawMessage appends a pre-built message to a chat (used by federated endpoints).
+func (s *Store) AddRawMessage(msg *model.Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.chats[msg.ChatID]; !ok {
+		return errors.New("chat not found")
+	}
+
+	s.messages[msg.ChatID] = append(s.messages[msg.ChatID], *msg)
+
+	return nil
+}
+
+// EditRawMessage updates a message's text without ownership check (used by federated endpoints).
+func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msgs := s.messages[chatID]
+	for idx := range msgs {
+		if msgs[idx].ID == messageID {
+			msgs[idx].Text = text
+			msgs[idx].EditedAt = &editedAt
+
+			return nil
+		}
+	}
+
+	return errors.New("message not found")
+}
+
+// DeleteRawMessage removes a message without ownership check (used by federated endpoints).
+func (s *Store) DeleteRawMessage(chatID, messageID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msgs := s.messages[chatID]
+	for idx, msg := range msgs {
+		if msg.ID == messageID {
 			s.messages[chatID] = append(msgs[:idx], msgs[idx+1:]...)
 
 			return nil

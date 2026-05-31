@@ -13,9 +13,10 @@ type User struct {
 
 // Chat represents a private conversation between users.
 type Chat struct {
-	ID        string    `json:"id"`
-	Members   []string  `json:"-"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID           string    `json:"id"`
+	Members      []string  `json:"-"`
+	CreatedAt    time.Time `json:"createdAt"`
+	RemoteServer string    `json:"-"` // empty = local chat, "host:port" = federated
 }
 
 // Message represents a single message within a chat.
