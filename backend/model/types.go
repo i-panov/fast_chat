@@ -20,10 +20,11 @@ type Chat struct {
 
 // Message represents a single message within a chat.
 type Message struct {
-	ID        string    `json:"id"`
-	ChatID    string    `json:"chatId"`
-	FromID    string    `json:"fromId"`
-	FromNick  string    `json:"fromNick"`
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID        string     `json:"id"`
+	ChatID    string     `json:"chatId"`
+	FromID    string     `json:"fromId"`
+	FromNick  string     `json:"fromNick"`
+	Text      string     `json:"text"`
+	CreatedAt time.Time  `json:"createdAt"`
+	EditedAt  *time.Time `json:"editedAt,omitempty"`
 }

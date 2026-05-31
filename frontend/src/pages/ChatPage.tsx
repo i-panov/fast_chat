@@ -99,6 +99,8 @@ export function ChatPage() {
 									text={s.inputText}
 									onTextChange={s.setInputText}
 									onSubmit={s.handleSend}
+									editing={s.editingMessage !== null}
+									onCancelEdit={s.handleCancelEdit}
 								/>
 							</>
 						) : s.activeChat === undefined ? (
@@ -117,12 +119,17 @@ export function ChatPage() {
 										messages={s.activeMessages}
 										userId={s.user.id}
 										onDelete={s.handleDeleteMessage}
+										onStartEdit={s.handleStartEdit}
+										editTTL={s.config?.messageEditTTL ?? 0}
+										deleteTTL={s.config?.messageDeleteTTL ?? 0}
 									/>
 								</ScrollArea>
 								<InputBar
 									text={s.inputText}
 									onTextChange={s.setInputText}
 									onSubmit={s.handleSend}
+									editing={s.editingMessage !== null}
+									onCancelEdit={s.handleCancelEdit}
 								/>
 							</>
 						)}

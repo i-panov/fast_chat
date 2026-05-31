@@ -1,10 +1,12 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Chat, Message, User } from "../api.ts";
+import type { AppConfig, Chat, Message, User } from "../api.ts";
 import {
 	createChat,
 	deleteMessage,
+	editMessage,
 	getChats,
+	getConfig,
 	getMessages,
 	searchUsers,
 	sendMessage,
@@ -98,6 +100,16 @@ function useSseMessages(
 					...prev,
 					[msg.chatId]: [...(prev[msg.chatId] ?? []), msg],
 				}));
+			} else if (event === "message_updated") {
+				const msg = data as Message;
+				setMessages((prev) => {
+					const msgs = prev[msg.chatId];
+					if (msgs === undefined) return prev;
+					return {
+						...prev,
+						[msg.chatId]: msgs.map((m) => (m.id === msg.id ? msg : m)),
+					};
+				});
 			} else if (event === "chat_created") {
 				const chat = data as Chat;
 				setChats((prev) => {
@@ -121,6 +133,12 @@ function useSseMessages(
 	useSse(token, handler);
 }
 
+interface EditingMessage {
+	chatId: string;
+	messageId: string;
+	text: string;
+}
+
 function useSendMessage(opts: {
 	activeAccount: { token: string } | null;
 	inputText: string;
@@ -131,6 +149,8 @@ function useSendMessage(opts: {
 	setPendingChatNick: (v: string | null) => void;
 	setActiveChatId: (v: string | null) => void;
 	activeChatId: string | null;
+	editingMessage: EditingMessage | null;
+	setEditingMessage: (v: EditingMessage | null) => void;
 }) {
 	const {
 		activeAccount,
@@ -142,6 +162,8 @@ function useSendMessage(opts: {
 		setPendingChatNick,
 		setActiveChatId,
 		activeChatId: activeChatId2,
+		editingMessage,
+		setEditingMessage,
 	} = opts;
 	return async function handleSend(e: React.FormEvent<HTMLFormElement>) {
 		e.preventDefault();
@@ -151,7 +173,15 @@ function useSendMessage(opts: {
 		setInputText("");
 
 		try {
-			if (pendingChatWith !== null) {
+			if (editingMessage !== null) {
+				await editMessage(
+					activeAccount.token,
+					editingMessage.chatId,
+					editingMessage.messageId,
+					text,
+				);
+				setEditingMessage(null);
+			} else if (pendingChatWith !== null) {
 				const { chat } = await createChat(activeAccount.token, pendingChatWith);
 				setChats((prev) =>
 					prev.some((c) => c.id === chat.id) ? prev : [...prev, chat],
@@ -184,14 +214,26 @@ export interface ChatInteraction {
 	handleSend: (e: React.FormEvent<HTMLFormElement>) => Promise<void>;
 }
 
-function useChatInteraction(
-	activeAccount: { token: string } | null,
-	setMessages: React.Dispatch<React.SetStateAction<Record<string, Message[]>>>,
-	setChats: React.Dispatch<React.SetStateAction<Chat[]>>,
-	activeChatId: string | null,
-	setActiveChatId: (v: string | null) => void,
-	messagesRef: React.MutableRefObject<Record<string, Message[]>>,
-): ChatInteraction {
+function useChatInteraction(opts: {
+	activeAccount: { token: string } | null;
+	setMessages: React.Dispatch<React.SetStateAction<Record<string, Message[]>>>;
+	setChats: React.Dispatch<React.SetStateAction<Chat[]>>;
+	activeChatId: string | null;
+	setActiveChatId: (v: string | null) => void;
+	messagesRef: React.MutableRefObject<Record<string, Message[]>>;
+	editingMessage: EditingMessage | null;
+	setEditingMessage: (v: EditingMessage | null) => void;
+}): ChatInteraction {
+	const {
+		activeAccount,
+		setMessages,
+		setChats,
+		activeChatId,
+		setActiveChatId,
+		messagesRef,
+		editingMessage,
+		setEditingMessage,
+	} = opts;
 	const [searchQuery, setSearchQuery] = useState("");
 	const [searchResults, setSearchResults] = useState<User[]>([]);
 	const [inputText, setInputText] = useState("");
@@ -235,6 +277,8 @@ function useChatInteraction(
 		setPendingChatNick,
 		setActiveChatId,
 		activeChatId,
+		editingMessage,
+		setEditingMessage,
 	});
 
 	function handleSearchChange(value: string) {
@@ -269,6 +313,10 @@ export function useChatPage() {
 	const [chats, setChats] = useState<Chat[]>([]);
 	const [activeChatId, setActiveChatId] = useState<string | null>(null);
 	const [messages, setMessages] = useState<Record<string, Message[]>>({});
+	const [config, setConfig] = useState<AppConfig | null>(null);
+	const [editingMessage, setEditingMessage] = useState<EditingMessage | null>(
+		null,
+	);
 	const messagesRef = useRef<Record<string, Message[]>>({});
 
 	const user =
@@ -282,14 +330,24 @@ export function useChatPage() {
 	useTokenChange(token, setChats, setMessages, messagesRef);
 	useSseMessages(token ?? "", setChats, setMessages);
 
-	const interaction = useChatInteraction(
+	useEffect(() => {
+		getConfig()
+			.then(setConfig)
+			.catch(() => {
+				emitNotification("Failed to load config");
+			});
+	}, []);
+
+	const interaction = useChatInteraction({
 		activeAccount,
 		setMessages,
 		setChats,
 		activeChatId,
 		setActiveChatId,
 		messagesRef,
-	);
+		editingMessage,
+		setEditingMessage,
+	});
 
 	const handleDeleteMessage = useCallback(
 		(chatId: string, messageId: string) => {
@@ -300,6 +358,19 @@ export function useChatPage() {
 		},
 		[activeAccount],
 	);
+
+	const handleStartEdit = useCallback(
+		(chatId: string, messageId: string, text: string) => {
+			setEditingMessage({ chatId, messageId, text });
+			interaction.setInputText(text);
+		},
+		[interaction.setInputText],
+	);
+
+	const handleCancelEdit = useCallback(() => {
+		setEditingMessage(null);
+		interaction.setInputText("");
+	}, [interaction.setInputText]);
 
 	const activeChat =
 		interaction.pendingChatWith !== null
@@ -318,9 +389,13 @@ export function useChatPage() {
 		activeChatId,
 		activeChat,
 		activeMessages,
+		config,
+		editingMessage,
 		navigate,
 		logout,
 		handleDeleteMessage,
+		handleStartEdit,
+		handleCancelEdit,
 		setSwitcherOpen,
 		...interaction,
 	};

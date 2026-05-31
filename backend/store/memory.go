@@ -166,6 +166,47 @@ func (s *Store) GetChat(chatID string) (*model.Chat, bool) {
 	return c, ok
 }
 
+// GetMessage returns a single message by its ID.
+func (s *Store) GetMessage(chatID, messageID string) (*model.Message, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	msgs := s.messages[chatID]
+	for idx := range msgs {
+		if msgs[idx].ID == messageID {
+			return &msgs[idx], nil
+		}
+	}
+
+	return nil, errors.New("message not found")
+}
+
+// EditMessage updates the text of an existing message.
+func (s *Store) EditMessage(chatID, messageID, userID, newText string) (*model.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msgs := s.messages[chatID]
+
+	for idx := range msgs {
+		if msgs[idx].ID != messageID {
+			continue
+		}
+
+		if msgs[idx].FromID != userID {
+			return nil, errors.New("not your message")
+		}
+
+		msgs[idx].Text = newText
+		now := time.Now()
+		msgs[idx].EditedAt = &now
+
+		return &msgs[idx], nil
+	}
+
+	return nil, errors.New("message not found")
+}
+
 // AddMessage stores a new message in the given chat.
 func (s *Store) AddMessage(chatID, fromID, fromNick, text string) (*model.Message, error) {
 	s.mu.Lock()

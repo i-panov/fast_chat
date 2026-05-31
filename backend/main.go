@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"fast_chat/config"
 	"fast_chat/handler"
 	"fast_chat/store"
 )
@@ -56,7 +57,7 @@ func (rl *rateLimiter) clean() {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == http.MethodOptions {
@@ -85,11 +86,14 @@ func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
 }
 
 func main() {
+	cfg := config.Load()
+
 	s := store.New()
-	handlerInstance := handler.New(s)
+	handlerInstance := handler.New(s, cfg)
 
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /api/config", handlerInstance.GetConfig)
 	mux.HandleFunc("POST /api/register", handlerInstance.Register)
 	mux.HandleFunc("GET /api/events", handlerInstance.SSE)
 	mux.HandleFunc("GET /api/users/search", handlerInstance.AuthMiddleware(handlerInstance.SearchUsers))
@@ -97,6 +101,7 @@ func main() {
 	mux.HandleFunc("POST /api/chats", handlerInstance.AuthMiddleware(handlerInstance.CreateChat))
 	mux.HandleFunc("GET /api/chats/{id}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetMessages))
 	mux.HandleFunc("POST /api/chats/{id}/messages", handlerInstance.AuthMiddleware(handlerInstance.SendMessage))
+	mux.HandleFunc("PATCH /api/chats/{id}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.EditMessage))
 	mux.HandleFunc("DELETE /api/chats/{id}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.DeleteMessage))
 
 	rl := newRateLimiter(100, 1*time.Minute)

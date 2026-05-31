@@ -8,7 +8,7 @@ import {
 	Text,
 	UnstyledButton,
 } from "@mantine/core";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Pencil } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -81,7 +81,18 @@ interface Props {
 	time: string;
 	chatId: string;
 	msgId: string;
+	editedAt?: string;
+	onStartEdit: (chatId: string, messageId: string, text: string) => void;
 	onDelete: (chatId: string, messageId: string) => void;
+	editTTL: number;
+	deleteTTL: number;
+	createdAt: string;
+}
+
+function isWithinTTL(createdAt: string, ttl: number): boolean {
+	if (ttl === 0) return true;
+	if (ttl < 0) return false;
+	return (Date.now() - new Date(createdAt).getTime()) / 1000 <= ttl;
 }
 
 export function MessageBubble({
@@ -90,10 +101,18 @@ export function MessageBubble({
 	time,
 	chatId,
 	msgId,
+	editedAt,
+	onStartEdit,
 	onDelete,
+	editTTL,
+	deleteTTL,
+	createdAt,
 }: Props) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const menuRef = useRef<HTMLDivElement>(null);
+
+	const canEdit = isOwn && isWithinTTL(createdAt, editTTL);
+	const canDelete = isOwn && isWithinTTL(createdAt, deleteTTL);
 
 	useLayoutEffect(() => {
 		if (!menuPos || !menuRef.current) return;
@@ -104,6 +123,11 @@ export function MessageBubble({
 			el.style.left = `${window.innerWidth - rect.width - 8}px`;
 		}
 	}, [menuPos]);
+
+	const editedLabel =
+		editedAt !== undefined
+			? `ред. ${new Date(editedAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`
+			: null;
 
 	return (
 		<>
@@ -152,7 +176,10 @@ export function MessageBubble({
 								},
 								pre: ({ children }) => {
 									const codeEl = children as {
-										props: { className?: string; children: unknown };
+										props: {
+											className?: string;
+											children: unknown;
+										};
 									};
 									const className = codeEl.props.className ?? "";
 									const lang = className.replace("language-", "");
@@ -171,7 +198,7 @@ export function MessageBubble({
 						</Markdown>
 					</div>
 					<Text size="xs" c="gray.5" style={{ flexShrink: 0 }}>
-						{time}
+						{editedLabel ?? time}
 					</Text>
 				</Group>
 			</Paper>
@@ -211,7 +238,30 @@ export function MessageBubble({
 							>
 								Копировать
 							</Button>
-							{isOwn && (
+							{canEdit && (
+								<Button
+									variant="subtle"
+									color="gray"
+									fullWidth
+									justify="flex-start"
+									style={{ borderRadius: 0 }}
+									onClick={() => {
+										onStartEdit(chatId, msgId, text);
+										setMenuPos(null);
+									}}
+								>
+									<ActionIcon
+										variant="transparent"
+										color="gray"
+										size={18}
+										mr={6}
+									>
+										<Pencil size={14} />
+									</ActionIcon>
+									Редактировать
+								</Button>
+							)}
+							{canDelete && (
 								<Button
 									variant="subtle"
 									color="red"

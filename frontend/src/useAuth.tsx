@@ -47,25 +47,45 @@ function writeAccounts(accounts: StoredAccount[]) {
 }
 
 function readActiveToken(): string | null {
-	return localStorage.getItem(ACTIVE_TOKEN_KEY);
+	return sessionStorage.getItem(ACTIVE_TOKEN_KEY);
 }
 
 function writeActiveToken(token: string) {
-	localStorage.setItem(ACTIVE_TOKEN_KEY, token);
+	sessionStorage.setItem(ACTIVE_TOKEN_KEY, token);
 }
 
 function removeActiveToken() {
+	sessionStorage.removeItem(ACTIVE_TOKEN_KEY);
+}
+
+function readLastActiveToken(): string | null {
+	return localStorage.getItem(ACTIVE_TOKEN_KEY);
+}
+
+function writeLastActiveToken(token: string) {
+	localStorage.setItem(ACTIVE_TOKEN_KEY, token);
+}
+
+function removeLastActiveToken() {
 	localStorage.removeItem(ACTIVE_TOKEN_KEY);
 }
 
 function resolveActiveToken(stored: StoredAccount[]): string | null {
-	const saved = readActiveToken();
-	if (saved !== null && stored.some((a) => a.token === saved)) {
-		return saved;
+	const session = readActiveToken();
+	if (session !== null && stored.some((a) => a.token === session)) {
+		return session;
 	}
+
+	const last = readLastActiveToken();
+	if (last !== null && stored.some((a) => a.token === last)) {
+		writeActiveToken(last);
+		return last;
+	}
+
 	const first = stored[0]?.token ?? null;
 	if (first !== null) {
 		writeActiveToken(first);
+		writeLastActiveToken(first);
 	}
 	return first;
 }
@@ -82,9 +102,6 @@ function useAuthState() {
 		function handleStorage(e: StorageEvent) {
 			if (e.key === ACCOUNTS_KEY) {
 				setAccounts(readAccounts());
-			}
-			if (e.key === ACTIVE_TOKEN_KEY && e.newValue !== null) {
-				setActiveToken(e.newValue);
 			}
 		}
 		window.addEventListener("storage", handleStorage);
@@ -124,6 +141,7 @@ function useAuthState() {
 		}
 		setActiveToken(token);
 		writeActiveToken(token);
+		writeLastActiveToken(token);
 	}, []);
 
 	const removeAccount = useCallback(
@@ -136,6 +154,7 @@ function useAuthState() {
 				setActiveToken(next);
 				if (next === null) {
 					removeActiveToken();
+					removeLastActiveToken();
 					window.location.href = "/login";
 				} else {
 					writeActiveToken(next);

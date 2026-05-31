@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"fast_chat/config"
 	"fast_chat/model"
 	"fast_chat/store"
 )
@@ -109,12 +110,14 @@ func getUser(r *http.Request) *model.User {
 type Handler struct {
 	store *store.Store
 	hub   *SSEHub
+	cfg   *config.Config
 }
 
-func New(s *store.Store) *Handler {
+func New(s *store.Store, cfg *config.Config) *Handler {
 	return &Handler{
 		store: s,
 		hub:   NewSSEHub(),
+		cfg:   cfg,
 	}
 }
 
@@ -327,6 +330,89 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
 }
 
+func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"messageEditTTL":   h.cfg.MessageEditTTL,
+		"messageDeleteTTL": h.cfg.MessageDeleteTTL,
+	})
+}
+
+func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck // write errors are unrecoverable at this point
+
+	user := getUser(r)
+	chatID := r.PathValue("id")
+	messageID := r.PathValue("messageId")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if !isMember(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return
+	}
+
+	msg, err := h.store.GetMessage(chatID, messageID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+
+		return
+	}
+
+	if msg.FromID != user.ID {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "not your message"})
+
+		return
+	}
+
+	if h.cfg.MessageEditTTL < 0 {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "editing not allowed"})
+
+		return
+	}
+
+	if h.cfg.MessageEditTTL > 0 && time.Since(msg.CreatedAt) > time.Duration(h.cfg.MessageEditTTL)*time.Second {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "edit window expired"})
+
+		return
+	}
+
+	var req struct {
+		Text string `json:"text"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
+
+		return
+	}
+
+	updated, err := h.store.EditMessage(chatID, messageID, user.ID, req.Text)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+
+		return
+	}
+
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "message_updated", Data: updated})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": updated})
+}
+
 func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	chatID := r.PathValue("id")
@@ -341,6 +427,31 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 
 	if !isMember(chat, user.ID) {
 		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return
+	}
+
+	msg, err := h.store.GetMessage(chatID, messageID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+
+		return
+	}
+
+	if msg.FromID != user.ID {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "not your message"})
+
+		return
+	}
+
+	if h.cfg.MessageDeleteTTL < 0 {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "deleting not allowed"})
+
+		return
+	}
+
+	if h.cfg.MessageDeleteTTL > 0 && time.Since(msg.CreatedAt) > time.Duration(h.cfg.MessageDeleteTTL)*time.Second {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "delete window expired"})
 
 		return
 	}

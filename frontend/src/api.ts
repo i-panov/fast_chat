@@ -51,6 +51,12 @@ export interface Message {
 	fromNick: string;
 	text: string;
 	createdAt: string;
+	editedAt?: string;
+}
+
+export interface AppConfig {
+	messageEditTTL: number;
+	messageDeleteTTL: number;
 }
 
 export function register(nick: string) {
@@ -102,4 +108,21 @@ export function deleteMessage(
 		token,
 		{ method: "DELETE" },
 	);
+}
+
+export function editMessage(
+	token: string,
+	chatId: string,
+	messageId: string,
+	text: string,
+) {
+	return request<{ message: Message }>(
+		`/api/chats/${chatId}/messages/${messageId}`,
+		token,
+		{ method: "PATCH", body: JSON.stringify({ text }) },
+	);
+}
+
+export function getConfig() {
+	return request<AppConfig>("/api/config", undefined);
 }

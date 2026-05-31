@@ -16,9 +16,19 @@ interface Props {
 	messages: Message[];
 	userId: string;
 	onDelete: (chatId: string, messageId: string) => void;
+	onStartEdit: (chatId: string, messageId: string, text: string) => void;
+	editTTL: number;
+	deleteTTL: number;
 }
 
-export function MessageList({ messages, userId, onDelete }: Props) {
+export function MessageList({
+	messages,
+	userId,
+	onDelete,
+	onStartEdit,
+	editTTL,
+	deleteTTL,
+}: Props) {
 	if (messages.length === 0) {
 		return (
 			<Text ta="center" c="dimmed" size="sm" py={32}>
@@ -53,7 +63,12 @@ export function MessageList({ messages, userId, onDelete }: Props) {
 							time={formatTime(msg.createdAt)}
 							chatId={msg.chatId}
 							msgId={msg.id}
+							editedAt={msg.editedAt}
+							onStartEdit={onStartEdit}
 							onDelete={onDelete}
+							editTTL={editTTL}
+							deleteTTL={deleteTTL}
+							createdAt={msg.createdAt}
 						/>
 					</Fragment>
 				);
