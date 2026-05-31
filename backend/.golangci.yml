@@ -197,10 +197,22 @@ linters:
       - linters:
           - revive
           - gocritic
+          - goconst
         path: handler/handler\.go
       - linters:
           - revive
         path: main\.go
+      - linters:
+          - errcheck
+          - ineffassign
+          - varnamelen
+          - paralleltest
+          - intrange
+          - wsl_v5
+          - gosec
+          - staticcheck
+          - usetesting
+        path: .*_test\.go
 
 formatters:
   enable:

@@ -144,7 +144,7 @@ func (h *Handler) enrichChat(c *model.Chat) chatResponse {
 
 // remoteServerFromID extracts the server domain from a federated user ID ("nick:domain").
 func remoteServerFromID(id string) string {
-	if idx := strings.LastIndex(id, ":"); idx != -1 && idx < len(id)-1 {
+	if idx := strings.Index(id, ":"); idx != -1 && idx < len(id)-1 {
 		return id[idx+1:]
 	}
 
@@ -416,6 +416,10 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func parseInt(s string) (int, error) {
+	if s == "" {
+		return 0, errors.New("not a number")
+	}
+
 	var n int
 
 	for _, c := range s {
