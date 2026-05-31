@@ -1,0 +1,214 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - revive
+    - misspell
+    - nakedret
+    - tagalign
+    - tagliatelle
+    - wsl_v5
+    - bodyclose
+    - noctx
+    - contextcheck
+    - nilerr
+    - nilnil
+    - prealloc
+    - makezero
+    - unconvert
+    - copyloopvar
+    - predeclared
+    - perfsprint
+    - gocognit
+    - gocyclo
+    - dupl
+    - goconst
+    - gocritic
+    - nestif
+    - varnamelen
+    - decorder
+    - dupword
+    - gosec
+    - errname
+    - exhaustive
+    - forbidigo
+    - iface
+    - importas
+    - interfacebloat
+    - intrange
+    - ireturn
+    - loggercheck
+    - musttag
+    - nonamedreturns
+    - paralleltest
+    - recvcheck
+    - testifylint
+    - thelper
+    - usestdlibvars
+    - usetesting
+    - whitespace
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          severity: error
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: deep-exit
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: redefines-builtin-id
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+        - opinionated
+      disabled-checks:
+        - ifElseChain
+        - unnamedResult
+
+    tagliatelle:
+      case:
+        use-field-name: true
+        rules:
+          json: snake
+
+    gocyclo:
+      min-complexity: 15
+
+    gocognit:
+      min-complexity: 20
+
+    nestif:
+      min-complexity: 5
+
+    dupl:
+      threshold: 100
+
+    varnamelen:
+      max-distance: 5
+      min-name-length: 2
+      ignore-type-assert-ok: true
+      ignore-map-index-ok: true
+      ignore-chan-recv-ok: true
+      ignore-names:
+        - id
+        - ok
+        - w
+        - r
+        - ch
+        - db
+
+    nakedret:
+      max-func-lines: 30
+
+    wsl_v5:
+      allow-first-in-block: true
+      allow-whole-block: false
+      branch-max-lines: 2
+      case-max-lines: 2
+      enable:
+        - err
+
+    whitespace:
+      multi-if: true
+      multi-func: true
+
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: use structured logging
+        - pattern: ^log\.Fatal.*$
+          msg: return errors instead
+        - pattern: ^log\.Panic.*$
+          msg: return errors instead
+
+    iface:
+      enable:
+        - identical
+
+    importas:
+      no-unaliased: true
+
+    interfacebloat:
+      max: 10
+
+    intrange:
+      max: 5
+
+    ireturn:
+      allow:
+        - anon
+        - error
+        - empty
+        - stdlib
+        - generic
+
+    paralleltest:
+      ignore-missing-subtests: true
+
+    testifylint:
+      enable-all: true
+
+    usetesting:
+      os-specific:
+        os: false
+        exec: false
+
+  exclusions:
+    rules:
+      - linters:
+          - varnamelen
+        path: handler/handler\.go
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+    - gci
+
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

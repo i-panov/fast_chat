@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+.DS_Store
+Thumbs.db
+*.log
