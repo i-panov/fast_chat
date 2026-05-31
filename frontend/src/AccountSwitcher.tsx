@@ -4,6 +4,7 @@ import {
 	Modal,
 	Overlay,
 	ScrollArea,
+	Select,
 	Stack,
 	Text,
 	TextInput,
@@ -13,7 +14,7 @@ import {
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import i18n from "./i18n.ts";
+import i18n, { SUPPORTED_LANGS } from "./i18n.ts";
 import { useAuth } from "./useAuth.tsx";
 
 interface Props {
@@ -305,24 +306,17 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 							marginTop: "12px",
 						}}
 					>
-						<Group gap="xs" grow>
-							<Button
-								variant="subtle"
-								color="gray"
-								size="sm"
-								onClick={() => i18n.changeLanguage("en")}
-							>
-								{t("lang.en")}
-							</Button>
-							<Button
-								variant="subtle"
-								color="gray"
-								size="sm"
-								onClick={() => i18n.changeLanguage("ru")}
-							>
-								{t("lang.ru")}
-							</Button>
-						</Group>
+						<Select
+							data={SUPPORTED_LANGS.map((l) => ({
+								value: l,
+								label: t(`lang.${l}`),
+							}))}
+							value={i18n.language}
+							onChange={(val) => {
+								if (val !== null) i18n.changeLanguage(val);
+							}}
+							size="xs"
+						/>
 					</div>
 				</div>
 				<Modal
