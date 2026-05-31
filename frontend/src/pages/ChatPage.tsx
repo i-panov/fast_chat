@@ -6,6 +6,7 @@ import { ChatList } from "../components/chat/ChatList.tsx";
 import { InputBar } from "../components/chat/InputBar.tsx";
 import { MessageList } from "../components/chat/MessageList.tsx";
 import { SearchBox } from "../components/chat/SearchBox.tsx";
+import { ThreadView } from "../components/chat/ThreadView.tsx";
 import { useChatPage } from "../hooks/useChatInteraction.ts";
 import { otherNick } from "../utils/chat.ts";
 
@@ -86,66 +87,91 @@ export function ChatPage() {
 						background: "var(--mantine-color-dark-9)",
 					}}
 				>
-					<Stack h="100%" gap={0}>
-						{s.pendingChatWith !== null ? (
-							<>
-								<ChatHeader title={s.pendingChatNick ?? ""} badge="newChat" />
-								<div
-									style={{
-										flex: 1,
-										display: "flex",
-										alignItems: "center",
-										justifyContent: "center",
-									}}
-								>
+					{s.activeThread !== null ? (
+						<ThreadView
+							thread={s.activeThread}
+							messages={s.activeThreadMessages}
+							userId={s.user.id}
+							onBack={s.handleCloseThread}
+							inputText={s.inputText}
+							setInputText={s.setInputText}
+							onSend={s.handleSendThreadMessage}
+							onDelete={s.handleDeleteMessage}
+							onStartEdit={s.handleStartEdit}
+							onCancelEdit={s.handleCancelEdit}
+							editTTL={s.config?.messageEditTTL ?? 0}
+							deleteTTL={s.config?.messageDeleteTTL ?? 0}
+							editingMessage={s.editingMessage}
+							hasMore={s.threadHasMore}
+							isLoadingMore={s.threadIsLoadingMore}
+							onLoadMore={s.loadMoreThreadMessages}
+						/>
+					) : (
+						<Stack h="100%" gap={0}>
+							{s.pendingChatWith !== null ? (
+								<>
+									<ChatHeader title={s.pendingChatNick ?? ""} badge="newChat" />
+									<div
+										style={{
+											flex: 1,
+											display: "flex",
+											alignItems: "center",
+											justifyContent: "center",
+										}}
+									>
+										<Text ta="center" c="dimmed" size="sm">
+											{t("chat.sendTo", { nick: s.pendingChatNick ?? "" })}
+										</Text>
+									</div>
+									<InputBar
+										text={s.inputText}
+										onTextChange={s.setInputText}
+										onSubmit={s.handleSend}
+										editing={s.editingMessage !== null}
+										onCancelEdit={s.handleCancelEdit}
+									/>
+								</>
+							) : s.activeChat === undefined ? (
+								<Center style={{ flex: 1 }}>
 									<Text ta="center" c="dimmed" size="sm">
-										{t("chat.sendTo", { nick: s.pendingChatNick ?? "" })}
+										{t("chat.selectPrompt")}
 									</Text>
-								</div>
-								<InputBar
-									text={s.inputText}
-									onTextChange={s.setInputText}
-									onSubmit={s.handleSend}
-									editing={s.editingMessage !== null}
-									onCancelEdit={s.handleCancelEdit}
-								/>
-							</>
-						) : s.activeChat === undefined ? (
-							<Center style={{ flex: 1 }}>
-								<Text ta="center" c="dimmed" size="sm">
-									{t("chat.selectPrompt")}
-								</Text>
-							</Center>
-						) : (
-							<>
-								<ChatHeader
-									title={otherNick(s.activeChat.members, s.user.id)}
-								/>
-								<MessageList
-									messages={s.activeMessages}
-									userId={s.user.id}
-									onDelete={s.handleDeleteMessage}
-									onStartEdit={s.handleStartEdit}
-									editTTL={s.config?.messageEditTTL ?? 0}
-									deleteTTL={s.config?.messageDeleteTTL ?? 0}
-									hasMore={s.hasMore}
-									isLoadingMore={s.isLoadingMore}
-									onLoadMore={
-										s.activeChatId !== null
-											? () => s.loadMoreMessages(s.activeChatId)
-											: undefined
-									}
-								/>
-								<InputBar
-									text={s.inputText}
-									onTextChange={s.setInputText}
-									onSubmit={s.handleSend}
-									editing={s.editingMessage !== null}
-									onCancelEdit={s.handleCancelEdit}
-								/>
-							</>
-						)}
-					</Stack>
+								</Center>
+							) : (
+								<>
+									<ChatHeader
+										title={otherNick(s.activeChat.members, s.user.id)}
+									/>
+									<MessageList
+										messages={s.activeMessages}
+										userId={s.user.id}
+										onDelete={s.handleDeleteMessage}
+										onStartEdit={s.handleStartEdit}
+										editTTL={s.config?.messageEditTTL ?? 0}
+										deleteTTL={s.config?.messageDeleteTTL ?? 0}
+										hasMore={s.hasMore}
+										isLoadingMore={s.isLoadingMore}
+										onLoadMore={
+											s.activeChatId !== null
+												? () => s.loadMoreMessages(s.activeChatId)
+												: undefined
+										}
+										onCreateThread={s.handleCreateThread}
+										onOpenThread={s.handleOpenThread}
+										messageToThread={s.messageToThread}
+										threads={s.threads}
+									/>
+									<InputBar
+										text={s.inputText}
+										onTextChange={s.setInputText}
+										onSubmit={s.handleSend}
+										editing={s.editingMessage !== null}
+										onCancelEdit={s.handleCancelEdit}
+									/>
+								</>
+							)}
+						</Stack>
+					)}
 				</Paper>
 			</div>
 		</Stack>

@@ -1,7 +1,7 @@
 import { Loader, Text } from "@mantine/core";
 import { Fragment, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import type { Message } from "../../api.ts";
+import type { Message, Thread } from "../../api.ts";
 import { formatDateLabel, formatTime } from "../../utils/chat.ts";
 import { MessageBubble } from "./MessageBubble.tsx";
 
@@ -23,6 +23,11 @@ interface Props {
 	hasMore?: boolean;
 	isLoadingMore?: boolean;
 	onLoadMore?: () => void;
+	onCreateThread?: (chatId: string, messageId: string) => void;
+	onOpenThread?: (threadId: string) => void;
+	messageToThread?: Record<string, string>;
+	threads?: Record<string, Thread>;
+	isInThread?: boolean;
 }
 
 export function MessageList({
@@ -35,6 +40,11 @@ export function MessageList({
 	hasMore,
 	isLoadingMore,
 	onLoadMore,
+	onCreateThread,
+	onOpenThread,
+	messageToThread,
+	threads,
+	isInThread,
 }: Props) {
 	const { t } = useTranslation();
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -137,6 +147,15 @@ export function MessageList({
 								editTTL={editTTL}
 								deleteTTL={deleteTTL}
 								createdAt={msg.createdAt}
+								onCreateThread={onCreateThread}
+								onOpenThread={onOpenThread}
+								threadId={messageToThread?.[msg.id]}
+								threadMessageCount={
+									messageToThread?.[msg.id] !== undefined
+										? threads?.[messageToThread[msg.id]]?.messageCount
+										: undefined
+								}
+								isInThread={isInThread}
 							/>
 						</Fragment>
 					);

@@ -1,7 +1,11 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppConfig, Chat, Message, User } from "../api.ts";
+import type { AppConfig, Chat, Message, Thread, User } from "../api.ts";
 import {
+	createThread as apiCreateThread,
+	getThreadMessages as apiGetThreadMessages,
+	getThreads as apiGetThreads,
+	sendThreadMessage as apiSendThreadMessage,
 	createChat,
 	deleteMessage,
 	editMessage,
@@ -94,6 +98,13 @@ function useSseMessages(
 	token: string,
 	setChats: React.Dispatch<React.SetStateAction<Chat[]>>,
 	setMessages: React.Dispatch<React.SetStateAction<Record<string, Message[]>>>,
+	setThreads: React.Dispatch<React.SetStateAction<Record<string, Thread>>>,
+	setThreadMessages: React.Dispatch<
+		React.SetStateAction<Record<string, Message[]>>
+	>,
+	setMessageToThread: React.Dispatch<
+		React.SetStateAction<Record<string, string>>
+	>,
 ) {
 	const seenIds = useRef<string[]>([]);
 
@@ -137,9 +148,36 @@ function useSseMessages(
 					...prev,
 					[chatId]: (prev[chatId] ?? []).filter((m) => m.id !== messageId),
 				}));
+			} else if (event === "thread_created") {
+				const thread = data as Thread;
+				setThreads((prev) => {
+					if (prev[thread.id] !== undefined) return prev;
+					return { ...prev, [thread.id]: thread };
+				});
+				setMessageToThread((prev) => ({
+					...prev,
+					[thread.parentMessageId]: thread.id,
+				}));
+			} else if (event === "thread_message_new") {
+				const { threadId, message } = data as {
+					threadId: string;
+					message: Message;
+				};
+				setThreadMessages((prev) => ({
+					...prev,
+					[threadId]: [...(prev[threadId] ?? []), message],
+				}));
+				setThreads((prev) => {
+					const t = prev[threadId];
+					if (t === undefined) return prev;
+					return {
+						...prev,
+						[threadId]: { ...t, messageCount: t.messageCount + 1 },
+					};
+				});
 			}
 		},
-		[setMessages, setChats],
+		[setMessages, setChats, setThreads, setThreadMessages, setMessageToThread],
 	);
 
 	useSse(token, handler);
@@ -163,6 +201,7 @@ function useSendMessage(opts: {
 	activeChatId: string | null;
 	editingMessage: EditingMessage | null;
 	setEditingMessage: (v: EditingMessage | null) => void;
+	sendingRef: React.MutableRefObject<boolean>;
 }) {
 	const {
 		activeAccount,
@@ -176,11 +215,14 @@ function useSendMessage(opts: {
 		activeChatId: activeChatId2,
 		editingMessage,
 		setEditingMessage,
+		sendingRef,
 	} = opts;
 	return async function handleSend(e: React.FormEvent<HTMLFormElement>) {
 		e.preventDefault();
 		if (activeAccount === null || inputText.trim().length === 0) return;
+		if (sendingRef.current) return;
 
+		sendingRef.current = true;
 		const text = inputText;
 		setInputText("");
 
@@ -208,6 +250,8 @@ function useSendMessage(opts: {
 		} catch {
 			setInputText(text);
 			emitNotification(i18n.t("error.send"));
+		} finally {
+			sendingRef.current = false;
 		}
 	};
 }
@@ -237,6 +281,10 @@ function useChatInteraction(opts: {
 	setEditingMessage: (v: EditingMessage | null) => void;
 	nextCursorsRef: React.MutableRefObject<Record<string, string | null>>;
 	setHasMoreMap: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+	setThreads: React.Dispatch<React.SetStateAction<Record<string, Thread>>>;
+	setMessageToThread: React.Dispatch<
+		React.SetStateAction<Record<string, string>>
+	>;
 }): ChatInteraction {
 	const {
 		activeAccount,
@@ -249,12 +297,15 @@ function useChatInteraction(opts: {
 		setEditingMessage,
 		nextCursorsRef,
 		setHasMoreMap,
+		setThreads,
+		setMessageToThread,
 	} = opts;
 	const [searchQuery, setSearchQuery] = useState("");
 	const [searchResults, setSearchResults] = useState<User[]>([]);
 	const [inputText, setInputText] = useState("");
 	const [pendingChatWith, setPendingChatWith] = useState<string | null>(null);
 	const [pendingChatNick, setPendingChatNick] = useState<string | null>(null);
+	const sendingRef = useRef(false);
 
 	useSearch(activeAccount?.token, searchQuery, setSearchResults);
 
@@ -280,6 +331,20 @@ function useChatInteraction(opts: {
 					emitNotification(i18n.t("error.loadMessages"));
 				});
 		}
+		apiGetThreads(activeAccount.token, chatId)
+			.then(({ threads: ts }) => {
+				const threadMap: Record<string, Thread> = {};
+				const msgToThread: Record<string, string> = {};
+				for (const t of ts) {
+					threadMap[t.id] = t;
+					msgToThread[t.parentMessageId] = t.id;
+				}
+				setThreads((prev) => ({ ...prev, ...threadMap }));
+				setMessageToThread((prev) => ({ ...prev, ...msgToThread }));
+			})
+			.catch(() => {
+				/* ignore */
+			});
 	}
 
 	function selectPendingChat(withUserId: string, withUserNick: string) {
@@ -302,6 +367,7 @@ function useChatInteraction(opts: {
 		activeChatId,
 		editingMessage,
 		setEditingMessage,
+		sendingRef,
 	});
 
 	function handleSearchChange(value: string) {
@@ -346,6 +412,21 @@ export function useChatPage() {
 	const [isLoadingMore, setIsLoadingMore] = useState(false);
 	const [hasMoreMap, setHasMoreMap] = useState<Record<string, boolean>>({});
 
+	const [threads, setThreads] = useState<Record<string, Thread>>({});
+	const [threadMessages, setThreadMessages] = useState<
+		Record<string, Message[]>
+	>({});
+	const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+	const [messageToThread, setMessageToThread] = useState<
+		Record<string, string>
+	>({});
+	const threadMessagesRef = useRef<Record<string, Message[]>>({});
+	const threadNextCursorsRef = useRef<Record<string, string | null>>({});
+	const threadLoadingMoreRef = useRef(false);
+	const threadSendingRef = useRef(false);
+	const [threadIsLoadingMore, setThreadIsLoadingMore] = useState(false);
+	const [threadHasMore, setThreadHasMore] = useState(false);
+
 	const user =
 		activeAccount !== null
 			? { id: activeAccount.user.id, nick: activeAccount.user.nick }
@@ -362,7 +443,14 @@ export function useChatPage() {
 		nextCursorsRef,
 		setHasMoreMap,
 	);
-	useSseMessages(token ?? "", setChats, setMessages);
+	useSseMessages(
+		token ?? "",
+		setChats,
+		setMessages,
+		setThreads,
+		setThreadMessages,
+		setMessageToThread,
+	);
 
 	useEffect(() => {
 		getConfig()
@@ -383,6 +471,8 @@ export function useChatPage() {
 		setEditingMessage,
 		nextCursorsRef,
 		setHasMoreMap,
+		setThreads,
+		setMessageToThread,
 	});
 
 	const handleDeleteMessage = useCallback(
@@ -443,6 +533,152 @@ export function useChatPage() {
 		[activeAccount],
 	);
 
+	const handleCreateThread = useCallback(
+		async (chatId: string, messageId: string) => {
+			if (activeAccount === null) return;
+			try {
+				const { thread } = await apiCreateThread(
+					activeAccount.token,
+					chatId,
+					messageId,
+				);
+				setThreads((prev) => ({ ...prev, [thread.id]: thread }));
+				setMessageToThread((prev) => ({
+					...prev,
+					[thread.parentMessageId]: thread.id,
+				}));
+				setActiveThreadId(thread.id);
+			} catch {
+				try {
+					const { threads: ts } = await apiGetThreads(
+						activeAccount.token,
+						chatId,
+					);
+					const existing = ts.find((t) => t.parentMessageId === messageId);
+					if (existing !== undefined) {
+						setThreads((prev) => ({ ...prev, [existing.id]: existing }));
+						setMessageToThread((prev) => ({
+							...prev,
+							[messageId]: existing.id,
+						}));
+						setActiveThreadId(existing.id);
+						return;
+					}
+				} catch {
+					/* ignore */
+				}
+				emitNotification(i18n.t("error.createThread"));
+			}
+		},
+		[activeAccount],
+	);
+
+	const handleOpenThread = useCallback((threadId: string) => {
+		setActiveThreadId(threadId);
+	}, []);
+
+	const handleCloseThread = useCallback(() => {
+		setActiveThreadId(null);
+	}, []);
+
+	const loadMoreThreadMessages = useCallback(async () => {
+		if (activeThreadId === null || activeAccount === null) return;
+		if (threadLoadingMoreRef.current) return;
+
+		const cursor = threadNextCursorsRef.current[activeThreadId];
+		if (cursor == null) return;
+
+		threadLoadingMoreRef.current = true;
+		setThreadIsLoadingMore(true);
+
+		try {
+			const thread = threads[activeThreadId];
+			if (thread === undefined) return;
+
+			const res = await apiGetThreadMessages(
+				activeAccount.token,
+				thread.chatId,
+				activeThreadId,
+				30,
+				cursor,
+			);
+			const existing = threadMessagesRef.current[activeThreadId] ?? [];
+			threadMessagesRef.current[activeThreadId] = [
+				...res.messages,
+				...existing,
+			];
+			setThreadMessages((prev) => ({
+				...prev,
+				[activeThreadId]: threadMessagesRef.current[activeThreadId],
+			}));
+			const nxt = res.nextCursor;
+			threadNextCursorsRef.current[activeThreadId] =
+				nxt != null && nxt !== "" ? nxt : null;
+			setThreadHasMore(nxt != null && nxt !== "");
+		} catch {
+			emitNotification(i18n.t("error.loadMessages"));
+		} finally {
+			setThreadIsLoadingMore(false);
+			threadLoadingMoreRef.current = false;
+		}
+	}, [activeThreadId, activeAccount, threads]);
+
+	const handleSendThreadMessage = useCallback(
+		async (e: React.FormEvent<HTMLFormElement>) => {
+			e.preventDefault();
+			if (activeAccount === null || activeThreadId === null) return;
+			if (interaction.inputText.trim().length === 0) return;
+			if (threadSendingRef.current) return;
+
+			threadSendingRef.current = true;
+			const text = interaction.inputText;
+			interaction.setInputText("");
+
+			const thread = threads[activeThreadId];
+			if (thread === undefined) {
+				interaction.setInputText(text);
+				threadSendingRef.current = false;
+				return;
+			}
+
+			try {
+				await apiSendThreadMessage(
+					activeAccount.token,
+					thread.chatId,
+					activeThreadId,
+					text,
+				);
+			} catch {
+				interaction.setInputText(text);
+				emitNotification(i18n.t("error.send"));
+			} finally {
+				threadSendingRef.current = false;
+			}
+		},
+		[activeAccount, activeThreadId, threads, interaction],
+	);
+
+	useEffect(() => {
+		if (activeThreadId === null || activeAccount === null) return;
+		if (threadMessagesRef.current[activeThreadId] !== undefined) return;
+
+		const thread = threads[activeThreadId];
+		if (thread === undefined) return;
+
+		apiGetThreadMessages(activeAccount.token, thread.chatId, activeThreadId, 30)
+			.then(({ messages: msgs, nextCursor }) => {
+				threadMessagesRef.current[activeThreadId] = msgs;
+				setThreadMessages((prev) => ({ ...prev, [activeThreadId]: msgs }));
+				const nxt = nextCursor;
+				threadNextCursorsRef.current[activeThreadId] =
+					nxt != null && nxt !== "" ? nxt : null;
+				setThreadHasMore(nxt != null && nxt !== "");
+			})
+			.catch(() => {
+				emitNotification(i18n.t("error.loadMessages"));
+			});
+	}, [activeThreadId, activeAccount, threads]);
+
 	const activeChat =
 		interaction.pendingChatWith !== null
 			? undefined
@@ -452,6 +688,12 @@ export function useChatPage() {
 		activeChatId !== null ? (messages[activeChatId] ?? []) : [];
 
 	const hasMore = activeChatId !== null && (hasMoreMap[activeChatId] ?? false);
+
+	const activeThread =
+		activeThreadId !== null ? (threads[activeThreadId] ?? null) : null;
+
+	const activeThreadMessages =
+		activeThreadId !== null ? (threadMessages[activeThreadId] ?? []) : [];
 
 	return {
 		activeAccount,
@@ -473,6 +715,18 @@ export function useChatPage() {
 		isLoadingMore,
 		hasMore,
 		loadMoreMessages,
+		threads,
+		messageToThread,
+		activeThreadId,
+		activeThread,
+		activeThreadMessages,
+		threadIsLoadingMore,
+		threadHasMore,
+		handleCreateThread,
+		handleOpenThread,
+		handleCloseThread,
+		loadMoreThreadMessages,
+		handleSendThreadMessage,
 		...interaction,
 	};
 }

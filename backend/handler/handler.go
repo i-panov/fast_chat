@@ -335,6 +335,9 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	remoteServer := remoteServerFromID(req.WithUserID)
+	if remoteServer == h.cfg.ServerDomain {
+		remoteServer = ""
+	}
 
 	if remoteServer == "" {
 		if _, ok := h.store.GetUserByID(req.WithUserID); !ok {
@@ -811,6 +814,184 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// checkIsThreadMessage checks if a message belongs to a thread (its chatId is a thread ID).
+func (h *Handler) checkIsThreadMessage(chatID, messageID string) bool {
+	msg, err := h.store.GetMessage(chatID, messageID)
+	if err != nil {
+		return false
+	}
+
+	_, isThread := h.store.GetThread(msg.ChatID)
+
+	return isThread
+}
+
+func (h *Handler) CreateThread(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+	chatID := r.PathValue("id")
+	messageID := r.PathValue("messageId")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		return
+	}
+
+	if !isMember(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		return
+	}
+
+	msg, err := h.store.GetMessage(chatID, messageID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+		return
+	}
+
+	if h.checkIsThreadMessage(chatID, messageID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "cannot create thread on a thread message"})
+		return
+	}
+
+	if _, exists := h.store.GetThreadByParentMessage(chatID, messageID); exists {
+		writeJSON(w, http.StatusConflict, map[string]string{mapKeyError: "thread already exists"})
+		return
+	}
+
+	thread, err := h.store.CreateThread(chatID, messageID, msg.Text, msg.FromNick)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+		return
+	}
+
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "thread_created", Data: thread})
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"thread": thread})
+}
+
+func (h *Handler) GetThreadMessages(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	threadID := r.PathValue("threadId")
+
+	thread, ok := h.store.GetThread(threadID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "thread not found"})
+		return
+	}
+
+	chat, ok := h.store.GetChat(thread.ChatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		return
+	}
+
+	if !isMember(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 30
+
+	if limitStr != "" {
+		if n, err := parseInt(limitStr); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+
+	before := r.URL.Query().Get("before")
+
+	messages, nextCursor, _ := h.store.GetThreadMessagesPaginated(threadID, limit, before)
+	if messages == nil {
+		messages = []model.Message{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"messages":   messages,
+		"nextCursor": nextCursor,
+	})
+}
+
+func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+	threadID := r.PathValue("threadId")
+
+	thread, ok := h.store.GetThread(threadID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "thread not found"})
+		return
+	}
+
+	chat, ok := h.store.GetChat(thread.ChatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		return
+	}
+
+	if !isMember(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		return
+	}
+
+	var req struct {
+		Text string `json:"text"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		return
+	}
+
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
+		return
+	}
+
+	msg, err := h.store.AddThreadMessage(threadID, user.ID, user.Nick, req.Text)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+		return
+	}
+
+	eventData := map[string]interface{}{
+		"threadId": threadID,
+		"message":  msg,
+	}
+
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "thread_message_new", Data: eventData})
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
+}
+
+func (h *Handler) GetThreads(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	chatID := r.PathValue("id")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		return
+	}
+
+	if !isMember(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		return
+	}
+
+	threads := h.store.GetThreadsForChat(chatID)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"threads": threads})
 }
 
 func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {

@@ -103,6 +103,10 @@ func main() {
 	mux.HandleFunc("POST /api/chats/{id}/messages", handlerInstance.AuthMiddleware(handlerInstance.SendMessage))
 	mux.HandleFunc("PATCH /api/chats/{id}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.EditMessage))
 	mux.HandleFunc("DELETE /api/chats/{id}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.DeleteMessage))
+	mux.HandleFunc("POST /api/chats/{id}/messages/{messageId}/thread", handlerInstance.AuthMiddleware(handlerInstance.CreateThread))
+	mux.HandleFunc("GET /api/chats/{id}/threads", handlerInstance.AuthMiddleware(handlerInstance.GetThreads))
+	mux.HandleFunc("GET /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetThreadMessages))
+	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.SendThreadMessage))
 
 	// Federated endpoints (server-to-server, no auth)
 	mux.HandleFunc("GET /api/federated/users/search", handlerInstance.FederatedSearchUsers)

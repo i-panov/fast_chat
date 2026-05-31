@@ -61,6 +61,24 @@ export function useSse(token: string, onEvent: EventHandler) {
 			}
 		});
 
+		source.addEventListener("thread_created", (e) => {
+			try {
+				const data = JSON.parse(e.data as string) as Record<string, unknown>;
+				onEventRef.current("thread_created", data);
+			} catch {
+				/* ignore */
+			}
+		});
+
+		source.addEventListener("thread_message_new", (e) => {
+			try {
+				const data = JSON.parse(e.data as string) as Record<string, unknown>;
+				onEventRef.current("thread_message_new", data);
+			} catch {
+				/* ignore */
+			}
+		});
+
 		source.addEventListener("connected", () => {
 			onEventRef.current("connected", null);
 		});

@@ -8,7 +8,7 @@ import {
 	Text,
 	UnstyledButton,
 } from "@mantine/core";
-import { Check, Copy, Pencil, Trash2 } from "lucide-react";
+import { Check, Copy, MessageCircle, Pencil, Trash2 } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
@@ -88,6 +88,11 @@ interface Props {
 	editTTL: number;
 	deleteTTL: number;
 	createdAt: string;
+	onCreateThread?: (chatId: string, messageId: string) => void;
+	onOpenThread?: (threadId: string) => void;
+	threadId?: string;
+	threadMessageCount?: number;
+	isInThread?: boolean;
 }
 
 function isWithinTTL(createdAt: string, ttl: number): boolean {
@@ -108,6 +113,11 @@ export function MessageBubble({
 	editTTL,
 	deleteTTL,
 	createdAt,
+	onCreateThread,
+	onOpenThread,
+	threadId,
+	threadMessageCount,
+	isInThread,
 }: Props) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const menuRef = useRef<HTMLDivElement>(null);
@@ -115,6 +125,8 @@ export function MessageBubble({
 
 	const canEdit = isOwn && isWithinTTL(createdAt, editTTL);
 	const canDelete = isOwn && isWithinTTL(createdAt, deleteTTL);
+	const canCreateThread =
+		onCreateThread !== undefined && threadId === undefined && !isInThread;
 
 	useLayoutEffect(() => {
 		if (!menuPos || !menuRef.current) return;
@@ -207,6 +219,25 @@ export function MessageBubble({
 					</Text>
 				</Group>
 			</Paper>
+			{threadId !== undefined && onOpenThread !== undefined && (
+				<Button
+					variant="subtle"
+					color="gray"
+					size="compact-xs"
+					style={{
+						alignSelf: isOwn ? "flex-end" : "flex-start",
+						marginTop: 2,
+					}}
+					onClick={() => onOpenThread(threadId)}
+				>
+					<MessageCircle size={14} />
+					{threadMessageCount !== undefined && threadMessageCount > 0 && (
+						<Text component="span" size="xs" ml={2}>
+							{threadMessageCount}
+						</Text>
+					)}
+				</Button>
+			)}
 			{menuPos && (
 				<>
 					<UnstyledButton
@@ -267,6 +298,29 @@ export function MessageBubble({
 										<Pencil size={14} />
 									</ActionIcon>
 									{t("message.edit")}
+								</Button>
+							)}
+							{canCreateThread && (
+								<Button
+									variant="subtle"
+									color="gray"
+									fullWidth
+									justify="flex-start"
+									style={{ borderRadius: 0 }}
+									onClick={() => {
+										onCreateThread?.(chatId, msgId);
+										setMenuPos(null);
+									}}
+								>
+									<ActionIcon
+										variant="transparent"
+										color="gray"
+										size={18}
+										mr={6}
+									>
+										<MessageCircle size={14} />
+									</ActionIcon>
+									{t("message.createThread")}
 								</Button>
 							)}
 							{canDelete && (

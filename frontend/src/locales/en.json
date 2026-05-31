@@ -33,6 +33,8 @@
 	"message.copy": "Copy",
 	"message.edit": "Edit",
 	"message.delete": "Delete",
+	"message.createThread": "Create thread",
+	"message.thread": "Reply",
 	"message.edited": "edited",
 
 	"date.today": "Today",
@@ -44,6 +46,7 @@
 	"error.loadMessages": "Failed to load messages",
 	"error.loadConfig": "Failed to load config",
 	"error.delete": "Failed to delete message",
+	"error.createThread": "Failed to create thread",
 	"error.register": "Registration failed",
 
 	"lang.en": "English",

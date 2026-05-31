@@ -33,6 +33,8 @@
 	"message.copy": "Копировать",
 	"message.edit": "Редактировать",
 	"message.delete": "Удалить",
+	"message.createThread": "Создать обсуждение",
+	"message.thread": "Ответить",
 	"message.edited": "ред.",
 
 	"date.today": "Сегодня",
@@ -44,6 +46,7 @@
 	"error.loadMessages": "Не удалось загрузить сообщения",
 	"error.loadConfig": "Не удалось загрузить конфигурацию",
 	"error.delete": "Не удалось удалить сообщение",
+	"error.createThread": "Не удалось создать обсуждение",
 	"error.register": "Ошибка регистрации",
 
 	"lang.en": "English",

@@ -54,6 +54,16 @@ export interface Message {
 	editedAt?: string;
 }
 
+export interface Thread {
+	id: string;
+	chatId: string;
+	parentMessageId: string;
+	parentMessageText: string;
+	parentMessageFrom: string;
+	createdAt: string;
+	messageCount: number;
+}
+
 export interface AppConfig {
 	messageEditTTL: number;
 	messageDeleteTTL: number;
@@ -130,6 +140,49 @@ export function editMessage(
 		`/api/chats/${chatId}/messages/${messageId}`,
 		token,
 		{ method: "PATCH", body: JSON.stringify({ text }) },
+	);
+}
+
+export function createThread(token: string, chatId: string, messageId: string) {
+	return request<{ thread: Thread }>(
+		`/api/chats/${chatId}/messages/${messageId}/thread`,
+		token,
+		{ method: "POST" },
+	);
+}
+
+export function getThreadMessages(
+	token: string,
+	chatId: string,
+	threadId: string,
+	limit?: number,
+	before?: string,
+) {
+	const params = new URLSearchParams();
+	if (limit !== undefined) params.set("limit", String(limit));
+	if (before !== undefined) params.set("before", before);
+	const qs = params.toString();
+
+	return request<{ messages: Message[]; nextCursor?: string }>(
+		`/api/chats/${chatId}/threads/${threadId}/messages${qs ? `?${qs}` : ""}`,
+		token,
+	);
+}
+
+export function getThreads(token: string, chatId: string) {
+	return request<{ threads: Thread[] }>(`/api/chats/${chatId}/threads`, token);
+}
+
+export function sendThreadMessage(
+	token: string,
+	chatId: string,
+	threadId: string,
+	text: string,
+) {
+	return request<{ message: Message }>(
+		`/api/chats/${chatId}/threads/${threadId}/messages`,
+		token,
+		{ method: "POST", body: JSON.stringify({ text }) },
 	);
 }
 

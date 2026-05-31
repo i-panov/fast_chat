@@ -29,3 +29,14 @@ type Message struct {
 	CreatedAt time.Time  `json:"createdAt"`
 	EditedAt  *time.Time `json:"editedAt,omitempty"`
 }
+
+// Thread represents a discussion thread attached to a specific message in a chat.
+type Thread struct {
+	ID                string    `json:"id"`
+	ChatID            string    `json:"chatId"`
+	ParentMessageID   string    `json:"parentMessageId"`
+	ParentMessageText string    `json:"parentMessageText"`
+	ParentMessageFrom string    `json:"parentMessageFrom"`
+	CreatedAt         time.Time `json:"createdAt"`
+	MessageCount      int       `json:"messageCount"`
+}
