@@ -61,10 +61,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [accounts, setAccounts] = useState<StoredAccount[]>(() => readAccounts());
   const [activeToken, setActiveToken] = useState<string | null>(() => {
     const saved = readActiveToken();
-    if (saved !== null && readAccounts().some((a) => a.token === saved)) {
+    const stored = readAccounts();
+    if (saved !== null && stored.some((a) => a.token === saved)) {
       return saved;
     }
-    return null;
+    const first = stored[0]?.token ?? null;
+    if (first !== null) {
+      writeActiveToken(first);
+    }
+    return first;
   });
 
   const activeAccount =

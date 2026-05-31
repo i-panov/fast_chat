@@ -1,5 +1,5 @@
 import { useState, type SubmitEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../useAuth";
 
 export default function LoginPage() {
@@ -10,8 +10,7 @@ export default function LoginPage() {
   const { login, accounts } = useAuth();
 
   if (accounts.length > 0) {
-    void navigate("/chat", { replace: true });
-    return null;
+    return <Navigate to="/chat" replace />;
   }
 
   async function handleSubmit(e: SubmitEvent<HTMLFormElement>) {
