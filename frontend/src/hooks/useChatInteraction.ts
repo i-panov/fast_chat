@@ -35,6 +35,8 @@ function useTokenChange(
 	setChats: (c: Chat[]) => void,
 	setMessages: React.Dispatch<React.SetStateAction<Record<string, Message[]>>>,
 	messagesRef: React.MutableRefObject<Record<string, Message[]>>,
+	nextCursorsRef: React.MutableRefObject<Record<string, string | null>>,
+	setHasMoreMap: React.Dispatch<React.SetStateAction<Record<string, boolean>>>,
 ) {
 	useEffect(() => {
 		if (token === undefined || token === "") {
@@ -43,6 +45,8 @@ function useTokenChange(
 
 		messagesRef.current = {};
 		setMessages({});
+		nextCursorsRef.current = {};
+		setHasMoreMap({});
 		getChats(token)
 			.then(({ chats: fetchedChats }) => {
 				setChats(fetchedChats);
@@ -50,7 +54,14 @@ function useTokenChange(
 			.catch(() => {
 				emitNotification("Failed to load chats");
 			});
-	}, [token, setChats, setMessages, messagesRef]);
+	}, [
+		token,
+		setChats,
+		setMessages,
+		messagesRef,
+		nextCursorsRef,
+		setHasMoreMap,
+	]);
 }
 
 function useSearch(
@@ -223,6 +234,8 @@ function useChatInteraction(opts: {
 	messagesRef: React.MutableRefObject<Record<string, Message[]>>;
 	editingMessage: EditingMessage | null;
 	setEditingMessage: (v: EditingMessage | null) => void;
+	nextCursorsRef: React.MutableRefObject<Record<string, string | null>>;
+	setHasMoreMap: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
 }): ChatInteraction {
 	const {
 		activeAccount,
@@ -233,6 +246,8 @@ function useChatInteraction(opts: {
 		messagesRef,
 		editingMessage,
 		setEditingMessage,
+		nextCursorsRef,
+		setHasMoreMap,
 	} = opts;
 	const [searchQuery, setSearchQuery] = useState("");
 	const [searchResults, setSearchResults] = useState<User[]>([]);
@@ -248,10 +263,17 @@ function useChatInteraction(opts: {
 		setPendingChatNick(null);
 		setActiveChatId(chatId);
 		if (messagesRef.current[chatId] === undefined) {
-			getMessages(activeAccount.token, chatId)
-				.then(({ messages: msgs }) => {
+			getMessages(activeAccount.token, chatId, 30)
+				.then(({ messages: msgs, nextCursor }) => {
 					messagesRef.current[chatId] = msgs;
 					setMessages((prev) => ({ ...prev, [chatId]: msgs }));
+					const nxt = nextCursor;
+					nextCursorsRef.current[chatId] =
+						nxt != null && nxt !== "" ? nxt : null;
+					setHasMoreMap((prev) => ({
+						...prev,
+						[chatId]: nxt != null && nxt !== "",
+					}));
 				})
 				.catch(() => {
 					emitNotification("Failed to load messages");
@@ -318,6 +340,10 @@ export function useChatPage() {
 		null,
 	);
 	const messagesRef = useRef<Record<string, Message[]>>({});
+	const nextCursorsRef = useRef<Record<string, string | null>>({});
+	const loadingMoreRef = useRef(false);
+	const [isLoadingMore, setIsLoadingMore] = useState(false);
+	const [hasMoreMap, setHasMoreMap] = useState<Record<string, boolean>>({});
 
 	const user =
 		activeAccount !== null
@@ -327,7 +353,14 @@ export function useChatPage() {
 	const token = activeAccount?.token;
 
 	useAuthGuard();
-	useTokenChange(token, setChats, setMessages, messagesRef);
+	useTokenChange(
+		token,
+		setChats,
+		setMessages,
+		messagesRef,
+		nextCursorsRef,
+		setHasMoreMap,
+	);
 	useSseMessages(token ?? "", setChats, setMessages);
 
 	useEffect(() => {
@@ -347,6 +380,8 @@ export function useChatPage() {
 		messagesRef,
 		editingMessage,
 		setEditingMessage,
+		nextCursorsRef,
+		setHasMoreMap,
 	});
 
 	const handleDeleteMessage = useCallback(
@@ -372,6 +407,41 @@ export function useChatPage() {
 		interaction.setInputText("");
 	}, [interaction.setInputText]);
 
+	const loadMoreMessages = useCallback(
+		async (chatId: string | null) => {
+			if (chatId === null || activeAccount === null) return;
+			if (loadingMoreRef.current) return;
+
+			const cursor = nextCursorsRef.current[chatId];
+			if (cursor == null) return;
+
+			loadingMoreRef.current = true;
+			setIsLoadingMore(true);
+
+			try {
+				const res = await getMessages(activeAccount.token, chatId, 30, cursor);
+				const existing = messagesRef.current[chatId] ?? [];
+				messagesRef.current[chatId] = [...res.messages, ...existing];
+				setMessages((prev) => ({
+					...prev,
+					[chatId]: messagesRef.current[chatId],
+				}));
+				const nxt = res.nextCursor;
+				nextCursorsRef.current[chatId] = nxt != null && nxt !== "" ? nxt : null;
+				setHasMoreMap((prev) => ({
+					...prev,
+					[chatId]: nxt != null && nxt !== "",
+				}));
+			} catch {
+				emitNotification("Failed to load messages");
+			} finally {
+				setIsLoadingMore(false);
+				loadingMoreRef.current = false;
+			}
+		},
+		[activeAccount],
+	);
+
 	const activeChat =
 		interaction.pendingChatWith !== null
 			? undefined
@@ -379,6 +449,8 @@ export function useChatPage() {
 
 	const activeMessages =
 		activeChatId !== null ? (messages[activeChatId] ?? []) : [];
+
+	const hasMore = activeChatId !== null && (hasMoreMap[activeChatId] ?? false);
 
 	return {
 		activeAccount,
@@ -397,6 +469,9 @@ export function useChatPage() {
 		handleStartEdit,
 		handleCancelEdit,
 		setSwitcherOpen,
+		isLoadingMore,
+		hasMore,
+		loadMoreMessages,
 		...interaction,
 	};
 }

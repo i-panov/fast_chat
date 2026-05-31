@@ -1,4 +1,4 @@
-import { Center, Paper, ScrollArea, Stack, Text } from "@mantine/core";
+import { Center, Paper, Stack, Text } from "@mantine/core";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
 import { AppHeader } from "../components/chat/AppHeader.tsx";
 import { ChatList } from "../components/chat/ChatList.tsx";
@@ -90,11 +90,18 @@ export function ChatPage() {
 						{s.pendingChatWith !== null ? (
 							<>
 								<ChatHeader title={s.pendingChatNick ?? ""} badge="New chat" />
-								<ScrollArea style={{ flex: 1 }} p="md">
-									<Text ta="center" c="dimmed" size="sm" py={32}>
+								<div
+									style={{
+										flex: 1,
+										display: "flex",
+										alignItems: "center",
+										justifyContent: "center",
+									}}
+								>
+									<Text ta="center" c="dimmed" size="sm">
 										Send a message to start a chat with @{s.pendingChatNick}
 									</Text>
-								</ScrollArea>
+								</div>
 								<InputBar
 									text={s.inputText}
 									onTextChange={s.setInputText}
@@ -114,16 +121,21 @@ export function ChatPage() {
 								<ChatHeader
 									title={otherNick(s.activeChat.members, s.user.id)}
 								/>
-								<ScrollArea style={{ flex: 1 }} p="md">
-									<MessageList
-										messages={s.activeMessages}
-										userId={s.user.id}
-										onDelete={s.handleDeleteMessage}
-										onStartEdit={s.handleStartEdit}
-										editTTL={s.config?.messageEditTTL ?? 0}
-										deleteTTL={s.config?.messageDeleteTTL ?? 0}
-									/>
-								</ScrollArea>
+								<MessageList
+									messages={s.activeMessages}
+									userId={s.user.id}
+									onDelete={s.handleDeleteMessage}
+									onStartEdit={s.handleStartEdit}
+									editTTL={s.config?.messageEditTTL ?? 0}
+									deleteTTL={s.config?.messageDeleteTTL ?? 0}
+									hasMore={s.hasMore}
+									isLoadingMore={s.isLoadingMore}
+									onLoadMore={
+										s.activeChatId !== null
+											? () => s.loadMoreMessages(s.activeChatId)
+											: undefined
+									}
+								/>
 								<InputBar
 									text={s.inputText}
 									onTextChange={s.setInputText}

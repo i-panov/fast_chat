@@ -84,9 +84,19 @@ export function createChat(token: string, withUserId: string) {
 	});
 }
 
-export function getMessages(token: string, chatId: string) {
-	return request<{ messages: Message[] }>(
-		`/api/chats/${chatId}/messages`,
+export function getMessages(
+	token: string,
+	chatId: string,
+	limit?: number,
+	before?: string,
+) {
+	const params = new URLSearchParams();
+	if (limit !== undefined) params.set("limit", String(limit));
+	if (before !== undefined) params.set("before", before);
+	const qs = params.toString();
+
+	return request<{ messages: Message[]; nextCursor?: string }>(
+		`/api/chats/${chatId}/messages${qs ? `?${qs}` : ""}`,
 		token,
 	);
 }

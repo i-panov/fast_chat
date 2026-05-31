@@ -4,6 +4,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -272,12 +273,40 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	messages := h.store.GetMessages(chatID)
+	limitStr := r.URL.Query().Get("limit")
+	limit := 30
+
+	if limitStr != "" {
+		if n, err := parseInt(limitStr); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+
+	before := r.URL.Query().Get("before")
+
+	messages, nextCursor, _ := h.store.GetMessagesPaginated(chatID, limit, before)
 	if messages == nil {
 		messages = []model.Message{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"messages": messages})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"messages":   messages,
+		"nextCursor": nextCursor,
+	})
+}
+
+func parseInt(s string) (int, error) {
+	var n int
+
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, errors.New("not a number")
+		}
+
+		n = n*10 + int(c-'0')
+	}
+
+	return n, nil
 }
 
 func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {

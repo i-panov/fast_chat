@@ -242,6 +242,49 @@ func (s *Store) GetMessages(chatID string) []model.Message {
 	return result
 }
 
+// GetMessagesPaginated returns up to limit messages older than the given cursor.
+// If before is empty, returns the most recent messages.
+// Returns messages in chronological order, nextCursor for the next page (oldest message ID), and hasMore.
+func (s *Store) GetMessagesPaginated(chatID string, limit int, before string) ([]model.Message, string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	all := s.messages[chatID]
+
+	end := len(all)
+	if before != "" {
+		for idx := range all {
+			if all[idx].ID == before {
+				end = idx
+				break
+			}
+		}
+	}
+
+	if end <= 0 {
+		return nil, "", false
+	}
+
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+
+	result := make([]model.Message, end-start)
+	copy(result, all[start:end])
+
+	var nextCursor string
+
+	var hasMore bool
+
+	if start > 0 {
+		nextCursor = all[start].ID
+		hasMore = true
+	}
+
+	return result, nextCursor, hasMore
+}
+
 // DeleteMessage removes a message if it belongs to the requesting user.
 func (s *Store) DeleteMessage(chatID, messageID, userID string) error {
 	s.mu.Lock()

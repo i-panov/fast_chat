@@ -109,6 +109,15 @@ function useAuthState() {
 	}, []);
 
 	useEffect(() => {
+		if (activeToken === null && accounts.length > 0) {
+			const resolved = resolveActiveToken(accounts);
+			if (resolved !== null) {
+				setActiveToken(resolved);
+			}
+		}
+	}, [accounts, activeToken]);
+
+	useEffect(() => {
 		const unsub = onUnauthorized((token) => {
 			const updated = readAccounts().filter((a) => a.token !== token);
 			writeAccounts(updated);

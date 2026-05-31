@@ -11,9 +11,9 @@ export function LoginPage() {
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(false);
 	const navigate = useNavigate();
-	const { login, accounts } = useAuth();
+	const { login, activeAccount } = useAuth();
 
-	if (accounts.length > 0) {
+	if (activeAccount !== null) {
 		return <Navigate to="/chat" />;
 	}
 
