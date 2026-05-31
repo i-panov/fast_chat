@@ -1,17 +1,16 @@
-backend\:run:
-	cd backend && go run .
+BACKEND_PORT ?= 8080
+SERVER_DOMAIN ?= localhost:$(BACKEND_PORT)
+FRONTEND_PORT ?= 5173
+API_PROXY ?= http://localhost:$(BACKEND_PORT)
 
-backend\:run\:8081:
-	cd backend && PORT=8081 SERVER_DOMAIN=localhost:8081 go run .
+backend\:run:
+	cd backend && PORT=$(BACKEND_PORT) SERVER_DOMAIN=$(SERVER_DOMAIN) go run .
 
 backend\:lint:
 	cd backend && ~/go/bin/golangci-lint run ./...
 
 frontend\:run:
-	cd frontend && npx vite --host
-
-frontend\:run\:8081:
-	cd frontend && VITE_API_PROXY=http://localhost:8081 npx vite --host --port 5174
+	cd frontend && VITE_API_PROXY=$(API_PROXY) npx vite --host --port $(FRONTEND_PORT)
 
 frontend\:lint:
 	cd frontend && npx biome check src/
@@ -31,8 +30,6 @@ dev:
 	@echo "  make backend:run"
 	@echo "  make frontend:run"
 	@echo ""
-	@echo "For federation testing (second instance):"
-	@echo "  make backend:run:8081"
-	@echo "  make frontend:run:8081"
-	@echo ""
-	@echo "Then open http://localhost:5173 and http://localhost:5174"
+	@echo "Second instance (federation test):"
+	@echo "  make backend:run BACKEND_PORT=8081 SERVER_DOMAIN=localhost:8081"
+	@echo "  make frontend:run FRONTEND_PORT=5174 API_PROXY=http://localhost:8081"
