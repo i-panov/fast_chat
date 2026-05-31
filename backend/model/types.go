@@ -1,7 +1,9 @@
+// Package model provides data types for the chat application.
 package model
 
 import "time"
 
+// User represents a chat user.
 type User struct {
 	ID     string `json:"id"`
 	Nick   string `json:"nick"`
@@ -9,12 +11,14 @@ type User struct {
 	Online bool   `json:"online"`
 }
 
+// Chat represents a private conversation between users.
 type Chat struct {
 	ID        string    `json:"id"`
 	Members   []string  `json:"-"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// Message represents a single message within a chat.
 type Message struct {
 	ID        string    `json:"id"`
 	ChatID    string    `json:"chatId"`

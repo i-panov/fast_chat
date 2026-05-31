@@ -7,13 +7,14 @@ import {
 	useState,
 } from "react";
 import { register as apiRegister } from "./api.ts";
+import { onUnauthorized } from "./utils/authEvents.ts";
 
-interface StoredUser {
+export interface StoredUser {
 	id: string;
 	nick: string;
 }
 
-interface StoredAccount {
+export interface StoredAccount {
 	token: string;
 	user: StoredUser;
 }
@@ -29,8 +30,7 @@ interface AuthContextValue {
 }
 
 const ACCOUNTS_KEY = "accounts";
-const SS_ACTIVE_TOKEN_KEY = "activeToken";
-const LS_ACTIVE_TOKEN_KEY = "activeToken";
+const ACTIVE_TOKEN_KEY = "activeToken";
 
 function readAccounts(): StoredAccount[] {
 	try {
@@ -47,27 +47,20 @@ function writeAccounts(accounts: StoredAccount[]) {
 }
 
 function readActiveToken(): string | null {
-	return sessionStorage.getItem(SS_ACTIVE_TOKEN_KEY);
+	return localStorage.getItem(ACTIVE_TOKEN_KEY);
 }
 
 function writeActiveToken(token: string) {
-	sessionStorage.setItem(SS_ACTIVE_TOKEN_KEY, token);
-	localStorage.setItem(LS_ACTIVE_TOKEN_KEY, token);
+	localStorage.setItem(ACTIVE_TOKEN_KEY, token);
 }
 
 function removeActiveToken() {
-	sessionStorage.removeItem(SS_ACTIVE_TOKEN_KEY);
-	localStorage.removeItem(LS_ACTIVE_TOKEN_KEY);
+	localStorage.removeItem(ACTIVE_TOKEN_KEY);
 }
 
 function resolveActiveToken(stored: StoredAccount[]): string | null {
-	const sessionToken = readActiveToken();
-	if (sessionToken !== null && stored.some((a) => a.token === sessionToken)) {
-		return sessionToken;
-	}
-	const saved = localStorage.getItem(LS_ACTIVE_TOKEN_KEY);
+	const saved = readActiveToken();
 	if (saved !== null && stored.some((a) => a.token === saved)) {
-		writeActiveToken(saved);
 		return saved;
 	}
 	const first = stored[0]?.token ?? null;
@@ -79,32 +72,59 @@ function resolveActiveToken(stored: StoredAccount[]): string | null {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function useAuthCallbacks(
-	activeToken: string | null,
-	setActiveToken: (v: string | null) => void,
-	setAccounts: React.Dispatch<React.SetStateAction<StoredAccount[]>>,
-) {
-	const switchAccount = useCallback(
-		(token: string) => {
-			setActiveToken(token);
-			writeActiveToken(token);
-		},
-		[setActiveToken],
+function useAuthState() {
+	const [accounts, setAccounts] = useState<StoredAccount[]>(readAccounts);
+	const [activeToken, setActiveToken] = useState<string | null>(() =>
+		resolveActiveToken(accounts),
 	);
 
-	const addAccount = useCallback(
-		(token: string, user: StoredUser) => {
-			const updated = readAccounts();
-			if (!updated.some((a) => a.token === token)) {
-				updated.push({ token, user });
-				writeAccounts(updated);
-				setAccounts(updated);
+	useEffect(() => {
+		function handleStorage(e: StorageEvent) {
+			if (e.key === ACCOUNTS_KEY) {
+				setAccounts(readAccounts());
 			}
-			setActiveToken(token);
-			writeActiveToken(token);
-		},
-		[setActiveToken, setAccounts],
-	);
+			if (e.key === ACTIVE_TOKEN_KEY && e.newValue !== null) {
+				setActiveToken(e.newValue);
+			}
+		}
+		window.addEventListener("storage", handleStorage);
+		return () => window.removeEventListener("storage", handleStorage);
+	}, []);
+
+	useEffect(() => {
+		const unsub = onUnauthorized((token) => {
+			const updated = readAccounts().filter((a) => a.token !== token);
+			writeAccounts(updated);
+			setAccounts(updated);
+			if (activeToken === token) {
+				const next = updated[0]?.token ?? null;
+				setActiveToken(next);
+				if (next === null) {
+					removeActiveToken();
+					window.location.href = "/login";
+				} else {
+					writeActiveToken(next);
+				}
+			}
+		});
+		return unsub;
+	}, [activeToken]);
+
+	const switchAccount = useCallback((token: string) => {
+		setActiveToken(token);
+		writeActiveToken(token);
+	}, []);
+
+	const addAccount = useCallback((token: string, user: StoredUser) => {
+		const updated = readAccounts();
+		if (!updated.some((a) => a.token === token)) {
+			updated.push({ token, user });
+			writeAccounts(updated);
+			setAccounts(updated);
+		}
+		setActiveToken(token);
+		writeActiveToken(token);
+	}, []);
 
 	const removeAccount = useCallback(
 		(token: string) => {
@@ -122,7 +142,7 @@ function useAuthCallbacks(
 				}
 			}
 		},
-		[activeToken, setActiveToken, setAccounts],
+		[activeToken],
 	);
 
 	const login = useCallback(
@@ -137,33 +157,20 @@ function useAuthCallbacks(
 		removeAccount(activeToken ?? "");
 	}, [activeToken, removeAccount]);
 
-	return { switchAccount, addAccount, removeAccount, login, logout };
-}
-
-function useAuthState() {
-	const [accounts, setAccounts] = useState<StoredAccount[]>(readAccounts);
-	const [activeToken, setActiveToken] = useState<string | null>(() =>
-		resolveActiveToken(accounts),
-	);
-
-	useEffect(() => {
-		function handleStorage(e: StorageEvent) {
-			if (e.key === ACCOUNTS_KEY) {
-				setAccounts(readAccounts());
-			}
-		}
-		window.addEventListener("storage", handleStorage);
-		return () => window.removeEventListener("storage", handleStorage);
-	}, []);
-
 	const activeAccount =
 		activeToken !== null
 			? (accounts.find((a) => a.token === activeToken) ?? null)
 			: null;
 
-	const callbacks = useAuthCallbacks(activeToken, setActiveToken, setAccounts);
-
-	return { accounts, activeAccount, ...callbacks };
+	return {
+		accounts,
+		activeAccount,
+		switchAccount,
+		addAccount,
+		removeAccount,
+		login,
+		logout,
+	};
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

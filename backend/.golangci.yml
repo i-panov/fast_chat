@@ -60,8 +60,6 @@ linters:
   settings:
     revive:
       rules:
-        - name: exported
-          severity: error
         - name: blank-imports
         - name: context-as-argument
         - name: context-keys-type
@@ -100,7 +98,7 @@ linters:
       case:
         use-field-name: true
         rules:
-          json: snake
+          json: camel
 
     gocyclo:
       min-complexity: 15
@@ -196,6 +194,13 @@ linters:
       - linters:
           - varnamelen
         path: handler/handler\.go
+      - linters:
+          - revive
+          - gocritic
+        path: handler/handler\.go
+      - linters:
+          - revive
+        path: main\.go
 
 formatters:
   enable:

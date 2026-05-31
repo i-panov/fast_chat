@@ -1,3 +1,5 @@
+import { emitUnauthorized } from "./utils/authEvents.ts";
+
 const HTTP_UNAUTHORIZED = 401;
 
 async function request<T>(
@@ -13,19 +15,8 @@ async function request<T>(
 	}
 	const res = await fetch(path, { ...init, headers });
 	if (res.status === HTTP_UNAUTHORIZED) {
-		const raw = localStorage.getItem("accounts");
-		if (raw !== null) {
-			const accounts = JSON.parse(raw) as {
-				token: string;
-				user: { id: string; nick: string };
-			}[];
-			const filtered = accounts.filter((a) => a.token !== token);
-			localStorage.setItem("accounts", JSON.stringify(filtered));
-			if (filtered.length === 0) {
-				window.location.href = "/login";
-			}
-		} else {
-			window.location.href = "/login";
+		if (token !== undefined) {
+			emitUnauthorized(token);
 		}
 		throw new Error("unauthorized");
 	}

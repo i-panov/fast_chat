@@ -22,28 +22,26 @@ const (
 	errKeyChatNotFound = "chat not found"
 	errKeyNotMember    = "not a member"
 	errKeyEmptyMessage = "empty message"
+
+	sseHeartbeatInterval = 30 * time.Second
 )
 
-// SSEEvent represents a server-sent event to be delivered to clients.
 type SSEEvent struct {
 	Event string
 	Data  interface{}
 }
 
-// SSEHub manages client subscriptions for server-sent events.
 type SSEHub struct {
 	mu      sync.RWMutex
 	clients map[string][]chan SSEEvent
 }
 
-// NewSSEHub creates a new SSE hub.
 func NewSSEHub() *SSEHub {
 	return &SSEHub{
 		clients: make(map[string][]chan SSEEvent),
 	}
 }
 
-// Subscribe registers a user for SSE events and returns a channel.
 func (h *SSEHub) Subscribe(userID string) chan SSEEvent {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -54,7 +52,6 @@ func (h *SSEHub) Subscribe(userID string) chan SSEEvent {
 	return ch
 }
 
-// Unsubscribe removes a specific channel for a user and closes it.
 func (h *SSEHub) Unsubscribe(userID string, ch chan SSEEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -75,7 +72,6 @@ func (h *SSEHub) Unsubscribe(userID string, ch chan SSEEvent) {
 	}
 }
 
-// Send delivers an event to all channels for a given user.
 func (h *SSEHub) Send(userID string, event SSEEvent) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -104,20 +100,17 @@ type contextKey string
 
 const userKey contextKey = "user"
 
-//nolint:unparam // always non-nil in authenticated routes
 func getUser(r *http.Request) *model.User {
 	user, _ := r.Context().Value(userKey).(*model.User) //nolint:errcheck // expected to be missing in unauthenticated contexts
 
 	return user
 }
 
-// Handler groups all HTTP handler methods and their dependencies.
 type Handler struct {
 	store *store.Store
 	hub   *SSEHub
 }
 
-// New creates a new Handler with the given store.
 func New(s *store.Store) *Handler {
 	return &Handler{
 		store: s,
@@ -140,8 +133,6 @@ func (h *Handler) enrichChat(c *model.Chat) chatResponse {
 	return cr
 }
 
-// AuthMiddleware extracts the user from the Authorization header or token
-// query parameter and injects it into the request context.
 func (h *Handler) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get("Authorization")
@@ -163,8 +154,9 @@ func (h *Handler) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// Register handles user registration with a unique nickname.
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck // write errors are unrecoverable at this point
+
 	var req struct {
 		Nick string `json:"nick"`
 	}
@@ -195,20 +187,18 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// SearchUsers searches for other users by nickname prefix.
 func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	query := r.URL.Query().Get("q")
 
 	users := h.store.SearchUsers(query, user.ID)
 	if users == nil {
-		users = []*model.User{}
+		users = []model.User{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
 }
 
-// GetChats returns all chats for the authenticated user.
 func (h *Handler) GetChats(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	chats := h.store.GetUserChats(user.ID)
@@ -221,8 +211,9 @@ func (h *Handler) GetChats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"chats": resp})
 }
 
-// CreateChat creates a new private chat with another user.
 func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck // write errors are unrecoverable at this point
+
 	user := getUser(r)
 
 	var req struct {
@@ -261,7 +252,6 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"chat": enriched})
 }
 
-// GetMessages returns the message history for a given chat.
 func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	chatID := r.PathValue("id")
@@ -287,8 +277,9 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"messages": messages})
 }
 
-// SendMessage sends a message in the specified chat.
 func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck // write errors are unrecoverable at this point
+
 	user := getUser(r)
 	chatID := r.PathValue("id")
 
@@ -336,7 +327,6 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
 }
 
-// DeleteMessage deletes a message if the requesting user is the author.
 func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	chatID := r.PathValue("id")
@@ -368,9 +358,14 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-// SSE handles the server-sent events connection for real-time updates.
 func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
+	token := r.Header.Get("Authorization")
+	token = strings.TrimPrefix(token, "Bearer ")
+
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
+
 	if token == "" {
 		http.Error(w, "token required", http.StatusBadRequest)
 
@@ -412,10 +407,21 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	ticker := time.NewTicker(sseHeartbeatInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ticker.C:
+			_, err := fmt.Fprintf(w, ": heartbeat\n\n")
+			if err != nil {
+				return
+			}
+
+			flusher.Flush()
+
 		case evt, ok := <-ch:
 			if !ok {
 				return
@@ -426,7 +432,10 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Event, data) //nolint:errcheck // write errors on SSE are unrecoverable
+			_, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Event, data)
+			if err != nil {
+				return
+			}
 
 			flusher.Flush()
 		}

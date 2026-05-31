@@ -29,26 +29,52 @@ function AccountRow({
 }) {
 	return (
 		<UnstyledButton
-			className={`flex items-center gap-3 w-full hover:bg-[var(--mantine-color-dark-6)] ${
-				isActive ? "bg-[var(--mantine-color-dark-6)]" : ""
-			}`}
 			style={{
+				display: "flex",
+				alignItems: "center",
+				gap: "12px",
+				width: "100%",
 				padding: "12px 16px",
 				borderBottom: "1px solid var(--mantine-color-dark-4)",
+				background: isActive ? "var(--mantine-color-dark-6)" : undefined,
+			}}
+			onMouseEnter={(e) => {
+				e.currentTarget.style.background = "var(--mantine-color-dark-6)";
+			}}
+			onMouseLeave={(e) => {
+				if (!isActive) {
+					e.currentTarget.style.background = "";
+				}
 			}}
 			onClick={onClick}
 		>
-			<Text
-				span
-				className="w-8 h-8 rounded-full bg-[var(--mantine-color-blue-8)] flex items-center justify-center text-white text-sm font-bold flex-shrink-0"
+			<div
+				style={{
+					width: "32px",
+					height: "32px",
+					borderRadius: "50%",
+					background: "var(--mantine-color-blue-8)",
+					display: "flex",
+					alignItems: "center",
+					justifyContent: "center",
+					flexShrink: 0,
+				}}
 			>
-				{(account.user.nick[0] ?? "").toUpperCase()}
-			</Text>
-			<Text span className="flex-1 text-sm text-white">
+				<Text
+					span
+					style={{ color: "white", fontSize: "14px", fontWeight: 700 }}
+				>
+					{(account.user.nick[0] ?? "").toUpperCase()}
+				</Text>
+			</div>
+			<Text span style={{ flex: 1, fontSize: "14px", color: "white" }}>
 				@{account.user.nick}
 			</Text>
 			{isActive && (
-				<Text span className="text-[var(--mantine-color-blue-5)] text-sm">
+				<Text
+					span
+					style={{ color: "var(--mantine-color-blue-5)", fontSize: "14px" }}
+				>
 					✓
 				</Text>
 			)}
@@ -68,7 +94,7 @@ function AccountList({
 	onClose: () => void;
 }) {
 	return (
-		<ScrollArea className="flex-1">
+		<ScrollArea style={{ flex: 1 }}>
 			{accounts.map((acc) => (
 				<AccountRow
 					key={acc.token}
@@ -109,7 +135,7 @@ function Footer({
 		return (
 			<Button
 				variant="outline"
-				className="w-full border-dashed"
+				style={{ width: "100%", borderStyle: "dashed" }}
 				onClick={onAddClick}
 			>
 				+ Add Account
@@ -191,11 +217,31 @@ export function AccountSwitcher({ open, onClose }: Props) {
 				<Overlay color="#000" opacity={0.5} zIndex={40} onClick={onClose} />
 			)}
 			<div
-				className="fixed top-0 left-0 h-full w-[280px] bg-[var(--mantine-color-dark-8)] z-50 shadow-lg flex flex-col transition-transform duration-300 ease-in-out"
-				style={{ transform: open ? "translateX(0)" : "translateX(-100%)" }}
+				style={{
+					position: "fixed",
+					top: 0,
+					left: 0,
+					height: "100%",
+					width: "280px",
+					background: "var(--mantine-color-dark-8)",
+					zIndex: 50,
+					display: "flex",
+					flexDirection: "column",
+					transition: "transform 300ms ease-in-out",
+					boxShadow: "0 0 20px rgba(0,0,0,0.3)",
+					transform: open ? "translateX(0)" : "translateX(-100%)",
+				}}
 			>
-				<div className="px-4 py-4 border-b border-[var(--mantine-color-dark-4)]">
-					<Title order={2} className="m-0 text-base text-white">
+				<div
+					style={{
+						padding: "16px",
+						borderBottom: "1px solid var(--mantine-color-dark-4)",
+					}}
+				>
+					<Title
+						order={2}
+						style={{ margin: 0, fontSize: "16px", color: "white" }}
+					>
 						Accounts
 					</Title>
 				</div>
@@ -205,7 +251,12 @@ export function AccountSwitcher({ open, onClose }: Props) {
 					onSwitchAccount={switchAccount}
 					onClose={onClose}
 				/>
-				<div className="border-t border-[var(--mantine-color-dark-4)] p-4">
+				<div
+					style={{
+						borderTop: "1px solid var(--mantine-color-dark-4)",
+						padding: "16px",
+					}}
+				>
 					<Footer
 						adding={adding}
 						error={error}

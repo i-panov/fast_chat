@@ -23,6 +23,7 @@ func generateID() string {
 type Store struct {
 	mu       sync.RWMutex
 	users    map[string]*model.User
+	tokens   map[string]*model.User
 	nicks    map[string]string
 	chats    map[string]*model.Chat
 	messages map[string][]model.Message
@@ -33,6 +34,7 @@ type Store struct {
 func New() *Store {
 	return &Store{
 		users:    make(map[string]*model.User),
+		tokens:   make(map[string]*model.User),
 		nicks:    make(map[string]string),
 		chats:    make(map[string]*model.Chat),
 		messages: make(map[string][]model.Message),
@@ -41,7 +43,6 @@ func New() *Store {
 }
 
 // CreateUser registers a new user with the given nickname.
-// Returns an error if the nickname is already taken.
 func (s *Store) CreateUser(nick string) (*model.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -58,6 +59,7 @@ func (s *Store) CreateUser(nick string) (*model.User, error) {
 	}
 
 	s.users[user.ID] = user
+	s.tokens[user.Token] = user
 	s.nicks[nick] = user.ID
 
 	return user, nil
@@ -68,13 +70,9 @@ func (s *Store) GetUserByToken(token string) (*model.User, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for _, u := range s.users {
-		if u.Token == token {
-			return u, true
-		}
-	}
+	u, ok := s.tokens[token]
 
-	return nil, false
+	return u, ok
 }
 
 // GetUserByID looks up a user by their ID.
@@ -88,18 +86,18 @@ func (s *Store) GetUserByID(id string) (*model.User, bool) {
 }
 
 // SearchUsers finds users whose nickname contains the query string,
-// excluding the user with the given excludeID.
-func (s *Store) SearchUsers(query, excludeID string) []*model.User {
+// excluding the user with the given excludeID. Returns copies to avoid data races.
+func (s *Store) SearchUsers(query, excludeID string) []model.User {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	q := strings.ToLower(query)
 
-	var result []*model.User
+	result := make([]model.User, 0)
 
 	for _, u := range s.users {
 		if u.ID != excludeID && strings.Contains(strings.ToLower(u.Nick), q) {
-			result = append(result, u)
+			result = append(result, *u)
 		}
 	}
 
