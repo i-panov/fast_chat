@@ -1,5 +1,5 @@
 import { Text } from "@mantine/core";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { onNotification } from "../utils/notify.ts";
 
 interface Toast {
@@ -12,16 +12,24 @@ let nextId = 0;
 
 export function NotificationToast() {
 	const [toasts, setToasts] = useState<Toast[]>([]);
+	const timerIdsRef = useRef<number[]>([]);
 
 	useEffect(() => {
 		const unsub = onNotification(({ message, type }) => {
 			const id = nextId++;
 			setToasts((prev) => [...prev, { message, type, id }]);
-			setTimeout(() => {
+			const timerId = window.setTimeout(() => {
 				setToasts((prev) => prev.filter((t) => t.id !== id));
 			}, 4000);
+			timerIdsRef.current.push(timerId);
 		});
-		return unsub;
+		return () => {
+			unsub();
+			for (const id of timerIdsRef.current) {
+				clearTimeout(id);
+			}
+			timerIdsRef.current = [];
+		};
 	}, []);
 
 	if (toasts.length === 0) return null;

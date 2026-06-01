@@ -3,13 +3,21 @@ import {
 	Anchor,
 	Button,
 	Group,
+	Loader,
 	Paper,
 	Stack,
 	Text,
 	UnstyledButton,
 } from "@mantine/core";
-import { Check, Copy, MessageCircle, Pencil, Trash2 } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import {
+	Check,
+	Copy,
+	MessageCircle,
+	Pencil,
+	RotateCcw,
+	Trash2,
+} from "lucide-react";
+import { isValidElement, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -93,6 +101,8 @@ interface Props {
 	threadId?: string;
 	threadMessageCount?: number;
 	isInThread?: boolean;
+	status?: "sending" | "failed";
+	onRetry?: (chatId: string, messageId: string) => void;
 }
 
 function isWithinTTL(createdAt: string, ttl: number): boolean {
@@ -118,15 +128,30 @@ export function MessageBubble({
 	threadId,
 	threadMessageCount,
 	isInThread,
+	status,
+	onRetry,
 }: Props) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const menuRef = useRef<HTMLDivElement>(null);
-	const { t } = useTranslation();
+	const { t, i18n } = useTranslation();
+	const locale = i18n.language.split("-")[0];
 
-	const canEdit = isOwn && isWithinTTL(createdAt, editTTL);
-	const canDelete = isOwn && isWithinTTL(createdAt, deleteTTL);
+	const canEdit =
+		isOwn &&
+		isWithinTTL(createdAt, editTTL) &&
+		status !== "sending" &&
+		status !== "failed";
+	const canDelete =
+		isOwn &&
+		(status === "sending" ||
+			status === "failed" ||
+			isWithinTTL(createdAt, deleteTTL));
 	const canCreateThread =
-		onCreateThread !== undefined && threadId === undefined && !isInThread;
+		onCreateThread !== undefined &&
+		threadId === undefined &&
+		!isInThread &&
+		status !== "sending" &&
+		status !== "failed";
 
 	useLayoutEffect(() => {
 		if (!menuPos || !menuRef.current) return;
@@ -143,20 +168,13 @@ export function MessageBubble({
 
 	const editedLabel =
 		editedAt !== undefined
-			? `${t("message.edited")} ${new Date(editedAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`
+			? `${t("message.edited")} ${new Date(editedAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}`
 			: null;
 
 	return (
 		<>
 			<Paper
-				style={{
-					maxWidth: "70%",
-					background: isOwn
-						? "var(--mantine-color-blue-8)"
-						: "var(--mantine-color-dark-6)",
-					alignSelf: isOwn ? "flex-end" : "flex-start",
-					padding: "8px 12px",
-				}}
+				className={isOwn ? "bubble-own" : "bubble-other"}
 				onContextMenu={(e) => {
 					e.preventDefault();
 					setMenuPos({ x: e.clientX, y: e.clientY });
@@ -192,12 +210,13 @@ export function MessageBubble({
 									);
 								},
 								pre: ({ children }) => {
-									const codeEl = children as {
-										props: {
-											className?: string;
-											children: unknown;
-										};
-									};
+									if (!isValidElement(children)) {
+										return <pre>{children}</pre>;
+									}
+									const codeEl = children as React.ReactElement<{
+										className?: string;
+										children: unknown;
+									}>;
 									const className = codeEl.props.className ?? "";
 									const lang = className.replace("language-", "");
 									const codeText = extractCodeText(codeEl.props.children);
@@ -214,7 +233,25 @@ export function MessageBubble({
 							{text}
 						</Markdown>
 					</div>
-					<Text size="xs" c="gray.5" style={{ flexShrink: 0 }}>
+					<Text
+						size="xs"
+						c="gray.5"
+						style={{
+							flexShrink: 0,
+							display: "flex",
+							alignItems: "center",
+							gap: 4,
+						}}
+					>
+						{status === "sending" && <Loader size={4} />}
+						{status === "failed" && (
+							<span
+								style={{ color: "var(--mantine-color-red-5)" }}
+								title={t("message.failed")}
+							>
+								!
+							</span>
+						)}
 						{editedLabel ?? time}
 					</Text>
 				</Group>
@@ -298,6 +335,29 @@ export function MessageBubble({
 										<Pencil size={14} />
 									</ActionIcon>
 									{t("message.edit")}
+								</Button>
+							)}
+							{status === "failed" && onRetry !== undefined && (
+								<Button
+									variant="subtle"
+									color="gray"
+									fullWidth
+									justify="flex-start"
+									style={{ borderRadius: 0 }}
+									onClick={() => {
+										onRetry(chatId, msgId);
+										setMenuPos(null);
+									}}
+								>
+									<ActionIcon
+										variant="transparent"
+										color="gray"
+										size={18}
+										mr={6}
+									>
+										<RotateCcw size={14} />
+									</ActionIcon>
+									{t("message.retry")}
 								</Button>
 							)}
 							{canCreateThread && (

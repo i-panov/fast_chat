@@ -119,10 +119,19 @@ function useSseMessages(
 					seenIds.current = seenIds.current.slice(-SEEN_IDS_MAX);
 				}
 
-				setMessages((prev) => ({
-					...prev,
-					[msg.chatId]: [...(prev[msg.chatId] ?? []), msg],
-				}));
+				setMessages((prev) => {
+					const list = prev[msg.chatId] ?? [];
+					const idx = list.findIndex((m) => m.id === msg.id);
+					if (idx !== -1) {
+						const next = [...list];
+						next[idx] = msg;
+						return { ...prev, [msg.chatId]: next };
+					}
+					return {
+						...prev,
+						[msg.chatId]: [...list, msg],
+					};
+				});
 			} else if (event === "message_updated") {
 				const msg = data as Message;
 				setMessages((prev) => {
@@ -163,10 +172,19 @@ function useSseMessages(
 					threadId: string;
 					message: Message;
 				};
-				setThreadMessages((prev) => ({
-					...prev,
-					[threadId]: [...(prev[threadId] ?? []), message],
-				}));
+				setThreadMessages((prev) => {
+					const list = prev[threadId] ?? [];
+					const idx = list.findIndex((m) => m.id === message.id);
+					if (idx !== -1) {
+						const next = [...list];
+						next[idx] = message;
+						return { ...prev, [threadId]: next };
+					}
+					return {
+						...prev,
+						[threadId]: [...list, message],
+					};
+				});
 				setThreads((prev) => {
 					const t = prev[threadId];
 					if (t === undefined) return prev;
@@ -190,9 +208,10 @@ interface EditingMessage {
 }
 
 function useSendMessage(opts: {
-	activeAccount: { token: string } | null;
+	activeAccount: { token: string; user: { id: string; nick: string } } | null;
 	inputText: string;
 	setInputText: (v: string) => void;
+	setMessages: React.Dispatch<React.SetStateAction<Record<string, Message[]>>>;
 	setChats: React.Dispatch<React.SetStateAction<Chat[]>>;
 	pendingChatWith: string | null;
 	setPendingChatWith: (v: string | null) => void;
@@ -207,6 +226,7 @@ function useSendMessage(opts: {
 		activeAccount,
 		inputText,
 		setInputText,
+		setMessages,
 		setChats,
 		pendingChatWith,
 		setPendingChatWith,
@@ -244,9 +264,50 @@ function useSendMessage(opts: {
 				setActiveChatId(chat.id);
 				setPendingChatWith(null);
 				setPendingChatNick(null);
+
+				const pending: Message = {
+					id: msgId,
+					chatId: chat.id,
+					fromId: activeAccount.user.id,
+					fromNick: activeAccount.user.nick,
+					text,
+					createdAt: new Date().toISOString(),
+					status: "sending",
+				};
+				setMessages((prev) => ({
+					...prev,
+					[chat.id]: [...(prev[chat.id] ?? []), pending],
+				}));
+
 				await sendMessage(activeAccount.token, chat.id, text, msgId);
+				setMessages((prev) => ({
+					...prev,
+					[chat.id]: prev[chat.id].map((m) =>
+						m.id === msgId ? { ...m, status: undefined } : m,
+					),
+				}));
 			} else if (activeChatId2 !== null) {
+				const pending: Message = {
+					id: msgId,
+					chatId: activeChatId2,
+					fromId: activeAccount.user.id,
+					fromNick: activeAccount.user.nick,
+					text,
+					createdAt: new Date().toISOString(),
+					status: "sending",
+				};
+				setMessages((prev) => ({
+					...prev,
+					[activeChatId2]: [...(prev[activeChatId2] ?? []), pending],
+				}));
+
 				await sendMessage(activeAccount.token, activeChatId2, text, msgId);
+				setMessages((prev) => ({
+					...prev,
+					[activeChatId2]: prev[activeChatId2].map((m) =>
+						m.id === msgId ? { ...m, status: undefined } : m,
+					),
+				}));
 			}
 		} catch {
 			setInputText(text);
@@ -357,9 +418,13 @@ function useChatInteraction(opts: {
 	}
 
 	const handleSend = useSendMessage({
-		activeAccount,
+		activeAccount: activeAccount as {
+			token: string;
+			user: { id: string; nick: string };
+		} | null,
 		inputText,
 		setInputText,
+		setMessages,
 		setChats,
 		pendingChatWith,
 		setPendingChatWith,
@@ -479,11 +544,124 @@ export function useChatPage() {
 	const handleDeleteMessage = useCallback(
 		(chatId: string, messageId: string) => {
 			if (activeAccount === null) return;
+
+			// Thread message
+			if (activeThreadId !== null) {
+				const msg = threadMessagesRef.current[activeThreadId]?.find(
+					(m) => m.id === messageId,
+				);
+				if (msg?.status === "sending" || msg?.status === "failed") {
+					setThreadMessages((prev) => ({
+						...prev,
+						[activeThreadId]: (prev[activeThreadId] ?? []).filter(
+							(m) => m.id !== messageId,
+						),
+					}));
+					return;
+				}
+				deleteMessage(activeAccount.token, chatId, messageId).catch(() => {
+					emitNotification(i18n.t("error.delete"));
+				});
+				return;
+			}
+
+			// Regular message
+			const msg = messagesRef.current[chatId]?.find((m) => m.id === messageId);
+			if (msg?.status === "sending" || msg?.status === "failed") {
+				setMessages((prev) => ({
+					...prev,
+					[chatId]: (prev[chatId] ?? []).filter((m) => m.id !== messageId),
+				}));
+				return;
+			}
 			deleteMessage(activeAccount.token, chatId, messageId).catch(() => {
 				emitNotification(i18n.t("error.delete"));
 			});
 		},
+		[activeAccount, activeThreadId],
+	);
+
+	const handleRetryMessage = useCallback(
+		(chatId: string, messageId: string) => {
+			if (activeAccount === null) return;
+			const msg = messagesRef.current[chatId]?.find((m) => m.id === messageId);
+			if (!msg || msg.status !== "failed") return;
+
+			setMessages((prev) => ({
+				...prev,
+				[chatId]: prev[chatId].map((m) =>
+					m.id === messageId ? { ...m, status: "sending" as const } : m,
+				),
+			}));
+
+			sendMessage(activeAccount.token, chatId, msg.text, msg.id)
+				.then(() => {
+					setMessages((prev) => ({
+						...prev,
+						[chatId]: prev[chatId].map((m) =>
+							m.id === messageId ? { ...m, status: undefined } : m,
+						),
+					}));
+				})
+				.catch(() => {
+					setMessages((prev) => ({
+						...prev,
+						[chatId]: prev[chatId].map((m) =>
+							m.id === messageId ? { ...m, status: "failed" as const } : m,
+						),
+					}));
+					emitNotification(i18n.t("error.send"));
+				});
+		},
 		[activeAccount],
+	);
+
+	const handleRetryThreadMessage = useCallback(
+		(threadId: string, messageId: string) => {
+			if (activeAccount === null) return;
+			const msg = threadMessagesRef.current[threadId]?.find(
+				(m) => m.id === messageId,
+			);
+			if (!msg || msg.status !== "failed") return;
+
+			setThreadMessages((prev) => ({
+				...prev,
+				[threadId]: (prev[threadId] ?? []).map((m) =>
+					m.id === messageId ? { ...m, status: "sending" as const } : m,
+				),
+			}));
+
+			const thread = threads[threadId];
+			if (!thread) {
+				return;
+			}
+
+			apiSendThreadMessage(
+				activeAccount.token,
+				thread.chatId,
+				threadId,
+				msg.text,
+				msg.id,
+			)
+				.then(() => {
+					setThreadMessages((prev) => ({
+						...prev,
+						[threadId]: (prev[threadId] ?? []).map((m) =>
+							m.id === messageId ? { ...m, status: undefined } : m,
+						),
+					}));
+				})
+				.catch(() => {
+					setThreadMessages((prev) => ({
+						...prev,
+						[threadId]: (prev[threadId] ?? []).map((m) =>
+							m.id === messageId ? { ...m, status: "failed" as const } : m,
+						),
+					}));
+					emitNotification(i18n.t("error.send"));
+				});
+		},
+		[activeAccount, threads],
 	);
 
 	const handleStartEdit = useCallback(
@@ -643,6 +821,20 @@ export function useChatPage() {
 				return;
 			}
 
+			const pending: Message = {
+				id: msgId,
+				chatId: thread.chatId,
+				fromId: activeAccount.user.id,
+				fromNick: activeAccount.user.nick,
+				text,
+				createdAt: new Date().toISOString(),
+				status: "sending",
+			};
+			setThreadMessages((prev) => ({
+				...prev,
+				[activeThreadId]: [...(prev[activeThreadId] ?? []), pending],
+			}));
+
 			try {
 				await apiSendThreadMessage(
 					activeAccount.token,
@@ -651,7 +843,19 @@ export function useChatPage() {
 					text,
 					msgId,
 				);
+				setThreadMessages((prev) => ({
+					...prev,
+					[activeThreadId]: (prev[activeThreadId] ?? []).map((m) =>
+						m.id === msgId ? { ...m, status: undefined } : m,
+					),
+				}));
 			} catch {
+				setThreadMessages((prev) => ({
+					...prev,
+					[activeThreadId]: (prev[activeThreadId] ?? []).map((m) =>
+						m.id === msgId ? { ...m, status: "failed" as const } : m,
+					),
+				}));
 				interaction.setInputText(text);
 				emitNotification(i18n.t("error.send"));
 			} finally {
@@ -712,6 +916,8 @@ export function useChatPage() {
 		navigate,
 		logout,
 		handleDeleteMessage,
+		handleRetryMessage,
+		handleRetryThreadMessage,
 		handleStartEdit,
 		handleCancelEdit,
 		setSwitcherOpen,

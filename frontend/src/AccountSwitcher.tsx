@@ -311,7 +311,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 								value: l,
 								label: t(`lang.${l}`),
 							}))}
-							value={i18n.language}
+							value={i18n.language.split("-")[0]}
 							onChange={(val) => {
 								if (val !== null) i18n.changeLanguage(val);
 							}}

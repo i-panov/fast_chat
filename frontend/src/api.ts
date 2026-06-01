@@ -52,6 +52,7 @@ export interface Message {
 	text: string;
 	createdAt: string;
 	editedAt?: string;
+	status?: "sending" | "failed";
 }
 
 export interface Thread {
@@ -111,7 +112,12 @@ export function getMessages(
 	);
 }
 
-export function sendMessage(token: string, chatId: string, text: string, id: string) {
+export function sendMessage(
+	token: string,
+	chatId: string,
+	text: string,
+	id: string,
+) {
 	return request<{ message: Message }>(`/api/chats/${chatId}/messages`, token, {
 		method: "POST",
 		body: JSON.stringify({ id, text }),

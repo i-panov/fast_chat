@@ -60,24 +60,30 @@ export function SearchBox({
 					}}
 					withBorder
 				>
-					{results.map((u) => (
-						<Button
-							key={u.id}
-							variant="subtle"
-							color="gray"
-							fullWidth
-							justify="flex-start"
-							style={{ borderRadius: 0 }}
-							onClick={() => onSelectUser(u.id, u.nick)}
-						>
-							<Text size="sm">@{u.nick}</Text>
-							{u.online && (
-								<Text size="xs" c="dimmed" ml={4}>
-									{t("search.online")}
-								</Text>
-							)}
-						</Button>
-					))}
+					{results.length === 0 ? (
+						<Text size="sm" c="dimmed" p="sm">
+							{t("search.noResults")}
+						</Text>
+					) : (
+						results.map((u) => (
+							<Button
+								key={u.id}
+								variant="subtle"
+								color="gray"
+								fullWidth
+								justify="flex-start"
+								style={{ borderRadius: 0 }}
+								onClick={() => onSelectUser(u.id, u.nick)}
+							>
+								<Text size="sm">@{u.nick}</Text>
+								{u.online && (
+									<Text size="xs" c="dimmed" ml={4}>
+										{t("search.online")}
+									</Text>
+								)}
+							</Button>
+						))
+					)}
 				</Paper>
 			)}
 		</div>

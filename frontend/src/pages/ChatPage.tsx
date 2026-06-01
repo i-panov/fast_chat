@@ -105,6 +105,7 @@ export function ChatPage() {
 							hasMore={s.threadHasMore}
 							isLoadingMore={s.threadIsLoadingMore}
 							onLoadMore={s.loadMoreThreadMessages}
+							onRetry={s.handleRetryThreadMessage}
 						/>
 					) : (
 						<Stack h="100%" gap={0}>
@@ -160,6 +161,7 @@ export function ChatPage() {
 										onOpenThread={s.handleOpenThread}
 										messageToThread={s.messageToThread}
 										threads={s.threads}
+										onRetry={s.handleRetryMessage}
 									/>
 									<InputBar
 										text={s.inputText}

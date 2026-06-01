@@ -13,16 +13,18 @@ body {
 	margin: 0;
 }
 
-.bubble-own {
+.bubble-own,
+.bubble-other {
 	max-width: 70%;
-	background: var(--mantine-color-blue-8);
-	align-self: flex-end;
 	padding: 8px 12px;
 }
 
+.bubble-own {
+	background: var(--mantine-color-blue-8);
+	align-self: flex-end;
+}
+
 .bubble-other {
-	max-width: 70%;
 	background: var(--mantine-color-dark-6);
 	align-self: flex-start;
-	padding: 8px 12px;
 }

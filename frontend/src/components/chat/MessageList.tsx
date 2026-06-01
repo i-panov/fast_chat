@@ -1,5 +1,5 @@
 import { Loader, Text } from "@mantine/core";
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { Message, Thread } from "../../api.ts";
 import { formatDateLabel, formatTime } from "../../utils/chat.ts";
@@ -28,6 +28,7 @@ interface Props {
 	messageToThread?: Record<string, string>;
 	threads?: Record<string, Thread>;
 	isInThread?: boolean;
+	onRetry?: (chatId: string, messageId: string) => void;
 }
 
 export function MessageList({
@@ -45,11 +46,14 @@ export function MessageList({
 	messageToThread,
 	threads,
 	isInThread,
+	onRetry,
 }: Props) {
-	const { t } = useTranslation();
+	const { t, i18n } = useTranslation();
 	const containerRef = useRef<HTMLDivElement>(null);
 	const sentinelRef = useRef<HTMLDivElement>(null);
 	const scrollAnchorRef = useRef(0);
+
+	const locale = i18n.language.split("-")[0];
 
 	useEffect(() => {
 		const el = sentinelRef.current;
@@ -83,6 +87,21 @@ export function MessageList({
 		}
 	}, [isLoadingMore]);
 
+	const datedMessages = useMemo(() => {
+		const fmt: Intl.DateTimeFormatOptions = {
+			day: "2-digit",
+			month: "2-digit",
+			year: "numeric",
+		};
+		let lastDateKey = "";
+		return messages.map((msg) => {
+			const dateKey = new Date(msg.createdAt).toLocaleDateString(locale, fmt);
+			const showSeparator = dateKey !== lastDateKey;
+			lastDateKey = dateKey;
+			return { msg, showSeparator };
+		});
+	}, [messages, locale]);
+
 	if (messages.length === 0) {
 		return (
 			<div
@@ -99,13 +118,6 @@ export function MessageList({
 			</div>
 		);
 	}
-
-	const fmt: Intl.DateTimeFormatOptions = {
-		day: "2-digit",
-		month: "2-digit",
-		year: "numeric",
-	};
-	let lastDateKey = "";
 
 	return (
 		<div
@@ -124,42 +136,35 @@ export function MessageList({
 			)}
 			<div ref={sentinelRef} style={{ height: 1 }} />
 			<div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-				{messages.map((msg) => {
-					const dateKey = new Date(msg.createdAt).toLocaleDateString(
-						"ru-RU",
-						fmt,
-					);
-					const showSeparator = dateKey !== lastDateKey;
-					lastDateKey = dateKey;
-
-					return (
-						<Fragment key={msg.id}>
-							{showSeparator && <DateSeparator dateStr={msg.createdAt} />}
-							<MessageBubble
-								text={msg.text}
-								isOwn={msg.fromId === userId}
-								time={formatTime(msg.createdAt)}
-								chatId={msg.chatId}
-								msgId={msg.id}
-								editedAt={msg.editedAt}
-								onStartEdit={onStartEdit}
-								onDelete={onDelete}
-								editTTL={editTTL}
-								deleteTTL={deleteTTL}
-								createdAt={msg.createdAt}
-								onCreateThread={onCreateThread}
-								onOpenThread={onOpenThread}
-								threadId={messageToThread?.[msg.id]}
-								threadMessageCount={
-									messageToThread?.[msg.id] !== undefined
-										? threads?.[messageToThread[msg.id]]?.messageCount
-										: undefined
-								}
-								isInThread={isInThread}
-							/>
-						</Fragment>
-					);
-				})}
+				{datedMessages.map(({ msg, showSeparator }) => (
+					<Fragment key={msg.id}>
+						{showSeparator && <DateSeparator dateStr={msg.createdAt} />}
+						<MessageBubble
+							text={msg.text}
+							isOwn={msg.fromId === userId}
+							time={formatTime(msg.createdAt, locale)}
+							chatId={msg.chatId}
+							msgId={msg.id}
+							editedAt={msg.editedAt}
+							onStartEdit={onStartEdit}
+							onDelete={onDelete}
+							editTTL={editTTL}
+							deleteTTL={deleteTTL}
+							createdAt={msg.createdAt}
+							onCreateThread={onCreateThread}
+							onOpenThread={onOpenThread}
+							threadId={messageToThread?.[msg.id]}
+							threadMessageCount={
+								messageToThread?.[msg.id] !== undefined
+									? threads?.[messageToThread[msg.id]]?.messageCount
+									: undefined
+							}
+							isInThread={isInThread}
+							status={msg.status}
+							onRetry={onRetry}
+						/>
+					</Fragment>
+				))}
 			</div>
 		</div>
 	);

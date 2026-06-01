@@ -1,4 +1,5 @@
 import { ActionIcon, Group, Paper } from "@mantine/core";
+import { Menu } from "lucide-react";
 
 interface Props {
 	onSwitcherToggle: () => void;
@@ -21,7 +22,7 @@ export function AppHeader({ onSwitcherToggle }: Props) {
 					size="lg"
 					onClick={onSwitcherToggle}
 				>
-					☰
+					<Menu size={18} />
 				</ActionIcon>
 			</Group>
 		</Paper>

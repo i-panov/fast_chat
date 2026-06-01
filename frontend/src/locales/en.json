@@ -24,6 +24,7 @@
 
 	"search.placeholder": "Search users...",
 	"search.online": "(online)",
+	"search.noResults": "No users found",
 
 	"login.title": "Fast Chat",
 	"login.subtitle": "Enter your nickname to join",
@@ -36,6 +37,8 @@
 	"message.createThread": "Create thread",
 	"message.thread": "Reply",
 	"message.edited": "edited",
+	"message.retry": "Retry",
+	"message.failed": "Failed to send",
 
 	"date.today": "Today",
 	"date.yesterday": "Yesterday",

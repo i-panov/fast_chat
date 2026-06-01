@@ -24,6 +24,7 @@
 
 	"search.placeholder": "Поиск пользователей...",
 	"search.online": "(в сети)",
+	"search.noResults": "Пользователи не найдены",
 
 	"login.title": "Fast Chat",
 	"login.subtitle": "Введите никнейм чтобы присоединиться",
@@ -36,6 +37,8 @@
 	"message.createThread": "Создать обсуждение",
 	"message.thread": "Ответить",
 	"message.edited": "ред.",
+	"message.retry": "Повторить",
+	"message.failed": "Не удалось отправить",
 
 	"date.today": "Сегодня",
 	"date.yesterday": "Вчера",

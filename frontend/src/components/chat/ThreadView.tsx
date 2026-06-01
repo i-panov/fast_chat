@@ -1,5 +1,6 @@
 import { ActionIcon, Group, Paper, Stack, Text } from "@mantine/core";
 import { ArrowLeft } from "lucide-react";
+import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import type { Message, Thread } from "../../api.ts";
 import { InputBar } from "./InputBar.tsx";
@@ -22,6 +23,7 @@ interface Props {
 	hasMore: boolean;
 	isLoadingMore: boolean;
 	onLoadMore: () => void;
+	onRetry?: (threadId: string, messageId: string) => void;
 }
 
 export function ThreadView({
@@ -41,8 +43,16 @@ export function ThreadView({
 	hasMore,
 	isLoadingMore,
 	onLoadMore,
+	onRetry,
 }: Props) {
 	const { t } = useTranslation();
+
+	const handleRetry = useCallback(
+		(_chatId: string, messageId: string) => {
+			onRetry?.(thread.id, messageId);
+		},
+		[onRetry, thread.id],
+	);
 
 	return (
 		<Stack h="100%" gap={0}>
@@ -91,6 +101,7 @@ export function ThreadView({
 				isLoadingMore={isLoadingMore}
 				onLoadMore={onLoadMore}
 				isInThread
+				onRetry={handleRetry}
 			/>
 			<InputBar
 				text={inputText}
