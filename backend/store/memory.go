@@ -12,11 +12,24 @@ import (
 	"fast_chat/model"
 )
 
-func generateID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+// Sentinel errors.
+var (
+	ErrChatNotFound    = errors.New("chat not found")
+	ErrMessageNotFound = errors.New("message not found")
+	ErrNotYourMessage  = errors.New("not your message")
+	ErrThreadNotFound  = errors.New("thread not found")
+	ErrThreadExists    = errors.New("thread already exists for this message")
+	ErrNicknameTaken   = errors.New("nickname already taken")
+)
 
-	return hex.EncodeToString(b)
+func generateID() string {
+	buf := make([]byte, 16)
+
+	if _, err := rand.Read(buf); err != nil {
+		panic("crypto/rand.Read failed: " + err.Error())
+	}
+
+	return hex.EncodeToString(buf)
 }
 
 // Store is a thread-safe in-memory storage for users, chats, messages, and threads.
@@ -30,7 +43,7 @@ type Store struct {
 	conns           map[string]int
 	threads         map[string]*model.Thread
 	threadMessages  map[string][]model.Message
-	messageToThread map[string]string // key: "chatID:messageID", value: threadID
+	messageToThread map[string]string
 }
 
 // New creates a new empty Store.
@@ -49,13 +62,12 @@ func New() *Store {
 }
 
 // CreateUser registers a new user with the given full ID and display nickname.
-// fullID should be in "nick:domain" format, nick is the display name without domain.
 func (s *Store) CreateUser(fullID, nick string) (*model.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, exists := s.nicks[fullID]; exists {
-		return nil, errors.New("nickname already taken")
+		return nil, ErrNicknameTaken
 	}
 
 	user := &model.User{
@@ -93,7 +105,7 @@ func (s *Store) GetUserByID(id string) (*model.User, bool) {
 }
 
 // SearchUsers finds users whose nickname contains the query string,
-// excluding the user with the given excludeID. Returns copies to avoid data races.
+// excluding the user with the given excludeID.
 func (s *Store) SearchUsers(query, excludeID string) []model.User {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -173,23 +185,23 @@ func (s *Store) GetChat(chatID string) (*model.Chat, bool) {
 	return c, ok
 }
 
-// GetMessage returns a single message by its ID.
-func (s *Store) GetMessage(chatID, messageID string) (*model.Message, error) {
+// GetMessage returns a copy of a message by its ID.
+func (s *Store) GetMessage(chatID, messageID string) (model.Message, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	msgs := s.messages[chatID]
 	for idx := range msgs {
 		if msgs[idx].ID == messageID {
-			return &msgs[idx], nil
+			return msgs[idx], nil
 		}
 	}
 
-	return nil, errors.New("message not found")
+	return model.Message{}, ErrMessageNotFound
 }
 
-// EditMessage updates the text of an existing message.
-func (s *Store) EditMessage(chatID, messageID, userID, newText string) (*model.Message, error) {
+// EditMessage updates the text of an existing message and returns a copy.
+func (s *Store) EditMessage(chatID, messageID, userID, newText string) (model.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -201,27 +213,28 @@ func (s *Store) EditMessage(chatID, messageID, userID, newText string) (*model.M
 		}
 
 		if msgs[idx].FromID != userID {
-			return nil, errors.New("not your message")
+			return model.Message{}, ErrNotYourMessage
 		}
 
-		msgs[idx].Text = newText
+		msg := msgs[idx]
+		msg.Text = newText
 		now := time.Now()
-		msgs[idx].EditedAt = &now
+		msg.EditedAt = &now
+		msgs[idx] = msg
 
-		return &msgs[idx], nil
+		return msg, nil
 	}
 
-	return nil, errors.New("message not found")
+	return model.Message{}, ErrMessageNotFound
 }
 
 // AddMessage stores a new message in the given chat.
-// If messageID is non-empty, it is used as the message ID; otherwise one is generated.
 func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID string) (*model.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, ok := s.chats[chatID]; !ok {
-		return nil, errors.New("chat not found")
+		return nil, ErrChatNotFound
 	}
 
 	id := messageID
@@ -249,7 +262,7 @@ func (s *Store) AddRawMessage(msg *model.Message) error {
 	defer s.mu.Unlock()
 
 	if _, ok := s.chats[msg.ChatID]; !ok {
-		return errors.New("chat not found")
+		return ErrChatNotFound
 	}
 
 	s.messages[msg.ChatID] = append(s.messages[msg.ChatID], *msg)
@@ -269,15 +282,14 @@ func (s *Store) GetMessages(chatID string) []model.Message {
 	return result
 }
 
-// paginateMessages returns up to limit messages older than the given cursor from the given slice.
-// If before is empty, returns the most recent messages.
-// Returns messages in chronological order, nextCursor for the next page (oldest message ID), and hasMore.
+// paginateMessages returns up to limit messages older than the given cursor.
 func paginateMessages(all []model.Message, limit int, before string) ([]model.Message, string, bool) {
 	end := len(all)
 	if before != "" {
 		for idx := range all {
 			if all[idx].ID == before {
 				end = idx
+
 				break
 			}
 		}
@@ -325,7 +337,7 @@ func (s *Store) DeleteMessage(chatID, messageID, userID string) error {
 	for idx, msg := range msgs {
 		if msg.ID == messageID {
 			if msg.FromID != userID {
-				return errors.New("not your message")
+				return ErrNotYourMessage
 			}
 
 			s.messages[chatID] = append(msgs[:idx], msgs[idx+1:]...)
@@ -334,7 +346,7 @@ func (s *Store) DeleteMessage(chatID, messageID, userID string) error {
 		}
 	}
 
-	return errors.New("message not found")
+	return ErrMessageNotFound
 }
 
 // CreateRemoteChat stores a chat with a pre-generated ID (used by federated endpoints).
@@ -363,7 +375,7 @@ func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Tim
 		}
 	}
 
-	return errors.New("message not found")
+	return ErrMessageNotFound
 }
 
 // DeleteRawMessage removes a message without ownership check (used by federated endpoints).
@@ -380,22 +392,21 @@ func (s *Store) DeleteRawMessage(chatID, messageID string) error {
 		}
 	}
 
-	return errors.New("message not found")
+	return ErrMessageNotFound
 }
 
 // CreateThread creates a new thread for a parent message in a chat.
-// The creator is automatically subscribed to the thread.
 func (s *Store) CreateThread(chatID, parentMessageID, parentText, parentFrom string) (*model.Thread, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, ok := s.chats[chatID]; !ok {
-		return nil, errors.New("chat not found")
+		return nil, ErrChatNotFound
 	}
 
 	key := chatID + ":" + parentMessageID
 	if _, exists := s.messageToThread[key]; exists {
-		return nil, errors.New("thread already exists for this message")
+		return nil, ErrThreadExists
 	}
 
 	id := generateID()
@@ -416,18 +427,21 @@ func (s *Store) CreateThread(chatID, parentMessageID, parentText, parentFrom str
 	return thread, nil
 }
 
-// GetThread returns a thread by its ID.
-func (s *Store) GetThread(threadID string) (*model.Thread, bool) {
+// GetThread returns a copy of a thread by its ID.
+func (s *Store) GetThread(threadID string) (model.Thread, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	t, ok := s.threads[threadID]
+	if !ok {
+		return model.Thread{}, false
+	}
 
-	return t, ok
+	return *t, true
 }
 
-// GetThreadByParentMessage returns a thread for a given chat and parent message, if one exists.
-func (s *Store) GetThreadByParentMessage(chatID, parentMessageID string) (*model.Thread, bool) {
+// GetThreadByParentMessage returns a copy of a thread for a given chat and parent message.
+func (s *Store) GetThreadByParentMessage(chatID, parentMessageID string) (model.Thread, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -435,29 +449,32 @@ func (s *Store) GetThreadByParentMessage(chatID, parentMessageID string) (*model
 	threadID, ok := s.messageToThread[key]
 
 	if !ok {
-		return nil, false
+		return model.Thread{}, false
 	}
 
 	t, ok := s.threads[threadID]
+	if !ok {
+		return model.Thread{}, false
+	}
 
-	return t, ok
+	return *t, true
 }
 
-// GetThreadsForChat returns all threads for a given chat.
-func (s *Store) GetThreadsForChat(chatID string) []*model.Thread {
+// GetThreadsForChat returns copies of all threads for a given chat.
+func (s *Store) GetThreadsForChat(chatID string) []model.Thread {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var result []*model.Thread
+	var result []model.Thread
 
 	for _, t := range s.threads {
 		if t.ChatID == chatID {
-			result = append(result, t)
+			result = append(result, *t)
 		}
 	}
 
 	if result == nil {
-		return []*model.Thread{}
+		return []model.Thread{}
 	}
 
 	return result
@@ -472,14 +489,13 @@ func (s *Store) GetThreadMessagesPaginated(threadID string, limit int, before st
 }
 
 // AddThreadMessage stores a new message in a thread.
-// If messageID is non-empty, it is used as the message ID; otherwise one is generated.
 func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID string) (*model.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	thread, ok := s.threads[threadID]
 	if !ok {
-		return nil, errors.New("thread not found")
+		return nil, ErrThreadNotFound
 	}
 
 	id := messageID

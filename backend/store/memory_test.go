@@ -267,3 +267,264 @@ func TestCreateRemoteChat(t *testing.T) {
 		t.Errorf("expected RemoteServer=remote.com, got %s", got.RemoteServer)
 	}
 }
+
+func TestAddRawMessage(t *testing.T) {
+	s := New()
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+
+	msg := &model.Message{
+		ID:     "raw-1",
+		ChatID: chat.ID,
+		FromID: "bob:test",
+		Text:   "from remote",
+	}
+
+	err := s.AddRawMessage(msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	msgs := s.GetMessages(chat.ID)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].ID != "raw-1" {
+		t.Errorf("expected raw-1, got %s", msgs[0].ID)
+	}
+
+	err = s.AddRawMessage(&model.Message{ChatID: "nonexistent"})
+	if err == nil {
+		t.Error("expected error for nonexistent chat")
+	}
+}
+
+func TestEditRawMessage(t *testing.T) {
+	s := New()
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1")
+
+	now := time.Now()
+	err := s.EditRawMessage(chat.ID, "msg-1", "Edited!", now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	msg, err := s.GetMessage(chat.ID, "msg-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Text != "Edited!" {
+		t.Errorf("expected 'Edited!', got '%s'", msg.Text)
+	}
+	if msg.EditedAt == nil {
+		t.Error("expected EditedAt to be set")
+	}
+
+	err = s.EditRawMessage(chat.ID, "nonexistent", "", time.Now())
+	if err == nil {
+		t.Error("expected error for nonexistent message")
+	}
+}
+
+func TestDeleteRawMessage(t *testing.T) {
+	s := New()
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1")
+
+	err := s.DeleteRawMessage(chat.ID, "msg-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	msgs := s.GetMessages(chat.ID)
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(msgs))
+	}
+
+	err = s.DeleteRawMessage(chat.ID, "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent message")
+	}
+}
+
+func TestCreateThreadAndGet(t *testing.T) {
+	s := New()
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1")
+
+	thread, err := s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if thread.ParentMessageID != "parent-1" {
+		t.Errorf("expected parent-1, got %s", thread.ParentMessageID)
+	}
+
+	got, ok := s.GetThread(thread.ID)
+	if !ok {
+		t.Fatal("expected to find thread")
+	}
+	if got.ID != thread.ID {
+		t.Errorf("expected %s, got %s", thread.ID, got.ID)
+	}
+
+	byParent, ok := s.GetThreadByParentMessage(chat.ID, "parent-1")
+	if !ok {
+		t.Fatal("expected to find thread by parent message")
+	}
+	if byParent.ID != thread.ID {
+		t.Errorf("expected %s, got %s", thread.ID, byParent.ID)
+	}
+
+	_, err = s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
+	if err == nil {
+		t.Error("expected error for duplicate thread")
+	}
+
+	_, err = s.CreateThread("nonexistent", "msg", "", "")
+	if err == nil {
+		t.Error("expected error for nonexistent chat")
+	}
+}
+
+func TestGetThreadsForChat(t *testing.T) {
+	s := New()
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Msg1", "m1")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Msg2", "m2")
+
+	s.CreateThread(chat.ID, "m1", "Msg1", "alice")
+	s.CreateThread(chat.ID, "m2", "Msg2", "alice")
+
+	threads := s.GetThreadsForChat(chat.ID)
+	if len(threads) != 2 {
+		t.Errorf("expected 2 threads, got %d", len(threads))
+	}
+
+	noThreads := s.GetThreadsForChat("nonexistent")
+	if len(noThreads) != 0 {
+		t.Errorf("expected 0 threads, got %d", len(noThreads))
+	}
+}
+
+func TestAddThreadMessage(t *testing.T) {
+	s := New()
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1")
+	thread, _ := s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
+
+	msg, err := s.AddThreadMessage(thread.ID, "bob:test", "bob", "Reply", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg.Text != "Reply" {
+		t.Errorf("expected 'Reply', got '%s'", msg.Text)
+	}
+
+	got, ok := s.GetThread(thread.ID)
+	if !ok {
+		t.Fatal("expected to find thread")
+	}
+	if got.MessageCount != 1 {
+		t.Errorf("expected MessageCount=1, got %d", got.MessageCount)
+	}
+
+	msgs, _, _ := s.GetThreadMessagesPaginated(thread.ID, 10, "")
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 thread message, got %d", len(msgs))
+	}
+
+	_, err = s.AddThreadMessage("nonexistent", "alice:test", "alice", "test", "")
+	if err == nil {
+		t.Error("expected error for nonexistent thread")
+	}
+}
+
+func TestAddConnection(t *testing.T) {
+	s := New()
+	s.CreateUser("alice:test", "alice")
+	user, _ := s.GetUserByID("alice:test")
+
+	if !user.Online {
+		t.Error("expected user to be online after creation")
+	}
+
+	s.AddConnection("alice:test")
+
+	s.RemoveConnection("alice:test")
+	if user.Online {
+		t.Error("expected user to be offline after RemoveConnection")
+	}
+}
+
+func TestAddConnectionMultiple(t *testing.T) {
+	s := New()
+	s.CreateUser("alice:test", "alice")
+	user, _ := s.GetUserByID("alice:test")
+
+	s.AddConnection("alice:test")
+	s.AddConnection("alice:test")
+	s.RemoveConnection("alice:test")
+
+	if !user.Online {
+		t.Error("expected user to stay online after one RemoveConnection (still one left)")
+	}
+
+	s.RemoveConnection("alice:test")
+	if user.Online {
+		t.Error("expected user to be offline after all connections removed")
+	}
+}
+
+func TestGetMessageValue(t *testing.T) {
+	s := New()
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1")
+
+	msg1, err := s.GetMessage(chat.ID, "msg-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg2, err := s.GetMessage(chat.ID, "msg-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg1.Text = "modified"
+	if msg2.Text == "modified" {
+		t.Error("GetMessage should return a copy, modifications to one should not affect the other")
+	}
+}
+
+func TestGetThreadValue(t *testing.T) {
+	s := New()
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1")
+	s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
+
+	threads := s.GetThreadsForChat(chat.ID)
+	thread1, _ := s.GetThread(threads[0].ID)
+	thread2, _ := s.GetThread(threads[0].ID)
+
+	thread1.ChatID = "modified"
+	if thread2.ChatID == "modified" {
+		t.Error("GetThread should return a copy")
+	}
+}

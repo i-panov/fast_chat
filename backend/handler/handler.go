@@ -5,17 +5,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"fast_chat/config"
+	"fast_chat/federation"
 	"fast_chat/model"
 	"fast_chat/store"
 )
@@ -112,16 +113,20 @@ func getUser(r *http.Request) *model.User {
 }
 
 type Handler struct {
-	store *store.Store
-	hub   *SSEHub
-	cfg   *config.Config
+	store      *store.Store
+	hub        *SSEHub
+	cfg        *config.Config
+	fedManager *federation.Manager
+	fedClient  *http.Client
 }
 
-func New(s *store.Store, cfg *config.Config) *Handler {
+func New(s *store.Store, cfg *config.Config, fm *federation.Manager) *Handler {
 	return &Handler{
-		store: s,
-		hub:   NewSSEHub(),
-		cfg:   cfg,
+		store:      s,
+		hub:        NewSSEHub(),
+		cfg:        cfg,
+		fedManager: fm,
+		fedClient:  &http.Client{Timeout: time.Duration(cfg.FederationTimeout) * time.Second},
 	}
 }
 
@@ -142,6 +147,11 @@ func (h *Handler) enrichChat(c *model.Chat) chatResponse {
 	return cr
 }
 
+// federatedURL builds a federation URL using the configured scheme.
+func (h *Handler) federatedURL(remoteServer, path string) string {
+	return fmt.Sprintf("%s://%s%s", h.cfg.FederationScheme, remoteServer, path)
+}
+
 // remoteServerFromID extracts the server domain from a federated user ID ("nick:domain").
 func remoteServerFromID(id string) string {
 	if idx := strings.Index(id, ":"); idx != -1 && idx < len(id)-1 {
@@ -151,12 +161,8 @@ func remoteServerFromID(id string) string {
 	return ""
 }
 
-func federatedURL(remoteServer, path string) string {
-	return fmt.Sprintf("http://%s%s", remoteServer, path)
-}
-
-func (h *Handler) doFederatedRequest(ctx context.Context, method, url string, body interface{}) ([]byte, error) {
-	var bodyReader io.Reader
+func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string, body interface{}) ([]byte, error) {
+	var bodyBytes []byte
 
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -164,19 +170,33 @@ func (h *Handler) doFederatedRequest(ctx context.Context, method, url string, bo
 			return nil, err
 		}
 
-		bodyReader = bytes.NewReader(data)
+		bodyBytes = data
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid federated URL: %w", err)
+	}
+
+	timestamp := time.Now().Unix()
+	signature := h.fedManager.Sign(method, parsedURL.RequestURI(), bodyBytes, timestamp)
+
+	var bodyReader io.Reader
+	if bodyBytes != nil {
+		bodyReader = bytes.NewReader(bodyBytes)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, urlStr, bodyReader)
 	if err != nil {
 		return nil, err
 	}
 
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Federation-Server", h.cfg.ServerDomain)
+	req.Header.Set("X-Federation-Signature", signature)
+	req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.fedClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("federated request failed: %w", err)
 	}
@@ -216,8 +236,53 @@ func (h *Handler) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (h *Handler) FederatedAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		serverDomain := r.Header.Get("X-Federation-Server")
+		signature := r.Header.Get("X-Federation-Signature")
+		timestampStr := r.Header.Get("X-Federation-Timestamp")
+
+		if serverDomain == "" || signature == "" || timestampStr == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{mapKeyError: "missing federation headers"})
+
+			return
+		}
+
+		timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{mapKeyError: "invalid timestamp"})
+
+			return
+		}
+
+		now := time.Now().Unix()
+		if now-timestamp > 300 || timestamp-now > 300 {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{mapKeyError: "timestamp out of bounds"})
+
+			return
+		}
+
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to read body"})
+
+			return
+		}
+
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+		if !h.fedManager.Verify(r.Context(), serverDomain, signature, r.Method, r.URL.RequestURI(), bodyBytes, timestamp) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{mapKeyError: "invalid signature"})
+
+			return
+		}
+
+		next(w, r)
+	}
+}
+
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck // write errors are unrecoverable at this point
+	defer r.Body.Close() //nolint:errcheck
 
 	var req struct {
 		Nick string `json:"nick"`
@@ -257,38 +322,56 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remoteNick, remoteDomain string) {
+	if remoteNick == "" || remoteDomain == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "invalid search query"})
+
+		return
+	}
+
+	if remoteDomain == h.cfg.ServerDomain {
+		users := h.store.SearchUsers(remoteNick, getUser(r).ID)
+		if users == nil {
+			users = []model.User{}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
+
+		return
+	}
+
+	remoteURL := h.federatedURL(remoteDomain, "/api/federated/users/search?q="+url.QueryEscape(remoteNick))
+
+	data, err := h.doFederatedRequest(r.Context(), http.MethodGet, remoteURL, nil)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{mapKeyError: err.Error()})
+
+		return
+	}
+
+	var result struct {
+		Users []model.User `json:"users"`
+	}
+
+	if err := json.Unmarshal(data, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to parse remote response"})
+
+		return
+	}
+
+	for i := range result.Users {
+		result.Users[i].Nick = result.Users[i].ID
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"users": result.Users})
+}
+
 func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	query := r.URL.Query().Get("q")
 
 	if idx := strings.Index(query, ":"); idx != -1 {
-		remoteNick := query[:idx]
-		remoteDomain := query[idx+1:]
-
-		remoteURL := federatedURL(remoteDomain, "/api/federated/users/search?q="+url.QueryEscape(remoteNick))
-
-		data, err := h.doFederatedRequest(r.Context(), http.MethodGet, remoteURL, nil)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{mapKeyError: err.Error()})
-
-			return
-		}
-
-		var result struct {
-			Users []model.User `json:"users"`
-		}
-
-		if err := json.Unmarshal(data, &result); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to parse remote response"})
-
-			return
-		}
-
-		for i := range result.Users {
-			result.Users[i].Nick = result.Users[i].ID
-		}
-
-		writeJSON(w, http.StatusOK, map[string]interface{}{"users": result.Users})
+		h.searchFederated(w, r, query[:idx], query[idx+1:])
 
 		return
 	}
@@ -314,7 +397,7 @@ func (h *Handler) GetChats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck // write errors are unrecoverable at this point
+	defer r.Body.Close() //nolint:errcheck
 
 	user := getUser(r)
 
@@ -360,9 +443,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	if remoteServer != "" {
 		chat.RemoteServer = remoteServer
 
-		h.hub.Send(req.WithUserID, SSEEvent{Event: "chat_created", Data: enriched})
-
-		fedURL := federatedURL(remoteServer, "/api/federated/chats")
+		fedURL := h.federatedURL(remoteServer, "/api/federated/chats")
 
 		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, map[string]interface{}{
 			"chatId":       chat.ID,
@@ -400,7 +481,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	limit := 30
 
 	if limitStr != "" {
-		if n, err := parseInt(limitStr); err == nil && n > 0 && n <= 100 {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 100 {
 			limit = n
 		}
 	}
@@ -418,26 +499,8 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func parseInt(s string) (int, error) {
-	if s == "" {
-		return 0, errors.New("not a number")
-	}
-
-	var n int
-
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, errors.New("not a number")
-		}
-
-		n = n*10 + int(c-'0')
-	}
-
-	return n, nil
-}
-
 func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck // write errors are unrecoverable at this point
+	defer r.Body.Close() //nolint:errcheck
 
 	user := getUser(r)
 	chatID := r.PathValue("id")
@@ -481,7 +544,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if chat.RemoteServer != "" {
-		fedURL := federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages")
+		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages")
 
 		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, map[string]interface{}{
 			"id":       msg.ID,
@@ -532,11 +595,19 @@ func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	if len(req.Members) != 2 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "federated chat must have exactly 2 members"})
+
 		return
 	}
 
 	if _, ok := h.store.GetChat(req.ChatID); ok {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "already exists"})
+
 		return
 	}
 
@@ -566,6 +637,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
 		return
 	}
 
@@ -578,6 +650,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
 		return
 	}
 
@@ -592,6 +665,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.store.AddRawMessage(&msg); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+
 		return
 	}
 
@@ -615,22 +689,24 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
 		return
 	}
 
 	now := time.Now()
-	updated := &model.Message{
-		Text:     req.Text,
-		EditedAt: &now,
-	}
 
 	if err := h.store.EditRawMessage(chatID, messageID, req.Text, now); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: err.Error()})
+
 		return
 	}
 
-	updated.ID = messageID
-	updated.ChatID = chatID
+	updated := &model.Message{
+		ID:       messageID,
+		ChatID:   chatID,
+		Text:     req.Text,
+		EditedAt: &now,
+	}
 
 	chat, ok := h.store.GetChat(chatID)
 	if ok {
@@ -650,11 +726,13 @@ func (h *Handler) FederatedDeleteMessage(w http.ResponseWriter, r *http.Request)
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
 		return
 	}
 
 	if err := h.store.DeleteRawMessage(chatID, messageID); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: err.Error()})
+
 		return
 	}
 
@@ -666,7 +744,7 @@ func (h *Handler) FederatedDeleteMessage(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck // write errors are unrecoverable at this point
+	defer r.Body.Close() //nolint:errcheck
 
 	user := getUser(r)
 	chatID := r.PathValue("id")
@@ -735,7 +813,7 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if chat.RemoteServer != "" {
-		fedURL := federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
+		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
 
 		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPatch, fedURL, map[string]string{
 			"text": req.Text,
@@ -746,7 +824,7 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, memberID := range chat.Members {
-		h.hub.Send(memberID, SSEEvent{Event: "message_updated", Data: updated})
+		h.hub.Send(memberID, SSEEvent{Event: "message_updated", Data: &updated})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"message": updated})
@@ -802,7 +880,7 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if chat.RemoteServer != "" {
-		fedURL := federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
+		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
 
 		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodDelete, fedURL, nil)
 		if fedErr != nil {
@@ -817,14 +895,9 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-// checkIsThreadMessage checks if a message belongs to a thread (its chatId is a thread ID).
-func (h *Handler) checkIsThreadMessage(chatID, messageID string) bool {
-	msg, err := h.store.GetMessage(chatID, messageID)
-	if err != nil {
-		return false
-	}
-
-	_, isThread := h.store.GetThread(msg.ChatID)
+// isThreadChat checks if a chat ID belongs to a thread.
+func (h *Handler) isThreadChat(chatID string) bool {
+	_, isThread := h.store.GetThread(chatID)
 
 	return isThread
 }
@@ -839,33 +912,39 @@ func (h *Handler) CreateThread(w http.ResponseWriter, r *http.Request) {
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
 		return
 	}
 
 	if !isMember(chat, user.ID) {
 		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
 		return
 	}
 
 	msg, err := h.store.GetMessage(chatID, messageID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+
 		return
 	}
 
-	if h.checkIsThreadMessage(chatID, messageID) {
+	if h.isThreadChat(chatID) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "cannot create thread on a thread message"})
+
 		return
 	}
 
 	if _, exists := h.store.GetThreadByParentMessage(chatID, messageID); exists {
 		writeJSON(w, http.StatusConflict, map[string]string{mapKeyError: "thread already exists"})
+
 		return
 	}
 
 	thread, err := h.store.CreateThread(chatID, messageID, msg.Text, msg.FromNick)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+
 		return
 	}
 
@@ -883,17 +962,20 @@ func (h *Handler) GetThreadMessages(w http.ResponseWriter, r *http.Request) {
 	thread, ok := h.store.GetThread(threadID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "thread not found"})
+
 		return
 	}
 
 	chat, ok := h.store.GetChat(thread.ChatID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
 		return
 	}
 
 	if !isMember(chat, user.ID) {
 		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
 		return
 	}
 
@@ -901,7 +983,7 @@ func (h *Handler) GetThreadMessages(w http.ResponseWriter, r *http.Request) {
 	limit := 30
 
 	if limitStr != "" {
-		if n, err := parseInt(limitStr); err == nil && n > 0 && n <= 100 {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 100 {
 			limit = n
 		}
 	}
@@ -928,17 +1010,20 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	thread, ok := h.store.GetThread(threadID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "thread not found"})
+
 		return
 	}
 
 	chat, ok := h.store.GetChat(thread.ChatID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
 		return
 	}
 
 	if !isMember(chat, user.ID) {
 		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
 		return
 	}
 
@@ -949,18 +1034,21 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
 		return
 	}
 
 	req.Text = strings.TrimSpace(req.Text)
 	if req.Text == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
+
 		return
 	}
 
 	msg, err := h.store.AddThreadMessage(threadID, user.ID, user.Nick, req.Text, req.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+
 		return
 	}
 
@@ -983,11 +1071,13 @@ func (h *Handler) GetThreads(w http.ResponseWriter, r *http.Request) {
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
 		return
 	}
 
 	if !isMember(chat, user.ID) {
 		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
 		return
 	}
 
@@ -1030,7 +1120,7 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", h.cfg.CORSOrigin)
 
 	ch := h.hub.Subscribe(user.ID)
 
@@ -1039,7 +1129,7 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 		h.store.RemoveConnection(user.ID)
 	}()
 
-	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"ok\"}\n\n") //nolint:errcheck // write errors on SSE are unrecoverable
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"ok\"}\n\n") //nolint:errcheck
 
 	flusher.Flush()
 
@@ -1093,5 +1183,8 @@ func isMember(chat *model.Chat, userID string) bool {
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(data) //nolint:errcheck // write errors are unrecoverable at this point
+
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("writeJSON: failed to encode response: %v", err)
+	}
 }

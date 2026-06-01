@@ -13,22 +13,25 @@ import (
 	"time"
 
 	"fast_chat/config"
+	"fast_chat/federation"
 	"fast_chat/handler"
 	"fast_chat/store"
 )
 
 type rateLimiter struct {
-	mu       sync.Mutex
-	requests map[string]int
-	limit    int
-	window   time.Duration
+	mu      sync.Mutex
+	entries map[string][]time.Time
+	limit   int
+	window  time.Duration
+	closeCh chan struct{}
 }
 
 func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 	rl := &rateLimiter{
-		requests: make(map[string]int),
-		limit:    limit,
-		window:   window,
+		entries: make(map[string][]time.Time),
+		limit:   limit,
+		window:  window,
+		closeCh: make(chan struct{}),
 	}
 
 	go rl.clean()
@@ -40,34 +43,81 @@ func (rl *rateLimiter) allow(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	rl.requests[ip]++
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
 
-	return rl.requests[ip] <= rl.limit
+	timestamps := rl.entries[ip]
+
+	var valid []time.Time
+
+	for _, t := range timestamps {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) >= rl.limit {
+		rl.entries[ip] = valid
+
+		return false
+	}
+
+	rl.entries[ip] = append(valid, now)
+
+	return true
 }
 
 func (rl *rateLimiter) clean() {
+	ticker := time.NewTicker(rl.window)
+	defer ticker.Stop()
+
 	for {
-		time.Sleep(rl.window)
-		rl.mu.Lock()
-		rl.requests = make(map[string]int)
-		rl.mu.Unlock()
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			now := time.Now()
+			cutoff := now.Add(-rl.window)
+
+			for ip, timestamps := range rl.entries {
+				var valid []time.Time
+
+				for _, t := range timestamps {
+					if t.After(cutoff) {
+						valid = append(valid, t)
+					}
+				}
+
+				if len(valid) == 0 {
+					delete(rl.entries, ip)
+				} else {
+					rl.entries[ip] = valid
+				}
+			}
+
+			rl.mu.Unlock()
+
+		case <-rl.closeCh:
+			return
+		}
 	}
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+func corsMiddleware(origin string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
 
-			return
-		}
+				return
+			}
 
-		next.ServeHTTP(w, r)
-	})
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
@@ -88,8 +138,16 @@ func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
 func main() {
 	cfg := config.Load()
 
+	fedKey, err := federation.LoadOrGenerateKeys(cfg.FederationKeyPath)
+	if err != nil {
+		log.Printf("FATAL: Failed to load federation keys: %v", err)
+		os.Exit(1)
+	}
+
+	fedManager := federation.New(fedKey, cfg.ServerDomain, cfg.FederationScheme, cfg.FederationTimeout)
+
 	s := store.New()
-	handlerInstance := handler.New(s, cfg)
+	handlerInstance := handler.New(s, cfg, fedManager)
 
 	mux := http.NewServeMux()
 
@@ -108,12 +166,16 @@ func main() {
 	mux.HandleFunc("GET /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetThreadMessages))
 	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.SendThreadMessage))
 
-	// Federated endpoints (server-to-server, no auth)
-	mux.HandleFunc("GET /api/federated/users/search", handlerInstance.FederatedSearchUsers)
-	mux.HandleFunc("POST /api/federated/chats", handlerInstance.FederatedCreateChat)
-	mux.HandleFunc("POST /api/federated/chats/{id}/messages", handlerInstance.FederatedSendMessage)
-	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", handlerInstance.FederatedEditMessage)
-	mux.HandleFunc("DELETE /api/federated/chats/{id}/messages/{messageId}", handlerInstance.FederatedDeleteMessage)
+	// Federated endpoints (server-to-server, with federated auth)
+	fedAuth := handlerInstance.FederatedAuthMiddleware
+	mux.HandleFunc("GET /api/federated/users/search", fedAuth(handlerInstance.FederatedSearchUsers))
+	mux.HandleFunc("POST /api/federated/chats", fedAuth(handlerInstance.FederatedCreateChat))
+	mux.HandleFunc("POST /api/federated/chats/{id}/messages", fedAuth(handlerInstance.FederatedSendMessage))
+	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", fedAuth(handlerInstance.FederatedEditMessage))
+	mux.HandleFunc("DELETE /api/federated/chats/{id}/messages/{messageId}", fedAuth(handlerInstance.FederatedDeleteMessage))
+
+	// Well-known endpoint (no auth, public key for federation)
+	mux.HandleFunc("GET /.well-known/fast-chat", fedManager.WellKnownHandler)
 
 	rl := newRateLimiter(100, 1*time.Minute)
 
@@ -126,7 +188,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           corsMiddleware(rateLimitMiddleware(rl)(mux)),
+		Handler:           corsMiddleware(cfg.CORSOrigin)(rateLimitMiddleware(rl)(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      0,
@@ -146,6 +208,8 @@ func main() {
 
 	<-quit
 	log.Println("Shutting down server...")
+
+	close(rl.closeCh)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

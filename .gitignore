@@ -11,3 +11,4 @@ Thumbs.db
 *.log
 .tanstack
 AGENTS.md
+backend/keys/
