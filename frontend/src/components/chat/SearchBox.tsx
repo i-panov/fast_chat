@@ -1,5 +1,12 @@
-import { ActionIcon, Button, Paper, Text, TextInput } from "@mantine/core";
-import { X } from "lucide-react";
+import {
+	ActionIcon,
+	Button,
+	Group,
+	Paper,
+	Text,
+	TextInput,
+} from "@mantine/core";
+import { Plus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { User } from "../../api.ts";
 
@@ -9,6 +16,7 @@ interface Props {
 	showResults: boolean;
 	onQueryChange: (value: string) => void;
 	onSelectUser: (userId: string, nick: string) => void;
+	onCreateGroup: () => void;
 }
 
 export function SearchBox({
@@ -17,6 +25,7 @@ export function SearchBox({
 	showResults,
 	onQueryChange,
 	onSelectUser,
+	onCreateGroup,
 }: Props) {
 	const { t } = useTranslation();
 
@@ -28,24 +37,37 @@ export function SearchBox({
 				position: "relative",
 			}}
 		>
-			<TextInput
-				placeholder={t("search.placeholder")}
-				value={query}
-				onChange={(e) => onQueryChange(e.target.value)}
-				size="sm"
-				rightSection={
-					query.length > 0 ? (
-						<ActionIcon
-							variant="transparent"
-							color="gray"
-							size="sm"
-							onClick={() => onQueryChange("")}
-						>
-							<X size={14} />
-						</ActionIcon>
-					) : undefined
-				}
-			/>
+			<Group gap="xs" wrap="nowrap">
+				<div style={{ flex: 1, position: "relative" }}>
+					<TextInput
+						placeholder={t("search.placeholder")}
+						value={query}
+						onChange={(e) => onQueryChange(e.currentTarget.value)}
+						size="sm"
+						rightSection={
+							query.length > 0 ? (
+								<ActionIcon
+									variant="transparent"
+									color="gray"
+									size="sm"
+									onClick={() => onQueryChange("")}
+								>
+									<X size={14} />
+								</ActionIcon>
+							) : undefined
+						}
+					/>
+				</div>
+				<ActionIcon
+					variant="default"
+					size="lg"
+					onClick={onCreateGroup}
+					aria-label={t("chat.createGroup")}
+					title={t("chat.createGroup")}
+				>
+					<Plus size={16} />
+				</ActionIcon>
+			</Group>
 			{showResults && (
 				<Paper
 					style={{

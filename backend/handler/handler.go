@@ -106,6 +106,10 @@ type memberInfo struct {
 
 type chatResponse struct {
 	ID        string       `json:"id"`
+	Type      string       `json:"type"`
+	Name      string       `json:"name"`
+	OwnerID   string       `json:"ownerId"`
+	AvatarURL string       `json:"avatarUrl,omitempty"`
 	Members   []memberInfo `json:"members"`
 	CreatedAt time.Time    `json:"createdAt"`
 }
@@ -141,7 +145,16 @@ func New(s *store.Store, cfg *config.Config, fm *federation.Manager) *Handler {
 func (h *Handler) enrichChat(c *model.Chat) chatResponse {
 	cr := chatResponse{
 		ID:        c.ID,
+		Type:      c.Type,
+		Name:      c.Name,
+		OwnerID:   c.OwnerID,
 		CreatedAt: c.CreatedAt,
+	}
+
+	if c.AvatarFileID != "" {
+		if f, err := h.store.GetFile(c.AvatarFileID); err == nil {
+			cr.AvatarURL = f.ToFileInfo().URL
+		}
 	}
 
 	for _, member := range c.Members {
@@ -410,11 +423,26 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 
 	var req struct {
-		WithUserID string `json:"withUserId"`
+		Type      string   `json:"type"`
+		WithUserID string  `json:"withUserId"`
+		Name      string   `json:"name"`
+		MemberIDs []string `json:"memberIds"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	if req.Type == "group" {
+		h.createGroupChat(w, r, user, req.Name, req.MemberIDs)
+
+		return
+	}
+
+	if req.WithUserID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "withUserId required for private chat"})
 
 		return
 	}
@@ -466,6 +494,365 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"chat": enriched})
+}
+
+func (h *Handler) createGroupChat(w http.ResponseWriter, r *http.Request, user *model.User, name string, memberIDs []string) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 60 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "group name must be 1-60 characters"})
+
+		return
+	}
+
+	seen := make(map[string]struct{}, len(memberIDs)+1)
+	cleaned := make([]string, 0, len(memberIDs)+1)
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+	}
+	for _, m := range memberIDs {
+		add(m)
+	}
+
+	for _, m := range cleaned {
+		remoteServer := remoteServerFromID(m)
+		if remoteServer != "" && remoteServer != h.cfg.ServerDomain {
+			writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "group chat members must be on the same server"})
+
+			return
+		}
+		if _, ok := h.store.GetUserByID(m); !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "user not found: " + m})
+
+			return
+		}
+	}
+
+	chat, err := h.store.CreateGroupChat(name, user.ID, cleaned)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: err.Error()})
+
+		return
+	}
+
+	enriched := h.enrichChat(chat)
+
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "chat_created", Data: enriched})
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"chat": enriched})
+}
+
+func (h *Handler) GetChat(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	chatID := r.PathValue("id")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if !isMember(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"chat": h.enrichChat(chat)})
+}
+
+func (h *Handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+	chatID := r.PathValue("id")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if chat.Type != "group" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "only group chats can be updated"})
+
+		return
+	}
+
+	if !isOwner(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "only owner can update"})
+
+		return
+	}
+
+	var req struct {
+		Name *string `json:"name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	updated := chat
+
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" || len(name) > 60 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "group name must be 1-60 characters"})
+
+			return
+		}
+
+		u, err := h.store.UpdateChatName(chatID, name)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+
+			return
+		}
+		updated = u
+	}
+
+	enriched := h.enrichChat(updated)
+	for _, memberID := range updated.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "chat_updated", Data: enriched})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"chat": enriched})
+}
+
+func (h *Handler) DeleteChat(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	chatID := r.PathValue("id")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if chat.Type != "group" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "only group chats can be deleted"})
+
+		return
+	}
+
+	if !isOwner(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "only owner can delete"})
+
+		return
+	}
+
+	if err := h.store.DeleteChat(chatID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+
+		return
+	}
+
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "chat_deleted", Data: map[string]string{"chatId": chatID}})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *Handler) AddChatMember(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+	chatID := r.PathValue("id")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if chat.Type != "group" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "only group chats can add members"})
+
+		return
+	}
+
+	if !isOwner(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "only owner can add members"})
+
+		return
+	}
+
+	var req struct {
+		UserID string `json:"userId"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	if req.UserID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "userId required"})
+
+		return
+	}
+
+	remoteServer := remoteServerFromID(req.UserID)
+	if remoteServer != "" && remoteServer != h.cfg.ServerDomain {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "members must be on the same server"})
+
+		return
+	}
+
+	if _, ok := h.store.GetUserByID(req.UserID); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "user not found"})
+
+		return
+	}
+
+	if err := h.store.AddChatMember(chatID, req.UserID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: err.Error()})
+
+		return
+	}
+
+	updated, _ := h.store.GetChat(chatID)
+	enriched := h.enrichChat(updated)
+	for _, memberID := range updated.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "chat_member_added", Data: map[string]interface{}{
+			"chatId": chatID,
+			"userId": req.UserID,
+			"chat":   enriched,
+		}})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"chat": enriched})
+}
+
+func (h *Handler) RemoveChatMember(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	chatID := r.PathValue("id")
+	targetUserID := r.PathValue("userId")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if chat.Type != "group" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "only group chats can remove members"})
+
+		return
+	}
+
+	if targetUserID != user.ID && !isOwner(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "only owner can remove other members"})
+
+		return
+	}
+
+	if isOwner(chat, targetUserID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "owner cannot leave the group; delete the group instead"})
+
+		return
+	}
+
+	if err := h.store.RemoveChatMember(chatID, targetUserID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: err.Error()})
+
+		return
+	}
+
+	updated, _ := h.store.GetChat(chatID)
+	enriched := h.enrichChat(updated)
+	for _, memberID := range updated.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "chat_member_removed", Data: map[string]interface{}{
+			"chatId":  chatID,
+			"userId":  targetUserID,
+			"chat":    enriched,
+			"isLeave": targetUserID == user.ID,
+		}})
+	}
+
+	h.hub.Send(targetUserID, SSEEvent{Event: "chat_deleted", Data: map[string]string{"chatId": chatID}})
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"chat": enriched})
+}
+
+func (h *Handler) UpdateChatAvatar(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+	chatID := r.PathValue("id")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if chat.Type != "group" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "only group chats have an avatar"})
+
+		return
+	}
+
+	if !isOwner(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "only owner can set avatar"})
+
+		return
+	}
+
+	var req struct {
+		FileID string `json:"fileId"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	if req.FileID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "fileId required"})
+
+		return
+	}
+
+	if _, err := h.store.GetFile(req.FileID); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "file not found"})
+
+		return
+	}
+
+	updated, err := h.store.UpdateChatAvatar(chatID, req.FileID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+
+		return
+	}
+
+	enriched := h.enrichChat(updated)
+	for _, memberID := range updated.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "chat_updated", Data: enriched})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"chat": enriched})
 }
 
 func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
@@ -775,22 +1162,7 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chatIDs, err := h.store.GetFileChats(fileID)
-	if err != nil || len(chatIDs) == 0 {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
-
-		return
-	}
-
-	var hasAccess bool
-
-	for _, cid := range chatIDs {
-		if chat, ok := h.store.GetChat(cid); ok && isMember(chat, user.ID) {
-			hasAccess = true
-
-			break
-		}
-	}
+	hasAccess := h.userCanAccessFile(user.ID, fileID)
 
 	if !hasAccess {
 		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
@@ -803,6 +1175,30 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", "inline; filename=\""+fileRecord.OriginalName+"\"")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	http.ServeFile(w, r, fullPath) //nolint:gosec // path is controlled, generated UUID
+}
+
+// userCanAccessFile returns true if the user has access to the file via any
+// message attachment or as a group chat avatar.
+func (h *Handler) userCanAccessFile(userID, fileID string) bool {
+	chatIDs, err := h.store.GetFileChats(fileID)
+	if err == nil {
+		for _, cid := range chatIDs {
+			if chat, ok := h.store.GetChat(cid); ok && isMember(chat, userID) {
+				return true
+			}
+		}
+	}
+
+	avatarChatIDs, err := h.store.GetChatsByAvatarFileID(fileID)
+	if err == nil {
+		for _, cid := range avatarChatIDs {
+			if chat, ok := h.store.GetChat(cid); ok && isMember(chat, userID) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func copyFile(srcPath, dstPath string) error {
@@ -1728,6 +2124,10 @@ func isMember(chat *model.Chat, userID string) bool {
 	}
 
 	return false
+}
+
+func isOwner(chat *model.Chat, userID string) bool {
+	return chat.OwnerID != "" && chat.OwnerID == userID
 }
 
 func generateID() string {

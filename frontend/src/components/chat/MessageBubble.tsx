@@ -293,6 +293,7 @@ function ReplyFilePreview({
 interface Props {
 	text: string;
 	isOwn: boolean;
+	fromNick?: string;
 	time: string;
 	chatId: string;
 	msgId: string;
@@ -319,6 +320,7 @@ interface Props {
 	isInThread?: boolean;
 	status?: "sending" | "failed";
 	onRetry?: (chatId: string, messageId: string) => void;
+	showAuthorNick?: boolean;
 }
 
 function isWithinTTL(createdAt: string, ttl: number): boolean {
@@ -330,6 +332,7 @@ function isWithinTTL(createdAt: string, ttl: number): boolean {
 export function MessageBubble({
 	text,
 	isOwn,
+	fromNick,
 	time,
 	chatId,
 	msgId,
@@ -350,6 +353,7 @@ export function MessageBubble({
 	isInThread,
 	status,
 	onRetry,
+	showAuthorNick,
 }: Props) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
@@ -400,6 +404,19 @@ export function MessageBubble({
 
 	return (
 		<>
+			{showAuthorNick === true && !isOwn && fromNick !== undefined && (
+				<Text
+					size="xs"
+					c="dimmed"
+					style={{
+						alignSelf: "flex-start",
+						marginLeft: 8,
+						marginBottom: 2,
+					}}
+				>
+					@{fromNick}
+				</Text>
+			)}
 			<Paper
 				className={isOwn ? "bubble-own" : "bubble-other"}
 				data-message-id={msgId}

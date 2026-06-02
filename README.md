@@ -29,10 +29,19 @@ make frontend:run   # Vite dev-сервер на :5173
 
 **Федеративные эндпоинты** (`/api/federated/*`) — без авторизации, вызов только между серверами.
 
+### Чаты: приватные и групповые
+
+Поддерживаются два типа:
+
+- **Private** — чат между двумя пользователями, уникальный для пары (для той же пары всегда возвращается существующий).
+- **Group** — чат с 3+ участниками, названием, владельцем (owner) и аватаркой. Групповые чаты с одинаковым составом **не уникальны** — можно создавать сколько угодно.
+
+Группы создаются через `POST /api/chats` с payload `{type: "group", name, memberIds}`. **Создатель автоматически добавляется как owner** — указывать себя в `memberIds` не нужно. Минимальный состав — 1 (только owner); остальные добавляются позже через `POST /api/chats/{id}/members`. Все участники должны быть зарегистрированы на одном сервере (федеративные группы для MVP не поддерживаются). Владелец может переименовывать чат, добавлять/удалять участников, менять аватарку, удалять чат. Любой участник (кроме владельца) может выйти. Удаление/leave последнего участника запрещено — только `DELETE /api/chats/{id}` от владельца.
+
 ### Реалтайм (SSE)
 
 - Каждый клиент держит SSE-соединение со своим сервером.
-- Сервер отправляет события: `new_message`, `message_updated`, `message_deleted`, `chat_created`.
+- Сервер отправляет события: `new_message`, `message_updated`, `message_deleted`, `chat_created`, `chat_updated`, `chat_deleted`, `chat_member_added`, `chat_member_removed`, `thread_created`, `thread_message_new`, `thread_message_updated`, `typing`, `typing_stop`.
 - Heartbeat каждые 30 секунд.
 
 ### API
@@ -44,7 +53,13 @@ make frontend:run   # Vite dev-сервер на :5173
 | `GET` | `/api/events` | token | SSE-поток |
 | `GET` | `/api/users/search` | Bearer | Поиск пользователей (локальный или федеративный) |
 | `GET` | `/api/chats` | Bearer | Список чатов |
-| `POST` | `/api/chats` | Bearer | Создать чат (`{ withUserId }`) |
+| `POST` | `/api/chats` | Bearer | Создать чат (`{withUserId}` приватный, `{type:"group",name,memberIds}` групповой) |
+| `GET` | `/api/chats/{id}` | Bearer | Метаданные чата (только для участников) |
+| `PATCH` | `/api/chats/{id}` | Bearer | Обновить название (только owner группы) |
+| `DELETE` | `/api/chats/{id}` | Bearer | Удалить группу (только owner) |
+| `POST` | `/api/chats/{id}/members` | Bearer | Добавить участника (только owner) |
+| `DELETE` | `/api/chats/{id}/members/{userId}` | Bearer | Удалить/leave (owner или сам) |
+| `POST` | `/api/chats/{id}/avatar` | Bearer | Загрузить аватар (только owner) |
 | `GET` | `/api/chats/{id}/messages` | Bearer | Сообщения чата (с пагинацией) |
 | `POST` | `/api/chats/{id}/messages` | Bearer | Отправить сообщение |
 | `PATCH` | `/api/chats/{id}/messages/{mid}` | Bearer | Редактировать |

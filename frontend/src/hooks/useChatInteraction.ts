@@ -11,10 +11,16 @@ import type {
 	User,
 } from "../api.ts";
 import {
+	addChatMember as apiAddChatMember,
 	createThread as apiCreateThread,
+	deleteChat as apiDeleteChat,
+	getChatInfo as apiGetChatInfo,
 	getThreadMessages as apiGetThreadMessages,
 	getThreads as apiGetThreads,
+	removeChatMember as apiRemoveChatMember,
 	sendThreadMessage as apiSendThreadMessage,
+	updateChat as apiUpdateChat,
+	uploadChatAvatar as apiUploadChatAvatar,
 	createChat,
 	deleteMessage,
 	editMessage,
@@ -165,6 +171,18 @@ function useSseMessages(
 					if (prev.some((c) => c.id === chat.id)) return prev;
 					return [...prev, chat];
 				});
+			} else if (event === "chat_updated") {
+				const chat = data as Chat;
+				setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+			} else if (event === "chat_deleted") {
+				const { chatId } = data as { chatId: string };
+				setChats((prev) => prev.filter((c) => c.id !== chatId));
+			} else if (event === "chat_member_added") {
+				const { chat } = data as { chatId: string; userId: string; chat: Chat };
+				setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+			} else if (event === "chat_member_removed") {
+				const { chat } = data as { chatId: string; userId: string; chat: Chat };
+				setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
 			} else if (event === "message_deleted") {
 				const { chatId, messageId } = data as {
 					chatId: string;
@@ -389,7 +407,10 @@ function useSendMessage(opts: {
 				}
 				setEditingMessage(null);
 			} else if (pendingChatWith !== null) {
-				const { chat } = await createChat(activeAccount.token, pendingChatWith);
+				const { chat } = await createChat(activeAccount.token, {
+					type: "private",
+					withUserId: pendingChatWith,
+				});
 				setChats((prev) =>
 					prev.some((c) => c.id === chat.id) ? prev : [...prev, chat],
 				);
@@ -688,6 +709,11 @@ export function useChatPage() {
 	const navigate = useNavigate();
 	const { activeAccount, accounts, logout } = useAuth();
 	const [switcherOpen, setSwitcherOpen] = useState(false);
+	const [createGroupOpen, setCreateGroupOpen] = useState(false);
+	const [groupSettingsChatId, setGroupSettingsChatId] = useState<string | null>(
+		null,
+	);
+	const [groupSettings, setGroupSettings] = useState<Chat | null>(null);
 
 	const [chats, setChats] = useState<Chat[]>([]);
 	const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -1212,12 +1238,154 @@ export function useChatPage() {
 	const activeThreadMessages =
 		activeThreadId !== null ? (threadMessages[activeThreadId] ?? []) : [];
 
+	const handleCreateGroup = useCallback(
+		async (name: string, memberIds: string[]) => {
+			if (activeAccount === null) return;
+			try {
+				const { chat } = await createChat(activeAccount.token, {
+					type: "group",
+					name,
+					memberIds,
+				});
+				setChats((prev) =>
+					prev.some((c) => c.id === chat.id) ? prev : [...prev, chat],
+				);
+				setActiveChatId(chat.id);
+				setCreateGroupOpen(false);
+			} catch {
+				emitNotification(i18n.t("error.createGroup"));
+			}
+		},
+		[activeAccount],
+	);
+
+	const openGroupSettings = useCallback(
+		async (chatId: string) => {
+			if (activeAccount === null) return;
+			setGroupSettingsChatId(chatId);
+			try {
+				const { chat } = await apiGetChatInfo(activeAccount.token, chatId);
+				setGroupSettings(chat);
+			} catch {
+				setGroupSettings(null);
+			}
+		},
+		[activeAccount],
+	);
+
+	const closeGroupSettings = useCallback(() => {
+		setGroupSettingsChatId(null);
+		setGroupSettings(null);
+	}, []);
+
+	const handleRenameGroup = useCallback(
+		async (name: string) => {
+			if (activeAccount === null || groupSettingsChatId === null) return;
+			try {
+				const { chat } = await apiUpdateChat(
+					activeAccount.token,
+					groupSettingsChatId,
+					{ name },
+				);
+				setGroupSettings(chat);
+				setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+			} catch {
+				emitNotification(i18n.t("error.updateGroup"));
+			}
+		},
+		[activeAccount, groupSettingsChatId],
+	);
+
+	const handleAddGroupMember = useCallback(
+		async (userId: string) => {
+			if (activeAccount === null || groupSettingsChatId === null) return;
+			try {
+				const { chat } = await apiAddChatMember(
+					activeAccount.token,
+					groupSettingsChatId,
+					userId,
+				);
+				setGroupSettings(chat);
+				setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+			} catch {
+				emitNotification(i18n.t("error.updateGroup"));
+			}
+		},
+		[activeAccount, groupSettingsChatId],
+	);
+
+	const handleRemoveGroupMember = useCallback(
+		async (userId: string) => {
+			if (activeAccount === null || groupSettingsChatId === null) return;
+			try {
+				const { chat } = await apiRemoveChatMember(
+					activeAccount.token,
+					groupSettingsChatId,
+					userId,
+				);
+				setGroupSettings(chat);
+				setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+				if (userId === activeAccount.user.id) {
+					closeGroupSettings();
+					if (activeChatId === groupSettingsChatId) {
+						setActiveChatId(null);
+					}
+				}
+			} catch {
+				emitNotification(i18n.t("error.updateGroup"));
+			}
+		},
+		[activeAccount, groupSettingsChatId, activeChatId, closeGroupSettings],
+	);
+
+	const handleDeleteGroup = useCallback(async () => {
+		if (activeAccount === null || groupSettingsChatId === null) return;
+		try {
+			await apiDeleteChat(activeAccount.token, groupSettingsChatId);
+			closeGroupSettings();
+		} catch {
+			emitNotification(i18n.t("error.deleteGroup"));
+		}
+	}, [activeAccount, groupSettingsChatId, closeGroupSettings]);
+
+	const handleUploadGroupAvatar = useCallback(
+		async (file: File) => {
+			if (activeAccount === null || groupSettingsChatId === null) return;
+			try {
+				const { file: uploaded } = await uploadFile(activeAccount.token, file);
+				const { chat } = await apiUploadChatAvatar(
+					activeAccount.token,
+					groupSettingsChatId,
+					uploaded.id,
+				);
+				setGroupSettings(chat);
+				setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+			} catch {
+				emitNotification(i18n.t("error.updateGroup"));
+			}
+		},
+		[activeAccount, groupSettingsChatId],
+	);
+
 	return {
 		activeAccount,
 		user,
 		accounts,
 		chats,
 		switcherOpen,
+		setSwitcherOpen,
+		createGroupOpen,
+		setCreateGroupOpen,
+		groupSettingsChatId,
+		groupSettings,
+		openGroupSettings,
+		closeGroupSettings,
+		handleCreateGroup,
+		handleRenameGroup,
+		handleAddGroupMember,
+		handleRemoveGroupMember,
+		handleDeleteGroup,
+		handleUploadGroupAvatar,
 		activeChatId,
 		activeChat,
 		activeMessages,
@@ -1231,7 +1399,6 @@ export function useChatPage() {
 		handleStartEdit,
 		handleCancelEdit,
 		handleRemoveExistingFile,
-		setSwitcherOpen,
 		isLoadingMore,
 		hasMore,
 		loadMoreMessages,

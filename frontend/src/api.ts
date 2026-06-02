@@ -41,6 +41,10 @@ export interface MemberInfo {
 
 export interface Chat {
 	id: string;
+	type: "private" | "group";
+	name: string;
+	ownerId: string;
+	avatarUrl?: string;
 	members: MemberInfo[];
 	createdAt: string;
 }
@@ -117,10 +121,67 @@ export function getChats(token: string) {
 	return request<{ chats: Chat[] }>("/api/chats", token);
 }
 
-export function createChat(token: string, withUserId: string) {
+export type CreateChatOptions =
+	| { type: "private"; withUserId: string }
+	| { type: "group"; name: string; memberIds: string[] };
+
+export function createChat(token: string, opts: CreateChatOptions) {
 	return request<{ chat: Chat }>("/api/chats", token, {
 		method: "POST",
-		body: JSON.stringify({ withUserId }),
+		body: JSON.stringify(opts),
+	});
+}
+
+export function getChatInfo(token: string, chatId: string) {
+	return request<{ chat: Chat }>(`/api/chats/${chatId}`, token);
+}
+
+export function updateChat(
+	token: string,
+	chatId: string,
+	body: { name?: string },
+) {
+	return request<{ chat: Chat }>(`/api/chats/${chatId}`, token, {
+		method: "PATCH",
+		body: JSON.stringify(body),
+	});
+}
+
+export function deleteChat(token: string, chatId: string) {
+	return request<{ status: string }>(`/api/chats/${chatId}`, token, {
+		method: "DELETE",
+	});
+}
+
+export function addChatMember(token: string, chatId: string, userId: string) {
+	return request<{ chat: Chat }>(`/api/chats/${chatId}/members`, token, {
+		method: "POST",
+		body: JSON.stringify({ userId }),
+	});
+}
+
+export function removeChatMember(
+	token: string,
+	chatId: string,
+	userId: string,
+) {
+	return request<{ chat: Chat }>(
+		`/api/chats/${chatId}/members/${userId}`,
+		token,
+		{
+			method: "DELETE",
+		},
+	);
+}
+
+export function uploadChatAvatar(
+	token: string,
+	chatId: string,
+	fileId: string,
+) {
+	return request<{ chat: Chat }>(`/api/chats/${chatId}/avatar`, token, {
+		method: "POST",
+		body: JSON.stringify({ fileId }),
 	});
 }
 

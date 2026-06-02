@@ -46,6 +46,7 @@ interface Props {
 	isInThread?: boolean;
 	onRetry?: (chatId: string, messageId: string) => void;
 	scrollToMessageId?: string | null;
+	showAuthorForGroup?: boolean;
 }
 
 export function MessageList({
@@ -66,6 +67,7 @@ export function MessageList({
 	isInThread,
 	onRetry,
 	scrollToMessageId,
+	showAuthorForGroup,
 }: Props) {
 	const handleStartEdit = useCallback(
 		(
@@ -198,39 +200,47 @@ export function MessageList({
 			)}
 			<div ref={sentinelRef} style={{ height: 1 }} />
 			<div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-				{datedMessages.map(({ msg, showSeparator }) => (
-					<Fragment key={msg.id}>
-						{showSeparator && <DateSeparator dateStr={msg.createdAt} />}
-						<MessageBubble
-							text={msg.text}
-							isOwn={msg.fromId === userId}
-							time={formatTime(msg.createdAt, locale)}
-							chatId={msg.chatId}
-							msgId={msg.id}
-							editedAt={msg.editedAt}
-							replyTo={msg.replyTo}
-							files={msg.files}
-							onReplyClick={handleReplyClick}
-							onStartEdit={handleStartEdit}
-							onDelete={onDelete}
-							onReply={onReply}
-							editTTL={editTTL}
-							deleteTTL={deleteTTL}
-							createdAt={msg.createdAt}
-							onCreateThread={onCreateThread}
-							onOpenThread={onOpenThread}
-							threadId={messageToThread?.[msg.id]}
-							threadMessageCount={
-								messageToThread?.[msg.id] !== undefined
-									? threads?.[messageToThread[msg.id]]?.messageCount
-									: undefined
-							}
-							isInThread={isInThread}
-							status={msg.status}
-							onRetry={onRetry}
-						/>
-					</Fragment>
-				))}
+				{datedMessages.map(({ msg, showSeparator }, idx) => {
+					const prev = idx > 0 ? datedMessages[idx - 1].msg : undefined;
+					const showAuthor =
+						showAuthorForGroup === true &&
+						(prev === undefined || prev.fromId !== msg.fromId);
+					return (
+						<Fragment key={msg.id}>
+							{showSeparator && <DateSeparator dateStr={msg.createdAt} />}
+							<MessageBubble
+								text={msg.text}
+								isOwn={msg.fromId === userId}
+								fromNick={msg.fromNick}
+								time={formatTime(msg.createdAt, locale)}
+								chatId={msg.chatId}
+								msgId={msg.id}
+								editedAt={msg.editedAt}
+								replyTo={msg.replyTo}
+								files={msg.files}
+								onReplyClick={handleReplyClick}
+								onStartEdit={handleStartEdit}
+								onDelete={onDelete}
+								onReply={onReply}
+								editTTL={editTTL}
+								deleteTTL={deleteTTL}
+								createdAt={msg.createdAt}
+								onCreateThread={onCreateThread}
+								onOpenThread={onOpenThread}
+								threadId={messageToThread?.[msg.id]}
+								threadMessageCount={
+									messageToThread?.[msg.id] !== undefined
+										? threads?.[messageToThread[msg.id]]?.messageCount
+										: undefined
+								}
+								isInThread={isInThread}
+								status={msg.status}
+								onRetry={onRetry}
+								showAuthorNick={showAuthor}
+							/>
+						</Fragment>
+					);
+				})}
 			</div>
 		</div>
 	);

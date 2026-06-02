@@ -7,13 +7,14 @@ vi.mock("../i18n.ts", () => ({
 				"date.today": "Today",
 				"date.yesterday": "Yesterday",
 				"chat.unknownUser": "Unknown",
+				"chat.groupFallback": "Group",
 			};
 			return map[key] ?? key;
 		},
 	},
 }));
 
-const { otherNick, formatDateLabel, extractCodeText } = await import(
+const { otherNick, formatDateLabel, extractCodeText, chatTitle } = await import(
 	"./chat.ts"
 );
 
@@ -66,5 +67,49 @@ describe("extractCodeText", () => {
 
 	it("converts non-string to string", () => {
 		expect(extractCodeText(42)).toBe("42");
+	});
+});
+
+describe("chatTitle", () => {
+	it("returns other nick for private chat", () => {
+		const chat = {
+			id: "c1",
+			type: "private" as const,
+			name: "",
+			ownerId: "",
+			members: [
+				{ id: "alice", nick: "alice" },
+				{ id: "bob", nick: "bob" },
+			],
+			createdAt: "",
+		};
+		expect(chatTitle(chat, "alice")).toBe("bob");
+	});
+
+	it("returns group name for group chat", () => {
+		const chat = {
+			id: "c1",
+			type: "group" as const,
+			name: "Team",
+			ownerId: "alice",
+			members: [
+				{ id: "alice", nick: "alice" },
+				{ id: "bob", nick: "bob" },
+			],
+			createdAt: "",
+		};
+		expect(chatTitle(chat, "alice")).toBe("Team");
+	});
+
+	it("falls back to 'Group' when group name is empty", () => {
+		const chat = {
+			id: "c1",
+			type: "group" as const,
+			name: "",
+			ownerId: "alice",
+			members: [{ id: "alice", nick: "alice" }],
+			createdAt: "",
+		};
+		expect(chatTitle(chat, "alice")).toBe("Group");
 	});
 });

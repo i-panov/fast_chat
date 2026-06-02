@@ -1,24 +1,32 @@
-import { Center, Paper, Stack, Text } from "@mantine/core";
+import { ActionIcon, Center, Group, Paper, Stack, Text } from "@mantine/core";
+import { Settings } from "lucide-react";
+import type * as React from "react";
 import { useTranslation } from "react-i18next";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
 import { AppHeader } from "../components/chat/AppHeader.tsx";
 import { AudioPlayerBar } from "../components/chat/AudioPlayerBar.tsx";
 import { ChatList } from "../components/chat/ChatList.tsx";
+import { CreateGroupModal } from "../components/chat/CreateGroupModal.tsx";
+import { GroupSettingsModal } from "../components/chat/GroupSettingsModal.tsx";
 import { InputBar } from "../components/chat/InputBar.tsx";
 import { MessageList } from "../components/chat/MessageList.tsx";
 import { SearchBox } from "../components/chat/SearchBox.tsx";
 import { ThreadView } from "../components/chat/ThreadView.tsx";
 import { useChatPage } from "../hooks/useChatInteraction.ts";
-import { otherNick } from "../utils/chat.ts";
+import { chatTitle } from "../utils/chat.ts";
 
 function ChatHeader({
 	title,
+	subtitle,
 	badge,
 	typingNick,
+	onOpenSettings,
 }: {
 	title: string;
+	subtitle?: string;
 	badge?: string;
 	typingNick?: string;
+	onOpenSettings?: () => void;
 }) {
 	const { t } = useTranslation();
 
@@ -32,19 +40,39 @@ function ChatHeader({
 				borderBottom: "1px solid var(--mantine-color-dark-4)",
 			}}
 		>
-			<Text fw={600}>
-				@{title}
-				{badge !== undefined && (
-					<Text component="span" size="xs" c="dimmed" ml={8}>
-						{t("chat.newChat")}
+			<Group justify="space-between" wrap="nowrap">
+				<div style={{ minWidth: 0, flex: 1 }}>
+					<Text fw={600} truncate>
+						{title}
+						{badge !== undefined && (
+							<Text component="span" size="xs" c="dimmed" ml={8}>
+								{t("chat.newChat")}
+							</Text>
+						)}
 					</Text>
+					{subtitle !== undefined && (
+						<Text size="xs" c="dimmed">
+							{subtitle}
+						</Text>
+					)}
+					{typingNick !== undefined && (
+						<Text size="xs" c="dimmed">
+							{t("chat.typing", { nick: typingNick })}
+						</Text>
+					)}
+				</div>
+				{onOpenSettings !== undefined && (
+					<ActionIcon
+						variant="subtle"
+						color="gray"
+						size="lg"
+						onClick={onOpenSettings}
+						aria-label={t("chat.settings")}
+					>
+						<Settings size={18} />
+					</ActionIcon>
 				)}
-			</Text>
-			{typingNick !== undefined && (
-				<Text size="xs" c="dimmed">
-					{t("chat.typing", { nick: typingNick })}
-				</Text>
-			)}
+			</Group>
 		</Paper>
 	);
 }
@@ -55,6 +83,44 @@ export function ChatPage() {
 
 	if (s.activeAccount === null || s.user === null) {
 		return null;
+	}
+
+	const typingNicks =
+		s.activeChatId !== null ? (s.typingUsers[s.activeChatId] ?? []) : [];
+	const typingNick = typingNicks[0]?.nick;
+
+	let header: React.ReactElement | null = null;
+	let showAuthorForGroup = false;
+
+	if (s.pendingChatWith !== null) {
+		header = (
+			<ChatHeader title={`@${s.pendingChatNick ?? ""}`} badge="newChat" />
+		);
+	} else if (s.activeChat !== undefined) {
+		const isGroup = s.activeChat.type === "group";
+		const title = isGroup
+			? s.activeChat.name || t("chat.groupFallback")
+			: `@${chatTitle(s.activeChat, s.user.id)}`;
+		const subtitle = isGroup
+			? t("chat.membersCount", { count: s.activeChat.members.length })
+			: undefined;
+		header = (
+			<ChatHeader
+				title={title}
+				subtitle={subtitle}
+				typingNick={typingNick}
+				onOpenSettings={
+					isGroup
+						? () => {
+								if (s.activeChat !== undefined) {
+									s.openGroupSettings(s.activeChat.id);
+								}
+							}
+						: undefined
+				}
+			/>
+		);
+		showAuthorForGroup = isGroup;
 	}
 
 	return (
@@ -84,6 +150,7 @@ export function ChatPage() {
 							showResults={s.showSearchResults}
 							onQueryChange={s.handleSearchChange}
 							onSelectUser={s.selectPendingChat}
+							onCreateGroup={() => s.setCreateGroupOpen(true)}
 						/>
 						<ChatList
 							chats={s.chats}
@@ -136,7 +203,7 @@ export function ChatPage() {
 						<Stack h="100%" gap={0}>
 							{s.pendingChatWith !== null ? (
 								<>
-									<ChatHeader title={s.pendingChatNick ?? ""} badge="newChat" />
+									{header}
 									<div
 										style={{
 											flex: 1,
@@ -174,10 +241,7 @@ export function ChatPage() {
 								</Center>
 							) : (
 								<>
-									<ChatHeader
-										title={otherNick(s.activeChat.members, s.user.id)}
-										typingNick={s.typingUsers[s.activeChatId ?? ""]?.[0]?.nick}
-									/>
+									{header}
 									<MessageList
 										messages={s.activeMessages}
 										userId={s.user.id}
@@ -198,6 +262,7 @@ export function ChatPage() {
 										messageToThread={s.messageToThread}
 										threads={s.threads}
 										onRetry={s.handleRetryMessage}
+										showAuthorForGroup={showAuthorForGroup}
 									/>
 									<InputBar
 										text={s.inputText}
@@ -229,6 +294,21 @@ export function ChatPage() {
 					)}
 				</Paper>
 			</div>
+			<CreateGroupModal
+				open={s.createGroupOpen}
+				onClose={() => s.setCreateGroupOpen(false)}
+				onCreate={s.handleCreateGroup}
+			/>
+			<GroupSettingsModal
+				open={s.groupSettingsChatId !== null}
+				chat={s.groupSettings}
+				onClose={s.closeGroupSettings}
+				onRename={s.handleRenameGroup}
+				onAddMember={s.handleAddGroupMember}
+				onRemoveMember={s.handleRemoveGroupMember}
+				onDelete={s.handleDeleteGroup}
+				onUploadAvatar={s.handleUploadGroupAvatar}
+			/>
 		</Stack>
 	);
 }

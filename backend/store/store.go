@@ -116,6 +116,7 @@ func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
 	var chatIDs []string
 
 	s.db.Model(&ChatMember{}).
+		Select("chat_id").
 		Where("user_id IN ?", []string{member1, member2}).
 		Group("chat_id").
 		Having("COUNT(DISTINCT user_id) = 2").
@@ -124,16 +125,24 @@ func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
 	if len(chatIDs) > 0 {
 		var chat model.Chat
 
-		if err := s.db.First(&chat, "id = ?", chatIDs[0]).Error; err == nil {
-			chat.Members = []string{member1, member2}
+		chatIDQuery := s.db.Model(&model.Chat{}).
+			Select("id").
+			Where("id IN ? AND type = ?", chatIDs, "private")
 
-			return &chat, nil
+		var foundID string
+		if err := chatIDQuery.Limit(1).Row().Scan(&foundID); err == nil {
+			if err := s.db.First(&chat, "id = ?", foundID).Error; err == nil {
+				chat.Members = []string{member1, member2}
+
+				return &chat, nil
+			}
 		}
 	}
 
 	id := generateID()
 	chat := &model.Chat{
 		ID:        id,
+		Type:      "private",
 		CreatedAt: time.Now(),
 	}
 
@@ -153,6 +162,183 @@ func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
 	chat.Members = []string{member1, member2}
 
 	return chat, nil
+}
+
+func (s *Store) CreateGroupChat(name, ownerID string, memberIDs []string) (*model.Chat, error) {
+	seen := make(map[string]struct{}, len(memberIDs)+1)
+	dedup := make([]string, 0, len(memberIDs)+1)
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		dedup = append(dedup, id)
+	}
+
+	add(ownerID)
+	for _, m := range memberIDs {
+		add(m)
+	}
+
+	if len(dedup) < 1 {
+		return nil, fmt.Errorf("group chat must have at least one member (the owner)")
+	}
+
+	id := generateID()
+	chat := &model.Chat{
+		ID:        id,
+		Type:      "group",
+		Name:      name,
+		OwnerID:   ownerID,
+		CreatedAt: time.Now(),
+	}
+
+	if err := s.db.Create(chat).Error; err != nil {
+		return nil, err
+	}
+
+	members := make([]ChatMember, 0, len(dedup))
+	for _, m := range dedup {
+		members = append(members, ChatMember{ChatID: id, UserID: m})
+	}
+
+	if err := s.db.Create(&members).Error; err != nil {
+		return nil, err
+	}
+
+	chat.Members = dedup
+
+	return chat, nil
+}
+
+func (s *Store) AddChatMember(chatID, userID string) error {
+	chat, ok := s.GetChat(chatID)
+	if !ok {
+		return ErrChatNotFound
+	}
+
+	if chat.Type != "group" {
+		return fmt.Errorf("cannot add members to non-group chat")
+	}
+
+	for _, m := range chat.Members {
+		if m == userID {
+			return nil //nolint:nilerr // already a member is a no-op
+		}
+	}
+
+	return s.db.Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
+}
+
+func (s *Store) RemoveChatMember(chatID, userID string) error {
+	chat, ok := s.GetChat(chatID)
+	if !ok {
+		return ErrChatNotFound
+	}
+
+	if chat.Type != "group" {
+		return fmt.Errorf("cannot remove members from non-group chat")
+	}
+
+	if len(chat.Members) <= 1 {
+		return fmt.Errorf("cannot remove the last member")
+	}
+
+	return s.db.Where("chat_id = ? AND user_id = ?", chatID, userID).Delete(&ChatMember{}).Error
+}
+
+func (s *Store) UpdateChatName(chatID, name string) (*model.Chat, error) {
+	chat, ok := s.GetChat(chatID)
+	if !ok {
+		return nil, ErrChatNotFound
+	}
+
+	if chat.Type != "group" {
+		return nil, fmt.Errorf("cannot rename non-group chat")
+	}
+
+	if err := s.db.Model(&model.Chat{}).Where("id = ?", chatID).Update("name", name).Error; err != nil {
+		return nil, err
+	}
+
+	chat.Name = name
+
+	return chat, nil
+}
+
+func (s *Store) UpdateChatAvatar(chatID, fileID string) (*model.Chat, error) {
+	chat, ok := s.GetChat(chatID)
+	if !ok {
+		return nil, ErrChatNotFound
+	}
+
+	if chat.Type != "group" {
+		return nil, fmt.Errorf("cannot set avatar on non-group chat")
+	}
+
+	if err := s.db.Model(&model.Chat{}).Where("id = ?", chatID).Update("avatar_file_id", fileID).Error; err != nil {
+		return nil, err
+	}
+
+	chat.AvatarFileID = fileID
+
+	return chat, nil
+}
+
+func (s *Store) GetChatsByAvatarFileID(fileID string) ([]string, error) {
+	var chatIDs []string
+
+	err := s.db.Model(&model.Chat{}).
+		Where("avatar_file_id = ?", fileID).
+		Pluck("id", &chatIDs).
+		Error
+
+	if chatIDs == nil {
+		return []string{}, nil
+	}
+
+	return chatIDs, err
+}
+
+func (s *Store) DeleteChat(chatID string) error {
+	chat, ok := s.GetChat(chatID)
+	if !ok {
+		return ErrChatNotFound
+	}
+
+	if chat.Type != "group" {
+		return fmt.Errorf("cannot delete non-group chat")
+	}
+
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var msgIDs []string
+		if err := tx.Model(&model.Message{}).Where("chat_id = ?", chatID).Pluck("id", &msgIDs).Error; err != nil {
+			return err
+		}
+
+		if len(msgIDs) > 0 {
+			if err := tx.Where("message_id IN ?", msgIDs).Delete(&model.MessageFile{}).Error; err != nil {
+				return err
+			}
+
+			if err := tx.Where("chat_id = ?", chatID).Delete(&model.Message{}).Error; err != nil {
+				return err
+			}
+		}
+
+		if err := tx.Where("chat_id = ?", chatID).Delete(&model.Thread{}).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Where("chat_id = ?", chatID).Delete(&ChatMember{}).Error; err != nil {
+			return err
+		}
+
+		return tx.Where("id = ?", chatID).Delete(&model.Chat{}).Error
+	})
 }
 
 func (s *Store) GetUserChats(userID string) []*model.Chat {
@@ -361,6 +547,10 @@ func (s *Store) CreateRemoteChat(chat *model.Chat) {
 
 	if count > 0 {
 		return
+	}
+
+	if chat.Type == "" {
+		chat.Type = "private"
 	}
 
 	s.db.Create(chat)

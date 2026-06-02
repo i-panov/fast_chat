@@ -485,6 +485,7 @@ func TestCreateThreadAndGet(t *testing.T) {
 
 func TestGetThreadsForChat(t *testing.T) {
 	s := newTestStore(t)
+
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
@@ -502,6 +503,307 @@ func TestGetThreadsForChat(t *testing.T) {
 	noThreads := s.GetThreadsForChat("nonexistent")
 	if len(noThreads) != 0 {
 		t.Errorf("expected 0 threads, got %d", len(noThreads))
+	}
+}
+
+func TestCreateChatIsPrivate(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+
+	chat, err := s.CreateChat("alice:test", "bob:test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if chat.Type != "private" {
+		t.Errorf("expected type=private, got %q", chat.Type)
+	}
+}
+
+func TestCreateGroupChatBasic(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	s.CreateUser("carol:test", "carol")
+
+	chat, err := s.CreateGroupChat("Team", "alice:test", []string{"bob:test", "carol:test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if chat.Type != "group" {
+		t.Errorf("expected type=group, got %q", chat.Type)
+	}
+	if chat.Name != "Team" {
+		t.Errorf("expected name=Team, got %q", chat.Name)
+	}
+	if chat.OwnerID != "alice:test" {
+		t.Errorf("expected ownerId=alice:test, got %q", chat.OwnerID)
+	}
+	if len(chat.Members) != 3 {
+		t.Errorf("expected 3 members, got %d", len(chat.Members))
+	}
+}
+
+func TestCreateGroupChatUnlimitedDuplicates(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	s.CreateUser("carol:test", "carol")
+
+	c1, _ := s.CreateGroupChat("G1", "alice:test", []string{"bob:test", "carol:test"})
+	c2, _ := s.CreateGroupChat("G2", "alice:test", []string{"bob:test", "carol:test"})
+	c3, _ := s.CreateGroupChat("G3", "alice:test", []string{"bob:test", "carol:test"})
+
+	if c1.ID == c2.ID || c2.ID == c3.ID || c1.ID == c3.ID {
+		t.Errorf("expected 3 distinct IDs, got %s %s %s", c1.ID, c2.ID, c3.ID)
+	}
+
+	chats := s.GetUserChats("alice:test")
+	if len(chats) != 3 {
+		t.Errorf("expected 3 chats for alice, got %d", len(chats))
+	}
+}
+
+func TestCreateGroupChatDeduplicates(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	s.CreateUser("carol:test", "carol")
+
+	chat, err := s.CreateGroupChat("G", "alice:test", []string{"alice:test", "bob:test", "carol:test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(chat.Members) != 3 {
+		t.Errorf("expected 3 unique members (dedup alice), got %d", len(chat.Members))
+	}
+}
+
+func TestCreateGroupChatValidation(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+
+	// owner + bob = 2 members, valid
+	chat, err := s.CreateGroupChat("G", "alice:test", []string{"alice:test", "bob:test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chat.Members) != 2 {
+		t.Errorf("expected 2 unique members, got %d", len(chat.Members))
+	}
+}
+
+func TestCreateGroupChatSolo(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+
+	chat, err := s.CreateGroupChat("Solo", "alice:test", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if chat.Type != "group" {
+		t.Errorf("expected type=group, got %q", chat.Type)
+	}
+	if chat.OwnerID != "alice:test" {
+		t.Errorf("expected ownerId=alice:test, got %q", chat.OwnerID)
+	}
+	if len(chat.Members) != 1 {
+		t.Errorf("expected 1 member (owner only), got %d", len(chat.Members))
+	}
+}
+
+func TestAddChatMember(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	s.CreateUser("carol:test", "carol")
+	s.CreateUser("dave:test", "dave")
+
+	chat, _ := s.CreateGroupChat("G", "alice:test", []string{"bob:test", "carol:test"})
+
+	if err := s.AddChatMember(chat.ID, "dave:test"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, _ := s.GetChat(chat.ID)
+	if len(got.Members) != 4 {
+		t.Errorf("expected 4 members, got %d", len(got.Members))
+	}
+
+	if err := s.AddChatMember(chat.ID, "dave:test"); err != nil {
+		t.Errorf("idempotent add should not error: %v", err)
+	}
+
+	got, _ = s.GetChat(chat.ID)
+	if len(got.Members) != 4 {
+		t.Errorf("expected still 4 members after duplicate add, got %d", len(got.Members))
+	}
+
+	privateChat, _ := s.CreateChat("alice:test", "bob:test")
+	if err := s.AddChatMember(privateChat.ID, "carol:test"); err == nil {
+		t.Error("expected error adding member to private chat")
+	}
+}
+
+func TestRemoveChatMember(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	s.CreateUser("carol:test", "carol")
+
+	chat, _ := s.CreateGroupChat("G", "alice:test", []string{"bob:test", "carol:test"})
+
+	if err := s.RemoveChatMember(chat.ID, "bob:test"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, _ := s.GetChat(chat.ID)
+	if len(got.Members) != 2 {
+		t.Errorf("expected 2 members, got %d", len(got.Members))
+	}
+
+	if err := s.RemoveChatMember(chat.ID, "carol:test"); err != nil {
+		t.Fatalf("unexpected error removing carol: %v", err)
+	}
+
+	got, _ = s.GetChat(chat.ID)
+	if len(got.Members) != 1 {
+		t.Errorf("expected 1 member remaining, got %d", len(got.Members))
+	}
+
+	if err := s.RemoveChatMember(chat.ID, "alice:test"); err == nil {
+		t.Error("expected error: cannot remove the last member")
+	}
+
+	if err := s.RemoveChatMember(chat.ID, "nobody:test"); err == nil {
+		t.Error("expected error: removing nonexistent user should not error silently")
+	}
+}
+
+func TestUpdateChatName(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	s.CreateUser("carol:test", "carol")
+
+	chat, _ := s.CreateGroupChat("Old", "alice:test", []string{"bob:test", "carol:test"})
+
+	updated, err := s.UpdateChatName(chat.ID, "New")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated.Name != "New" {
+		t.Errorf("expected New, got %q", updated.Name)
+	}
+
+	privateChat, _ := s.CreateChat("alice:test", "bob:test")
+	if _, err := s.UpdateChatName(privateChat.ID, "X"); err == nil {
+		t.Error("expected error renaming private chat")
+	}
+}
+
+func TestUpdateChatAvatar(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	s.CreateUser("carol:test", "carol")
+	f, _ := s.SaveFile("hash", "image/png", 100, "a.png", "a.png")
+
+	chat, _ := s.CreateGroupChat("G", "alice:test", []string{"bob:test", "carol:test"})
+
+	updated, err := s.UpdateChatAvatar(chat.ID, f.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated.AvatarFileID != f.ID {
+		t.Errorf("expected avatar %s, got %q", f.ID, updated.AvatarFileID)
+	}
+}
+
+func TestDeleteChatCascade(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	s.CreateUser("carol:test", "carol")
+
+	chat, _ := s.CreateGroupChat("G", "alice:test", []string{"bob:test", "carol:test"})
+	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "hi", "", "")
+	thread, _ := s.CreateThread(chat.ID, msg.ID, "hi", "alice")
+	s.AddThreadMessage(thread.ID, "bob:test", "bob", "reply", "", "")
+	f, _ := s.SaveFile("h", "image/png", 1, "a.png", "a.png")
+	s.AddMessageFiles(msg.ID, []string{f.ID})
+
+	if err := s.DeleteChat(chat.ID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := s.GetChat(chat.ID); ok {
+		t.Error("expected chat to be deleted")
+	}
+
+	if msgs := s.GetMessages(chat.ID); len(msgs) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(msgs))
+	}
+
+	if threads := s.GetThreadsForChat(chat.ID); len(threads) != 0 {
+		t.Errorf("expected 0 threads, got %d", len(threads))
+	}
+
+	var memberCount int64
+	s.db.Model(&ChatMember{}).Where("chat_id = ?", chat.ID).Count(&memberCount)
+	if memberCount != 0 {
+		t.Errorf("expected 0 chat members, got %d", memberCount)
+	}
+
+	var fileLinkCount int64
+	s.db.Model(&model.MessageFile{}).Where("message_id = ?", msg.ID).Count(&fileLinkCount)
+	if fileLinkCount != 0 {
+		t.Errorf("expected 0 message_file links, got %d", fileLinkCount)
+	}
+}
+
+func TestDeleteChatRejectsPrivate(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+
+	if err := s.DeleteChat(chat.ID); err == nil {
+		t.Error("expected error deleting private chat")
+	}
+}
+
+func TestGetChatsByAvatarFileID(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	s.CreateUser("carol:test", "carol")
+	f, _ := s.SaveFile("avatar-hash", "image/png", 100, "a.png", "a.png")
+
+	chat, _ := s.CreateGroupChat("G", "alice:test", []string{"bob:test", "carol:test"})
+	if _, err := s.UpdateChatAvatar(chat.ID, f.ID); err != nil {
+		t.Fatalf("set avatar: %v", err)
+	}
+
+	ids, err := s.GetChatsByAvatarFileID(f.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != chat.ID {
+		t.Errorf("expected [%s], got %v", chat.ID, ids)
+	}
+
+	ids, err = s.GetChatsByAvatarFileID("nonexistent")
+	if err != nil {
+		t.Fatalf("get nonexistent: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected empty, got %v", ids)
 	}
 }
 

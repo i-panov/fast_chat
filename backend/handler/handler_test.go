@@ -27,7 +27,7 @@ func newTestStore(t *testing.T) *store.Store {
 		t.Fatal(err)
 	}
 
-	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &store.ChatMember{}, &model.Message{}, &model.Thread{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &store.ChatMember{}, &model.Message{}, &model.Thread{}, &model.File{}, &model.MessageFile{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -389,5 +389,382 @@ func TestIsMember(t *testing.T) {
 	}
 	if isMember(chat, "carol") {
 		t.Error("expected carol to not be a member")
+	}
+}
+
+type testAccount struct {
+	token string
+	id    string
+}
+
+func registerTestUser(t *testing.T, h *Handler, nick string) testAccount {
+	t.Helper()
+
+	body := `{"nick":"` + nick + `"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.Register(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("register %s: expected 201, got %d: %s", nick, w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	return testAccount{
+		token: resp["token"].(string),
+		id:    resp["user"].(map[string]interface{})["id"].(string),
+	}
+}
+
+func authReq(method, path, token string, body string) *http.Request {
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequestWithContext(context.Background(), method, path, http.NoBody)
+	} else {
+		r = httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	}
+	r.Header.Set("Authorization", "Bearer "+token)
+	return r
+}
+
+func TestCreateGroupChat(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice")
+	bob := registerTestUser(t, h, "bob")
+	carol := registerTestUser(t, h, "carol")
+
+	body := `{"type":"group","name":"Team","memberIds":["` + bob.id + `","` + carol.id + `"]}`
+	req := authReq(http.MethodPost, "/api/chats", alice.token, body)
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.CreateChat)(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	chat := resp["chat"].(map[string]interface{})
+
+	if chat["type"] != "group" {
+		t.Errorf("expected type=group, got %v", chat["type"])
+	}
+	if chat["name"] != "Team" {
+		t.Errorf("expected name=Team, got %v", chat["name"])
+	}
+	if chat["ownerId"] != alice.id {
+		t.Errorf("expected ownerId=%s, got %v", alice.id, chat["ownerId"])
+	}
+	members := chat["members"].([]interface{})
+	if len(members) != 3 {
+		t.Errorf("expected 3 members, got %d", len(members))
+	}
+}
+
+func TestCreateGroupChat_RejectsFederatedMember(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice")
+	bob := registerTestUser(t, h, "bob")
+
+	body := `{"type":"group","name":"X","memberIds":["` + bob.id + `","carol:other.com:9999"]}`
+	req := authReq(http.MethodPost, "/api/chats", alice.token, body)
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.CreateChat)(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for federated member, got %d", w.Code)
+	}
+}
+
+func TestCreateGroupChat_Validation(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice")
+	bob := registerTestUser(t, h, "bob")
+
+	tests := []struct {
+		name string
+		body string
+		code int
+	}{
+		{"empty name", `{"type":"group","name":"","memberIds":["` + bob.id + `"]}`, http.StatusBadRequest},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := authReq(http.MethodPost, "/api/chats", alice.token, tc.body)
+			w := httptest.NewRecorder()
+			h.AuthMiddleware(h.CreateChat)(w, req)
+			if w.Code != tc.code {
+				t.Errorf("expected %d, got %d", tc.code, w.Code)
+			}
+		})
+	}
+}
+
+func TestCreateGroupChat_Solo(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice")
+
+	body := `{"type":"group","name":"Solo","memberIds":[]}`
+	req := authReq(http.MethodPost, "/api/chats", alice.token, body)
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.CreateChat)(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	chat := resp["chat"].(map[string]interface{})
+
+	if chat["ownerId"] != alice.id {
+		t.Errorf("expected ownerId=%s, got %v", alice.id, chat["ownerId"])
+	}
+	members := chat["members"].([]interface{})
+	if len(members) != 1 {
+		t.Errorf("expected 1 member, got %d", len(members))
+	}
+}
+
+func TestGroupPermissions(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice")
+	bob := registerTestUser(t, h, "bob")
+	carol := registerTestUser(t, h, "carol")
+
+	createBody := `{"type":"group","name":"G","memberIds":["` + bob.id + `","` + carol.id + `"]}`
+	createReq := authReq(http.MethodPost, "/api/chats", alice.token, createBody)
+	createW := httptest.NewRecorder()
+	h.AuthMiddleware(h.CreateChat)(createW, createReq)
+	if createW.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", createW.Code, createW.Body.String())
+	}
+	var created map[string]interface{}
+	json.Unmarshal(createW.Body.Bytes(), &created)
+	chatID := created["chat"].(map[string]interface{})["id"].(string)
+
+	t.Run("owner can rename", func(t *testing.T) {
+		req := authReq(http.MethodPatch, "/api/chats/"+chatID, alice.token, `{"name":"New"}`)
+		req.SetPathValue("id", chatID)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.UpdateChat)(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", w.Code)
+		}
+	})
+
+	t.Run("non-owner cannot rename", func(t *testing.T) {
+		req := authReq(http.MethodPatch, "/api/chats/"+chatID, bob.token, `{"name":"Hack"}`)
+		req.SetPathValue("id", chatID)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.UpdateChat)(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403, got %d", w.Code)
+		}
+	})
+
+	t.Run("non-member cannot rename", func(t *testing.T) {
+		dave := registerTestUser(t, h, "dave")
+		req := authReq(http.MethodPatch, "/api/chats/"+chatID, dave.token, `{"name":"X"}`)
+		req.SetPathValue("id", chatID)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.UpdateChat)(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403, got %d", w.Code)
+		}
+	})
+
+	t.Run("owner can add", func(t *testing.T) {
+		dave := registerTestUser(t, h, "dave2")
+		body := `{"userId":"` + dave.id + `"}`
+		req := authReq(http.MethodPost, "/api/chats/"+chatID+"/members", alice.token, body)
+		req.SetPathValue("id", chatID)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.AddChatMember)(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("non-owner cannot add", func(t *testing.T) {
+		eve := registerTestUser(t, h, "eve")
+		body := `{"userId":"` + eve.id + `"}`
+		req := authReq(http.MethodPost, "/api/chats/"+chatID+"/members", bob.token, body)
+		req.SetPathValue("id", chatID)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.AddChatMember)(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403, got %d", w.Code)
+		}
+	})
+
+	t.Run("owner cannot leave", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/api/chats/"+chatID+"/members/"+alice.id, http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+alice.token)
+		req.SetPathValue("id", chatID)
+		req.SetPathValue("userId", alice.id)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.RemoveChatMember)(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("member can leave (self-remove)", func(t *testing.T) {
+		// carol removes herself
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/api/chats/"+chatID+"/members/"+carol.id, http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+carol.token)
+		req.SetPathValue("id", chatID)
+		req.SetPathValue("userId", carol.id)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.RemoveChatMember)(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("member cannot remove other", func(t *testing.T) {
+		// bob (not owner) tries to remove alice
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/api/chats/"+chatID+"/members/"+alice.id, http.NoBody)
+		req.Header.Set("Authorization", "Bearer "+bob.token)
+		req.SetPathValue("id", chatID)
+		req.SetPathValue("userId", alice.id)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.RemoveChatMember)(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403, got %d", w.Code)
+		}
+	})
+}
+
+func TestDeleteGroupChat(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice")
+	bob := registerTestUser(t, h, "bob")
+	carol := registerTestUser(t, h, "carol")
+
+	createBody := `{"type":"group","name":"G","memberIds":["` + bob.id + `","` + carol.id + `"]}`
+	createReq := authReq(http.MethodPost, "/api/chats", alice.token, createBody)
+	createW := httptest.NewRecorder()
+	h.AuthMiddleware(h.CreateChat)(createW, createReq)
+	var created map[string]interface{}
+	json.Unmarshal(createW.Body.Bytes(), &created)
+	chatID := created["chat"].(map[string]interface{})["id"].(string)
+
+	// non-owner cannot delete
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/api/chats/"+chatID, http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+bob.token)
+	req.SetPathValue("id", chatID)
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.DeleteChat)(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("non-owner delete: expected 403, got %d", w.Code)
+	}
+
+	// owner can delete
+	req2 := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/api/chats/"+chatID, http.NoBody)
+	req2.Header.Set("Authorization", "Bearer "+alice.token)
+	req2.SetPathValue("id", chatID)
+	w2 := httptest.NewRecorder()
+	h.AuthMiddleware(h.DeleteChat)(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Errorf("owner delete: expected 200, got %d", w2.Code)
+	}
+
+	// chat is gone
+	req3 := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/chats/"+chatID, http.NoBody)
+	req3.Header.Set("Authorization", "Bearer "+alice.token)
+	req3.SetPathValue("id", chatID)
+	w3 := httptest.NewRecorder()
+	h.AuthMiddleware(h.GetChat)(w3, req3)
+	if w3.Code != http.StatusNotFound {
+		t.Errorf("after delete: expected 404, got %d", w3.Code)
+	}
+}
+
+func TestServeFileForGroupAvatar(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice")
+	bob := registerTestUser(t, h, "bob")
+	carol := registerTestUser(t, h, "carol")
+
+	createBody := `{"type":"group","name":"G","memberIds":["` + bob.id + `","` + carol.id + `"]}`
+	createReq := authReq(http.MethodPost, "/api/chats", alice.token, createBody)
+	createW := httptest.NewRecorder()
+	h.AuthMiddleware(h.CreateChat)(createW, createReq)
+	var created map[string]interface{}
+	json.Unmarshal(createW.Body.Bytes(), &created)
+	chatID := created["chat"].(map[string]interface{})["id"].(string)
+
+	f, _ := h.store.SaveFile("avatar-hash", "image/png", 70, "a.png", "a.png")
+
+	req := authReq(http.MethodPost, "/api/chats/"+chatID+"/avatar", alice.token, `{"fileId":"`+f.ID+`"}`)
+	req.SetPathValue("id", chatID)
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.UpdateChatAvatar)(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("set avatar: %d %s", w.Code, w.Body.String())
+	}
+
+	if !h.userCanAccessFile(bob.id, f.ID) {
+		t.Error("expected bob to access group avatar")
+	}
+	if h.userCanAccessFile(bob.id, "no-such-file") {
+		t.Error("expected no access for unknown file")
+	}
+
+	eve := registerTestUser(t, h, "eve")
+	if h.userCanAccessFile(eve.id, f.ID) {
+		t.Error("expected eve (non-member) to NOT access group avatar")
+	}
+}
+
+func TestPrivateChatUnaffectedByGroup(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice")
+	bob := registerTestUser(t, h, "bob")
+	carol := registerTestUser(t, h, "carol")
+
+	// Create a group with all three
+	createBody := `{"type":"group","name":"All","memberIds":["` + bob.id + `","` + carol.id + `"]}`
+	createReq := authReq(http.MethodPost, "/api/chats", alice.token, createBody)
+	createW := httptest.NewRecorder()
+	h.AuthMiddleware(h.CreateChat)(createW, createReq)
+	if createW.Code != http.StatusCreated {
+		t.Fatalf("group create: %d %s", createW.Code, createW.Body.String())
+	}
+
+	// Now alice tries to open private chat with bob - should be a NEW chat (type=private)
+	privBody := `{"withUserId":"` + bob.id + `"}`
+	privReq := authReq(http.MethodPost, "/api/chats", alice.token, privBody)
+	privW := httptest.NewRecorder()
+	h.AuthMiddleware(h.CreateChat)(privW, privReq)
+	if privW.Code != http.StatusCreated {
+		t.Fatalf("private create: %d %s", privW.Code, privW.Body.String())
+	}
+	var privResp map[string]interface{}
+	json.Unmarshal(privW.Body.Bytes(), &privResp)
+	privChat := privResp["chat"].(map[string]interface{})
+	if privChat["type"] != "private" {
+		t.Errorf("expected private, got %v", privChat["type"])
+	}
+
+	// And second call returns the SAME private chat (uniqueness)
+	privReq2 := authReq(http.MethodPost, "/api/chats", alice.token, privBody)
+	privW2 := httptest.NewRecorder()
+	h.AuthMiddleware(h.CreateChat)(privW2, privReq2)
+	if privW2.Code != http.StatusCreated {
+		t.Fatalf("private create2: %d", privW2.Code)
+	}
+	var privResp2 map[string]interface{}
+	json.Unmarshal(privW2.Body.Bytes(), &privResp2)
+	if privResp2["chat"].(map[string]interface{})["id"] != privChat["id"] {
+		t.Error("expected same private chat id on second call")
 	}
 }

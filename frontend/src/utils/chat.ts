@@ -1,8 +1,21 @@
-import type { MemberInfo } from "../api.ts";
+import type { Chat, MemberInfo } from "../api.ts";
 import i18n from "../i18n.ts";
 
 export function otherNick(members: MemberInfo[], myId: string): string {
 	return members.find((m) => m.id !== myId)?.nick ?? i18n.t("chat.unknownUser");
+}
+
+export function chatTitle(chat: Chat, myId: string): string {
+	if (chat.type === "group") {
+		return chat.name || i18n.t("chat.groupFallback");
+	}
+	return otherNick(chat.members, myId);
+}
+
+export function withToken(url: string, token: string | undefined): string {
+	if (token === undefined || token === "") return url;
+	const sep = url.includes("?") ? "&" : "?";
+	return `${url}${sep}token=${encodeURIComponent(token)}`;
 }
 
 export function formatDateLabel(isoStr: string, locale?: string): string {
