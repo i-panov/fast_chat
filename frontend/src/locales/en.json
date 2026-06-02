@@ -22,6 +22,11 @@
 	"input.placeholder": "Type a message...",
 	"input.save": "Save",
 	"input.send": "Send",
+	"input.attachFile": "Attach file",
+	"input.photo": "Photo",
+	"input.video": "Video",
+	"input.audio": "Audio",
+	"input.file": "File",
 
 	"search.placeholder": "Search users...",
 	"search.online": "(online)",

@@ -2,6 +2,7 @@ import { Center, Paper, Stack, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
 import { AppHeader } from "../components/chat/AppHeader.tsx";
+import { AudioPlayerBar } from "../components/chat/AudioPlayerBar.tsx";
 import { ChatList } from "../components/chat/ChatList.tsx";
 import { InputBar } from "../components/chat/InputBar.tsx";
 import { MessageList } from "../components/chat/MessageList.tsx";
@@ -64,6 +65,7 @@ export function ChatPage() {
 				onLogout={s.logout}
 			/>
 			<AppHeader onSwitcherToggle={() => s.setSwitcherOpen(true)} />
+			<AudioPlayerBar />
 			<div style={{ display: "flex", flex: 1, minHeight: 0 }}>
 				<Paper
 					component="aside"
@@ -123,6 +125,9 @@ export function ChatPage() {
 							replyToNick={s.replyToMessage?.fromNick}
 							replyToText={s.replyToMessage?.text}
 							onCancelReply={s.cancelReply}
+							pendingFiles={s.pendingFiles}
+							onAttachFiles={s.handleAttachFiles}
+							onRemoveFile={s.handleRemoveFile}
 						/>
 					) : (
 						<Stack h="100%" gap={0}>
@@ -150,6 +155,9 @@ export function ChatPage() {
 										replyToNick={s.replyToMessage?.fromNick}
 										replyToText={s.replyToMessage?.text}
 										onCancelReply={s.cancelReply}
+										pendingFiles={s.pendingFiles}
+										onAttachFiles={s.handleAttachFiles}
+										onRemoveFile={s.handleRemoveFile}
 									/>
 								</>
 							) : s.activeChat === undefined ? (
@@ -202,6 +210,9 @@ export function ChatPage() {
 											if (s.activeChatId !== null)
 												s.handleTyping(s.activeChatId, false);
 										}}
+										pendingFiles={s.pendingFiles}
+										onAttachFiles={s.handleAttachFiles}
+										onRemoveFile={s.handleRemoveFile}
 									/>
 								</>
 							)}

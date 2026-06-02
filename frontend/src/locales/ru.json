@@ -22,6 +22,11 @@
 	"input.placeholder": "Напишите сообщение...",
 	"input.save": "Сохранить",
 	"input.send": "Отправить",
+	"input.attachFile": "Прикрепить файл",
+	"input.photo": "Фото",
+	"input.video": "Видео",
+	"input.audio": "Аудио",
+	"input.file": "Файл",
 
 	"search.placeholder": "Поиск пользователей...",
 	"search.online": "(в сети)",

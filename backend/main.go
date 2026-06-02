@@ -144,6 +144,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := os.MkdirAll(cfg.UploadDir, 0o750); err != nil {
+		log.Printf("FATAL: Failed to create upload directory: %v", err)
+		os.Exit(1)
+	}
+
 	db, err := store.InitDB(cfg.DBPath)
 	if err != nil {
 		log.Printf("FATAL: Failed to initialize database: %v", err)
@@ -177,6 +182,8 @@ func main() {
 	mux.HandleFunc("GET /api/chats/{id}/threads", handlerInstance.AuthMiddleware(handlerInstance.GetThreads))
 	mux.HandleFunc("GET /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetThreadMessages))
 	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.SendThreadMessage))
+	mux.HandleFunc("POST /api/files/upload", handlerInstance.AuthMiddleware(handlerInstance.UploadFile))
+	mux.HandleFunc("GET /api/files/{fileId}", handlerInstance.AuthMiddleware(handlerInstance.ServeFile))
 	mux.HandleFunc("POST /api/chats/{id}/typing", handlerInstance.AuthMiddleware(handlerInstance.HandleTyping))
 
 	// Federated endpoints (server-to-server, with federated auth)

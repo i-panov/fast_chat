@@ -3,6 +3,7 @@ import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { NotificationToast } from "../components/NotificationToast.tsx";
 import i18n from "../i18n.ts";
+import { AudioProvider } from "../useAudioPlayer.tsx";
 import { AuthProvider } from "../useAuth.tsx";
 
 function RootDocument() {
@@ -19,10 +20,12 @@ function RootDocument() {
 
 	return (
 		<MantineProvider defaultColorScheme="dark">
-			<AuthProvider>
-				<Outlet />
-				<NotificationToast />
-			</AuthProvider>
+			<AudioProvider>
+				<AuthProvider>
+					<Outlet />
+					<NotificationToast />
+				</AuthProvider>
+			</AudioProvider>
 		</MantineProvider>
 	);
 }

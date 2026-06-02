@@ -7,11 +7,12 @@ async function request<T>(
 	token: string | undefined,
 	init?: RequestInit,
 ): Promise<T> {
-	const headers: Record<string, string> = {
-		"Content-Type": "application/json",
-	};
+	const headers: Record<string, string> = {};
 	if (token !== undefined) {
 		headers.Authorization = `Bearer ${token}`;
+	}
+	if (!(init?.body instanceof FormData)) {
+		headers["Content-Type"] = "application/json";
 	}
 	const res = await fetch(path, { ...init, headers });
 	if (res.status === HTTP_UNAUTHORIZED) {
@@ -50,6 +51,25 @@ export interface ReplyToInfo {
 	fromNick: string;
 }
 
+export interface FileInfo {
+	id: string;
+	mimeType: string;
+	size: number;
+	originalName: string;
+	fileType: "photo" | "video" | "audio" | "file";
+	url: string;
+}
+
+export interface PendingFile {
+	id: string;
+	file: File;
+	blobUrl: string;
+	originalName: string;
+	size: number;
+	mimeType: string;
+	fileType: "photo" | "video" | "audio" | "file";
+}
+
 export interface Message {
 	id: string;
 	chatId: string;
@@ -59,6 +79,7 @@ export interface Message {
 	createdAt: string;
 	editedAt?: string;
 	replyTo?: ReplyToInfo;
+	files?: FileInfo[];
 	status?: "sending" | "failed";
 }
 
@@ -125,10 +146,21 @@ export function sendMessage(
 	text: string,
 	id: string,
 	replyToId?: string,
+	fileIDs?: string[],
 ) {
 	return request<{ message: Message }>(`/api/chats/${chatId}/messages`, token, {
 		method: "POST",
-		body: JSON.stringify({ id, text, replyToId }),
+		body: JSON.stringify({ id, text, replyToId, fileIDs }),
+	});
+}
+
+export function uploadFile(token: string, file: File) {
+	const formData = new FormData();
+	formData.append("file", file);
+
+	return request<{ file: FileInfo }>("/api/files/upload", token, {
+		method: "POST",
+		body: formData,
 	});
 }
 
@@ -194,11 +226,12 @@ export function sendThreadMessage(
 	text: string,
 	id: string,
 	replyToId?: string,
+	fileIDs?: string[],
 ) {
 	return request<{ message: Message }>(
 		`/api/chats/${chatId}/threads/${threadId}/messages`,
 		token,
-		{ method: "POST", body: JSON.stringify({ id, text, replyToId }) },
+		{ method: "POST", body: JSON.stringify({ id, text, replyToId, fileIDs }) },
 	);
 }
 

@@ -4,12 +4,17 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,8 +33,10 @@ const (
 	errKeyChatNotFound = "chat not found"
 	errKeyNotMember    = "not a member"
 	errKeyEmptyMessage = "empty message"
+	errKeyFileTooLarge = "file too large"
 
 	sseHeartbeatInterval = 30 * time.Second
+	maxUploadSize        = 50 << 20 // 50 MB
 )
 
 type SSEEvent struct {
@@ -494,6 +501,11 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		messages = []model.Message{}
 	}
 
+	for i := range messages {
+		files, _ := h.store.GetMessageFiles(messages[i].ID) //nolint:errcheck
+		messages[i].Files = files
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"messages":   messages,
 		"nextCursor": nextCursor,
@@ -520,9 +532,10 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID        string `json:"id"`
-		Text      string `json:"text"`
-		ReplyToID string `json:"replyToId"`
+		ID        string   `json:"id"`
+		Text      string   `json:"text"`
+		ReplyToID string   `json:"replyToId"`
+		FileIDs   []string `json:"fileIDs,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -532,7 +545,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" {
+	if req.Text == "" && len(req.FileIDs) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
 
 		return
@@ -543,6 +556,15 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
 
 		return
+	}
+
+	if len(req.FileIDs) > 0 {
+		if err := h.store.AddMessageFiles(msg.ID, req.FileIDs); err != nil {
+			log.Printf("failed to link files to message: %v", err)
+		}
+
+		files, _ := h.store.GetMessageFiles(msg.ID) //nolint:errcheck
+		msg.Files = files
 	}
 
 	if chat.RemoteServer != "" {
@@ -662,6 +684,147 @@ func (h *Handler) HandleTyping(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+
+	if err := r.ParseMultipartForm(maxUploadSize); err != nil { //nolint:gosec // limited by MaxBytesReader above
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{mapKeyError: errKeyFileTooLarge})
+
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "missing file"})
+
+		return
+	}
+
+	defer file.Close() //nolint:errcheck
+
+	tempFile, err := os.CreateTemp("", "upload-*")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to process file"})
+
+		return
+	}
+
+	tempPath := tempFile.Name()
+
+	defer os.Remove(tempPath) //nolint:errcheck
+
+	hasher := sha256.New()
+	multiWriter := io.MultiWriter(tempFile, hasher)
+
+	size, err := io.Copy(multiWriter, file)
+	if err != nil {
+		tempFile.Close() //nolint:errcheck,gosec
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to read file"})
+
+		return
+	}
+
+	tempFile.Close() //nolint:errcheck,gosec
+
+	hash := hex.EncodeToString(hasher.Sum(nil))
+
+	mimeType := header.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	existing, ok := h.store.FindFileByHash(hash)
+	if ok {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"file": existing.ToFileInfo()})
+
+		return
+	}
+
+	dateDir := time.Now().Format("20060102")
+	ext := filepath.Ext(header.Filename)
+	storageName := generateID() + ext
+	relativePath := filepath.Join(dateDir, storageName)
+	fullPath := filepath.Join(h.cfg.UploadDir, relativePath)
+
+	if err := copyFile(tempPath, fullPath); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to save file"})
+
+		return
+	}
+
+	saved, err := h.store.SaveFile(hash, mimeType, size, header.Filename, relativePath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to save file metadata"})
+
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"file": saved.ToFileInfo()})
+}
+
+func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	fileID := r.PathValue("fileId")
+
+	fileRecord, err := h.store.GetFile(fileID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "file not found"})
+
+		return
+	}
+
+	chatIDs, err := h.store.GetFileChats(fileID)
+	if err != nil || len(chatIDs) == 0 {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return
+	}
+
+	var hasAccess bool
+
+	for _, cid := range chatIDs {
+		if chat, ok := h.store.GetChat(cid); ok && isMember(chat, user.ID) {
+			hasAccess = true
+
+			break
+		}
+	}
+
+	if !hasAccess {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return
+	}
+
+	fullPath := filepath.Join(h.cfg.UploadDir, fileRecord.StoragePath)
+	w.Header().Set("Content-Type", fileRecord.MimeType)
+	w.Header().Set("Content-Disposition", "inline; filename=\""+fileRecord.OriginalName+"\"")
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	http.ServeFile(w, r, fullPath) //nolint:gosec // path is controlled, generated UUID
+}
+
+func copyFile(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath) //nolint:gosec // paths are controlled, generated UUID
+	if err != nil {
+		return err
+	}
+	defer src.Close() //nolint:errcheck
+
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o750); err != nil { //nolint:gosec // paths are controlled
+		return err
+	}
+
+	dst, err := os.Create(dstPath) //nolint:gosec // paths are controlled
+	if err != nil {
+		return err
+	}
+	defer dst.Close() //nolint:errcheck
+
+	_, err = io.Copy(dst, src)
+
+	return err
 }
 
 func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
@@ -1202,9 +1365,10 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID        string `json:"id"`
-		Text      string `json:"text"`
-		ReplyToID string `json:"replyToId"`
+		ID        string   `json:"id"`
+		Text      string   `json:"text"`
+		ReplyToID string   `json:"replyToId"`
+		FileIDs   []string `json:"fileIDs,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1214,7 +1378,7 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" {
+	if req.Text == "" && len(req.FileIDs) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
 
 		return
@@ -1225,6 +1389,15 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
 
 		return
+	}
+
+	if len(req.FileIDs) > 0 {
+		if err := h.store.AddMessageFiles(msg.ID, req.FileIDs); err != nil {
+			log.Printf("failed to link files to thread message: %v", err)
+		}
+
+		files, _ := h.store.GetMessageFiles(msg.ID) //nolint:errcheck
+		msg.Files = files
 	}
 
 	eventData := map[string]interface{}{
@@ -1353,6 +1526,16 @@ func isMember(chat *model.Chat, userID string) bool {
 	}
 
 	return false
+}
+
+func generateID() string {
+	buf := make([]byte, 16)
+
+	if _, err := rand.Read(buf); err != nil {
+		panic("crypto/rand.Read failed: " + err.Error())
+	}
+
+	return hex.EncodeToString(buf)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {

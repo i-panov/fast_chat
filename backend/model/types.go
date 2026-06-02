@@ -23,6 +23,50 @@ type ReplyToInfo struct {
 	FromNick  string `json:"fromNick"`
 }
 
+type File struct {
+	ID           string    `gorm:"primaryKey;not null"  json:"id"`
+	Hash         string    `gorm:"uniqueIndex;not null" json:"hash"`
+	MimeType     string    `gorm:"not null"             json:"mimeType"`
+	Size         int64     `gorm:"not null"             json:"size"`
+	OriginalName string    `gorm:"not null"             json:"originalName"`
+	StoragePath  string    `gorm:"not null"             json:"-"`
+	CreatedAt    time.Time `gorm:"not null"             json:"createdAt"`
+}
+
+type MessageFile struct {
+	MessageID string `gorm:"primaryKey"`
+	FileID    string `gorm:"primaryKey"`
+}
+
+type FileInfo struct {
+	ID           string `json:"id"`
+	MimeType     string `json:"mimeType"`
+	Size         int64  `json:"size"`
+	OriginalName string `json:"originalName"`
+	FileType     string `json:"fileType"`
+	URL          string `json:"url"`
+}
+
+func (f *File) ToFileInfo() FileInfo {
+	ft := "file"
+	if len(f.MimeType) >= 6 && f.MimeType[:6] == "image/" {
+		ft = "photo"
+	} else if len(f.MimeType) >= 6 && f.MimeType[:6] == "video/" {
+		ft = "video"
+	} else if len(f.MimeType) >= 6 && f.MimeType[:6] == "audio/" {
+		ft = "audio"
+	}
+
+	return FileInfo{
+		ID:           f.ID,
+		MimeType:     f.MimeType,
+		Size:         f.Size,
+		OriginalName: f.OriginalName,
+		FileType:     ft,
+		URL:          "/api/files/" + f.ID,
+	}
+}
+
 type Message struct {
 	ID        string       `gorm:"primaryKey"         json:"id"`
 	ChatID    string       `gorm:"index;not null"     json:"chatId"`
@@ -32,6 +76,7 @@ type Message struct {
 	CreatedAt time.Time    `gorm:"not null"           json:"createdAt"`
 	EditedAt  *time.Time   `json:"editedAt,omitempty"`
 	ReplyTo   *ReplyToInfo `gorm:"serializer:json"    json:"replyTo,omitempty"`
+	Files     []FileInfo   `gorm:"-"                  json:"files,omitempty"`
 }
 
 type Thread struct {

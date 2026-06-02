@@ -32,7 +32,7 @@
 				"useMaxParams": {
 					"level": "error",
 					"options": {
-						"max": 6
+						"max": 7
 					}
 				}
 			},

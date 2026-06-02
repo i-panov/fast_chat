@@ -180,6 +180,7 @@ export function MessageList({
 							msgId={msg.id}
 							editedAt={msg.editedAt}
 							replyTo={msg.replyTo}
+							files={msg.files}
 							onReplyClick={handleReplyClick}
 							onStartEdit={onStartEdit}
 							onDelete={onDelete}

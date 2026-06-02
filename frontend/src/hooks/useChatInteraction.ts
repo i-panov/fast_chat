@@ -4,6 +4,7 @@ import type {
 	AppConfig,
 	Chat,
 	Message,
+	PendingFile,
 	Thread,
 	TypingPayload,
 	User,
@@ -22,6 +23,7 @@ import {
 	searchUsers,
 	sendMessage,
 	sendTyping,
+	uploadFile,
 } from "../api.ts";
 import i18n from "../i18n.ts";
 import { useAuth } from "../useAuth.tsx";
@@ -295,6 +297,8 @@ function useSendMessage(opts: {
 	sendingRef: React.MutableRefObject<boolean>;
 	replyToMessage: ReplyTarget | null;
 	setReplyToMessage: (v: ReplyTarget | null) => void;
+	pendingFiles: PendingFile[];
+	setPendingFiles: React.Dispatch<React.SetStateAction<PendingFile[]>>;
 }) {
 	const {
 		activeAccount,
@@ -312,20 +316,38 @@ function useSendMessage(opts: {
 		sendingRef,
 		replyToMessage,
 		setReplyToMessage,
+		pendingFiles,
+		setPendingFiles,
 	} = opts;
 	return async function handleSend(e: React.FormEvent<HTMLFormElement>) {
 		e.preventDefault();
-		if (activeAccount === null || inputText.trim().length === 0) return;
+		if (activeAccount === null) return;
+		if (inputText.trim().length === 0 && pendingFiles.length === 0) return;
 		if (sendingRef.current) return;
 
 		sendingRef.current = true;
 		const text = inputText;
 		const msgId = crypto.randomUUID();
 		const replyToId = replyToMessage?.messageId;
+		const filesToUpload = pendingFiles;
 		setInputText("");
 		setReplyToMessage(null);
+		setPendingFiles([]);
 
 		try {
+			let fileIDs: string[] = [];
+			if (filesToUpload.length > 0) {
+				fileIDs = [];
+				for (const pf of filesToUpload) {
+					const { file: uploaded } = await uploadFile(
+						activeAccount.token,
+						pf.file,
+					);
+					fileIDs.push(uploaded.id);
+					URL.revokeObjectURL(pf.blobUrl);
+				}
+			}
+
 			if (editingMessage !== null) {
 				await editMessage(
 					activeAccount.token,
@@ -357,7 +379,14 @@ function useSendMessage(opts: {
 					[chat.id]: [...(prev[chat.id] ?? []), pending],
 				}));
 
-				await sendMessage(activeAccount.token, chat.id, text, msgId, replyToId);
+				await sendMessage(
+					activeAccount.token,
+					chat.id,
+					text,
+					msgId,
+					replyToId,
+					fileIDs,
+				);
 				setMessages((prev) => ({
 					...prev,
 					[chat.id]: prev[chat.id].map((m) =>
@@ -385,6 +414,7 @@ function useSendMessage(opts: {
 					text,
 					msgId,
 					replyToId,
+					fileIDs,
 				);
 				setMessages((prev) => ({
 					...prev,
@@ -396,6 +426,9 @@ function useSendMessage(opts: {
 		} catch {
 			setInputText(text);
 			setReplyToMessage(replyToMessage);
+			for (const pf of filesToUpload) {
+				URL.revokeObjectURL(pf.blobUrl);
+			}
 			emitNotification(i18n.t("error.send"));
 		} finally {
 			sendingRef.current = false;
@@ -418,6 +451,10 @@ export interface ChatInteraction {
 	replyToMessage: ReplyTarget | null;
 	handleReply: (chatId: string, messageId: string) => void;
 	cancelReply: () => void;
+	pendingFiles: PendingFile[];
+	setPendingFiles: React.Dispatch<React.SetStateAction<PendingFile[]>>;
+	handleAttachFiles: (files: FileList) => void;
+	handleRemoveFile: (fileId: string) => void;
 }
 
 function useChatInteraction(opts: {
@@ -458,6 +495,7 @@ function useChatInteraction(opts: {
 	const [replyToMessage, setReplyToMessage] = useState<ReplyTarget | null>(
 		null,
 	);
+	const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
 	const sendingRef = useRef(false);
 
 	useSearch(activeAccount?.token, searchQuery, setSearchResults);
@@ -510,6 +548,38 @@ function useChatInteraction(opts: {
 		setReplyToMessage(null);
 	}
 
+	function handleAttachFiles(fileList: FileList) {
+		for (const file of Array.from(fileList)) {
+			const fileType = file.type.startsWith("image/")
+				? "photo"
+				: file.type.startsWith("video/")
+					? "video"
+					: file.type.startsWith("audio/")
+						? "audio"
+						: "file";
+			setPendingFiles((prev) => [
+				...prev,
+				{
+					id: crypto.randomUUID(),
+					file,
+					blobUrl: URL.createObjectURL(file),
+					originalName: file.name,
+					size: file.size,
+					mimeType: file.type,
+					fileType,
+				},
+			]);
+		}
+	}
+
+	function handleRemoveFile(fileId: string) {
+		setPendingFiles((prev) => {
+			const removed = prev.find((f) => f.id === fileId);
+			if (removed) URL.revokeObjectURL(removed.blobUrl);
+			return prev.filter((f) => f.id !== fileId);
+		});
+	}
+
 	const handleSend = useSendMessage({
 		activeAccount: activeAccount as {
 			token: string;
@@ -529,6 +599,8 @@ function useChatInteraction(opts: {
 		sendingRef,
 		replyToMessage,
 		setReplyToMessage,
+		pendingFiles,
+		setPendingFiles,
 	});
 
 	function handleReply(chatId: string, messageId: string) {
@@ -570,6 +642,10 @@ function useChatInteraction(opts: {
 		replyToMessage,
 		handleReply,
 		cancelReply,
+		pendingFiles,
+		setPendingFiles,
+		handleAttachFiles,
+		handleRemoveFile,
 	};
 }
 
@@ -945,38 +1021,60 @@ export function useChatPage() {
 		async (e: React.FormEvent<HTMLFormElement>) => {
 			e.preventDefault();
 			if (activeAccount === null || activeThreadId === null) return;
-			if (interaction.inputText.trim().length === 0) return;
+			if (
+				interaction.inputText.trim().length === 0 &&
+				interaction.pendingFiles.length === 0
+			)
+				return;
 			if (threadSendingRef.current) return;
 
 			threadSendingRef.current = true;
 			const text = interaction.inputText;
 			const msgId = crypto.randomUUID();
 			const replyToId = interaction.replyToMessage?.messageId;
+			const filesToUpload = interaction.pendingFiles;
 			interaction.setInputText("");
 			interaction.cancelReply();
+			interaction.setPendingFiles([]);
 
 			const thread = threads[activeThreadId];
 			if (thread === undefined) {
 				interaction.setInputText(text);
+				for (const pf of filesToUpload) {
+					URL.revokeObjectURL(pf.blobUrl);
+				}
 				threadSendingRef.current = false;
 				return;
 			}
 
-			const pending: Message = {
-				id: msgId,
-				chatId: thread.chatId,
-				fromId: activeAccount.user.id,
-				fromNick: activeAccount.user.nick,
-				text,
-				createdAt: new Date().toISOString(),
-				status: "sending",
-			};
-			setThreadMessages((prev) => ({
-				...prev,
-				[activeThreadId]: [...(prev[activeThreadId] ?? []), pending],
-			}));
-
+			let fileIDs: string[] = [];
 			try {
+				if (filesToUpload.length > 0) {
+					fileIDs = [];
+					for (const pf of filesToUpload) {
+						const { file: uploaded } = await uploadFile(
+							activeAccount.token,
+							pf.file,
+						);
+						fileIDs.push(uploaded.id);
+						URL.revokeObjectURL(pf.blobUrl);
+					}
+				}
+
+				const pending: Message = {
+					id: msgId,
+					chatId: thread.chatId,
+					fromId: activeAccount.user.id,
+					fromNick: activeAccount.user.nick,
+					text,
+					createdAt: new Date().toISOString(),
+					status: "sending",
+				};
+				setThreadMessages((prev) => ({
+					...prev,
+					[activeThreadId]: [...(prev[activeThreadId] ?? []), pending],
+				}));
+
 				await apiSendThreadMessage(
 					activeAccount.token,
 					thread.chatId,
@@ -984,6 +1082,7 @@ export function useChatPage() {
 					text,
 					msgId,
 					replyToId,
+					fileIDs,
 				);
 				setThreadMessages((prev) => ({
 					...prev,
@@ -999,6 +1098,9 @@ export function useChatPage() {
 					),
 				}));
 				interaction.setInputText(text);
+				for (const pf of filesToUpload) {
+					URL.revokeObjectURL(pf.blobUrl);
+				}
 				emitNotification(i18n.t("error.send"));
 			} finally {
 				threadSendingRef.current = false;

@@ -13,6 +13,8 @@ import {
 	Check,
 	Copy,
 	CornerUpLeft,
+	FileAudio,
+	FileIcon,
 	MessageCircle,
 	Pencil,
 	RotateCcw,
@@ -22,7 +24,9 @@ import { isValidElement, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ReplyToInfo } from "../../api.ts";
+import type { FileInfo, ReplyToInfo } from "../../api.ts";
+import { useAudioPlayer } from "../../useAudioPlayer.tsx";
+import { useAuth } from "../../useAuth.tsx";
 import { extractCodeText } from "../../utils/chat.ts";
 
 interface CodeBlockProps {
@@ -86,6 +90,120 @@ function CodeBlock({ className, code, lang }: CodeBlockProps) {
 	);
 }
 
+function FileAttachment({ file }: { file: FileInfo }) {
+	const { play, currentTrack, isPlaying } = useAudioPlayer();
+	const { activeAccount } = useAuth();
+	const token = activeAccount?.token;
+	const url = token
+		? `${file.url}?token=${encodeURIComponent(token)}`
+		: file.url;
+
+	if (file.fileType === "photo") {
+		return (
+			<a href={url} target="_blank" rel="noreferrer">
+				<img
+					src={url}
+					alt={file.originalName}
+					style={{
+						maxWidth: "100%",
+						maxHeight: 300,
+						borderRadius: 6,
+						objectFit: "contain",
+						cursor: "pointer",
+						display: "block",
+					}}
+				/>
+			</a>
+		);
+	}
+
+	if (file.fileType === "video") {
+		return (
+			<video
+				src={url}
+				controls
+				preload="metadata"
+				style={{
+					maxWidth: "100%",
+					maxHeight: 300,
+					borderRadius: 6,
+					display: "block",
+				}}
+			>
+				<track kind="captions" />
+			</video>
+		);
+	}
+
+	if (file.fileType === "audio") {
+		const isCurrentTrack = currentTrack?.fileId === file.id;
+		const thisIsPlaying = isCurrentTrack && isPlaying;
+		const buttonIcon = thisIsPlaying ? "⏸" : "▶";
+
+		return (
+			<UnstyledButton
+				style={{
+					display: "flex",
+					alignItems: "center",
+					gap: 8,
+					padding: "6px 10px",
+					background: "var(--mantine-color-dark-6)",
+					borderRadius: 6,
+					width: "100%",
+					cursor: "pointer",
+				}}
+				onClick={() => play({ fileId: file.id, url, name: file.originalName })}
+			>
+				<Text size="lg">{buttonIcon}</Text>
+				<FileAudio size={20} />
+				<div style={{ overflow: "hidden", minWidth: 0 }}>
+					<Text size="sm" truncate="end">
+						{file.originalName}
+					</Text>
+				</div>
+			</UnstyledButton>
+		);
+	}
+
+	return (
+		<a
+			href={url}
+			target="_blank"
+			rel="noreferrer"
+			style={{ textDecoration: "none" }}
+		>
+			<UnstyledButton
+				style={{
+					display: "flex",
+					alignItems: "center",
+					gap: 8,
+					padding: "6px 10px",
+					background: "var(--mantine-color-dark-6)",
+					borderRadius: 6,
+					width: "100%",
+					cursor: "pointer",
+				}}
+			>
+				<FileIcon size={24} />
+				<div style={{ overflow: "hidden", minWidth: 0 }}>
+					<Text size="sm" truncate="end">
+						{file.originalName}
+					</Text>
+					<Text size="xs" c="dimmed">
+						{formatSize(file.size)}
+					</Text>
+				</div>
+			</UnstyledButton>
+		</a>
+	);
+}
+
+function formatSize(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 interface Props {
 	text: string;
 	isOwn: boolean;
@@ -94,6 +212,7 @@ interface Props {
 	msgId: string;
 	editedAt?: string;
 	replyTo?: ReplyToInfo;
+	files?: FileInfo[];
 	onReplyClick?: (messageId: string) => void;
 	onStartEdit: (chatId: string, messageId: string, text: string) => void;
 	onDelete: (chatId: string, messageId: string) => void;
@@ -124,6 +243,7 @@ export function MessageBubble({
 	msgId,
 	editedAt,
 	replyTo,
+	files,
 	onReplyClick,
 	onStartEdit,
 	onDelete,
@@ -190,6 +310,7 @@ export function MessageBubble({
 					e.preventDefault();
 					setMenuPos({ x: e.clientX, y: e.clientY });
 				}}
+				style={{ overflow: "hidden" }}
 			>
 				{replyTo !== undefined && (
 					<UnstyledButton
@@ -224,81 +345,90 @@ export function MessageBubble({
 						</Text>
 					</UnstyledButton>
 				)}
-				<Group gap={6} wrap="nowrap" align="end">
-					<div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-						<Markdown
-							remarkPlugins={[remarkGfm]}
-							components={{
-								p: ({ children }) => <span>{children}</span>,
-								a: ({ href, children }) => (
-									<Anchor href={href} target="_blank" rel="noreferrer">
-										{children}
-									</Anchor>
-								),
-								code: ({ className, children }) => {
-									const lang = className?.replace("language-", "");
-									if (lang) {
-										return <code className={className}>{children}</code>;
-									}
-									return (
-										<code
-											style={{
-												background: "var(--mantine-color-dark-7)",
-												padding: "1px 4px",
-												borderRadius: "3px",
-												fontSize: "0.85em",
-											}}
-										>
+				{(files ?? []).length > 0 && (
+					<div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+						{files?.map((file) => (
+							<FileAttachment key={file.id} file={file} />
+						))}
+					</div>
+				)}
+				{text.length > 0 && (
+					<Group gap={6} wrap="nowrap" align="end">
+						<div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+							<Markdown
+								remarkPlugins={[remarkGfm]}
+								components={{
+									p: ({ children }) => <span>{children}</span>,
+									a: ({ href, children }) => (
+										<Anchor href={href} target="_blank" rel="noreferrer">
 											{children}
-										</code>
-									);
-								},
-								pre: ({ children }) => {
-									if (!isValidElement(children)) {
-										return <pre>{children}</pre>;
-									}
-									const codeEl = children as React.ReactElement<{
-										className?: string;
-										children: unknown;
-									}>;
-									const className = codeEl.props.className ?? "";
-									const lang = className.replace("language-", "");
-									const codeText = extractCodeText(codeEl.props.children);
-									return (
-										<CodeBlock
-											className={className}
-											code={codeText}
-											lang={lang}
-										/>
-									);
-								},
+										</Anchor>
+									),
+									code: ({ className, children }) => {
+										const lang = className?.replace("language-", "");
+										if (lang) {
+											return <code className={className}>{children}</code>;
+										}
+										return (
+											<code
+												style={{
+													background: "var(--mantine-color-dark-7)",
+													padding: "1px 4px",
+													borderRadius: "3px",
+													fontSize: "0.85em",
+												}}
+											>
+												{children}
+											</code>
+										);
+									},
+									pre: ({ children }) => {
+										if (!isValidElement(children)) {
+											return <pre>{children}</pre>;
+										}
+										const codeEl = children as React.ReactElement<{
+											className?: string;
+											children: unknown;
+										}>;
+										const className = codeEl.props.className ?? "";
+										const lang = className.replace("language-", "");
+										const codeText = extractCodeText(codeEl.props.children);
+										return (
+											<CodeBlock
+												className={className}
+												code={codeText}
+												lang={lang}
+											/>
+										);
+									},
+								}}
+							>
+								{text}
+							</Markdown>
+						</div>
+						<Text
+							size="xs"
+							c="gray.5"
+							style={{
+								flexShrink: 0,
+								display: "flex",
+								alignItems: "center",
+								gap: 4,
 							}}
 						>
-							{text}
-						</Markdown>
-					</div>
-					<Text
-						size="xs"
-						c="gray.5"
-						style={{
-							flexShrink: 0,
-							display: "flex",
-							alignItems: "center",
-							gap: 4,
-						}}
-					>
-						{status === "sending" && <Loader size={4} />}
-						{status === "failed" && (
-							<span
-								style={{ color: "var(--mantine-color-red-5)" }}
-								title={t("message.failed")}
-							>
-								!
-							</span>
-						)}
-						{editedLabel ?? time}
-					</Text>
-				</Group>
+							{status === "sending" && <Loader size={4} />}
+							{status === "failed" && (
+								<span
+									style={{ color: "var(--mantine-color-red-5)" }}
+									title={t("message.failed")}
+								>
+									!
+								</span>
+							)}
+							{editedLabel ?? time}
+						</Text>
+					</Group>
+				)}
 			</Paper>
 			{threadId !== undefined && onOpenThread !== undefined && (
 				<Button

@@ -10,6 +10,7 @@ import (
 // Config holds application settings.
 type Config struct {
 	DBPath            string
+	UploadDir         string
 	MessageEditTTL    int
 	MessageDeleteTTL  int
 	ServerDomain      string
@@ -23,6 +24,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		DBPath:            getEnv("DB_PATH", "data/fast_chat.db"),
+		UploadDir:         getEnv("UPLOAD_DIR", "./data/uploads"),
 		MessageEditTTL:    getEnvInt("MESSAGE_EDIT_TTL", 300),
 		MessageDeleteTTL:  getEnvInt("MESSAGE_DELETE_TTL", 0),
 		ServerDomain:      getEnv("SERVER_DOMAIN", "localhost:8080"),
