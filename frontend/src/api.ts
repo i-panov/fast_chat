@@ -181,11 +181,27 @@ export function editMessage(
 	chatId: string,
 	messageId: string,
 	text: string,
+	fileIDs?: string[],
 ) {
 	return request<{ message: Message }>(
 		`/api/chats/${chatId}/messages/${messageId}`,
 		token,
-		{ method: "PATCH", body: JSON.stringify({ text }) },
+		{ method: "PATCH", body: JSON.stringify({ text, fileIDs }) },
+	);
+}
+
+export function editThreadMessage(
+	token: string,
+	chatId: string,
+	threadId: string,
+	messageId: string,
+	text: string,
+	fileIDs?: string[],
+) {
+	return request<{ message: Message }>(
+		`/api/chats/${chatId}/threads/${threadId}/messages/${messageId}`,
+		token,
+		{ method: "PATCH", body: JSON.stringify({ text, fileIDs }) },
 	);
 }
 

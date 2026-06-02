@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
 	AppConfig,
 	Chat,
+	FileInfo,
 	Message,
 	PendingFile,
 	Thread,
@@ -17,6 +18,7 @@ import {
 	createChat,
 	deleteMessage,
 	editMessage,
+	editThreadMessage,
 	getChats,
 	getConfig,
 	getMessages,
@@ -208,6 +210,19 @@ function useSseMessages(
 						[threadId]: { ...t, messageCount: t.messageCount + 1 },
 					};
 				});
+			} else if (event === "thread_message_updated") {
+				const { threadId, message } = data as {
+					threadId: string;
+					message: Message;
+				};
+				setThreadMessages((prev) => {
+					const list = prev[threadId];
+					if (list === undefined) return prev;
+					return {
+						...prev,
+						[threadId]: list.map((m) => (m.id === message.id ? message : m)),
+					};
+				});
 			} else if (event === "typing") {
 				const payload = data as TypingPayload;
 				setTypingUsers((prev) => {
@@ -272,6 +287,8 @@ interface EditingMessage {
 	chatId: string;
 	messageId: string;
 	text: string;
+	files?: FileInfo[];
+	threadId?: string;
 }
 
 interface ReplyTarget {
@@ -349,12 +366,26 @@ function useSendMessage(opts: {
 			}
 
 			if (editingMessage !== null) {
-				await editMessage(
-					activeAccount.token,
-					editingMessage.chatId,
-					editingMessage.messageId,
-					text,
-				);
+				const existingIDs = (editingMessage.files ?? []).map((f) => f.id);
+				const finalFileIDs = [...existingIDs, ...fileIDs];
+				if (editingMessage.threadId !== undefined) {
+					await editThreadMessage(
+						activeAccount.token,
+						editingMessage.chatId,
+						editingMessage.threadId,
+						editingMessage.messageId,
+						text,
+						finalFileIDs,
+					);
+				} else {
+					await editMessage(
+						activeAccount.token,
+						editingMessage.chatId,
+						editingMessage.messageId,
+						text,
+						finalFileIDs,
+					);
+				}
 				setEditingMessage(null);
 			} else if (pendingChatWith !== null) {
 				const { chat } = await createChat(activeAccount.token, pendingChatWith);
@@ -880,8 +911,14 @@ export function useChatPage() {
 	);
 
 	const handleStartEdit = useCallback(
-		(chatId: string, messageId: string, text: string) => {
-			setEditingMessage({ chatId, messageId, text });
+		(
+			chatId: string,
+			messageId: string,
+			text: string,
+			files?: FileInfo[],
+			threadId?: string,
+		) => {
+			setEditingMessage({ chatId, messageId, text, files, threadId });
 			interaction.setInputText(text);
 		},
 		[interaction.setInputText],
@@ -890,7 +927,15 @@ export function useChatPage() {
 	const handleCancelEdit = useCallback(() => {
 		setEditingMessage(null);
 		interaction.setInputText("");
-	}, [interaction.setInputText]);
+		interaction.setPendingFiles([]);
+	}, [interaction.setInputText, interaction.setPendingFiles]);
+
+	const handleRemoveExistingFile = useCallback((fileId: string) => {
+		setEditingMessage((prev) => {
+			if (prev === null || prev.files === undefined) return prev;
+			return { ...prev, files: prev.files.filter((f) => f.id !== fileId) };
+		});
+	}, []);
 
 	const loadMoreMessages = useCallback(
 		async (chatId: string | null) => {
@@ -1023,7 +1068,8 @@ export function useChatPage() {
 			if (activeAccount === null || activeThreadId === null) return;
 			if (
 				interaction.inputText.trim().length === 0 &&
-				interaction.pendingFiles.length === 0
+				interaction.pendingFiles.length === 0 &&
+				(editingMessage?.files?.length ?? 0) === 0
 			)
 				return;
 			if (threadSendingRef.current) return;
@@ -1033,6 +1079,8 @@ export function useChatPage() {
 			const msgId = crypto.randomUUID();
 			const replyToId = interaction.replyToMessage?.messageId;
 			const filesToUpload = interaction.pendingFiles;
+			const isEditing =
+				editingMessage !== null && editingMessage.threadId !== undefined;
 			interaction.setInputText("");
 			interaction.cancelReply();
 			interaction.setPendingFiles([]);
@@ -1061,42 +1109,58 @@ export function useChatPage() {
 					}
 				}
 
-				const pending: Message = {
-					id: msgId,
-					chatId: thread.chatId,
-					fromId: activeAccount.user.id,
-					fromNick: activeAccount.user.nick,
-					text,
-					createdAt: new Date().toISOString(),
-					status: "sending",
-				};
-				setThreadMessages((prev) => ({
-					...prev,
-					[activeThreadId]: [...(prev[activeThreadId] ?? []), pending],
-				}));
+				if (isEditing) {
+					const existingIDs = (editingMessage.files ?? []).map((f) => f.id);
+					const finalFileIDs = [...existingIDs, ...fileIDs];
+					await editThreadMessage(
+						activeAccount.token,
+						thread.chatId,
+						activeThreadId,
+						editingMessage.messageId,
+						text,
+						finalFileIDs,
+					);
+					setEditingMessage(null);
+				} else {
+					const pending: Message = {
+						id: msgId,
+						chatId: thread.chatId,
+						fromId: activeAccount.user.id,
+						fromNick: activeAccount.user.nick,
+						text,
+						createdAt: new Date().toISOString(),
+						status: "sending",
+					};
+					setThreadMessages((prev) => ({
+						...prev,
+						[activeThreadId]: [...(prev[activeThreadId] ?? []), pending],
+					}));
 
-				await apiSendThreadMessage(
-					activeAccount.token,
-					thread.chatId,
-					activeThreadId,
-					text,
-					msgId,
-					replyToId,
-					fileIDs,
-				);
-				setThreadMessages((prev) => ({
-					...prev,
-					[activeThreadId]: (prev[activeThreadId] ?? []).map((m) =>
-						m.id === msgId ? { ...m, status: undefined } : m,
-					),
-				}));
+					await apiSendThreadMessage(
+						activeAccount.token,
+						thread.chatId,
+						activeThreadId,
+						text,
+						msgId,
+						replyToId,
+						fileIDs,
+					);
+					setThreadMessages((prev) => ({
+						...prev,
+						[activeThreadId]: (prev[activeThreadId] ?? []).map((m) =>
+							m.id === msgId ? { ...m, status: undefined } : m,
+						),
+					}));
+				}
 			} catch {
-				setThreadMessages((prev) => ({
-					...prev,
-					[activeThreadId]: (prev[activeThreadId] ?? []).map((m) =>
-						m.id === msgId ? { ...m, status: "failed" as const } : m,
-					),
-				}));
+				if (!isEditing) {
+					setThreadMessages((prev) => ({
+						...prev,
+						[activeThreadId]: (prev[activeThreadId] ?? []).map((m) =>
+							m.id === msgId ? { ...m, status: "failed" as const } : m,
+						),
+					}));
+				}
 				interaction.setInputText(text);
 				for (const pf of filesToUpload) {
 					URL.revokeObjectURL(pf.blobUrl);
@@ -1106,7 +1170,7 @@ export function useChatPage() {
 				threadSendingRef.current = false;
 			}
 		},
-		[activeAccount, activeThreadId, threads, interaction],
+		[activeAccount, activeThreadId, threads, interaction, editingMessage],
 	);
 
 	useEffect(() => {
@@ -1164,6 +1228,7 @@ export function useChatPage() {
 		handleRetryThreadMessage,
 		handleStartEdit,
 		handleCancelEdit,
+		handleRemoveExistingFile,
 		setSwitcherOpen,
 		isLoadingMore,
 		hasMore,

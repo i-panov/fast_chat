@@ -128,6 +128,8 @@ export function ChatPage() {
 							pendingFiles={s.pendingFiles}
 							onAttachFiles={s.handleAttachFiles}
 							onRemoveFile={s.handleRemoveFile}
+							existingFiles={s.editingMessage?.files}
+							onRemoveExistingFile={s.handleRemoveExistingFile}
 						/>
 					) : (
 						<Stack h="100%" gap={0}>
@@ -158,6 +160,8 @@ export function ChatPage() {
 										pendingFiles={s.pendingFiles}
 										onAttachFiles={s.handleAttachFiles}
 										onRemoveFile={s.handleRemoveFile}
+										existingFiles={s.editingMessage?.files}
+										onRemoveExistingFile={s.handleRemoveExistingFile}
 									/>
 								</>
 							) : s.activeChat === undefined ? (
@@ -213,6 +217,8 @@ export function ChatPage() {
 										pendingFiles={s.pendingFiles}
 										onAttachFiles={s.handleAttachFiles}
 										onRemoveFile={s.handleRemoveFile}
+										existingFiles={s.editingMessage?.files}
+										onRemoveExistingFile={s.handleRemoveExistingFile}
 									/>
 								</>
 							)}

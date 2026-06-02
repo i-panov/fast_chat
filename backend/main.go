@@ -182,6 +182,7 @@ func main() {
 	mux.HandleFunc("GET /api/chats/{id}/threads", handlerInstance.AuthMiddleware(handlerInstance.GetThreads))
 	mux.HandleFunc("GET /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetThreadMessages))
 	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.SendThreadMessage))
+	mux.HandleFunc("PATCH /api/chats/{id}/threads/{threadId}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.EditThreadMessage))
 	mux.HandleFunc("POST /api/files/upload", handlerInstance.AuthMiddleware(handlerInstance.UploadFile))
 	mux.HandleFunc("GET /api/files/{fileId}", handlerInstance.AuthMiddleware(handlerInstance.ServeFile))
 	mux.HandleFunc("POST /api/chats/{id}/typing", handlerInstance.AuthMiddleware(handlerInstance.HandleTyping))
@@ -192,6 +193,7 @@ func main() {
 	mux.HandleFunc("POST /api/federated/chats", fedAuth(handlerInstance.FederatedCreateChat))
 	mux.HandleFunc("POST /api/federated/chats/{id}/messages", fedAuth(handlerInstance.FederatedSendMessage))
 	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", fedAuth(handlerInstance.FederatedEditMessage))
+	mux.HandleFunc("PATCH /api/federated/chats/{id}/threads/{threadId}/messages/{messageId}", fedAuth(handlerInstance.FederatedEditThreadMessage))
 	mux.HandleFunc("DELETE /api/federated/chats/{id}/messages/{messageId}", fedAuth(handlerInstance.FederatedDeleteMessage))
 	mux.HandleFunc("POST /api/federated/chats/{id}/typing", fedAuth(handlerInstance.FederatedHandleTyping))
 

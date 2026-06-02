@@ -214,7 +214,13 @@ interface Props {
 	replyTo?: ReplyToInfo;
 	files?: FileInfo[];
 	onReplyClick?: (messageId: string) => void;
-	onStartEdit: (chatId: string, messageId: string, text: string) => void;
+	onStartEdit: (
+		chatId: string,
+		messageId: string,
+		text: string,
+		files?: FileInfo[],
+		threadId?: string,
+	) => void;
 	onDelete: (chatId: string, messageId: string) => void;
 	onReply?: (chatId: string, messageId: string) => void;
 	editTTL: number;
@@ -496,7 +502,7 @@ export function MessageBubble({
 									justify="flex-start"
 									style={{ borderRadius: 0 }}
 									onClick={() => {
-										onStartEdit(chatId, msgId, text);
+										onStartEdit(chatId, msgId, text, files, threadId);
 										setMenuPos(null);
 									}}
 								>

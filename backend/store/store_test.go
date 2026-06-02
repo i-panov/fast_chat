@@ -19,7 +19,7 @@ func newTestStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 
-	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &ChatMember{}, &model.Message{}, &model.Thread{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &ChatMember{}, &model.Message{}, &model.Thread{}, &model.File{}, &model.MessageFile{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -223,6 +223,76 @@ func TestDeleteMessage(t *testing.T) {
 	err = s.DeleteMessage(chat.ID, "nonexistent", "alice:test")
 	if err == nil {
 		t.Error("expected error for nonexistent message")
+	}
+}
+
+func TestSetMessageFiles(t *testing.T) {
+	s := newTestStore(t)
+
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "", "")
+
+	f1, _ := s.SaveFile("hash1", "image/png", 100, "a.png", "a.png")
+	f2, _ := s.SaveFile("hash2", "application/pdf", 200, "b.pdf", "b.pdf")
+	f3, _ := s.SaveFile("hash3", "text/plain", 50, "c.txt", "c.txt")
+
+	if err := s.AddMessageFiles(msg.ID, []string{f1.ID, f2.ID}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if err := s.SetMessageFiles(msg.ID, []string{f2.ID, f3.ID}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	files, err := s.GetMessageFiles(msg.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+
+	ids := map[string]bool{files[0].ID: true, files[1].ID: true}
+	if !ids[f2.ID] || !ids[f3.ID] {
+		t.Errorf("expected f2 and f3, got %v", ids)
+	}
+	if ids[f1.ID] {
+		t.Error("f1 should have been removed")
+	}
+}
+
+func TestEditThreadMessage(t *testing.T) {
+	s := newTestStore(t)
+
+	s.CreateUser("alice:test", "alice")
+	s.CreateUser("bob:test", "bob")
+	chat, _ := s.CreateChat("alice:test", "bob:test")
+	parent, _ := s.AddMessage(chat.ID, "alice:test", "alice", "parent", "", "")
+	thread, _ := s.CreateThread(chat.ID, parent.ID, parent.Text, parent.FromNick)
+	msg, _ := s.AddThreadMessage(thread.ID, "alice:test", "alice", "Hello", "", "")
+
+	updated, err := s.EditThreadMessage(thread.ID, msg.ID, "alice:test", "Edited!")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated.Text != "Edited!" {
+		t.Errorf("expected 'Edited!', got '%s'", updated.Text)
+	}
+	if updated.EditedAt == nil {
+		t.Error("expected EditedAt to be set")
+	}
+
+	_, err = s.EditThreadMessage(thread.ID, msg.ID, "bob:test", "Hacked!")
+	if err == nil {
+		t.Error("expected error when bob edits alice's thread message")
+	}
+
+	_, err = s.EditThreadMessage("nonexistent", msg.ID, "alice:test", "x")
+	if err == nil {
+		t.Error("expected error for nonexistent thread")
 	}
 }
 

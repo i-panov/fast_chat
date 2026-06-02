@@ -1,7 +1,7 @@
 import { Loader, Text } from "@mantine/core";
 import { Fragment, useCallback, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import type { Message, Thread } from "../../api.ts";
+import type { FileInfo, Message, Thread } from "../../api.ts";
 import { formatDateLabel, formatTime } from "../../utils/chat.ts";
 import { MessageBubble } from "./MessageBubble.tsx";
 
@@ -17,7 +17,13 @@ interface Props {
 	messages: Message[];
 	userId: string;
 	onDelete: (chatId: string, messageId: string) => void;
-	onStartEdit: (chatId: string, messageId: string, text: string) => void;
+	onStartEdit: (
+		chatId: string,
+		messageId: string,
+		text: string,
+		files?: FileInfo[],
+		threadId?: string,
+	) => void;
 	onReply?: (chatId: string, messageId: string) => void;
 	editTTL: number;
 	deleteTTL: number;
@@ -52,6 +58,18 @@ export function MessageList({
 	onRetry,
 	scrollToMessageId,
 }: Props) {
+	const handleStartEdit = useCallback(
+		(
+			chatId: string,
+			messageId: string,
+			text: string,
+			files?: FileInfo[],
+			threadId?: string,
+		) => {
+			onStartEdit(chatId, messageId, text, files, threadId);
+		},
+		[onStartEdit],
+	);
 	const { t, i18n } = useTranslation();
 	const containerRef = useRef<HTMLDivElement>(null);
 	const sentinelRef = useRef<HTMLDivElement>(null);
@@ -182,7 +200,7 @@ export function MessageList({
 							replyTo={msg.replyTo}
 							files={msg.files}
 							onReplyClick={handleReplyClick}
-							onStartEdit={onStartEdit}
+							onStartEdit={handleStartEdit}
 							onDelete={onDelete}
 							onReply={onReply}
 							editTTL={editTTL}

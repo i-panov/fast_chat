@@ -224,6 +224,53 @@ func (s *Store) EditMessage(chatID, messageID, userID, newText string) (model.Me
 	return msg, nil
 }
 
+func (s *Store) EditThreadMessage(threadID, messageID, userID, newText string) (model.Message, error) {
+	var thread model.Thread
+
+	if err := s.db.First(&thread, "id = ?", threadID).Error; err != nil {
+		return model.Message{}, ErrThreadNotFound
+	}
+
+	var msg model.Message
+
+	if err := s.db.Where("chat_id = ? AND id = ?", threadID, messageID).First(&msg).Error; err != nil {
+		return model.Message{}, ErrMessageNotFound
+	}
+
+	if msg.FromID != userID {
+		return model.Message{}, ErrNotYourMessage
+	}
+
+	now := time.Now()
+	msg.Text = newText
+	msg.EditedAt = &now
+
+	if err := s.db.Model(&model.Message{}).Where("chat_id = ? AND id = ?", threadID, messageID).Updates(map[string]interface{}{
+		"text":      newText,
+		"edited_at": &now,
+	}).Error; err != nil {
+		return model.Message{}, err
+	}
+
+	return msg, nil
+}
+
+func (s *Store) SetMessageFiles(messageID string, fileIDs []string) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
+			return err
+		}
+
+		for _, fid := range fileIDs {
+			if err := tx.Create(&model.MessageFile{MessageID: messageID, FileID: fid}).Error; err != nil {
+				return fmt.Errorf("link file %s to message %s: %w", fid, messageID, err)
+			}
+		}
+
+		return nil
+	})
+}
+
 func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID string) (*model.Message, error) {
 	var chatCount int64
 	s.db.Model(&model.Chat{}).Where("id = ?", chatID).Count(&chatCount)

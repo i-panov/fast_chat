@@ -964,7 +964,8 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	messageID := r.PathValue("messageId")
 
 	var req struct {
-		Text string `json:"text"`
+		Text    string   `json:"text"`
+		FileIDs []string `json:"fileIDs,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -981,11 +982,22 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.FileIDs != nil {
+		if err := h.store.SetMessageFiles(messageID, req.FileIDs); err != nil {
+			log.Printf("federated edit: failed to set message files: %v", err)
+		}
+	}
+
 	updated := &model.Message{
 		ID:       messageID,
 		ChatID:   chatID,
 		Text:     req.Text,
 		EditedAt: &now,
+	}
+
+	if req.FileIDs != nil {
+		files, _ := h.store.GetMessageFiles(messageID) //nolint:errcheck
+		updated.Files = files
 	}
 
 	chat, ok := h.store.GetChat(chatID)
@@ -1126,7 +1138,8 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Text string `json:"text"`
+		Text    string   `json:"text"`
+		FileIDs []string `json:"fileIDs,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1136,7 +1149,7 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" {
+	if req.Text == "" && len(req.FileIDs) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
 
 		return
@@ -1149,12 +1162,26 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.FileIDs != nil {
+		if err := h.store.SetMessageFiles(messageID, req.FileIDs); err != nil {
+			log.Printf("failed to set message files: %v", err)
+		}
+
+		files, _ := h.store.GetMessageFiles(messageID) //nolint:errcheck
+		updated.Files = files
+	}
+
 	if chat.RemoteServer != "" {
 		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
 
-		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPatch, fedURL, map[string]string{
+		fedBody := map[string]interface{}{
 			"text": req.Text,
-		})
+		}
+		if req.FileIDs != nil {
+			fedBody["fileIDs"] = req.FileIDs
+		}
+
+		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPatch, fedURL, fedBody)
 		if fedErr != nil {
 			log.Printf("federated edit message failed: %v", fedErr)
 		}
@@ -1410,6 +1437,175 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
+}
+
+func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+	threadID := r.PathValue("threadId")
+	messageID := r.PathValue("messageId")
+
+	thread, ok := h.store.GetThread(threadID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "thread not found"})
+
+		return
+	}
+
+	chat, ok := h.store.GetChat(thread.ChatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if !isMember(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return
+	}
+
+	if h.cfg.MessageEditTTL < 0 {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "editing not allowed"})
+
+		return
+	}
+
+	if h.cfg.MessageEditTTL > 0 {
+		existing, err := h.store.GetMessage(threadID, messageID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+
+			return
+		}
+
+		if time.Since(existing.CreatedAt) > time.Duration(h.cfg.MessageEditTTL)*time.Second {
+			writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "edit window expired"})
+
+			return
+		}
+	}
+
+	var req struct {
+		Text    string   `json:"text"`
+		FileIDs []string `json:"fileIDs,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" && len(req.FileIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
+
+		return
+	}
+
+	updated, err := h.store.EditThreadMessage(threadID, messageID, user.ID, req.Text)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+
+		return
+	}
+
+	if req.FileIDs != nil {
+		if err := h.store.SetMessageFiles(messageID, req.FileIDs); err != nil {
+			log.Printf("failed to set thread message files: %v", err)
+		}
+
+		files, _ := h.store.GetMessageFiles(messageID) //nolint:errcheck
+		updated.Files = files
+	}
+
+	if chat.RemoteServer != "" {
+		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+thread.ChatID+"/threads/"+threadID+"/messages/"+messageID)
+
+		fedBody := map[string]interface{}{
+			"text": req.Text,
+		}
+		if req.FileIDs != nil {
+			fedBody["fileIDs"] = req.FileIDs
+		}
+
+		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPatch, fedURL, fedBody)
+		if fedErr != nil {
+			log.Printf("federated edit thread message failed: %v", fedErr)
+		}
+	}
+
+	eventData := map[string]interface{}{
+		"threadId": threadID,
+		"message":  &updated,
+	}
+
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, SSEEvent{Event: "thread_message_updated", Data: eventData})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": &updated})
+}
+
+func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	chatID := r.PathValue("id")
+	threadID := r.PathValue("threadId")
+	messageID := r.PathValue("messageId")
+
+	var req struct {
+		Text    string   `json:"text"`
+		FileIDs []string `json:"fileIDs,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	now := time.Now()
+
+	if err := h.store.EditRawMessage(threadID, messageID, req.Text, now); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: err.Error()})
+
+		return
+	}
+
+	if req.FileIDs != nil {
+		if err := h.store.SetMessageFiles(messageID, req.FileIDs); err != nil {
+			log.Printf("federated edit thread message: failed to set files: %v", err)
+		}
+	}
+
+	updated := &model.Message{
+		ID:       messageID,
+		ChatID:   threadID,
+		Text:     req.Text,
+		EditedAt: &now,
+	}
+
+	if req.FileIDs != nil {
+		files, _ := h.store.GetMessageFiles(messageID) //nolint:errcheck
+		updated.Files = files
+	}
+
+	chat, ok := h.store.GetChat(chatID)
+	if ok {
+		eventData := map[string]interface{}{
+			"threadId": threadID,
+			"message":  updated,
+		}
+
+		for _, memberID := range chat.Members {
+			h.hub.Send(memberID, SSEEvent{Event: "thread_message_updated", Data: eventData})
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": updated})
 }
 
 func (h *Handler) GetThreads(w http.ResponseWriter, r *http.Request) {

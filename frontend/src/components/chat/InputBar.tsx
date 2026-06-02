@@ -10,7 +10,8 @@ import { FileIcon, Paperclip, X } from "lucide-react";
 import type React from "react";
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
-import type { PendingFile } from "../../api.ts";
+import type { FileInfo, PendingFile } from "../../api.ts";
+import { useAuth } from "../../useAuth.tsx";
 
 interface Props {
 	text: string;
@@ -26,6 +27,8 @@ interface Props {
 	pendingFiles?: PendingFile[];
 	onAttachFiles?: (files: FileList) => void;
 	onRemoveFile?: (fileId: string) => void;
+	existingFiles?: FileInfo[];
+	onRemoveExistingFile?: (fileId: string) => void;
 }
 
 function formatSize(bytes: number): string {
@@ -34,7 +37,7 @@ function formatSize(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function FilePreview({
+function PendingFilePreview({
 	file,
 	onRemove,
 }: {
@@ -83,6 +86,62 @@ function FilePreview({
 	);
 }
 
+function ExistingFilePreview({
+	file,
+	onRemove,
+	token,
+}: {
+	file: FileInfo;
+	onRemove: () => void;
+	token: string | undefined;
+}) {
+	const url = token
+		? `${file.url}?token=${encodeURIComponent(token)}`
+		: file.url;
+
+	return (
+		<Paper
+			style={{
+				padding: "6px 10px",
+				display: "flex",
+				alignItems: "center",
+				gap: 8,
+				background: "var(--mantine-color-dark-6)",
+				borderRadius: 6,
+				maxWidth: 200,
+				opacity: 0.85,
+			}}
+		>
+			{file.fileType === "photo" ? (
+				<img
+					src={url}
+					alt=""
+					style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }}
+				/>
+			) : (
+				<FileIcon size={24} style={{ flexShrink: 0 }} />
+			)}
+			<div style={{ overflow: "hidden", minWidth: 0 }}>
+				<Text size="xs" truncate="end">
+					{file.originalName}
+				</Text>
+				<Text size="xs" c="dimmed">
+					{formatSize(file.size)}
+				</Text>
+			</div>
+			<ActionIcon
+				variant="subtle"
+				color="gray"
+				size="sm"
+				onClick={onRemove}
+				style={{ flexShrink: 0 }}
+			>
+				<X size={14} />
+			</ActionIcon>
+		</Paper>
+	);
+}
+
 export function InputBar({
 	text,
 	onTextChange,
@@ -97,8 +156,12 @@ export function InputBar({
 	pendingFiles,
 	onAttachFiles,
 	onRemoveFile,
+	existingFiles,
+	onRemoveExistingFile,
 }: Props) {
 	const { t } = useTranslation();
+	const { activeAccount } = useAuth();
+	const token = activeAccount?.token;
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
 	function handleAttachClick() {
@@ -111,6 +174,10 @@ export function InputBar({
 		}
 		e.target.value = "";
 	}
+
+	const hasExisting = existingFiles !== undefined && existingFiles.length > 0;
+	const hasPending = pendingFiles !== undefined && pendingFiles.length > 0;
+	const hasAttachments = hasExisting || hasPending;
 
 	return (
 		<div>
@@ -181,7 +248,7 @@ export function InputBar({
 					</ActionIcon>
 				</Paper>
 			)}
-			{pendingFiles !== undefined && pendingFiles.length > 0 && (
+			{hasAttachments && (
 				<Paper
 					style={{
 						padding: "8px 12px",
@@ -191,8 +258,16 @@ export function InputBar({
 					}}
 				>
 					<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-						{pendingFiles.map((file) => (
-							<FilePreview
+						{(existingFiles ?? []).map((file) => (
+							<ExistingFilePreview
+								key={file.id}
+								file={file}
+								token={token}
+								onRemove={() => onRemoveExistingFile?.(file.id)}
+							/>
+						))}
+						{(pendingFiles ?? []).map((file) => (
+							<PendingFilePreview
 								key={file.id}
 								file={file}
 								onRemove={() => onRemoveFile?.(file.id)}
@@ -207,7 +282,7 @@ export function InputBar({
 					gap: "8px",
 					padding: "12px",
 					borderTop:
-						editing || (pendingFiles !== undefined && pendingFiles.length > 0)
+						editing || hasAttachments
 							? undefined
 							: "1px solid var(--mantine-color-dark-4)",
 					background: "var(--mantine-color-dark-8)",
@@ -255,7 +330,9 @@ export function InputBar({
 				<Button
 					type="submit"
 					disabled={
-						text.trim().length === 0 && (pendingFiles ?? []).length === 0
+						text.trim().length === 0 &&
+						(pendingFiles ?? []).length === 0 &&
+						(existingFiles ?? []).length === 0
 					}
 					size="sm"
 				>

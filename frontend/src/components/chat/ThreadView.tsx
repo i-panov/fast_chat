@@ -2,7 +2,7 @@ import { ActionIcon, Group, Paper, Stack, Text } from "@mantine/core";
 import { ArrowLeft } from "lucide-react";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import type { Message, PendingFile, Thread } from "../../api.ts";
+import type { FileInfo, Message, PendingFile, Thread } from "../../api.ts";
 import { InputBar } from "./InputBar.tsx";
 import { MessageList } from "./MessageList.tsx";
 
@@ -15,12 +15,24 @@ interface Props {
 	setInputText: (v: string) => void;
 	onSend: (e: React.FormEvent<HTMLFormElement>) => Promise<void>;
 	onDelete: (chatId: string, messageId: string) => void;
-	onStartEdit: (chatId: string, messageId: string, text: string) => void;
+	onStartEdit: (
+		chatId: string,
+		messageId: string,
+		text: string,
+		files?: FileInfo[],
+		threadId?: string,
+	) => void;
 	onCancelEdit: () => void;
 	onReply?: (chatId: string, messageId: string) => void;
 	editTTL: number;
 	deleteTTL: number;
-	editingMessage: { chatId: string; messageId: string; text: string } | null;
+	editingMessage: {
+		chatId: string;
+		messageId: string;
+		text: string;
+		files?: FileInfo[];
+		threadId?: string;
+	} | null;
 	hasMore: boolean;
 	isLoadingMore: boolean;
 	onLoadMore: () => void;
@@ -31,6 +43,8 @@ interface Props {
 	pendingFiles?: PendingFile[];
 	onAttachFiles?: (files: FileList) => void;
 	onRemoveFile?: (fileId: string) => void;
+	existingFiles?: FileInfo[];
+	onRemoveExistingFile?: (fileId: string) => void;
 }
 
 export function ThreadView({
@@ -58,6 +72,8 @@ export function ThreadView({
 	pendingFiles,
 	onAttachFiles,
 	onRemoveFile,
+	existingFiles,
+	onRemoveExistingFile,
 }: Props) {
 	const { t } = useTranslation();
 
@@ -130,6 +146,8 @@ export function ThreadView({
 				pendingFiles={pendingFiles}
 				onAttachFiles={onAttachFiles}
 				onRemoveFile={onRemoveFile}
+				existingFiles={existingFiles}
+				onRemoveExistingFile={onRemoveExistingFile}
 			/>
 		</Stack>
 	);
