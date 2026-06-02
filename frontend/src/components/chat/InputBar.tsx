@@ -9,6 +9,9 @@ interface Props {
 	onSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
 	editing: boolean;
 	onCancelEdit: () => void;
+	replyToNick?: string;
+	replyToText?: string;
+	onCancelReply?: () => void;
 	onTypingStart?: () => void;
 	onTypingStop?: () => void;
 }
@@ -19,6 +22,9 @@ export function InputBar({
 	onSubmit,
 	editing,
 	onCancelEdit,
+	replyToNick,
+	replyToText,
+	onCancelReply,
 	onTypingStart,
 	onTypingStop,
 }: Props) {
@@ -26,6 +32,41 @@ export function InputBar({
 
 	return (
 		<div>
+			{replyToNick !== undefined && replyToText !== undefined && !editing && (
+				<Paper
+					style={{
+						padding: "8px 12px",
+						borderRadius: 0,
+						borderTop: "1px solid var(--mantine-color-dark-4)",
+						background: "var(--mantine-color-dark-7)",
+					}}
+				>
+					<div
+						style={{
+							display: "flex",
+							alignItems: "center",
+							justifyContent: "space-between",
+						}}
+					>
+						<div style={{ flex: 1, overflow: "hidden" }}>
+							<Text size="xs" c="blue" truncate="end">
+								{t("input.replyingTo", { nick: replyToNick })}
+							</Text>
+							<Text size="xs" c="dimmed" truncate="end">
+								{replyToText}
+							</Text>
+						</div>
+						<ActionIcon
+							variant="subtle"
+							color="gray"
+							size="sm"
+							onClick={onCancelReply}
+						>
+							<X size={16} />
+						</ActionIcon>
+					</div>
+				</Paper>
+			)}
 			{editing && (
 				<Paper
 					style={{

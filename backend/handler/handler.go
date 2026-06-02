@@ -520,8 +520,9 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID   string `json:"id"`
-		Text string `json:"text"`
+		ID        string `json:"id"`
+		Text      string `json:"text"`
+		ReplyToID string `json:"replyToId"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -537,7 +538,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg, err := h.store.AddMessage(chatID, user.ID, user.Nick, req.Text, req.ID)
+	msg, err := h.store.AddMessage(chatID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
 
@@ -547,12 +548,17 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	if chat.RemoteServer != "" {
 		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages")
 
-		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, map[string]interface{}{
+		fedBody := map[string]interface{}{
 			"id":       msg.ID,
 			"fromId":   msg.FromID,
 			"fromNick": msg.FromNick,
 			"text":     msg.Text,
-		})
+		}
+		if req.ReplyToID != "" {
+			fedBody["replyToId"] = req.ReplyToID
+		}
+
+		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, fedBody)
 		if fedErr != nil {
 			log.Printf("federated send message failed: %v", fedErr)
 		}
@@ -736,10 +742,11 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID       string `json:"id"`
-		FromID   string `json:"fromId"`
-		FromNick string `json:"fromNick"`
-		Text     string `json:"text"`
+		ID        string `json:"id"`
+		FromID    string `json:"fromId"`
+		FromNick  string `json:"fromNick"`
+		Text      string `json:"text"`
+		ReplyToID string `json:"replyToId"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -755,6 +762,22 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 		FromNick:  req.FromNick,
 		Text:      req.Text,
 		CreatedAt: time.Now(),
+	}
+
+	if req.ReplyToID != "" {
+		msgs := h.store.GetMessages(chatID)
+
+		for idx := range msgs {
+			if msgs[idx].ID == req.ReplyToID {
+				msg.ReplyTo = &model.ReplyToInfo{
+					MessageID: req.ReplyToID,
+					Text:      msgs[idx].Text,
+					FromNick:  msgs[idx].FromNick,
+				}
+
+				break
+			}
+		}
 	}
 
 	if err := h.store.AddRawMessage(&msg); err != nil {
@@ -1179,8 +1202,9 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID   string `json:"id"`
-		Text string `json:"text"`
+		ID        string `json:"id"`
+		Text      string `json:"text"`
+		ReplyToID string `json:"replyToId"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1196,7 +1220,7 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg, err := h.store.AddThreadMessage(threadID, user.ID, user.Nick, req.Text, req.ID)
+	msg, err := h.store.AddThreadMessage(threadID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
 

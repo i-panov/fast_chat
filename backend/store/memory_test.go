@@ -143,7 +143,7 @@ func TestAddMessage(t *testing.T) {
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
 
-	msg, err := s.AddMessage(chat.ID, "alice:test", "alice", "Hello!", "")
+	msg, err := s.AddMessage(chat.ID, "alice:test", "alice", "Hello!", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestAddMessage(t *testing.T) {
 		t.Errorf("expected %s, got %s", chat.ID, msg.ChatID)
 	}
 
-	_, err = s.AddMessage("nonexistent", "alice:test", "alice", "test", "")
+	_, err = s.AddMessage("nonexistent", "alice:test", "alice", "test", "", "")
 	if err == nil {
 		t.Error("expected error for nonexistent chat")
 	}
@@ -170,7 +170,7 @@ func TestEditMessage(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "")
+	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "", "")
 
 	updated, err := s.EditMessage(chat.ID, msg.ID, "alice:test", "Edited!")
 	if err != nil {
@@ -195,7 +195,7 @@ func TestDeleteMessage(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "")
+	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "", "")
 
 	err := s.DeleteMessage(chat.ID, msg.ID, "alice:test")
 	if err != nil {
@@ -216,7 +216,7 @@ func TestGetMessagesPaginated(t *testing.T) {
 	chat, _ := s.CreateChat("alice:test", "bob:test")
 
 	for i := 0; i < 10; i++ {
-		s.AddMessage(chat.ID, "alice:test", "alice", fmt.Sprintf("msg-%d", i), "")
+		s.AddMessage(chat.ID, "alice:test", "alice", fmt.Sprintf("msg-%d", i), "", "")
 	}
 
 	msgs, next, hasMore := s.GetMessagesPaginated(chat.ID, 4, "")
@@ -305,7 +305,7 @@ func TestEditRawMessage(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1", "")
 
 	now := time.Now()
 	err := s.EditRawMessage(chat.ID, "msg-1", "Edited!", now)
@@ -335,7 +335,7 @@ func TestDeleteRawMessage(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1", "")
 
 	err := s.DeleteRawMessage(chat.ID, "msg-1")
 	if err != nil {
@@ -358,7 +358,7 @@ func TestCreateThreadAndGet(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1", "")
 
 	thread, err := s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
 	if err != nil {
@@ -400,8 +400,8 @@ func TestGetThreadsForChat(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Msg1", "m1")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Msg2", "m2")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Msg1", "m1", "")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Msg2", "m2", "")
 
 	s.CreateThread(chat.ID, "m1", "Msg1", "alice")
 	s.CreateThread(chat.ID, "m2", "Msg2", "alice")
@@ -422,10 +422,10 @@ func TestAddThreadMessage(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1", "")
 	thread, _ := s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
 
-	msg, err := s.AddThreadMessage(thread.ID, "bob:test", "bob", "Reply", "")
+	msg, err := s.AddThreadMessage(thread.ID, "bob:test", "bob", "Reply", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestAddThreadMessage(t *testing.T) {
 		t.Errorf("expected 1 thread message, got %d", len(msgs))
 	}
 
-	_, err = s.AddThreadMessage("nonexistent", "alice:test", "alice", "test", "")
+	_, err = s.AddThreadMessage("nonexistent", "alice:test", "alice", "test", "", "")
 	if err == nil {
 		t.Error("expected error for nonexistent thread")
 	}
@@ -493,7 +493,7 @@ func TestGetMessageValue(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1", "")
 
 	msg1, err := s.GetMessage(chat.ID, "msg-1")
 	if err != nil {
@@ -516,7 +516,7 @@ func TestGetThreadValue(t *testing.T) {
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1")
+	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1", "")
 	s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
 
 	threads := s.GetThreadsForChat(chat.ID)

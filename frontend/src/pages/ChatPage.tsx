@@ -112,6 +112,7 @@ export function ChatPage() {
 							onDelete={s.handleDeleteMessage}
 							onStartEdit={s.handleStartEdit}
 							onCancelEdit={s.handleCancelEdit}
+							onReply={s.handleReply}
 							editTTL={s.config?.messageEditTTL ?? 0}
 							deleteTTL={s.config?.messageDeleteTTL ?? 0}
 							editingMessage={s.editingMessage}
@@ -119,6 +120,9 @@ export function ChatPage() {
 							isLoadingMore={s.threadIsLoadingMore}
 							onLoadMore={s.loadMoreThreadMessages}
 							onRetry={s.handleRetryThreadMessage}
+							replyToNick={s.replyToMessage?.fromNick}
+							replyToText={s.replyToMessage?.text}
+							onCancelReply={s.cancelReply}
 						/>
 					) : (
 						<Stack h="100%" gap={0}>
@@ -143,6 +147,9 @@ export function ChatPage() {
 										onSubmit={s.handleSend}
 										editing={s.editingMessage !== null}
 										onCancelEdit={s.handleCancelEdit}
+										replyToNick={s.replyToMessage?.fromNick}
+										replyToText={s.replyToMessage?.text}
+										onCancelReply={s.cancelReply}
 									/>
 								</>
 							) : s.activeChat === undefined ? (
@@ -162,6 +169,7 @@ export function ChatPage() {
 										userId={s.user.id}
 										onDelete={s.handleDeleteMessage}
 										onStartEdit={s.handleStartEdit}
+										onReply={s.handleReply}
 										editTTL={s.config?.messageEditTTL ?? 0}
 										deleteTTL={s.config?.messageDeleteTTL ?? 0}
 										hasMore={s.hasMore}
@@ -183,6 +191,9 @@ export function ChatPage() {
 										onSubmit={s.handleSend}
 										editing={s.editingMessage !== null}
 										onCancelEdit={s.handleCancelEdit}
+										replyToNick={s.replyToMessage?.fromNick}
+										replyToText={s.replyToMessage?.text}
+										onCancelReply={s.cancelReply}
 										onTypingStart={() => {
 											if (s.activeChatId !== null)
 												s.handleTyping(s.activeChatId, true);

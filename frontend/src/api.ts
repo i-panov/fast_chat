@@ -44,6 +44,12 @@ export interface Chat {
 	createdAt: string;
 }
 
+export interface ReplyToInfo {
+	messageId: string;
+	text: string;
+	fromNick: string;
+}
+
 export interface Message {
 	id: string;
 	chatId: string;
@@ -52,6 +58,7 @@ export interface Message {
 	text: string;
 	createdAt: string;
 	editedAt?: string;
+	replyTo?: ReplyToInfo;
 	status?: "sending" | "failed";
 }
 
@@ -117,10 +124,11 @@ export function sendMessage(
 	chatId: string,
 	text: string,
 	id: string,
+	replyToId?: string,
 ) {
 	return request<{ message: Message }>(`/api/chats/${chatId}/messages`, token, {
 		method: "POST",
-		body: JSON.stringify({ id, text }),
+		body: JSON.stringify({ id, text, replyToId }),
 	});
 }
 
@@ -185,11 +193,12 @@ export function sendThreadMessage(
 	threadId: string,
 	text: string,
 	id: string,
+	replyToId?: string,
 ) {
 	return request<{ message: Message }>(
 		`/api/chats/${chatId}/threads/${threadId}/messages`,
 		token,
-		{ method: "POST", body: JSON.stringify({ id, text }) },
+		{ method: "POST", body: JSON.stringify({ id, text, replyToId }) },
 	);
 }
 

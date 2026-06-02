@@ -229,12 +229,36 @@ func (s *Store) EditMessage(chatID, messageID, userID, newText string) (model.Me
 }
 
 // AddMessage stores a new message in the given chat.
-func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID string) (*model.Message, error) {
+func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID string) (*model.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, ok := s.chats[chatID]; !ok {
 		return nil, ErrChatNotFound
+	}
+
+	var replyTo *model.ReplyToInfo
+
+	if replyToID != "" {
+		msgs := s.messages[chatID]
+		found := false
+
+		for idx := range msgs {
+			if msgs[idx].ID == replyToID {
+				replyTo = &model.ReplyToInfo{
+					MessageID: replyToID,
+					Text:      msgs[idx].Text,
+					FromNick:  msgs[idx].FromNick,
+				}
+				found = true
+
+				break
+			}
+		}
+
+		if !found {
+			return nil, ErrMessageNotFound
+		}
 	}
 
 	id := messageID
@@ -249,6 +273,7 @@ func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID string) (*m
 		FromNick:  fromNick,
 		Text:      text,
 		CreatedAt: time.Now(),
+		ReplyTo:   replyTo,
 	}
 
 	s.messages[chatID] = append(s.messages[chatID], msg)
@@ -489,13 +514,37 @@ func (s *Store) GetThreadMessagesPaginated(threadID string, limit int, before st
 }
 
 // AddThreadMessage stores a new message in a thread.
-func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID string) (*model.Message, error) {
+func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID, replyToID string) (*model.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	thread, ok := s.threads[threadID]
 	if !ok {
 		return nil, ErrThreadNotFound
+	}
+
+	var replyTo *model.ReplyToInfo
+
+	if replyToID != "" {
+		msgs := s.threadMessages[threadID]
+		found := false
+
+		for idx := range msgs {
+			if msgs[idx].ID == replyToID {
+				replyTo = &model.ReplyToInfo{
+					MessageID: replyToID,
+					Text:      msgs[idx].Text,
+					FromNick:  msgs[idx].FromNick,
+				}
+				found = true
+
+				break
+			}
+		}
+
+		if !found {
+			return nil, ErrMessageNotFound
+		}
 	}
 
 	id := messageID
@@ -510,6 +559,7 @@ func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID str
 		FromNick:  fromNick,
 		Text:      text,
 		CreatedAt: time.Now(),
+		ReplyTo:   replyTo,
 	}
 
 	s.threadMessages[threadID] = append(s.threadMessages[threadID], msg)

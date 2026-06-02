@@ -1,5 +1,5 @@
 import { Loader, Text } from "@mantine/core";
-import { Fragment, useEffect, useMemo, useRef } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { Message, Thread } from "../../api.ts";
 import { formatDateLabel, formatTime } from "../../utils/chat.ts";
@@ -18,6 +18,7 @@ interface Props {
 	userId: string;
 	onDelete: (chatId: string, messageId: string) => void;
 	onStartEdit: (chatId: string, messageId: string, text: string) => void;
+	onReply?: (chatId: string, messageId: string) => void;
 	editTTL: number;
 	deleteTTL: number;
 	hasMore?: boolean;
@@ -29,6 +30,7 @@ interface Props {
 	threads?: Record<string, Thread>;
 	isInThread?: boolean;
 	onRetry?: (chatId: string, messageId: string) => void;
+	scrollToMessageId?: string | null;
 }
 
 export function MessageList({
@@ -36,6 +38,7 @@ export function MessageList({
 	userId,
 	onDelete,
 	onStartEdit,
+	onReply,
 	editTTL,
 	deleteTTL,
 	hasMore,
@@ -47,11 +50,13 @@ export function MessageList({
 	threads,
 	isInThread,
 	onRetry,
+	scrollToMessageId,
 }: Props) {
 	const { t, i18n } = useTranslation();
 	const containerRef = useRef<HTMLDivElement>(null);
 	const sentinelRef = useRef<HTMLDivElement>(null);
 	const scrollAnchorRef = useRef(0);
+	const prevScrollToRef = useRef<string | null>(null);
 
 	const locale = i18n.language.split("-")[0];
 
@@ -86,6 +91,34 @@ export function MessageList({
 			scrollAnchorRef.current = 0;
 		}
 	}, [isLoadingMore]);
+
+	useEffect(() => {
+		if (
+			scrollToMessageId === undefined ||
+			scrollToMessageId === null ||
+			scrollToMessageId === prevScrollToRef.current
+		)
+			return;
+
+		prevScrollToRef.current = scrollToMessageId;
+
+		const el = containerRef.current?.querySelector(
+			`[data-message-id="${scrollToMessageId}"]`,
+		);
+		if (el) {
+			el.scrollIntoView({ behavior: "smooth", block: "center" });
+		}
+	}, [scrollToMessageId]);
+
+	const handleReplyClick = useCallback((messageId: string) => {
+		prevScrollToRef.current = messageId;
+		const el = containerRef.current?.querySelector(
+			`[data-message-id="${messageId}"]`,
+		);
+		if (el) {
+			el.scrollIntoView({ behavior: "smooth", block: "center" });
+		}
+	}, []);
 
 	const datedMessages = useMemo(() => {
 		const fmt: Intl.DateTimeFormatOptions = {
@@ -146,8 +179,11 @@ export function MessageList({
 							chatId={msg.chatId}
 							msgId={msg.id}
 							editedAt={msg.editedAt}
+							replyTo={msg.replyTo}
+							onReplyClick={handleReplyClick}
 							onStartEdit={onStartEdit}
 							onDelete={onDelete}
+							onReply={onReply}
 							editTTL={editTTL}
 							deleteTTL={deleteTTL}
 							createdAt={msg.createdAt}

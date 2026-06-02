@@ -34,12 +34,15 @@
 
 	"message.copy": "Копировать",
 	"message.edit": "Редактировать",
+	"message.reply": "Ответить",
 	"message.delete": "Удалить",
 	"message.createThread": "Создать обсуждение",
 	"message.thread": "Ответить",
 	"message.edited": "ред.",
 	"message.retry": "Повторить",
 	"message.failed": "Не удалось отправить",
+
+	"input.replyingTo": "Ответ @{{nick}}",
 
 	"date.today": "Сегодня",
 	"date.yesterday": "Вчера",

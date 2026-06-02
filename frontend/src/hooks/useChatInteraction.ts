@@ -272,6 +272,13 @@ interface EditingMessage {
 	text: string;
 }
 
+interface ReplyTarget {
+	chatId: string;
+	messageId: string;
+	fromNick: string;
+	text: string;
+}
+
 function useSendMessage(opts: {
 	activeAccount: { token: string; user: { id: string; nick: string } } | null;
 	inputText: string;
@@ -286,6 +293,8 @@ function useSendMessage(opts: {
 	editingMessage: EditingMessage | null;
 	setEditingMessage: (v: EditingMessage | null) => void;
 	sendingRef: React.MutableRefObject<boolean>;
+	replyToMessage: ReplyTarget | null;
+	setReplyToMessage: (v: ReplyTarget | null) => void;
 }) {
 	const {
 		activeAccount,
@@ -301,6 +310,8 @@ function useSendMessage(opts: {
 		editingMessage,
 		setEditingMessage,
 		sendingRef,
+		replyToMessage,
+		setReplyToMessage,
 	} = opts;
 	return async function handleSend(e: React.FormEvent<HTMLFormElement>) {
 		e.preventDefault();
@@ -310,7 +321,9 @@ function useSendMessage(opts: {
 		sendingRef.current = true;
 		const text = inputText;
 		const msgId = crypto.randomUUID();
+		const replyToId = replyToMessage?.messageId;
 		setInputText("");
+		setReplyToMessage(null);
 
 		try {
 			if (editingMessage !== null) {
@@ -344,7 +357,7 @@ function useSendMessage(opts: {
 					[chat.id]: [...(prev[chat.id] ?? []), pending],
 				}));
 
-				await sendMessage(activeAccount.token, chat.id, text, msgId);
+				await sendMessage(activeAccount.token, chat.id, text, msgId, replyToId);
 				setMessages((prev) => ({
 					...prev,
 					[chat.id]: prev[chat.id].map((m) =>
@@ -366,7 +379,13 @@ function useSendMessage(opts: {
 					[activeChatId2]: [...(prev[activeChatId2] ?? []), pending],
 				}));
 
-				await sendMessage(activeAccount.token, activeChatId2, text, msgId);
+				await sendMessage(
+					activeAccount.token,
+					activeChatId2,
+					text,
+					msgId,
+					replyToId,
+				);
 				setMessages((prev) => ({
 					...prev,
 					[activeChatId2]: prev[activeChatId2].map((m) =>
@@ -376,6 +395,7 @@ function useSendMessage(opts: {
 			}
 		} catch {
 			setInputText(text);
+			setReplyToMessage(replyToMessage);
 			emitNotification(i18n.t("error.send"));
 		} finally {
 			sendingRef.current = false;
@@ -395,10 +415,13 @@ export interface ChatInteraction {
 	selectPendingChat: (withUserId: string, withUserNick: string) => void;
 	selectChat: (chatId: string) => void;
 	handleSend: (e: React.FormEvent<HTMLFormElement>) => Promise<void>;
+	replyToMessage: ReplyTarget | null;
+	handleReply: (chatId: string, messageId: string) => void;
+	cancelReply: () => void;
 }
 
 function useChatInteraction(opts: {
-	activeAccount: { token: string } | null;
+	activeAccount: { token: string; user: { id: string; nick: string } } | null;
 	setMessages: React.Dispatch<React.SetStateAction<Record<string, Message[]>>>;
 	setChats: React.Dispatch<React.SetStateAction<Chat[]>>;
 	activeChatId: string | null;
@@ -432,6 +455,9 @@ function useChatInteraction(opts: {
 	const [inputText, setInputText] = useState("");
 	const [pendingChatWith, setPendingChatWith] = useState<string | null>(null);
 	const [pendingChatNick, setPendingChatNick] = useState<string | null>(null);
+	const [replyToMessage, setReplyToMessage] = useState<ReplyTarget | null>(
+		null,
+	);
 	const sendingRef = useRef(false);
 
 	useSearch(activeAccount?.token, searchQuery, setSearchResults);
@@ -440,6 +466,7 @@ function useChatInteraction(opts: {
 		if (activeAccount === null) return;
 		setPendingChatWith(null);
 		setPendingChatNick(null);
+		setReplyToMessage(null);
 		setActiveChatId(chatId);
 		if (messagesRef.current[chatId] === undefined) {
 			getMessages(activeAccount.token, chatId, 30)
@@ -480,6 +507,7 @@ function useChatInteraction(opts: {
 		setActiveChatId(null);
 		setSearchQuery("");
 		setSearchResults([]);
+		setReplyToMessage(null);
 	}
 
 	const handleSend = useSendMessage({
@@ -499,7 +527,26 @@ function useChatInteraction(opts: {
 		editingMessage,
 		setEditingMessage,
 		sendingRef,
+		replyToMessage,
+		setReplyToMessage,
 	});
+
+	function handleReply(chatId: string, messageId: string) {
+		const msgs = messagesRef.current[chatId];
+		if (msgs === undefined) return;
+		const msg = msgs.find((m) => m.id === messageId);
+		if (msg === undefined) return;
+		setReplyToMessage({
+			chatId,
+			messageId,
+			fromNick: msg.fromNick,
+			text: msg.text,
+		});
+	}
+
+	function cancelReply() {
+		setReplyToMessage(null);
+	}
 
 	function handleSearchChange(value: string) {
 		setSearchQuery(value);
@@ -520,6 +567,9 @@ function useChatInteraction(opts: {
 		selectPendingChat,
 		selectChat,
 		handleSend,
+		replyToMessage,
+		handleReply,
+		cancelReply,
 	};
 }
 
@@ -901,7 +951,9 @@ export function useChatPage() {
 			threadSendingRef.current = true;
 			const text = interaction.inputText;
 			const msgId = crypto.randomUUID();
+			const replyToId = interaction.replyToMessage?.messageId;
 			interaction.setInputText("");
+			interaction.cancelReply();
 
 			const thread = threads[activeThreadId];
 			if (thread === undefined) {
@@ -931,6 +983,7 @@ export function useChatPage() {
 					activeThreadId,
 					text,
 					msgId,
+					replyToId,
 				);
 				setThreadMessages((prev) => ({
 					...prev,

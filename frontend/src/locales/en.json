@@ -34,12 +34,15 @@
 
 	"message.copy": "Copy",
 	"message.edit": "Edit",
+	"message.reply": "Reply",
 	"message.delete": "Delete",
 	"message.createThread": "Create thread",
 	"message.thread": "Reply",
 	"message.edited": "edited",
 	"message.retry": "Retry",
 	"message.failed": "Failed to send",
+
+	"input.replyingTo": "Replying to @{{nick}}",
 
 	"date.today": "Today",
 	"date.yesterday": "Yesterday",

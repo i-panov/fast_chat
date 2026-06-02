@@ -19,15 +19,23 @@ type Chat struct {
 	RemoteServer string    `json:"-"` // empty = local chat, "host:port" = federated
 }
 
+// ReplyToInfo holds a snapshot of the message being replied to.
+type ReplyToInfo struct {
+	MessageID string `json:"messageId"`
+	Text      string `json:"text"`
+	FromNick  string `json:"fromNick"`
+}
+
 // Message represents a single message within a chat.
 type Message struct {
-	ID        string     `json:"id"`
-	ChatID    string     `json:"chatId"`
-	FromID    string     `json:"fromId"`
-	FromNick  string     `json:"fromNick"`
-	Text      string     `json:"text"`
-	CreatedAt time.Time  `json:"createdAt"`
-	EditedAt  *time.Time `json:"editedAt,omitempty"`
+	ID        string       `json:"id"`
+	ChatID    string       `json:"chatId"`
+	FromID    string       `json:"fromId"`
+	FromNick  string       `json:"fromNick"`
+	Text      string       `json:"text"`
+	CreatedAt time.Time    `json:"createdAt"`
+	EditedAt  *time.Time   `json:"editedAt,omitempty"`
+	ReplyTo   *ReplyToInfo `json:"replyTo,omitempty"`
 }
 
 // Thread represents a discussion thread attached to a specific message in a chat.

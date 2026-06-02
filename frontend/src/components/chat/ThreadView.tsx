@@ -17,6 +17,7 @@ interface Props {
 	onDelete: (chatId: string, messageId: string) => void;
 	onStartEdit: (chatId: string, messageId: string, text: string) => void;
 	onCancelEdit: () => void;
+	onReply?: (chatId: string, messageId: string) => void;
 	editTTL: number;
 	deleteTTL: number;
 	editingMessage: { chatId: string; messageId: string; text: string } | null;
@@ -24,6 +25,9 @@ interface Props {
 	isLoadingMore: boolean;
 	onLoadMore: () => void;
 	onRetry?: (threadId: string, messageId: string) => void;
+	replyToNick?: string;
+	replyToText?: string;
+	onCancelReply?: () => void;
 }
 
 export function ThreadView({
@@ -37,6 +41,7 @@ export function ThreadView({
 	onDelete,
 	onStartEdit,
 	onCancelEdit,
+	onReply,
 	editTTL,
 	deleteTTL,
 	editingMessage,
@@ -44,6 +49,9 @@ export function ThreadView({
 	isLoadingMore,
 	onLoadMore,
 	onRetry,
+	replyToNick,
+	replyToText,
+	onCancelReply,
 }: Props) {
 	const { t } = useTranslation();
 
@@ -95,6 +103,7 @@ export function ThreadView({
 				userId={userId}
 				onDelete={onDelete}
 				onStartEdit={onStartEdit}
+				onReply={onReply}
 				editTTL={editTTL}
 				deleteTTL={deleteTTL}
 				hasMore={hasMore}
@@ -109,6 +118,9 @@ export function ThreadView({
 				onSubmit={onSend}
 				editing={editingMessage !== null}
 				onCancelEdit={onCancelEdit}
+				replyToNick={replyToNick}
+				replyToText={replyToText}
+				onCancelReply={onCancelReply}
 			/>
 		</Stack>
 	);

@@ -12,6 +12,7 @@ import {
 import {
 	Check,
 	Copy,
+	CornerUpLeft,
 	MessageCircle,
 	Pencil,
 	RotateCcw,
@@ -21,6 +22,7 @@ import { isValidElement, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { ReplyToInfo } from "../../api.ts";
 import { extractCodeText } from "../../utils/chat.ts";
 
 interface CodeBlockProps {
@@ -91,8 +93,11 @@ interface Props {
 	chatId: string;
 	msgId: string;
 	editedAt?: string;
+	replyTo?: ReplyToInfo;
+	onReplyClick?: (messageId: string) => void;
 	onStartEdit: (chatId: string, messageId: string, text: string) => void;
 	onDelete: (chatId: string, messageId: string) => void;
+	onReply?: (chatId: string, messageId: string) => void;
 	editTTL: number;
 	deleteTTL: number;
 	createdAt: string;
@@ -118,8 +123,11 @@ export function MessageBubble({
 	chatId,
 	msgId,
 	editedAt,
+	replyTo,
+	onReplyClick,
 	onStartEdit,
 	onDelete,
+	onReply,
 	editTTL,
 	deleteTTL,
 	createdAt,
@@ -146,6 +154,8 @@ export function MessageBubble({
 		(status === "sending" ||
 			status === "failed" ||
 			isWithinTTL(createdAt, deleteTTL));
+	const canReply =
+		onReply !== undefined && status !== "sending" && status !== "failed";
 	const canCreateThread =
 		onCreateThread !== undefined &&
 		threadId === undefined &&
@@ -175,11 +185,45 @@ export function MessageBubble({
 		<>
 			<Paper
 				className={isOwn ? "bubble-own" : "bubble-other"}
+				data-message-id={msgId}
 				onContextMenu={(e) => {
 					e.preventDefault();
 					setMenuPos({ x: e.clientX, y: e.clientY });
 				}}
 			>
+				{replyTo !== undefined && (
+					<UnstyledButton
+						style={{
+							display: "block",
+							width: "100%",
+							textAlign: "left",
+							marginBottom: 6,
+							padding: "2px 6px",
+							borderLeft: "3px solid var(--mantine-color-blue-5)",
+							background: "var(--mantine-color-dark-6)",
+							borderRadius: 4,
+							overflow: "hidden",
+							cursor: "pointer",
+						}}
+						onClick={() => onReplyClick?.(replyTo.messageId)}
+					>
+						<Text size="xs" c="blue" truncate="end">
+							@{replyTo.fromNick}
+						</Text>
+						<Text
+							size="xs"
+							c="dimmed"
+							style={{
+								display: "-webkit-box",
+								WebkitLineClamp: 2,
+								WebkitBoxOrient: "vertical",
+								overflow: "hidden",
+							}}
+						>
+							{replyTo.text}
+						</Text>
+					</UnstyledButton>
+				)}
 				<Group gap={6} wrap="nowrap" align="end">
 					<div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
 						<Markdown
@@ -358,6 +402,29 @@ export function MessageBubble({
 										<RotateCcw size={14} />
 									</ActionIcon>
 									{t("message.retry")}
+								</Button>
+							)}
+							{canReply && (
+								<Button
+									variant="subtle"
+									color="gray"
+									fullWidth
+									justify="flex-start"
+									style={{ borderRadius: 0 }}
+									onClick={() => {
+										onReply?.(chatId, msgId);
+										setMenuPos(null);
+									}}
+								>
+									<ActionIcon
+										variant="transparent"
+										color="gray"
+										size={18}
+										mr={6}
+									>
+										<CornerUpLeft size={14} />
+									</ActionIcon>
+									{t("message.reply")}
 								</Button>
 							)}
 							{canCreateThread && (
