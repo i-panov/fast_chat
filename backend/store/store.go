@@ -111,28 +111,18 @@ func (s *Store) SearchUsers(query, excludeID string) []model.User {
 }
 
 func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
-	var count int64
-	s.db.Raw(`
-		SELECT COUNT(*)
-		FROM chat_members cm1
-		JOIN chat_members cm2 ON cm1.chat_id = cm2.chat_id
-		WHERE (cm1.user_id = ? AND cm2.user_id = ?)
-		   OR (cm1.user_id = ? AND cm2.user_id = ?)
-	`, member1, member2, member2, member1).Scan(&count)
+	var chatIDs []string
 
-	if count > 0 {
+	s.db.Model(&ChatMember{}).
+		Where("user_id IN ?", []string{member1, member2}).
+		Group("chat_id").
+		Having("COUNT(DISTINCT user_id) = 2").
+		Pluck("chat_id", &chatIDs)
+
+	if len(chatIDs) > 0 {
 		var chat model.Chat
 
-		err := s.db.Raw(`
-			SELECT c.* FROM chats c
-			JOIN chat_members cm1 ON c.id = cm1.chat_id
-			JOIN chat_members cm2 ON c.id = cm2.chat_id
-			WHERE ((cm1.user_id = ? AND cm2.user_id = ?)
-				OR (cm1.user_id = ? AND cm2.user_id = ?))
-			GROUP BY c.id
-			HAVING COUNT(cm1.user_id) = 2
-		`, member1, member2, member2, member1).First(&chat).Error
-		if err == nil {
+		if err := s.db.First(&chat, "id = ?", chatIDs[0]).Error; err == nil {
 			chat.Members = []string{member1, member2}
 
 			return &chat, nil
@@ -164,18 +154,18 @@ func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
 }
 
 func (s *Store) GetUserChats(userID string) []*model.Chat {
+	var chatIDs []string
+
+	s.db.Model(&ChatMember{}).Where("user_id = ?", userID).Pluck("chat_id", &chatIDs)
+
 	var chats []*model.Chat
 
-	s.db.Raw(`
-		SELECT c.* FROM chats c
-		JOIN chat_members cm ON c.id = cm.chat_id
-		WHERE cm.user_id = ?
-		ORDER BY c.created_at DESC
-	`, userID).Scan(&chats)
+	s.db.Where("id IN ?", chatIDs).Order("created_at DESC").Find(&chats)
 
 	for _, c := range chats {
 		var memberIDs []string
-		s.db.Raw("SELECT user_id FROM chat_members WHERE chat_id = ?", c.ID).Scan(&memberIDs) //nolint:errcheck // scan result checked by subsequent use
+
+		s.db.Model(&ChatMember{}).Where("chat_id = ?", c.ID).Pluck("user_id", &memberIDs)
 		c.Members = memberIDs
 	}
 
@@ -190,7 +180,8 @@ func (s *Store) GetChat(chatID string) (*model.Chat, bool) {
 	}
 
 	var members []string
-	s.db.Raw("SELECT user_id FROM chat_members WHERE chat_id = ?", chatID).Scan(&members) //nolint:errcheck // scan result checked by subsequent use
+
+	s.db.Model(&ChatMember{}).Where("chat_id = ?", chatID).Pluck("user_id", &members)
 	chat.Members = members
 
 	return &chat, true
