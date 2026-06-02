@@ -485,7 +485,7 @@ export interface ChatInteraction {
 	cancelReply: () => void;
 	pendingFiles: PendingFile[];
 	setPendingFiles: React.Dispatch<React.SetStateAction<PendingFile[]>>;
-	handleAttachFiles: (files: FileList) => void;
+	handleAttachFiles: (files: File[]) => void;
 	handleRemoveFile: (fileId: string) => void;
 }
 
@@ -580,8 +580,8 @@ function useChatInteraction(opts: {
 		setReplyToMessage(null);
 	}
 
-	function handleAttachFiles(fileList: FileList) {
-		for (const file of Array.from(fileList)) {
+	function handleAttachFiles(files: File[]) {
+		for (const file of files) {
 			const fileType = file.type.startsWith("image/")
 				? "photo"
 				: file.type.startsWith("video/")

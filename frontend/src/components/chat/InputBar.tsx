@@ -1,6 +1,7 @@
 import {
 	ActionIcon,
 	Button,
+	Loader,
 	Paper,
 	Text,
 	Textarea,
@@ -8,7 +9,7 @@ import {
 } from "@mantine/core";
 import { FileIcon, Paperclip, X } from "lucide-react";
 import type React from "react";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { FileInfo, PendingFile } from "../../api.ts";
 import { useAuth } from "../../useAuth.tsx";
@@ -26,7 +27,7 @@ interface Props {
 	onTypingStart?: () => void;
 	onTypingStop?: () => void;
 	pendingFiles?: PendingFile[];
-	onAttachFiles?: (files: FileList) => void;
+	onAttachFiles?: (files: File[]) => void;
 	onRemoveFile?: (fileId: string) => void;
 	existingFiles?: FileInfo[];
 	onRemoveExistingFile?: (fileId: string) => void;
@@ -36,6 +37,57 @@ function formatSize(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function useVideoThumbnail(blobUrl: string | undefined): string | null {
+	const [thumb, setThumb] = useState<string | null>(null);
+	useEffect(() => {
+		if (!blobUrl) {
+			setThumb(null);
+			return;
+		}
+		const video = document.createElement("video");
+		video.preload = "metadata";
+		video.muted = true;
+		video.playsInline = true;
+		video.src = blobUrl;
+		let cancelled = false;
+
+		const onSeeked = () => {
+			if (cancelled) return;
+			const w = video.videoWidth || 320;
+			const h = video.videoHeight || 240;
+			const canvas = document.createElement("canvas");
+			canvas.width = w;
+			canvas.height = h;
+			const ctx = canvas.getContext("2d");
+			if (!ctx) return;
+			try {
+				ctx.drawImage(video, 0, 0, w, h);
+				setThumb(canvas.toDataURL("image/jpeg", 0.7));
+			} catch {
+				/* canvas tainted — fallback to icon */
+			}
+		};
+
+		const onLoaded = () => {
+			const seekTo =
+				video.duration > 0 ? Math.min(0.1, video.duration / 2) : 0.1;
+			video.currentTime = seekTo;
+		};
+
+		video.addEventListener("loadedmetadata", onLoaded);
+		video.addEventListener("seeked", onSeeked);
+
+		return () => {
+			cancelled = true;
+			video.removeEventListener("loadedmetadata", onLoaded);
+			video.removeEventListener("seeked", onSeeked);
+			video.removeAttribute("src");
+			video.load();
+		};
+	}, [blobUrl]);
+	return thumb;
 }
 
 function ReplyFilePreviewInline({
@@ -103,6 +155,10 @@ function PendingFilePreview({
 	file: PendingFile;
 	onRemove: () => void;
 }) {
+	const videoThumb = useVideoThumbnail(
+		file.fileType === "video" ? file.blobUrl : undefined,
+	);
+
 	return (
 		<Paper
 			style={{
@@ -121,6 +177,34 @@ function PendingFilePreview({
 					alt=""
 					style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }}
 				/>
+			) : file.fileType === "video" ? (
+				videoThumb ? (
+					<img
+						src={videoThumb}
+						alt=""
+						style={{
+							width: 32,
+							height: 32,
+							objectFit: "cover",
+							borderRadius: 4,
+						}}
+					/>
+				) : (
+					<div
+						style={{
+							width: 32,
+							height: 32,
+							display: "flex",
+							alignItems: "center",
+							justifyContent: "center",
+							background: "var(--mantine-color-dark-5)",
+							borderRadius: 4,
+							flexShrink: 0,
+						}}
+					>
+						<Loader size="xs" color="gray" />
+					</div>
+				)
 			) : (
 				<FileIcon size={24} style={{ flexShrink: 0 }} />
 			)}
@@ -230,9 +314,31 @@ export function InputBar({
 
 	function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
 		if (e.target.files && e.target.files.length > 0 && onAttachFiles) {
-			onAttachFiles(e.target.files);
+			onAttachFiles(Array.from(e.target.files));
 		}
 		e.target.value = "";
+	}
+
+	function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+		const items = e.clipboardData?.items;
+		if (!items) return;
+		const files: File[] = [];
+		let idx = 0;
+		for (const item of Array.from(items)) {
+			if (item.kind !== "file") continue;
+			const f = item.getAsFile();
+			if (!f) continue;
+			const ext = f.type.split("/")[1]?.replace("jpeg", "jpg") || "";
+			const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+			const base =
+				idx === 0 ? `clipboard-${stamp}` : `clipboard-${stamp}-${idx + 1}`;
+			const name = ext ? `${base}.${ext}` : base;
+			files.push(new File([f], name, { type: f.type }));
+			idx++;
+		}
+		if (files.length === 0) return; // текст/не-файл — дефолт
+		e.preventDefault();
+		onAttachFiles?.(files);
 	}
 
 	const hasExisting = existingFiles !== undefined && existingFiles.length > 0;
@@ -387,6 +493,7 @@ export function InputBar({
 					autosize
 					minRows={1}
 					maxRows={6}
+					onPaste={handlePaste}
 					onKeyDown={(e) => {
 						if (e.key === "Enter" && !e.shiftKey) {
 							e.preventDefault();

@@ -42,7 +42,7 @@ interface Props {
 	replyToFiles?: FileInfo[];
 	onCancelReply?: () => void;
 	pendingFiles?: PendingFile[];
-	onAttachFiles?: (files: FileList) => void;
+	onAttachFiles?: (files: File[]) => void;
 	onRemoveFile?: (fileId: string) => void;
 	existingFiles?: FileInfo[];
 	onRemoveExistingFile?: (fileId: string) => void;

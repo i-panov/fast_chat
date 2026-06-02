@@ -28,6 +28,7 @@ import type { FileInfo, ReplyToInfo } from "../../api.ts";
 import { useAudioPlayer } from "../../useAudioPlayer.tsx";
 import { useAuth } from "../../useAuth.tsx";
 import { extractCodeText } from "../../utils/chat.ts";
+import { ImageLightbox } from "./ImageLightbox.tsx";
 
 interface CodeBlockProps {
 	className?: string;
@@ -90,7 +91,13 @@ function CodeBlock({ className, code, lang }: CodeBlockProps) {
 	);
 }
 
-function FileAttachment({ file }: { file: FileInfo }) {
+function FileAttachment({
+	file,
+	onPhotoClick,
+}: {
+	file: FileInfo;
+	onPhotoClick?: () => void;
+}) {
 	const { play, currentTrack, isPlaying } = useAudioPlayer();
 	const { activeAccount } = useAuth();
 	const token = activeAccount?.token;
@@ -99,6 +106,27 @@ function FileAttachment({ file }: { file: FileInfo }) {
 		: file.url;
 
 	if (file.fileType === "photo") {
+		if (onPhotoClick) {
+			return (
+				<UnstyledButton
+					onClick={onPhotoClick}
+					style={{ display: "block", padding: 0, lineHeight: 0 }}
+				>
+					<img
+						src={url}
+						alt={file.originalName}
+						style={{
+							maxWidth: "100%",
+							maxHeight: 300,
+							borderRadius: 6,
+							objectFit: "contain",
+							cursor: "pointer",
+							display: "block",
+						}}
+					/>
+				</UnstyledButton>
+			);
+		}
 		return (
 			<a href={url} target="_blank" rel="noreferrer">
 				<img
@@ -324,6 +352,7 @@ export function MessageBubble({
 	onRetry,
 }: Props) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
 	const menuRef = useRef<HTMLDivElement>(null);
 	const { t, i18n } = useTranslation();
 	const locale = i18n.language.split("-")[0];
@@ -348,6 +377,8 @@ export function MessageBubble({
 		!isInThread &&
 		status !== "sending" &&
 		status !== "failed";
+
+	const photoFiles = (files ?? []).filter((f) => f.fileType === "photo");
 
 	useLayoutEffect(() => {
 		if (!menuPos || !menuRef.current) return;
@@ -417,9 +448,21 @@ export function MessageBubble({
 				)}
 				{(files ?? []).length > 0 && (
 					<div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-						{files?.map((file) => (
-							<FileAttachment key={file.id} file={file} />
-						))}
+						{files?.map((file) => {
+							const photoIdx =
+								file.fileType === "photo"
+									? photoFiles.findIndex((p) => p.id === file.id)
+									: -1;
+							return (
+								<FileAttachment
+									key={file.id}
+									file={file}
+									onPhotoClick={
+										photoIdx >= 0 ? () => setLightboxIdx(photoIdx) : undefined
+									}
+								/>
+							);
+						})}
 					</div>
 				)}
 				{text.length > 0 && (
@@ -676,6 +719,14 @@ export function MessageBubble({
 						</Stack>
 					</Paper>
 				</>
+			)}
+			{lightboxIdx !== null && photoFiles[lightboxIdx] && (
+				<ImageLightbox
+					images={photoFiles}
+					startIndex={lightboxIdx}
+					token={token}
+					onClose={() => setLightboxIdx(null)}
+				/>
 			)}
 		</>
 	);
