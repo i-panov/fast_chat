@@ -936,6 +936,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 					MessageID: req.ReplyToID,
 					Text:      msgs[idx].Text,
 					FromNick:  msgs[idx].FromNick,
+					Files:     h.store.GetMessageFilesForReply(msgs[idx].ID),
 				}
 
 				break
@@ -1357,6 +1358,11 @@ func (h *Handler) GetThreadMessages(w http.ResponseWriter, r *http.Request) {
 	messages, nextCursor, _ := h.store.GetThreadMessagesPaginated(threadID, limit, before)
 	if messages == nil {
 		messages = []model.Message{}
+	}
+
+	for i := range messages {
+		files, _ := h.store.GetMessageFiles(messages[i].ID) //nolint:errcheck
+		messages[i].Files = files
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

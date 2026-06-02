@@ -49,6 +49,7 @@ export interface ReplyToInfo {
 	messageId: string;
 	text: string;
 	fromNick: string;
+	files?: FileInfo[];
 }
 
 export interface FileInfo {

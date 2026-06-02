@@ -39,6 +39,7 @@ interface Props {
 	onRetry?: (threadId: string, messageId: string) => void;
 	replyToNick?: string;
 	replyToText?: string;
+	replyToFiles?: FileInfo[];
 	onCancelReply?: () => void;
 	pendingFiles?: PendingFile[];
 	onAttachFiles?: (files: FileList) => void;
@@ -68,6 +69,7 @@ export function ThreadView({
 	onRetry,
 	replyToNick,
 	replyToText,
+	replyToFiles,
 	onCancelReply,
 	pendingFiles,
 	onAttachFiles,
@@ -142,6 +144,7 @@ export function ThreadView({
 				onCancelEdit={onCancelEdit}
 				replyToNick={replyToNick}
 				replyToText={replyToText}
+				replyToFiles={replyToFiles}
 				onCancelReply={onCancelReply}
 				pendingFiles={pendingFiles}
 				onAttachFiles={onAttachFiles}

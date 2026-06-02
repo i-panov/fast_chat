@@ -18,9 +18,10 @@ type Chat struct {
 }
 
 type ReplyToInfo struct {
-	MessageID string `json:"messageId"`
-	Text      string `json:"text"`
-	FromNick  string `json:"fromNick"`
+	MessageID string     `json:"messageId"`
+	Text      string     `json:"text"`
+	FromNick  string     `json:"fromNick"`
+	Files     []FileInfo `json:"files,omitempty"`
 }
 
 type File struct {

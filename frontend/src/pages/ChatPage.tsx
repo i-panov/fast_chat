@@ -124,6 +124,7 @@ export function ChatPage() {
 							onRetry={s.handleRetryThreadMessage}
 							replyToNick={s.replyToMessage?.fromNick}
 							replyToText={s.replyToMessage?.text}
+							replyToFiles={s.replyToMessage?.files}
 							onCancelReply={s.cancelReply}
 							pendingFiles={s.pendingFiles}
 							onAttachFiles={s.handleAttachFiles}
@@ -156,6 +157,7 @@ export function ChatPage() {
 										onCancelEdit={s.handleCancelEdit}
 										replyToNick={s.replyToMessage?.fromNick}
 										replyToText={s.replyToMessage?.text}
+										replyToFiles={s.replyToMessage?.files}
 										onCancelReply={s.cancelReply}
 										pendingFiles={s.pendingFiles}
 										onAttachFiles={s.handleAttachFiles}
@@ -205,6 +207,7 @@ export function ChatPage() {
 										onCancelEdit={s.handleCancelEdit}
 										replyToNick={s.replyToMessage?.fromNick}
 										replyToText={s.replyToMessage?.text}
+										replyToFiles={s.replyToMessage?.files}
 										onCancelReply={s.cancelReply}
 										onTypingStart={() => {
 											if (s.activeChatId !== null)

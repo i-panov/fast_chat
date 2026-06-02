@@ -13,6 +13,15 @@ function DateSeparator({ dateStr }: { dateStr: string }) {
 	);
 }
 
+function flashElement(el: HTMLElement) {
+	el.classList.remove("bubble-flash");
+	void el.offsetWidth;
+	el.classList.add("bubble-flash");
+	window.setTimeout(() => {
+		el.classList.remove("bubble-flash");
+	}, 1500);
+}
+
 interface Props {
 	messages: Message[];
 	userId: string;
@@ -125,6 +134,7 @@ export function MessageList({
 		);
 		if (el) {
 			el.scrollIntoView({ behavior: "smooth", block: "center" });
+			flashElement(el as HTMLElement);
 		}
 	}, [scrollToMessageId]);
 
@@ -135,6 +145,7 @@ export function MessageList({
 		);
 		if (el) {
 			el.scrollIntoView({ behavior: "smooth", block: "center" });
+			flashElement(el as HTMLElement);
 		}
 	}, []);
 

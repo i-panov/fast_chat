@@ -21,6 +21,7 @@ interface Props {
 	onCancelEdit: () => void;
 	replyToNick?: string;
 	replyToText?: string;
+	replyToFiles?: FileInfo[];
 	onCancelReply?: () => void;
 	onTypingStart?: () => void;
 	onTypingStop?: () => void;
@@ -35,6 +36,64 @@ function formatSize(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function ReplyFilePreviewInline({
+	files,
+	token,
+}: {
+	files: FileInfo[];
+	token: string | undefined;
+}) {
+	if (files.length === 0) return null;
+	const first = files[0];
+	const extra = files.length - 1;
+	const url = token
+		? `${first.url}?token=${encodeURIComponent(token)}`
+		: first.url;
+
+	return (
+		<div
+			style={{
+				display: "flex",
+				alignItems: "center",
+				gap: 6,
+				marginTop: 2,
+			}}
+		>
+			{first.fileType === "photo" ? (
+				<img
+					src={url}
+					alt=""
+					style={{
+						width: 20,
+						height: 20,
+						objectFit: "cover",
+						borderRadius: 3,
+						flexShrink: 0,
+					}}
+				/>
+			) : (
+				<FileIcon
+					size={18}
+					style={{ flexShrink: 0, color: "var(--mantine-color-gray-5)" }}
+				/>
+			)}
+			<Text
+				size="xs"
+				c="dimmed"
+				truncate="end"
+				style={{ flex: 1, minWidth: 0 }}
+			>
+				{first.originalName}
+			</Text>
+			{extra > 0 && (
+				<Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+					+{extra}
+				</Text>
+			)}
+		</div>
+	);
 }
 
 function PendingFilePreview({
@@ -150,6 +209,7 @@ export function InputBar({
 	onCancelEdit,
 	replyToNick,
 	replyToText,
+	replyToFiles,
 	onCancelReply,
 	onTypingStart,
 	onTypingStop,
@@ -188,7 +248,7 @@ export function InputBar({
 				style={{ display: "none" }}
 				onChange={handleFileChange}
 			/>
-			{replyToNick !== undefined && replyToText !== undefined && !editing && (
+			{replyToNick !== undefined && !editing && (
 				<Paper
 					style={{
 						padding: "8px 12px",
@@ -202,15 +262,25 @@ export function InputBar({
 							display: "flex",
 							alignItems: "center",
 							justifyContent: "space-between",
+							gap: 8,
 						}}
 					>
-						<div style={{ flex: 1, overflow: "hidden" }}>
+						<div style={{ flex: 1, overflow: "hidden", minWidth: 0 }}>
 							<Text size="xs" c="blue" truncate="end">
 								{t("input.replyingTo", { nick: replyToNick })}
 							</Text>
-							<Text size="xs" c="dimmed" truncate="end">
-								{replyToText}
-							</Text>
+							{(replyToText ?? "").length > 0 ? (
+								<Text size="xs" c="dimmed" truncate="end">
+									{replyToText}
+								</Text>
+							) : (
+								(replyToFiles ?? []).length > 0 && (
+									<ReplyFilePreviewInline
+										files={replyToFiles ?? []}
+										token={token}
+									/>
+								)
+							)}
 						</div>
 						<ActionIcon
 							variant="subtle"

@@ -296,6 +296,7 @@ interface ReplyTarget {
 	messageId: string;
 	fromNick: string;
 	text: string;
+	files?: FileInfo[];
 }
 
 function useSendMessage(opts: {
@@ -644,6 +645,7 @@ function useChatInteraction(opts: {
 			messageId,
 			fromNick: msg.fromNick,
 			text: msg.text,
+			files: msg.files,
 		});
 	}
 

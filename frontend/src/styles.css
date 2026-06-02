@@ -28,3 +28,22 @@ body {
 	background: var(--mantine-color-dark-6);
 	align-self: flex-start;
 }
+
+@keyframes bubble-flash {
+	0% {
+		box-shadow: 0 0 0 0 var(--mantine-color-blue-5);
+	}
+
+	50% {
+		box-shadow: 0 0 0 4px var(--mantine-color-blue-5);
+	}
+
+	100% {
+		box-shadow: 0 0 0 0 var(--mantine-color-blue-5);
+	}
+}
+
+.bubble-flash {
+	animation: bubble-flash 1.5s ease-out;
+	border-radius: 8px;
+}

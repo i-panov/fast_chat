@@ -292,6 +292,7 @@ func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID 
 			MessageID: replyToID,
 			Text:      replyMsg.Text,
 			FromNick:  replyMsg.FromNick,
+			Files:     s.GetMessageFilesForReply(replyMsg.ID),
 		}
 	}
 
@@ -533,6 +534,7 @@ func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID, re
 			MessageID: replyToID,
 			Text:      replyMsg.Text,
 			FromNick:  replyMsg.FromNick,
+			Files:     s.GetMessageFilesForReply(replyMsg.ID),
 		}
 	}
 
@@ -669,6 +671,17 @@ func (s *Store) GetMessageFiles(messageID string) ([]model.FileInfo, error) {
 	}
 
 	return result, nil
+}
+
+// GetMessageFilesForReply returns files for embedding into a ReplyToInfo.
+// It silently swallows errors and returns nil on failure to keep the caller paths simple.
+func (s *Store) GetMessageFilesForReply(messageID string) []model.FileInfo {
+	files, err := s.GetMessageFiles(messageID)
+	if err != nil {
+		return nil
+	}
+
+	return files
 }
 
 func (s *Store) GetFileChats(fileID string) ([]string, error) {

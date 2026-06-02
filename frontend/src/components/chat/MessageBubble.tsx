@@ -204,6 +204,64 @@ function formatSize(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function ReplyFilePreview({
+	files,
+	token,
+}: {
+	files: FileInfo[];
+	token: string | undefined;
+}) {
+	if (files.length === 0) return null;
+	const first = files[0];
+	const extra = files.length - 1;
+	const url = token
+		? `${first.url}?token=${encodeURIComponent(token)}`
+		: first.url;
+
+	return (
+		<div
+			style={{
+				display: "flex",
+				alignItems: "center",
+				gap: 6,
+				marginTop: 2,
+			}}
+		>
+			{first.fileType === "photo" ? (
+				<img
+					src={url}
+					alt=""
+					style={{
+						width: 24,
+						height: 24,
+						objectFit: "cover",
+						borderRadius: 3,
+						flexShrink: 0,
+					}}
+				/>
+			) : (
+				<FileIcon
+					size={20}
+					style={{ flexShrink: 0, color: "var(--mantine-color-gray-5)" }}
+				/>
+			)}
+			<Text
+				size="xs"
+				c="dimmed"
+				truncate="end"
+				style={{ flex: 1, minWidth: 0 }}
+			>
+				{first.originalName}
+			</Text>
+			{extra > 0 && (
+				<Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+					+{extra}
+				</Text>
+			)}
+		</div>
+	);
+}
+
 interface Props {
 	text: string;
 	isOwn: boolean;
@@ -269,6 +327,8 @@ export function MessageBubble({
 	const menuRef = useRef<HTMLDivElement>(null);
 	const { t, i18n } = useTranslation();
 	const locale = i18n.language.split("-")[0];
+	const { activeAccount } = useAuth();
+	const token = activeAccount?.token;
 
 	const canEdit =
 		isOwn &&
@@ -337,18 +397,22 @@ export function MessageBubble({
 						<Text size="xs" c="blue" truncate="end">
 							@{replyTo.fromNick}
 						</Text>
-						<Text
-							size="xs"
-							c="dimmed"
-							style={{
-								display: "-webkit-box",
-								WebkitLineClamp: 2,
-								WebkitBoxOrient: "vertical",
-								overflow: "hidden",
-							}}
-						>
-							{replyTo.text}
-						</Text>
+						{replyTo.text.length > 0 ? (
+							<Text
+								size="xs"
+								c="dimmed"
+								style={{
+									display: "-webkit-box",
+									WebkitLineClamp: 2,
+									WebkitBoxOrient: "vertical",
+									overflow: "hidden",
+								}}
+							>
+								{replyTo.text}
+							</Text>
+						) : (
+							<ReplyFilePreview files={replyTo.files ?? []} token={token} />
+						)}
 					</UnstyledButton>
 				)}
 				{(files ?? []).length > 0 && (
