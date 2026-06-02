@@ -225,6 +225,7 @@ formatters:
       sections:
         - standard
         - default
+        - prefix(fast_chat)
 
 issues:
   max-issues-per-linter: 0

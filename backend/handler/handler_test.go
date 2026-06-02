@@ -10,11 +10,31 @@ import (
 	"strings"
 	"testing"
 
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
 	"fast_chat/config"
 	"fast_chat/federation"
 	"fast_chat/model"
 	"fast_chat/store"
 )
+
+func newTestStore(t *testing.T) *store.Store {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &store.ChatMember{}, &model.Message{}, &model.Thread{}); err != nil {
+		t.Fatal(err)
+	}
+
+	return store.New(db)
+}
+
+const testNickAlice = `{"nick":"alice"}`
 
 func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
@@ -35,7 +55,7 @@ func newTestHandler(t *testing.T) *Handler {
 	}
 
 	fm := federation.New(key, cfg.ServerDomain, cfg.FederationScheme, cfg.FederationTimeout)
-	s := store.New()
+	s := newTestStore(t)
 
 	return New(s, cfg, fm)
 }
@@ -43,7 +63,7 @@ func newTestHandler(t *testing.T) *Handler {
 func TestRegister(t *testing.T) {
 	h := newTestHandler(t)
 
-	body := `{"nick":"alice"}`
+	body := testNickAlice
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -74,7 +94,7 @@ func TestRegister(t *testing.T) {
 func TestRegisterDuplicate(t *testing.T) {
 	h := newTestHandler(t)
 
-	body := `{"nick":"alice"}`
+	body := testNickAlice
 
 	req1 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(body))
 	req1.Header.Set("Content-Type", "application/json")
@@ -123,7 +143,7 @@ func TestAuthMiddleware(t *testing.T) {
 	h := newTestHandler(t)
 
 	// Register a user to get a token
-	body := `{"nick":"alice"}`
+	body := testNickAlice
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

@@ -9,6 +9,7 @@ import (
 
 // Config holds application settings.
 type Config struct {
+	DBPath            string
 	MessageEditTTL    int
 	MessageDeleteTTL  int
 	ServerDomain      string
@@ -21,6 +22,7 @@ type Config struct {
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
 	return &Config{
+		DBPath:            getEnv("DB_PATH", "data/fast_chat.db"),
 		MessageEditTTL:    getEnvInt("MESSAGE_EDIT_TTL", 300),
 		MessageDeleteTTL:  getEnvInt("MESSAGE_DELETE_TTL", 0),
 		ServerDomain:      getEnv("SERVER_DOMAIN", "localhost:8080"),

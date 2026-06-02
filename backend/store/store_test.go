@@ -5,11 +5,29 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
 	"fast_chat/model"
 )
 
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &ChatMember{}, &model.Message{}, &model.Thread{}); err != nil {
+		t.Fatal(err)
+	}
+
+	return New(db)
+}
+
 func TestCreateUser(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	user, err := s.CreateUser("alice:localhost:8080", "alice")
 	if err != nil {
@@ -33,7 +51,7 @@ func TestCreateUser(t *testing.T) {
 }
 
 func TestGetUserByToken(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	user, _ := s.CreateUser("bob:test", "bob")
 	found, ok := s.GetUserByToken(user.Token)
@@ -51,7 +69,7 @@ func TestGetUserByToken(t *testing.T) {
 }
 
 func TestGetUserByID(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	user, _ := s.CreateUser("carol:test", "carol")
 	found, ok := s.GetUserByID(user.ID)
@@ -64,7 +82,7 @@ func TestGetUserByID(t *testing.T) {
 }
 
 func TestSearchUsers(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
@@ -92,7 +110,7 @@ func TestSearchUsers(t *testing.T) {
 }
 
 func TestCreateChat(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
@@ -116,7 +134,7 @@ func TestCreateChat(t *testing.T) {
 }
 
 func TestGetUserChats(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
@@ -137,7 +155,7 @@ func TestGetUserChats(t *testing.T) {
 }
 
 func TestAddMessage(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
@@ -165,7 +183,7 @@ func TestAddMessage(t *testing.T) {
 }
 
 func TestEditMessage(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
@@ -190,7 +208,7 @@ func TestEditMessage(t *testing.T) {
 }
 
 func TestDeleteMessage(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
@@ -209,7 +227,7 @@ func TestDeleteMessage(t *testing.T) {
 }
 
 func TestGetMessagesPaginated(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
@@ -245,7 +263,7 @@ func TestGetMessagesPaginated(t *testing.T) {
 }
 
 func TestCreateRemoteChat(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 
 	s.CreateUser("alice:local", "alice")
 	s.CreateUser("bob:remote", "bob")
@@ -269,7 +287,7 @@ func TestCreateRemoteChat(t *testing.T) {
 }
 
 func TestAddRawMessage(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
@@ -301,7 +319,7 @@ func TestAddRawMessage(t *testing.T) {
 }
 
 func TestEditRawMessage(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
@@ -331,7 +349,7 @@ func TestEditRawMessage(t *testing.T) {
 }
 
 func TestDeleteRawMessage(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
@@ -354,7 +372,7 @@ func TestDeleteRawMessage(t *testing.T) {
 }
 
 func TestCreateThreadAndGet(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
@@ -396,7 +414,7 @@ func TestCreateThreadAndGet(t *testing.T) {
 }
 
 func TestGetThreadsForChat(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
@@ -418,7 +436,7 @@ func TestGetThreadsForChat(t *testing.T) {
 }
 
 func TestAddThreadMessage(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
@@ -453,7 +471,7 @@ func TestAddThreadMessage(t *testing.T) {
 }
 
 func TestAddConnection(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 	s.CreateUser("alice:test", "alice")
 	user, _ := s.GetUserByID("alice:test")
 
@@ -464,32 +482,36 @@ func TestAddConnection(t *testing.T) {
 	s.AddConnection("alice:test")
 
 	s.RemoveConnection("alice:test")
+
+	user, _ = s.GetUserByID("alice:test")
 	if user.Online {
 		t.Error("expected user to be offline after RemoveConnection")
 	}
 }
 
 func TestAddConnectionMultiple(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 	s.CreateUser("alice:test", "alice")
-	user, _ := s.GetUserByID("alice:test")
 
 	s.AddConnection("alice:test")
 	s.AddConnection("alice:test")
 	s.RemoveConnection("alice:test")
 
+	user, _ := s.GetUserByID("alice:test")
 	if !user.Online {
 		t.Error("expected user to stay online after one RemoveConnection (still one left)")
 	}
 
 	s.RemoveConnection("alice:test")
+
+	user, _ = s.GetUserByID("alice:test")
 	if user.Online {
 		t.Error("expected user to be offline after all connections removed")
 	}
 }
 
 func TestGetMessageValue(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")
@@ -505,14 +527,14 @@ func TestGetMessageValue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	msg1.Text = "modified"
+	msg1.Text = "modified" //nolint:goconst // test value
 	if msg2.Text == "modified" {
 		t.Error("GetMessage should return a copy, modifications to one should not affect the other")
 	}
 }
 
 func TestGetThreadValue(t *testing.T) {
-	s := New()
+	s := newTestStore(t)
 	s.CreateUser("alice:test", "alice")
 	s.CreateUser("bob:test", "bob")
 	chat, _ := s.CreateChat("alice:test", "bob:test")

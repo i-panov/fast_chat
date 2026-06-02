@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -138,6 +139,17 @@ func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
 func main() {
 	cfg := config.Load()
 
+	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o750); err != nil {
+		log.Printf("FATAL: Failed to create data directory: %v", err)
+		os.Exit(1)
+	}
+
+	db, err := store.InitDB(cfg.DBPath)
+	if err != nil {
+		log.Printf("FATAL: Failed to initialize database: %v", err)
+		os.Exit(1)
+	}
+
 	fedKey, err := federation.LoadOrGenerateKeys(cfg.FederationKeyPath)
 	if err != nil {
 		log.Printf("FATAL: Failed to load federation keys: %v", err)
@@ -146,7 +158,7 @@ func main() {
 
 	fedManager := federation.New(fedKey, cfg.ServerDomain, cfg.FederationScheme, cfg.FederationTimeout)
 
-	s := store.New()
+	s := store.New(db) //nolint:varnamelen // st used across startup/shutdown
 	handlerInstance := handler.New(s, cfg, fedManager)
 
 	mux := http.NewServeMux()
@@ -212,6 +224,8 @@ func main() {
 	log.Println("Shutting down server...")
 
 	close(rl.closeCh)
+
+	s.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
