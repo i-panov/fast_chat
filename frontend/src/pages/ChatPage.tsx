@@ -10,7 +10,15 @@ import { ThreadView } from "../components/chat/ThreadView.tsx";
 import { useChatPage } from "../hooks/useChatInteraction.ts";
 import { otherNick } from "../utils/chat.ts";
 
-function ChatHeader({ title, badge }: { title: string; badge?: string }) {
+function ChatHeader({
+	title,
+	badge,
+	typingNick,
+}: {
+	title: string;
+	badge?: string;
+	typingNick?: string;
+}) {
 	const { t } = useTranslation();
 
 	return (
@@ -31,6 +39,11 @@ function ChatHeader({ title, badge }: { title: string; badge?: string }) {
 					</Text>
 				)}
 			</Text>
+			{typingNick !== undefined && (
+				<Text size="xs" c="dimmed">
+					{t("chat.typing", { nick: typingNick })}
+				</Text>
+			)}
 		</Paper>
 	);
 }
@@ -142,6 +155,7 @@ export function ChatPage() {
 								<>
 									<ChatHeader
 										title={otherNick(s.activeChat.members, s.user.id)}
+										typingNick={s.typingUsers[s.activeChatId ?? ""]?.[0]?.nick}
 									/>
 									<MessageList
 										messages={s.activeMessages}
@@ -169,6 +183,14 @@ export function ChatPage() {
 										onSubmit={s.handleSend}
 										editing={s.editingMessage !== null}
 										onCancelEdit={s.handleCancelEdit}
+										onTypingStart={() => {
+											if (s.activeChatId !== null)
+												s.handleTyping(s.activeChatId, true);
+										}}
+										onTypingStop={() => {
+											if (s.activeChatId !== null)
+												s.handleTyping(s.activeChatId, false);
+										}}
 									/>
 								</>
 							)}

@@ -16,6 +16,7 @@
 	"chat.noChats": "No chats yet. Search for a user above to start one.",
 	"chat.loading": "Loading...",
 	"chat.unknownUser": "Unknown",
+	"chat.typing": "{{nick}} is typing...",
 
 	"input.editBanner": "Editing",
 	"input.placeholder": "Type a message...",

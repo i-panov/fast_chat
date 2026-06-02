@@ -9,6 +9,8 @@ interface Props {
 	onSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
 	editing: boolean;
 	onCancelEdit: () => void;
+	onTypingStart?: () => void;
+	onTypingStop?: () => void;
 }
 
 export function InputBar({
@@ -17,6 +19,8 @@ export function InputBar({
 	onSubmit,
 	editing,
 	onCancelEdit,
+	onTypingStart,
+	onTypingStop,
 }: Props) {
 	const { t } = useTranslation();
 
@@ -57,12 +61,18 @@ export function InputBar({
 						: "1px solid var(--mantine-color-dark-4)",
 					background: "var(--mantine-color-dark-8)",
 				}}
-				onSubmit={onSubmit}
+				onSubmit={(e) => {
+					onTypingStop?.();
+					onSubmit(e);
+				}}
 			>
 				<Textarea
 					placeholder={t("input.placeholder")}
 					value={text}
-					onChange={(e) => onTextChange(e.target.value)}
+					onChange={(e) => {
+						onTextChange(e.target.value);
+						onTypingStart?.();
+					}}
 					style={{ flex: 1 }}
 					size="sm"
 					autosize

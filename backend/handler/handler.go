@@ -38,8 +38,9 @@ type SSEEvent struct {
 }
 
 type SSEHub struct {
-	mu      sync.RWMutex
-	clients map[string][]chan SSEEvent
+	mu         sync.RWMutex
+	clients    map[string][]chan SSEEvent
+	lastTyping sync.Map // key "chatID:userID" → time.Time
 }
 
 func NewSSEHub() *SSEHub {
@@ -564,6 +565,99 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
 }
 
+const typingThrottleInterval = 2 * time.Second
+
+func (h *Handler) HandleTyping(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+	chatID := r.PathValue("id")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if !isMember(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return
+	}
+
+	var req struct {
+		Active bool `json:"active"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	if !req.Active {
+		event := SSEEvent{Event: "typing_stop", Data: map[string]string{
+			"chatId": chatID,
+			"userId": user.ID,
+		}}
+
+		for _, memberID := range chat.Members {
+			if memberID != user.ID {
+				h.hub.Send(memberID, event)
+			}
+		}
+
+		if chat.RemoteServer != "" {
+			fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/typing")
+
+			_, _ = h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, map[string]interface{}{ //nolint:errcheck
+				"userId": user.ID,
+				"active": false,
+			})
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+
+		return
+	}
+
+	key := chatID + ":" + user.ID
+	if last, ok := h.hub.lastTyping.Load(key); ok {
+		if time.Since(last.(time.Time)) < typingThrottleInterval { //nolint:errcheck
+			writeJSON(w, http.StatusOK, map[string]string{"status": "throttled"})
+
+			return
+		}
+	}
+
+	h.hub.lastTyping.Store(key, time.Now())
+
+	event := SSEEvent{Event: "typing", Data: map[string]string{
+		"chatId": chatID,
+		"userId": user.ID,
+		"nick":   user.Nick,
+	}}
+
+	for _, memberID := range chat.Members {
+		if memberID != user.ID {
+			h.hub.Send(memberID, event)
+		}
+	}
+
+	if chat.RemoteServer != "" {
+		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/typing")
+
+		_, _ = h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, map[string]interface{}{ //nolint:errcheck
+			"userId": user.ID,
+			"nick":   user.Nick,
+			"active": true,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"messageEditTTL":   h.cfg.MessageEditTTL,
@@ -741,6 +835,63 @@ func (h *Handler) FederatedDeleteMessage(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *Handler) FederatedHandleTyping(w http.ResponseWriter, r *http.Request) {
+	chatID := r.PathValue("id")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	remoteServer := r.Header.Get("X-Federation-Server")
+	if remoteServer == "" || chat.RemoteServer != remoteServer {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return
+	}
+
+	var req struct {
+		UserID string `json:"userId"`
+		Nick   string `json:"nick,omitempty"`
+		Active bool   `json:"active"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	if req.Active {
+		event := SSEEvent{Event: "typing", Data: map[string]string{
+			"chatId": chatID,
+			"userId": req.UserID,
+			"nick":   req.Nick,
+		}}
+
+		for _, memberID := range chat.Members {
+			if memberID != req.UserID {
+				h.hub.Send(memberID, event)
+			}
+		}
+	} else {
+		event := SSEEvent{Event: "typing_stop", Data: map[string]string{
+			"chatId": chatID,
+			"userId": req.UserID,
+		}}
+
+		for _, memberID := range chat.Members {
+			if memberID != req.UserID {
+				h.hub.Send(memberID, event)
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {

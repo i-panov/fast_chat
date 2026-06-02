@@ -1,6 +1,13 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppConfig, Chat, Message, Thread, User } from "../api.ts";
+import type {
+	AppConfig,
+	Chat,
+	Message,
+	Thread,
+	TypingPayload,
+	User,
+} from "../api.ts";
 import {
 	createThread as apiCreateThread,
 	getThreadMessages as apiGetThreadMessages,
@@ -14,6 +21,7 @@ import {
 	getMessages,
 	searchUsers,
 	sendMessage,
+	sendTyping,
 } from "../api.ts";
 import i18n from "../i18n.ts";
 import { useAuth } from "../useAuth.tsx";
@@ -94,6 +102,7 @@ function useSearch(
 	}, [query, token, setResults]);
 }
 
+// biome-ignore lint/complexity/useMaxParams: all params are required for SSE event routing
 function useSseMessages(
 	token: string,
 	setChats: React.Dispatch<React.SetStateAction<Chat[]>>,
@@ -105,6 +114,10 @@ function useSseMessages(
 	setMessageToThread: React.Dispatch<
 		React.SetStateAction<Record<string, string>>
 	>,
+	setTypingUsers: React.Dispatch<
+		React.SetStateAction<Record<string, TypingPayload[]>>
+	>,
+	typingTimersRef: React.MutableRefObject<Record<string, number>>,
 ) {
 	const seenIds = useRef<string[]>([]);
 
@@ -193,9 +206,61 @@ function useSseMessages(
 						[threadId]: { ...t, messageCount: t.messageCount + 1 },
 					};
 				});
+			} else if (event === "typing") {
+				const payload = data as TypingPayload;
+				setTypingUsers((prev) => {
+					const list = prev[payload.chatId] ?? [];
+					if (list.some((t) => t.userId === payload.userId)) return prev;
+					return { ...prev, [payload.chatId]: [...list, payload] };
+				});
+				const timerKey = `${payload.chatId}:${payload.userId}`;
+				if (typingTimersRef.current[timerKey] !== undefined) {
+					clearTimeout(typingTimersRef.current[timerKey]);
+				}
+				typingTimersRef.current[timerKey] = window.setTimeout(() => {
+					setTypingUsers((prev) => {
+						const list = (prev[payload.chatId] ?? []).filter(
+							(t) => t.userId !== payload.userId,
+						);
+						if (list.length === 0) {
+							// eslint-disable-next-line @typescript-eslint/no-unused-vars
+							const { [payload.chatId]: _, ...rest } = prev;
+							return rest;
+						}
+						return { ...prev, [payload.chatId]: list };
+					});
+					delete typingTimersRef.current[timerKey];
+				}, 3000);
+			} else if (event === "typing_stop") {
+				const { chatId, userId } = data as {
+					chatId: string;
+					userId: string;
+				};
+				const timerKey = `${chatId}:${userId}`;
+				if (typingTimersRef.current[timerKey] !== undefined) {
+					clearTimeout(typingTimersRef.current[timerKey]);
+					delete typingTimersRef.current[timerKey];
+				}
+				setTypingUsers((prev) => {
+					const list = (prev[chatId] ?? []).filter((t) => t.userId !== userId);
+					if (list.length === 0) {
+						// eslint-disable-next-line @typescript-eslint/no-unused-vars
+						const { [chatId]: _, ...rest } = prev;
+						return rest;
+					}
+					return { ...prev, [chatId]: list };
+				});
 			}
 		},
-		[setMessages, setChats, setThreads, setThreadMessages, setMessageToThread],
+		[
+			setMessages,
+			setChats,
+			setThreads,
+			setThreadMessages,
+			setMessageToThread,
+			setTypingUsers,
+			typingTimersRef,
+		],
 	);
 
 	useSse(token, handler);
@@ -493,6 +558,12 @@ export function useChatPage() {
 	const [threadIsLoadingMore, setThreadIsLoadingMore] = useState(false);
 	const [threadHasMore, setThreadHasMore] = useState(false);
 
+	const [typingUsers, setTypingUsers] = useState<
+		Record<string, TypingPayload[]>
+	>({});
+	const typingTimersRef = useRef<Record<string, number>>({});
+	const lastTypingSent = useRef<Record<string, number>>({});
+
 	const user =
 		activeAccount !== null
 			? { id: activeAccount.user.id, nick: activeAccount.user.nick }
@@ -516,6 +587,24 @@ export function useChatPage() {
 		setThreads,
 		setThreadMessages,
 		setMessageToThread,
+		setTypingUsers,
+		typingTimersRef,
+	);
+
+	const handleTyping = useCallback(
+		(chatId: string, active: boolean) => {
+			if (token === undefined || token === "") return;
+			if (active) {
+				const now = Date.now();
+				const last = lastTypingSent.current[chatId] ?? 0;
+				if (now - last < 2000) return;
+				lastTypingSent.current[chatId] = now;
+			}
+			sendTyping(token, chatId, active).catch(() => {
+				/* ignore */
+			});
+		},
+		[token],
 	);
 
 	useEffect(() => {
@@ -936,6 +1025,8 @@ export function useChatPage() {
 		handleCloseThread,
 		loadMoreThreadMessages,
 		handleSendThreadMessage,
+		typingUsers,
+		handleTyping,
 		...interaction,
 	};
 }

@@ -16,6 +16,7 @@
 	"chat.noChats": "Чатов пока нет. Найдите пользователя выше, чтобы начать.",
 	"chat.loading": "Загрузка...",
 	"chat.unknownUser": "Неизвестный",
+	"chat.typing": "{{nick}} печатает...",
 
 	"input.editBanner": "Редактирование",
 	"input.placeholder": "Напишите сообщение...",

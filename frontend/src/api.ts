@@ -193,6 +193,19 @@ export function sendThreadMessage(
 	);
 }
 
+export interface TypingPayload {
+	chatId: string;
+	userId: string;
+	nick: string;
+}
+
+export function sendTyping(token: string, chatId: string, active: boolean) {
+	return request<{ status: string }>(`/api/chats/${chatId}/typing`, token, {
+		method: "POST",
+		body: JSON.stringify({ active }),
+	});
+}
+
 export function getConfig() {
 	return request<AppConfig>("/api/config", undefined);
 }

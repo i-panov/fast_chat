@@ -79,6 +79,24 @@ export function useSse(token: string, onEvent: EventHandler) {
 			}
 		});
 
+		source.addEventListener("typing", (e) => {
+			try {
+				const data = JSON.parse(e.data as string) as Record<string, unknown>;
+				onEventRef.current("typing", data);
+			} catch {
+				/* ignore */
+			}
+		});
+
+		source.addEventListener("typing_stop", (e) => {
+			try {
+				const data = JSON.parse(e.data as string) as Record<string, unknown>;
+				onEventRef.current("typing_stop", data);
+			} catch {
+				/* ignore */
+			}
+		});
+
 		source.addEventListener("connected", () => {
 			onEventRef.current("connected", null);
 		});
