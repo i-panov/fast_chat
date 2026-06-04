@@ -14,9 +14,13 @@ vi.mock("../i18n.ts", () => ({
 	},
 }));
 
-const { otherNick, formatDateLabel, extractCodeText, chatTitle } = await import(
-	"./chat.ts"
-);
+const {
+	otherNick,
+	extractCodeText,
+	chatTitle,
+	formatCoords,
+	openStreetMapURL,
+} = await import("./chat.ts");
 
 describe("otherNick", () => {
 	it("returns the other member's nick", () => {
@@ -37,22 +41,37 @@ describe("otherNick", () => {
 	});
 });
 
-describe("formatDateLabel", () => {
-	it('returns "Today" for today\'s date', () => {
-		const today = new Date();
-		expect(formatDateLabel(today.toISOString())).toBe("Today");
+describe("formatCoords", () => {
+	it("formats coordinates with 6 decimal places", () => {
+		expect(formatCoords({ lat: 51.505, lng: -0.09 })).toBe(
+			"51.505000, -0.090000",
+		);
 	});
 
-	it('returns "Yesterday" for yesterday\'s date', () => {
-		const yesterday = new Date();
-		yesterday.setDate(yesterday.getDate() - 1);
-		expect(formatDateLabel(yesterday.toISOString())).toBe("Yesterday");
+	it("keeps negative latitude formatting", () => {
+		expect(formatCoords({ lat: -33.8688, lng: 151.2093 })).toBe(
+			"-33.868800, 151.209300",
+		);
 	});
 
-	it("returns formatted date for older dates", () => {
-		const date = new Date("2024-01-15T12:00:00Z");
-		const result = formatDateLabel(date.toISOString());
-		expect(result).toMatch(/\d{2}\.\d{2}\.\d{4}/);
+	it("keeps negative longitude formatting", () => {
+		expect(formatCoords({ lat: 40.7128, lng: -74.006 })).toBe(
+			"40.712800, -74.006000",
+		);
+	});
+});
+
+describe("openStreetMapURL", () => {
+	it("builds an OSM URL with mlat/mlon and map hash", () => {
+		expect(openStreetMapURL({ lat: 51.505, lng: -0.09 })).toBe(
+			"https://www.openstreetmap.org/?mlat=51.505&mlon=-0.09#map=17/51.505/-0.09",
+		);
+	});
+
+	it("preserves sign on negative coordinates", () => {
+		expect(openStreetMapURL({ lat: -33.8688, lng: 151.2093 })).toBe(
+			"https://www.openstreetmap.org/?mlat=-33.8688&mlon=151.2093#map=17/-33.8688/151.2093",
+		);
 	});
 });
 

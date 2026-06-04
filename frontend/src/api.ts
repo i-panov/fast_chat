@@ -54,6 +54,12 @@ export interface ReplyToInfo {
 	text: string;
 	fromNick: string;
 	files?: FileInfo[];
+	location?: Location;
+}
+
+export interface Location {
+	lat: number;
+	lng: number;
 }
 
 export interface FileInfo {
@@ -85,6 +91,7 @@ export interface Message {
 	editedAt?: string;
 	replyTo?: ReplyToInfo;
 	files?: FileInfo[];
+	location?: Location;
 	status?: "sending" | "failed";
 }
 
@@ -209,10 +216,11 @@ export function sendMessage(
 	id: string,
 	replyToId?: string,
 	fileIDs?: string[],
+	location?: Location,
 ) {
 	return request<{ message: Message }>(`/api/chats/${chatId}/messages`, token, {
 		method: "POST",
-		body: JSON.stringify({ id, text, replyToId, fileIDs }),
+		body: JSON.stringify({ id, text, replyToId, fileIDs, location }),
 	});
 }
 
@@ -238,17 +246,36 @@ export function deleteMessage(
 	);
 }
 
+export interface EditMessageOptions {
+	location?: Location | null;
+	clearLocation?: boolean;
+}
+
 export function editMessage(
 	token: string,
 	chatId: string,
 	messageId: string,
 	text: string,
 	fileIDs?: string[],
+	opts?: EditMessageOptions,
 ) {
+	const body: {
+		text: string;
+		fileIDs?: string[];
+		location?: Location | null;
+	} = { text };
+
+	if (fileIDs !== undefined) body.fileIDs = fileIDs;
+	if (opts?.clearLocation) {
+		body.location = null;
+	} else if (opts?.location !== undefined) {
+		body.location = opts.location;
+	}
+
 	return request<{ message: Message }>(
 		`/api/chats/${chatId}/messages/${messageId}`,
 		token,
-		{ method: "PATCH", body: JSON.stringify({ text, fileIDs }) },
+		{ method: "PATCH", body: JSON.stringify(body) },
 	);
 }
 
@@ -259,11 +286,25 @@ export function editThreadMessage(
 	messageId: string,
 	text: string,
 	fileIDs?: string[],
+	opts?: EditMessageOptions,
 ) {
+	const body: {
+		text: string;
+		fileIDs?: string[];
+		location?: Location | null;
+	} = { text };
+
+	if (fileIDs !== undefined) body.fileIDs = fileIDs;
+	if (opts?.clearLocation) {
+		body.location = null;
+	} else if (opts?.location !== undefined) {
+		body.location = opts.location;
+	}
+
 	return request<{ message: Message }>(
 		`/api/chats/${chatId}/threads/${threadId}/messages/${messageId}`,
 		token,
-		{ method: "PATCH", body: JSON.stringify({ text, fileIDs }) },
+		{ method: "PATCH", body: JSON.stringify(body) },
 	);
 }
 
@@ -297,6 +338,7 @@ export function getThreads(token: string, chatId: string) {
 	return request<{ threads: Thread[] }>(`/api/chats/${chatId}/threads`, token);
 }
 
+// biome-ignore lint/complexity/useMaxParams: all params are required for the thread-send payload
 export function sendThreadMessage(
 	token: string,
 	chatId: string,
@@ -305,11 +347,15 @@ export function sendThreadMessage(
 	id: string,
 	replyToId?: string,
 	fileIDs?: string[],
+	location?: Location,
 ) {
 	return request<{ message: Message }>(
 		`/api/chats/${chatId}/threads/${threadId}/messages`,
 		token,
-		{ method: "POST", body: JSON.stringify({ id, text, replyToId, fileIDs }) },
+		{
+			method: "POST",
+			body: JSON.stringify({ id, text, replyToId, fileIDs, location }),
+		},
 	);
 }
 

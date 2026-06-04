@@ -47,6 +47,14 @@
 	"input.save": "Сохранить",
 	"input.send": "Отправить",
 	"input.attachFile": "Прикрепить файл",
+	"input.attachLocation": "Прикрепить местоположение",
+	"input.locationPreview": "Местоположение: {{coords}}",
+	"input.locationSend": "Отправить",
+	"input.locationCancel": "Отмена",
+	"input.locationClear": "Убрать местоположение",
+	"input.locationGetCurrent": "Использовать моё местоположение",
+	"input.locationMapHint": "Перетащите маркер, чтобы выбрать точку",
+	"input.locationCoords": "Координаты",
 	"input.photo": "Фото",
 	"input.video": "Видео",
 	"input.audio": "Аудио",
@@ -70,6 +78,8 @@
 	"message.edited": "ред.",
 	"message.retry": "Повторить",
 	"message.failed": "Не удалось отправить",
+	"message.openInMap": "Открыть в OpenStreetMap",
+	"message.location": "Местоположение",
 
 	"input.replyingTo": "Ответ @{{nick}}",
 
@@ -87,6 +97,8 @@
 	"error.createGroup": "Не удалось создать группу",
 	"error.updateGroup": "Не удалось обновить группу",
 	"error.deleteGroup": "Не удалось удалить группу",
+	"error.invalidCoords": "Неверные координаты",
+	"error.geolocationDenied": "Геолокация недоступна",
 
 	"lang.en": "English",
 	"lang.ru": "Русский"

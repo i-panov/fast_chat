@@ -26,6 +26,13 @@ type ReplyToInfo struct {
 	Text      string     `json:"text"`
 	FromNick  string     `json:"fromNick"`
 	Files     []FileInfo `json:"files,omitempty"`
+	Location  *Location  `json:"location,omitempty"`
+}
+
+// Location represents a point on a map attached to a message.
+type Location struct {
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
 }
 
 type File struct {
@@ -81,6 +88,7 @@ type Message struct {
 	CreatedAt time.Time    `gorm:"not null"           json:"createdAt"`
 	EditedAt  *time.Time   `json:"editedAt,omitempty"`
 	ReplyTo   *ReplyToInfo `gorm:"serializer:json"    json:"replyTo,omitempty"`
+	Location  *Location    `gorm:"serializer:json"    json:"location,omitempty"`
 	Files     []FileInfo   `gorm:"-"                  json:"files,omitempty"`
 }
 

@@ -15,6 +15,7 @@ import {
 	CornerUpLeft,
 	FileAudio,
 	FileIcon,
+	MapPin,
 	MessageCircle,
 	Pencil,
 	RotateCcw,
@@ -24,11 +25,13 @@ import { isValidElement, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { FileInfo, ReplyToInfo } from "../../api.ts";
+import type { FileInfo, Location, ReplyToInfo } from "../../api.ts";
 import { useAudioPlayer } from "../../useAudioPlayer.tsx";
 import { useAuth } from "../../useAuth.tsx";
-import { extractCodeText } from "../../utils/chat.ts";
+import { extractCodeText, formatCoords } from "../../utils/chat.ts";
 import { ImageLightbox } from "./ImageLightbox.tsx";
+import { LocationLightbox } from "./LocationLightbox.tsx";
+import { LocationMiniMap } from "./LocationMiniMap.tsx";
 
 interface CodeBlockProps {
 	className?: string;
@@ -290,6 +293,24 @@ function ReplyFilePreview({
 	);
 }
 
+function ReplyLocationChip({ location }: { location: Location }) {
+	return (
+		<div
+			style={{
+				display: "flex",
+				alignItems: "center",
+				gap: 4,
+				marginTop: 2,
+			}}
+		>
+			<MapPin size={12} style={{ flexShrink: 0 }} />
+			<Text size="xs" c="dimmed" truncate="end">
+				{formatCoords(location)}
+			</Text>
+		</div>
+	);
+}
+
 interface Props {
 	text: string;
 	isOwn: boolean;
@@ -300,6 +321,7 @@ interface Props {
 	editedAt?: string;
 	replyTo?: ReplyToInfo;
 	files?: FileInfo[];
+	location?: Location;
 	onReplyClick?: (messageId: string) => void;
 	onStartEdit: (
 		chatId: string,
@@ -339,6 +361,7 @@ export function MessageBubble({
 	editedAt,
 	replyTo,
 	files,
+	location,
 	onReplyClick,
 	onStartEdit,
 	onDelete,
@@ -357,6 +380,7 @@ export function MessageBubble({
 }: Props) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
+	const [locationLightboxOpen, setLocationLightboxOpen] = useState(false);
 	const menuRef = useRef<HTMLDivElement>(null);
 	const { t, i18n } = useTranslation();
 	const locale = i18n.language.split("-")[0];
@@ -461,6 +485,9 @@ export function MessageBubble({
 						) : (
 							<ReplyFilePreview files={replyTo.files ?? []} token={token} />
 						)}
+						{replyTo.location !== undefined && (
+							<ReplyLocationChip location={replyTo.location} />
+						)}
 					</UnstyledButton>
 				)}
 				{(files ?? []).length > 0 && (
@@ -481,6 +508,19 @@ export function MessageBubble({
 							);
 						})}
 					</div>
+				)}
+				{location !== undefined && (
+					<UnstyledButton
+						onClick={() => setLocationLightboxOpen(true)}
+						style={{
+							display: "block",
+							padding: 0,
+							marginTop: 4,
+							maxWidth: "100%",
+						}}
+					>
+						<LocationMiniMap location={location} />
+					</UnstyledButton>
 				)}
 				{text.length > 0 && (
 					<Group gap={6} wrap="nowrap" align="end">
@@ -743,6 +783,14 @@ export function MessageBubble({
 					startIndex={lightboxIdx}
 					token={token}
 					onClose={() => setLightboxIdx(null)}
+				/>
+			)}
+			{locationLightboxOpen && location !== undefined && (
+				<LocationLightbox
+					open={locationLightboxOpen}
+					location={location}
+					editable={false}
+					onClose={() => setLocationLightboxOpen(false)}
 				/>
 			)}
 		</>

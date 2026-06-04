@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -423,10 +424,10 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 
 	var req struct {
-		Type      string   `json:"type"`
-		WithUserID string  `json:"withUserId"`
-		Name      string   `json:"name"`
-		MemberIDs []string `json:"memberIds"`
+		Type       string   `json:"type"`
+		WithUserID string   `json:"withUserId"`
+		Name       string   `json:"name"`
+		MemberIDs  []string `json:"memberIds"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -919,10 +920,11 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID        string   `json:"id"`
-		Text      string   `json:"text"`
-		ReplyToID string   `json:"replyToId"`
-		FileIDs   []string `json:"fileIDs,omitempty"`
+		ID        string          `json:"id"`
+		Text      string          `json:"text"`
+		ReplyToID string          `json:"replyToId"`
+		FileIDs   []string        `json:"fileIDs,omitempty"`
+		Location  *model.Location `json:"location,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -932,13 +934,21 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" && len(req.FileIDs) == 0 {
+	if req.Text == "" && len(req.FileIDs) == 0 && req.Location == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
 
 		return
 	}
 
-	msg, err := h.store.AddMessage(chatID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID)
+	if req.Location != nil {
+		if !validCoords(req.Location.Lat, req.Location.Lng) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "invalid coordinates"})
+
+			return
+		}
+	}
+
+	msg, err := h.store.AddMessage(chatID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID, req.Location)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
 
@@ -965,6 +975,9 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.ReplyToID != "" {
 			fedBody["replyToId"] = req.ReplyToID
+		}
+		if req.Location != nil {
+			fedBody["location"] = req.Location
 		}
 
 		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, fedBody)
@@ -1301,15 +1314,22 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID        string `json:"id"`
-		FromID    string `json:"fromId"`
-		FromNick  string `json:"fromNick"`
-		Text      string `json:"text"`
-		ReplyToID string `json:"replyToId"`
+		ID        string          `json:"id"`
+		FromID    string          `json:"fromId"`
+		FromNick  string          `json:"fromNick"`
+		Text      string          `json:"text"`
+		ReplyToID string          `json:"replyToId"`
+		Location  *model.Location `json:"location,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	if req.Location != nil && !validCoords(req.Location.Lat, req.Location.Lng) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "invalid coordinates"})
 
 		return
 	}
@@ -1321,6 +1341,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 		FromNick:  req.FromNick,
 		Text:      req.Text,
 		CreatedAt: time.Now(),
+		Location:  req.Location,
 	}
 
 	if req.ReplyToID != "" {
@@ -1333,6 +1354,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 					Text:      msgs[idx].Text,
 					FromNick:  msgs[idx].FromNick,
 					Files:     h.store.GetMessageFilesForReply(msgs[idx].ID),
+					Location:  msgs[idx].Location,
 				}
 
 				break
@@ -1361,8 +1383,9 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	messageID := r.PathValue("messageId")
 
 	var req struct {
-		Text    string   `json:"text"`
-		FileIDs []string `json:"fileIDs,omitempty"`
+		Text     string          `json:"text"`
+		FileIDs  []string        `json:"fileIDs,omitempty"`
+		Location json.RawMessage `json:"location"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1371,9 +1394,16 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	location, clearLocation, locErr := parseLocationPatch(req.Location)
+	if locErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: locErr.Error()})
+
+		return
+	}
+
 	now := time.Now()
 
-	if err := h.store.EditRawMessage(chatID, messageID, req.Text, now); err != nil {
+	if err := h.store.EditRawMessage(chatID, messageID, req.Text, now, location, clearLocation); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: err.Error()})
 
 		return
@@ -1395,6 +1425,16 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	if req.FileIDs != nil {
 		files, _ := h.store.GetMessageFiles(messageID) //nolint:errcheck
 		updated.Files = files
+	}
+
+	if len(req.Location) > 0 {
+		if clearLocation {
+			updated.Location = nil
+		} else {
+			updated.Location = location
+		}
+	} else if stored, gerr := h.store.GetMessage(chatID, messageID); gerr == nil {
+		updated.Location = stored.Location
 	}
 
 	chat, ok := h.store.GetChat(chatID)
@@ -1535,8 +1575,9 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Text    string   `json:"text"`
-		FileIDs []string `json:"fileIDs,omitempty"`
+		Text     string          `json:"text"`
+		FileIDs  []string        `json:"fileIDs,omitempty"`
+		Location json.RawMessage `json:"location"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1545,14 +1586,22 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	location, clearLocation, locErr := parseLocationPatch(req.Location)
+	if locErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: locErr.Error()})
+
+		return
+	}
+
 	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" && len(req.FileIDs) == 0 {
+	hasLocation := location != nil
+	if req.Text == "" && len(req.FileIDs) == 0 && !hasLocation && !clearLocation {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
 
 		return
 	}
 
-	updated, err := h.store.EditMessage(chatID, messageID, user.ID, req.Text)
+	updated, err := h.store.EditMessage(chatID, messageID, user.ID, req.Text, location, clearLocation)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
 
@@ -1576,6 +1625,9 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.FileIDs != nil {
 			fedBody["fileIDs"] = req.FileIDs
+		}
+		if len(req.Location) > 0 {
+			fedBody["location"] = req.Location
 		}
 
 		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPatch, fedURL, fedBody)
@@ -1794,10 +1846,11 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID        string   `json:"id"`
-		Text      string   `json:"text"`
-		ReplyToID string   `json:"replyToId"`
-		FileIDs   []string `json:"fileIDs,omitempty"`
+		ID        string          `json:"id"`
+		Text      string          `json:"text"`
+		ReplyToID string          `json:"replyToId"`
+		FileIDs   []string        `json:"fileIDs,omitempty"`
+		Location  *model.Location `json:"location,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1807,13 +1860,19 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" && len(req.FileIDs) == 0 {
+	if req.Text == "" && len(req.FileIDs) == 0 && req.Location == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
 
 		return
 	}
 
-	msg, err := h.store.AddThreadMessage(threadID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID)
+	if req.Location != nil && !validCoords(req.Location.Lat, req.Location.Lng) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "invalid coordinates"})
+
+		return
+	}
+
+	msg, err := h.store.AddThreadMessage(threadID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID, req.Location)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
 
@@ -1890,8 +1949,9 @@ func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Text    string   `json:"text"`
-		FileIDs []string `json:"fileIDs,omitempty"`
+		Text     string          `json:"text"`
+		FileIDs  []string        `json:"fileIDs,omitempty"`
+		Location json.RawMessage `json:"location"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1900,14 +1960,22 @@ func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	location, clearLocation, locErr := parseLocationPatch(req.Location)
+	if locErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: locErr.Error()})
+
+		return
+	}
+
 	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" && len(req.FileIDs) == 0 {
+	hasLocation := location != nil
+	if req.Text == "" && len(req.FileIDs) == 0 && !hasLocation && !clearLocation {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
 
 		return
 	}
 
-	updated, err := h.store.EditThreadMessage(threadID, messageID, user.ID, req.Text)
+	updated, err := h.store.EditThreadMessage(threadID, messageID, user.ID, req.Text, location, clearLocation)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
 
@@ -1931,6 +1999,9 @@ func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.FileIDs != nil {
 			fedBody["fileIDs"] = req.FileIDs
+		}
+		if len(req.Location) > 0 {
+			fedBody["location"] = req.Location
 		}
 
 		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPatch, fedURL, fedBody)
@@ -1959,8 +2030,9 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 	messageID := r.PathValue("messageId")
 
 	var req struct {
-		Text    string   `json:"text"`
-		FileIDs []string `json:"fileIDs,omitempty"`
+		Text     string          `json:"text"`
+		FileIDs  []string        `json:"fileIDs,omitempty"`
+		Location json.RawMessage `json:"location"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1969,9 +2041,16 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	location, clearLocation, locErr := parseLocationPatch(req.Location)
+	if locErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: locErr.Error()})
+
+		return
+	}
+
 	now := time.Now()
 
-	if err := h.store.EditRawMessage(threadID, messageID, req.Text, now); err != nil {
+	if err := h.store.EditRawMessage(threadID, messageID, req.Text, now, location, clearLocation); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: err.Error()})
 
 		return
@@ -1993,6 +2072,16 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 	if req.FileIDs != nil {
 		files, _ := h.store.GetMessageFiles(messageID) //nolint:errcheck
 		updated.Files = files
+	}
+
+	if len(req.Location) > 0 {
+		if clearLocation {
+			updated.Location = nil
+		} else {
+			updated.Location = location
+		}
+	} else if stored, gerr := h.store.GetMessage(threadID, messageID); gerr == nil {
+		updated.Location = stored.Location
 	}
 
 	chat, ok := h.store.GetChat(chatID)
@@ -2128,6 +2217,39 @@ func isMember(chat *model.Chat, userID string) bool {
 
 func isOwner(chat *model.Chat, userID string) bool {
 	return chat.OwnerID != "" && chat.OwnerID == userID
+}
+
+// validCoords returns true if the latitude and longitude are within valid ranges.
+func validCoords(lat, lng float64) bool {
+	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
+}
+
+// parseLocationPatch decodes a tri-state location patch field.
+//
+//   - empty (field absent)         → nil, false, nil  (leave unchanged)
+//   - JSON null                    → nil, true,  nil  (clear)
+//   - JSON object {lat,lng}         → &Location{...}, false, nil
+//   - malformed                    → nil, false, error
+func parseLocationPatch(raw json.RawMessage) (*model.Location, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "null" {
+		return nil, true, nil
+	}
+
+	var loc model.Location
+	if err := json.Unmarshal(raw, &loc); err != nil {
+		return nil, false, errors.New("invalid location")
+	}
+
+	if !validCoords(loc.Lat, loc.Lng) {
+		return nil, false, errors.New("invalid coordinates")
+	}
+
+	return &loc, false, nil
 }
 
 func generateID() string {

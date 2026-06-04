@@ -2,7 +2,13 @@ import { ActionIcon, Group, Paper, Stack, Text } from "@mantine/core";
 import { ArrowLeft } from "lucide-react";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import type { FileInfo, Message, PendingFile, Thread } from "../../api.ts";
+import type {
+	FileInfo,
+	Location,
+	Message,
+	PendingFile,
+	Thread,
+} from "../../api.ts";
 import { InputBar } from "./InputBar.tsx";
 import { MessageList } from "./MessageList.tsx";
 
@@ -21,6 +27,7 @@ interface Props {
 		text: string,
 		files?: FileInfo[],
 		threadId?: string,
+		location?: Location | null,
 	) => void;
 	onCancelEdit: () => void;
 	onReply?: (chatId: string, messageId: string) => void;
@@ -32,6 +39,7 @@ interface Props {
 		text: string;
 		files?: FileInfo[];
 		threadId?: string;
+		location?: Location | null;
 	} | null;
 	hasMore: boolean;
 	isLoadingMore: boolean;
@@ -46,6 +54,11 @@ interface Props {
 	onRemoveFile?: (fileId: string) => void;
 	existingFiles?: FileInfo[];
 	onRemoveExistingFile?: (fileId: string) => void;
+	pendingLocation?: Location | null;
+	onOpenLocationPicker?: () => void;
+	onRemovePendingLocation?: () => void;
+	existingLocation?: Location | null;
+	onRemoveExistingLocation?: () => void;
 }
 
 export function ThreadView({
@@ -76,6 +89,11 @@ export function ThreadView({
 	onRemoveFile,
 	existingFiles,
 	onRemoveExistingFile,
+	pendingLocation,
+	onOpenLocationPicker,
+	onRemovePendingLocation,
+	existingLocation,
+	onRemoveExistingLocation,
 }: Props) {
 	const { t } = useTranslation();
 
@@ -151,6 +169,11 @@ export function ThreadView({
 				onRemoveFile={onRemoveFile}
 				existingFiles={existingFiles}
 				onRemoveExistingFile={onRemoveExistingFile}
+				pendingLocation={pendingLocation}
+				onOpenLocationPicker={onOpenLocationPicker}
+				onRemovePendingLocation={onRemovePendingLocation}
+				existingLocation={existingLocation}
+				onRemoveExistingLocation={onRemoveExistingLocation}
 			/>
 		</Stack>
 	);

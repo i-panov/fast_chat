@@ -4,6 +4,7 @@ import type {
 	AppConfig,
 	Chat,
 	FileInfo,
+	Location,
 	Message,
 	PendingFile,
 	Thread,
@@ -307,6 +308,7 @@ interface EditingMessage {
 	text: string;
 	files?: FileInfo[];
 	threadId?: string;
+	location?: Location | null;
 }
 
 interface ReplyTarget {
@@ -335,6 +337,8 @@ function useSendMessage(opts: {
 	setReplyToMessage: (v: ReplyTarget | null) => void;
 	pendingFiles: PendingFile[];
 	setPendingFiles: React.Dispatch<React.SetStateAction<PendingFile[]>>;
+	pendingLocation: Location | null;
+	setPendingLocation: (v: Location | null) => void;
 }) {
 	const {
 		activeAccount,
@@ -354,11 +358,18 @@ function useSendMessage(opts: {
 		setReplyToMessage,
 		pendingFiles,
 		setPendingFiles,
+		pendingLocation,
+		setPendingLocation,
 	} = opts;
 	return async function handleSend(e: React.FormEvent<HTMLFormElement>) {
 		e.preventDefault();
 		if (activeAccount === null) return;
-		if (inputText.trim().length === 0 && pendingFiles.length === 0) return;
+		if (
+			inputText.trim().length === 0 &&
+			pendingFiles.length === 0 &&
+			pendingLocation === null
+		)
+			return;
 		if (sendingRef.current) return;
 
 		sendingRef.current = true;
@@ -366,9 +377,11 @@ function useSendMessage(opts: {
 		const msgId = crypto.randomUUID();
 		const replyToId = replyToMessage?.messageId;
 		const filesToUpload = pendingFiles;
+		const locationToSend = pendingLocation;
 		setInputText("");
 		setReplyToMessage(null);
 		setPendingFiles([]);
+		setPendingLocation(null);
 
 		try {
 			let fileIDs: string[] = [];
@@ -387,6 +400,15 @@ function useSendMessage(opts: {
 			if (editingMessage !== null) {
 				const existingIDs = (editingMessage.files ?? []).map((f) => f.id);
 				const finalFileIDs = [...existingIDs, ...fileIDs];
+				const editOpts = {
+					clearLocation:
+						locationToSend === null &&
+						editingMessage.location !== undefined &&
+						editingMessage.location !== null,
+					location:
+						locationToSend ??
+						(editingMessage.location === null ? null : undefined),
+				};
 				if (editingMessage.threadId !== undefined) {
 					await editThreadMessage(
 						activeAccount.token,
@@ -395,6 +417,7 @@ function useSendMessage(opts: {
 						editingMessage.messageId,
 						text,
 						finalFileIDs,
+						editOpts,
 					);
 				} else {
 					await editMessage(
@@ -403,6 +426,7 @@ function useSendMessage(opts: {
 						editingMessage.messageId,
 						text,
 						finalFileIDs,
+						editOpts,
 					);
 				}
 				setEditingMessage(null);
@@ -426,6 +450,7 @@ function useSendMessage(opts: {
 					text,
 					createdAt: new Date().toISOString(),
 					status: "sending",
+					location: locationToSend ?? undefined,
 				};
 				setMessages((prev) => ({
 					...prev,
@@ -439,6 +464,7 @@ function useSendMessage(opts: {
 					msgId,
 					replyToId,
 					fileIDs,
+					locationToSend ?? undefined,
 				);
 				setMessages((prev) => ({
 					...prev,
@@ -455,6 +481,7 @@ function useSendMessage(opts: {
 					text,
 					createdAt: new Date().toISOString(),
 					status: "sending",
+					location: locationToSend ?? undefined,
 				};
 				setMessages((prev) => ({
 					...prev,
@@ -468,6 +495,7 @@ function useSendMessage(opts: {
 					msgId,
 					replyToId,
 					fileIDs,
+					locationToSend ?? undefined,
 				);
 				setMessages((prev) => ({
 					...prev,
@@ -479,6 +507,7 @@ function useSendMessage(opts: {
 		} catch {
 			setInputText(text);
 			setReplyToMessage(replyToMessage);
+			setPendingLocation(locationToSend);
 			for (const pf of filesToUpload) {
 				URL.revokeObjectURL(pf.blobUrl);
 			}
@@ -508,6 +537,13 @@ export interface ChatInteraction {
 	setPendingFiles: React.Dispatch<React.SetStateAction<PendingFile[]>>;
 	handleAttachFiles: (files: File[]) => void;
 	handleRemoveFile: (fileId: string) => void;
+	pendingLocation: Location | null;
+	setPendingLocation: (v: Location | null) => void;
+	locationPickerOpen: boolean;
+	setLocationPickerOpen: (v: boolean) => void;
+	openLocationPicker: () => void;
+	handleLocationConfirm: (loc: Location) => void;
+	handleRemovePendingLocation: () => void;
 }
 
 function useChatInteraction(opts: {
@@ -549,6 +585,8 @@ function useChatInteraction(opts: {
 		null,
 	);
 	const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+	const [pendingLocation, setPendingLocation] = useState<Location | null>(null);
+	const [locationPickerOpen, setLocationPickerOpen] = useState(false);
 	const sendingRef = useRef(false);
 
 	useSearch(activeAccount?.token, searchQuery, setSearchResults);
@@ -654,6 +692,8 @@ function useChatInteraction(opts: {
 		setReplyToMessage,
 		pendingFiles,
 		setPendingFiles,
+		pendingLocation,
+		setPendingLocation,
 	});
 
 	function handleReply(chatId: string, messageId: string) {
@@ -681,6 +721,19 @@ function useChatInteraction(opts: {
 
 	const showSearchResults = searchQuery.length > 0 && searchResults.length > 0;
 
+	function openLocationPicker() {
+		setLocationPickerOpen(true);
+	}
+
+	function handleLocationConfirm(loc: Location) {
+		setPendingLocation({ lat: loc.lat, lng: loc.lng });
+		setLocationPickerOpen(false);
+	}
+
+	function handleRemovePendingLocation() {
+		setPendingLocation(null);
+	}
+
 	return {
 		searchQuery,
 		searchResults,
@@ -700,6 +753,13 @@ function useChatInteraction(opts: {
 		setPendingFiles,
 		handleAttachFiles,
 		handleRemoveFile,
+		pendingLocation,
+		setPendingLocation,
+		locationPickerOpen,
+		setLocationPickerOpen,
+		openLocationPicker,
+		handleLocationConfirm,
+		handleRemovePendingLocation,
 	};
 }
 
@@ -945,8 +1005,9 @@ export function useChatPage() {
 			text: string,
 			files?: FileInfo[],
 			threadId?: string,
+			location?: Location | null,
 		) => {
-			setEditingMessage({ chatId, messageId, text, files, threadId });
+			setEditingMessage({ chatId, messageId, text, files, threadId, location });
 			interaction.setInputText(text);
 		},
 		[interaction.setInputText],
@@ -956,7 +1017,12 @@ export function useChatPage() {
 		setEditingMessage(null);
 		interaction.setInputText("");
 		interaction.setPendingFiles([]);
-	}, [interaction.setInputText, interaction.setPendingFiles]);
+		interaction.setPendingLocation(null);
+	}, [
+		interaction.setInputText,
+		interaction.setPendingFiles,
+		interaction.setPendingLocation,
+	]);
 
 	const handleRemoveExistingFile = useCallback((fileId: string) => {
 		setEditingMessage((prev) => {
@@ -964,6 +1030,14 @@ export function useChatPage() {
 			return { ...prev, files: prev.files.filter((f) => f.id !== fileId) };
 		});
 	}, []);
+
+	const handleRemoveExistingLocation = useCallback(() => {
+		setEditingMessage((prev) => {
+			if (prev === null) return prev;
+			return { ...prev, location: null };
+		});
+		interaction.setPendingLocation(null);
+	}, [interaction.setPendingLocation]);
 
 	const loadMoreMessages = useCallback(
 		async (chatId: string | null) => {
@@ -1097,7 +1171,9 @@ export function useChatPage() {
 			if (
 				interaction.inputText.trim().length === 0 &&
 				interaction.pendingFiles.length === 0 &&
-				(editingMessage?.files?.length ?? 0) === 0
+				interaction.pendingLocation === null &&
+				(editingMessage?.files?.length ?? 0) === 0 &&
+				editingMessage?.location === undefined
 			)
 				return;
 			if (threadSendingRef.current) return;
@@ -1107,15 +1183,18 @@ export function useChatPage() {
 			const msgId = crypto.randomUUID();
 			const replyToId = interaction.replyToMessage?.messageId;
 			const filesToUpload = interaction.pendingFiles;
+			const locationToSend = interaction.pendingLocation;
 			const isEditing =
 				editingMessage !== null && editingMessage.threadId !== undefined;
 			interaction.setInputText("");
 			interaction.cancelReply();
 			interaction.setPendingFiles([]);
+			interaction.setPendingLocation(null);
 
 			const thread = threads[activeThreadId];
 			if (thread === undefined) {
 				interaction.setInputText(text);
+				interaction.setPendingLocation(locationToSend);
 				for (const pf of filesToUpload) {
 					URL.revokeObjectURL(pf.blobUrl);
 				}
@@ -1140,6 +1219,15 @@ export function useChatPage() {
 				if (isEditing) {
 					const existingIDs = (editingMessage.files ?? []).map((f) => f.id);
 					const finalFileIDs = [...existingIDs, ...fileIDs];
+					const editOpts = {
+						clearLocation:
+							locationToSend === null &&
+							editingMessage.location !== undefined &&
+							editingMessage.location !== null,
+						location:
+							locationToSend ??
+							(editingMessage.location === null ? null : undefined),
+					};
 					await editThreadMessage(
 						activeAccount.token,
 						thread.chatId,
@@ -1147,6 +1235,7 @@ export function useChatPage() {
 						editingMessage.messageId,
 						text,
 						finalFileIDs,
+						editOpts,
 					);
 					setEditingMessage(null);
 				} else {
@@ -1158,6 +1247,7 @@ export function useChatPage() {
 						text,
 						createdAt: new Date().toISOString(),
 						status: "sending",
+						location: locationToSend ?? undefined,
 					};
 					setThreadMessages((prev) => ({
 						...prev,
@@ -1172,6 +1262,7 @@ export function useChatPage() {
 						msgId,
 						replyToId,
 						fileIDs,
+						locationToSend ?? undefined,
 					);
 					setThreadMessages((prev) => ({
 						...prev,
@@ -1190,6 +1281,7 @@ export function useChatPage() {
 					}));
 				}
 				interaction.setInputText(text);
+				interaction.setPendingLocation(locationToSend);
 				for (const pf of filesToUpload) {
 					URL.revokeObjectURL(pf.blobUrl);
 				}
@@ -1399,6 +1491,7 @@ export function useChatPage() {
 		handleStartEdit,
 		handleCancelEdit,
 		handleRemoveExistingFile,
+		handleRemoveExistingLocation,
 		isLoadingMore,
 		hasMore,
 		loadMoreMessages,

@@ -7,12 +7,13 @@ import {
 	Textarea,
 	Tooltip,
 } from "@mantine/core";
-import { FileIcon, Paperclip, X } from "lucide-react";
+import { FileIcon, MapPin, Paperclip, X } from "lucide-react";
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { FileInfo, PendingFile } from "../../api.ts";
+import type { FileInfo, Location, PendingFile } from "../../api.ts";
 import { useAuth } from "../../useAuth.tsx";
+import { formatCoords } from "../../utils/chat.ts";
 
 interface Props {
 	text: string;
@@ -31,6 +32,11 @@ interface Props {
 	onRemoveFile?: (fileId: string) => void;
 	existingFiles?: FileInfo[];
 	onRemoveExistingFile?: (fileId: string) => void;
+	pendingLocation?: Location | null;
+	onOpenLocationPicker?: () => void;
+	onRemovePendingLocation?: () => void;
+	existingLocation?: Location | null;
+	onRemoveExistingLocation?: () => void;
 }
 
 function formatSize(bytes: number): string {
@@ -285,6 +291,51 @@ function ExistingFilePreview({
 	);
 }
 
+function LocationPreview({
+	location,
+	onRemove,
+	dimmed,
+}: {
+	location: Location;
+	onRemove: () => void;
+	dimmed: boolean;
+}) {
+	return (
+		<Paper
+			style={{
+				padding: "6px 10px",
+				display: "flex",
+				alignItems: "center",
+				gap: 8,
+				background: "var(--mantine-color-dark-6)",
+				borderRadius: 6,
+				maxWidth: 240,
+				opacity: dimmed ? 0.85 : 1,
+			}}
+		>
+			<MapPin
+				size={20}
+				style={{ flexShrink: 0, color: "var(--mantine-color-blue-5)" }}
+			/>
+			<div style={{ overflow: "hidden", minWidth: 0 }}>
+				<Text size="xs" truncate="end">
+					{formatCoords(location)}
+				</Text>
+			</div>
+			<ActionIcon
+				variant="subtle"
+				color="gray"
+				size="sm"
+				onClick={onRemove}
+				style={{ flexShrink: 0 }}
+				aria-label="Remove location"
+			>
+				<X size={14} />
+			</ActionIcon>
+		</Paper>
+	);
+}
+
 export function InputBar({
 	text,
 	onTextChange,
@@ -302,6 +353,11 @@ export function InputBar({
 	onRemoveFile,
 	existingFiles,
 	onRemoveExistingFile,
+	pendingLocation,
+	onOpenLocationPicker,
+	onRemovePendingLocation,
+	existingLocation,
+	onRemoveExistingLocation,
 }: Props) {
 	const { t } = useTranslation();
 	const { activeAccount } = useAuth();
@@ -343,7 +399,12 @@ export function InputBar({
 
 	const hasExisting = existingFiles !== undefined && existingFiles.length > 0;
 	const hasPending = pendingFiles !== undefined && pendingFiles.length > 0;
-	const hasAttachments = hasExisting || hasPending;
+	const hasExistingLocation =
+		existingLocation !== undefined && existingLocation !== null;
+	const hasPendingLocation =
+		pendingLocation !== undefined && pendingLocation !== null;
+	const hasAttachments =
+		hasExisting || hasPending || hasExistingLocation || hasPendingLocation;
 
 	return (
 		<div>
@@ -449,6 +510,20 @@ export function InputBar({
 								onRemove={() => onRemoveFile?.(file.id)}
 							/>
 						))}
+						{hasExistingLocation && existingLocation !== null && (
+							<LocationPreview
+								location={existingLocation}
+								dimmed
+								onRemove={() => onRemoveExistingLocation?.()}
+							/>
+						)}
+						{hasPendingLocation && pendingLocation !== null && (
+							<LocationPreview
+								location={pendingLocation}
+								dimmed={false}
+								onRemove={() => onRemovePendingLocation?.()}
+							/>
+						)}
 					</div>
 				</Paper>
 			)}
@@ -480,6 +555,19 @@ export function InputBar({
 							<Paperclip size={20} />
 						</ActionIcon>
 					</Tooltip>
+					{onOpenLocationPicker !== undefined && (
+						<Tooltip label={t("input.attachLocation")}>
+							<ActionIcon
+								variant="subtle"
+								color="gray"
+								size="lg"
+								onClick={onOpenLocationPicker}
+								style={{ marginBottom: 2 }}
+							>
+								<MapPin size={20} />
+							</ActionIcon>
+						</Tooltip>
+					)}
 				</div>
 				<Textarea
 					placeholder={t("input.placeholder")}
@@ -509,7 +597,9 @@ export function InputBar({
 					disabled={
 						text.trim().length === 0 &&
 						(pendingFiles ?? []).length === 0 &&
-						(existingFiles ?? []).length === 0
+						(existingFiles ?? []).length === 0 &&
+						pendingLocation === null &&
+						!hasExistingLocation
 					}
 					size="sm"
 				>

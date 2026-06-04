@@ -9,6 +9,7 @@ import { ChatList } from "../components/chat/ChatList.tsx";
 import { CreateGroupModal } from "../components/chat/CreateGroupModal.tsx";
 import { GroupSettingsModal } from "../components/chat/GroupSettingsModal.tsx";
 import { InputBar } from "../components/chat/InputBar.tsx";
+import { LocationPickerModal } from "../components/chat/LocationPickerModal.tsx";
 import { MessageList } from "../components/chat/MessageList.tsx";
 import { SearchBox } from "../components/chat/SearchBox.tsx";
 import { ThreadView } from "../components/chat/ThreadView.tsx";
@@ -198,6 +199,11 @@ export function ChatPage() {
 							onRemoveFile={s.handleRemoveFile}
 							existingFiles={s.editingMessage?.files}
 							onRemoveExistingFile={s.handleRemoveExistingFile}
+							pendingLocation={s.pendingLocation}
+							onOpenLocationPicker={s.openLocationPicker}
+							onRemovePendingLocation={s.handleRemovePendingLocation}
+							existingLocation={s.editingMessage?.location ?? null}
+							onRemoveExistingLocation={s.handleRemoveExistingLocation}
 						/>
 					) : (
 						<Stack h="100%" gap={0}>
@@ -231,6 +237,11 @@ export function ChatPage() {
 										onRemoveFile={s.handleRemoveFile}
 										existingFiles={s.editingMessage?.files}
 										onRemoveExistingFile={s.handleRemoveExistingFile}
+										pendingLocation={s.pendingLocation}
+										onOpenLocationPicker={s.openLocationPicker}
+										onRemovePendingLocation={s.handleRemovePendingLocation}
+										existingLocation={s.editingMessage?.location ?? null}
+										onRemoveExistingLocation={s.handleRemoveExistingLocation}
 									/>
 								</>
 							) : s.activeChat === undefined ? (
@@ -287,6 +298,11 @@ export function ChatPage() {
 										onRemoveFile={s.handleRemoveFile}
 										existingFiles={s.editingMessage?.files}
 										onRemoveExistingFile={s.handleRemoveExistingFile}
+										pendingLocation={s.pendingLocation}
+										onOpenLocationPicker={s.openLocationPicker}
+										onRemovePendingLocation={s.handleRemovePendingLocation}
+										existingLocation={s.editingMessage?.location ?? null}
+										onRemoveExistingLocation={s.handleRemoveExistingLocation}
 									/>
 								</>
 							)}
@@ -308,6 +324,12 @@ export function ChatPage() {
 				onRemoveMember={s.handleRemoveGroupMember}
 				onDelete={s.handleDeleteGroup}
 				onUploadAvatar={s.handleUploadGroupAvatar}
+			/>
+			<LocationPickerModal
+				open={s.locationPickerOpen}
+				initial={s.pendingLocation}
+				onClose={() => s.setLocationPickerOpen(false)}
+				onConfirm={s.handleLocationConfirm}
 			/>
 		</Stack>
 	);

@@ -46,6 +46,14 @@
 	"input.save": "Save",
 	"input.send": "Send",
 	"input.attachFile": "Attach file",
+	"input.attachLocation": "Attach location",
+	"input.locationPreview": "Location: {{coords}}",
+	"input.locationSend": "Send location",
+	"input.locationCancel": "Cancel",
+	"input.locationClear": "Remove location",
+	"input.locationGetCurrent": "Use my location",
+	"input.locationMapHint": "Drag the marker to set the location",
+	"input.locationCoords": "Coordinates",
 	"input.photo": "Photo",
 	"input.video": "Video",
 	"input.audio": "Audio",
@@ -69,6 +77,8 @@
 	"message.edited": "edited",
 	"message.retry": "Retry",
 	"message.failed": "Failed to send",
+	"message.openInMap": "Open in OpenStreetMap",
+	"message.location": "Location",
 
 	"input.replyingTo": "Replying to @{{nick}}",
 
@@ -86,6 +96,8 @@
 	"error.createGroup": "Failed to create group",
 	"error.updateGroup": "Failed to update group",
 	"error.deleteGroup": "Failed to delete group",
+	"error.invalidCoords": "Invalid coordinates",
+	"error.geolocationDenied": "Geolocation unavailable",
 
 	"lang.en": "English",
 	"lang.ru": "Русский"

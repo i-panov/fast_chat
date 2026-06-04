@@ -4,6 +4,7 @@ package store
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -385,7 +386,7 @@ func (s *Store) GetMessage(chatID, messageID string) (model.Message, error) {
 	return msg, nil
 }
 
-func (s *Store) EditMessage(chatID, messageID, userID, newText string) (model.Message, error) {
+func (s *Store) EditMessage(chatID, messageID, userID, newText string, location *model.Location, clearLocation bool) (model.Message, error) {
 	var msg model.Message
 
 	if err := s.db.Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
@@ -400,17 +401,29 @@ func (s *Store) EditMessage(chatID, messageID, userID, newText string) (model.Me
 	msg.Text = newText
 	msg.EditedAt = &now
 
-	if err := s.db.Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(map[string]interface{}{
+	updates := map[string]interface{}{
 		"text":      newText,
 		"edited_at": &now,
-	}).Error; err != nil {
+	}
+
+	switch {
+	case clearLocation:
+		updates["location"] = nil
+		msg.Location = nil
+	case location != nil:
+		raw, _ := json.Marshal(location)
+		updates["location"] = string(raw)
+		msg.Location = location
+	}
+
+	if err := s.db.Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates).Error; err != nil {
 		return model.Message{}, err
 	}
 
 	return msg, nil
 }
 
-func (s *Store) EditThreadMessage(threadID, messageID, userID, newText string) (model.Message, error) {
+func (s *Store) EditThreadMessage(threadID, messageID, userID, newText string, location *model.Location, clearLocation bool) (model.Message, error) {
 	var thread model.Thread
 
 	if err := s.db.First(&thread, "id = ?", threadID).Error; err != nil {
@@ -431,10 +444,22 @@ func (s *Store) EditThreadMessage(threadID, messageID, userID, newText string) (
 	msg.Text = newText
 	msg.EditedAt = &now
 
-	if err := s.db.Model(&model.Message{}).Where("chat_id = ? AND id = ?", threadID, messageID).Updates(map[string]interface{}{
+	updates := map[string]interface{}{
 		"text":      newText,
 		"edited_at": &now,
-	}).Error; err != nil {
+	}
+
+	switch {
+	case clearLocation:
+		updates["location"] = nil
+		msg.Location = nil
+	case location != nil:
+		raw, _ := json.Marshal(location)
+		updates["location"] = string(raw)
+		msg.Location = location
+	}
+
+	if err := s.db.Model(&model.Message{}).Where("chat_id = ? AND id = ?", threadID, messageID).Updates(updates).Error; err != nil {
 		return model.Message{}, err
 	}
 
@@ -457,7 +482,7 @@ func (s *Store) SetMessageFiles(messageID string, fileIDs []string) error {
 	})
 }
 
-func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID string) (*model.Message, error) {
+func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID string, location *model.Location) (*model.Message, error) {
 	var chatCount int64
 	s.db.Model(&model.Chat{}).Where("id = ?", chatID).Count(&chatCount)
 
@@ -479,6 +504,7 @@ func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID 
 			Text:      replyMsg.Text,
 			FromNick:  replyMsg.FromNick,
 			Files:     s.GetMessageFilesForReply(replyMsg.ID),
+			Location:  replyMsg.Location,
 		}
 	}
 
@@ -495,6 +521,7 @@ func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID 
 		Text:      text,
 		CreatedAt: time.Now(),
 		ReplyTo:   replyTo,
+		Location:  location,
 	}
 
 	if err := s.db.Create(&msg).Error; err != nil {
@@ -564,11 +591,20 @@ func (s *Store) CreateRemoteChat(chat *model.Chat) {
 	s.db.Create(&members) //nolint:errcheck // best-effort member insert for remote chat
 }
 
-func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Time) error {
-	result := s.db.Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(map[string]interface{}{
+func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Time, location *model.Location, clearLocation bool) error {
+	updates := map[string]interface{}{
 		"text":      text,
 		"edited_at": &editedAt,
-	})
+	}
+
+	if clearLocation {
+		updates["location"] = nil
+	} else if location != nil {
+		raw, _ := json.Marshal(location)
+		updates["location"] = string(raw)
+	}
+
+	result := s.db.Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates)
 
 	if result.RowsAffected == 0 {
 		return ErrMessageNotFound
@@ -704,7 +740,7 @@ func (s *Store) GetThreadMessagesPaginated(threadID string, limit int, before st
 	return s.paginateMessages(threadID, limit, before)
 }
 
-func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID, replyToID string) (*model.Message, error) {
+func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID, replyToID string, location *model.Location) (*model.Message, error) {
 	var thread model.Thread
 
 	if err := s.db.First(&thread, "id = ?", threadID).Error; err != nil {
@@ -725,6 +761,7 @@ func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID, re
 			Text:      replyMsg.Text,
 			FromNick:  replyMsg.FromNick,
 			Files:     s.GetMessageFilesForReply(replyMsg.ID),
+			Location:  replyMsg.Location,
 		}
 	}
 
@@ -741,6 +778,7 @@ func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID, re
 		Text:      text,
 		CreatedAt: time.Now(),
 		ReplyTo:   replyTo,
+		Location:  location,
 	}
 
 	if err := s.db.Create(&msg).Error; err != nil {
