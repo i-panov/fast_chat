@@ -86,22 +86,28 @@ export function MessageList({
 	const sentinelRef = useRef<HTMLDivElement>(null);
 	const scrollAnchorRef = useRef(0);
 	const prevScrollToRef = useRef<string | null>(null);
+	const onLoadMoreRef = useRef(onLoadMore);
 
 	const locale = i18n.language.split("-")[0];
 
+	// Обновляем ref при изменении onLoadMore
+	useEffect(() => {
+		onLoadMoreRef.current = onLoadMore;
+	}, [onLoadMore]);
+
 	useEffect(() => {
 		const el = sentinelRef.current;
-		if (!el || !hasMore || !onLoadMore || isLoadingMore) return;
+		if (!el || !hasMore || isLoadingMore) return;
 
 		const observer = new IntersectionObserver(
 			([entry]) => {
-				if (entry.isIntersecting) {
+				if (entry.isIntersecting && onLoadMoreRef.current) {
 					const container = containerRef.current;
 					if (container) {
 						scrollAnchorRef.current =
 							container.scrollHeight - container.scrollTop;
 					}
-					onLoadMore();
+					onLoadMoreRef.current();
 				}
 			},
 			{ rootMargin: "200px 0px" },
@@ -109,7 +115,7 @@ export function MessageList({
 
 		observer.observe(el);
 		return () => observer.disconnect();
-	}, [hasMore, onLoadMore, isLoadingMore]);
+	}, [hasMore, isLoadingMore]);
 
 	useEffect(() => {
 		if (!isLoadingMore && scrollAnchorRef.current > 0) {

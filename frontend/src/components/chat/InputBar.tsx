@@ -15,6 +15,12 @@ import type { FileInfo, Location, PendingFile } from "../../api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { formatCoords } from "../../utils/chat.ts";
 
+// Константы для стилей
+const PENDING_FILE_MAX_WIDTH = 200;
+const LOCATION_PREVIEW_MAX_WIDTH = 240;
+const PREVIEW_SIZE = 32;
+const PREVIEW_BORDER_RADIUS = 4;
+
 interface Props {
 	text: string;
 	onTextChange: (value: string) => void;
@@ -91,6 +97,7 @@ function useVideoThumbnail(blobUrl: string | undefined): string | null {
 			video.removeEventListener("seeked", onSeeked);
 			video.removeAttribute("src");
 			video.load();
+			setThumb(null);
 		};
 	}, [blobUrl]);
 	return thumb;
@@ -174,14 +181,19 @@ function PendingFilePreview({
 				gap: 8,
 				background: "var(--mantine-color-dark-6)",
 				borderRadius: 6,
-				maxWidth: 200,
+				maxWidth: PENDING_FILE_MAX_WIDTH,
 			}}
 		>
 			{file.fileType === "photo" ? (
 				<img
 					src={file.blobUrl}
 					alt=""
-					style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }}
+					style={{
+						width: PREVIEW_SIZE,
+						height: PREVIEW_SIZE,
+						objectFit: "cover",
+						borderRadius: PREVIEW_BORDER_RADIUS,
+					}}
 				/>
 			) : file.fileType === "video" ? (
 				videoThumb ? (
@@ -189,22 +201,22 @@ function PendingFilePreview({
 						src={videoThumb}
 						alt=""
 						style={{
-							width: 32,
-							height: 32,
+							width: PREVIEW_SIZE,
+							height: PREVIEW_SIZE,
 							objectFit: "cover",
-							borderRadius: 4,
+							borderRadius: PREVIEW_BORDER_RADIUS,
 						}}
 					/>
 				) : (
 					<div
 						style={{
-							width: 32,
-							height: 32,
+							width: PREVIEW_SIZE,
+							height: PREVIEW_SIZE,
 							display: "flex",
 							alignItems: "center",
 							justifyContent: "center",
 							background: "var(--mantine-color-dark-5)",
-							borderRadius: 4,
+							borderRadius: PREVIEW_BORDER_RADIUS,
 							flexShrink: 0,
 						}}
 					>
@@ -257,7 +269,7 @@ function ExistingFilePreview({
 				gap: 8,
 				background: "var(--mantine-color-dark-6)",
 				borderRadius: 6,
-				maxWidth: 200,
+				maxWidth: PENDING_FILE_MAX_WIDTH,
 				opacity: 0.85,
 			}}
 		>
@@ -265,7 +277,12 @@ function ExistingFilePreview({
 				<img
 					src={url}
 					alt=""
-					style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }}
+					style={{
+						width: PREVIEW_SIZE,
+						height: PREVIEW_SIZE,
+						objectFit: "cover",
+						borderRadius: PREVIEW_BORDER_RADIUS,
+					}}
 				/>
 			) : (
 				<FileIcon size={24} style={{ flexShrink: 0 }} />
@@ -309,7 +326,7 @@ function LocationPreview({
 				gap: 8,
 				background: "var(--mantine-color-dark-6)",
 				borderRadius: 6,
-				maxWidth: 240,
+				maxWidth: LOCATION_PREVIEW_MAX_WIDTH,
 				opacity: dimmed ? 0.85 : 1,
 			}}
 		>
@@ -551,6 +568,7 @@ export function InputBar({
 							size="lg"
 							onClick={handleAttachClick}
 							style={{ marginBottom: 2 }}
+							aria-label={t("input.attachFile")}
 						>
 							<Paperclip size={20} />
 						</ActionIcon>
@@ -563,6 +581,7 @@ export function InputBar({
 								size="lg"
 								onClick={onOpenLocationPicker}
 								style={{ marginBottom: 2 }}
+								aria-label={t("input.attachLocation")}
 							>
 								<MapPin size={20} />
 							</ActionIcon>

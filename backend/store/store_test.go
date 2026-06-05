@@ -11,6 +11,13 @@ import (
 	"fast_chat/model"
 )
 
+const (
+	testAlice  = "alice:test"
+	testBob    = "bob:test"
+	testCarol  = "carol:test"
+	testEdited = "Edited!"
+)
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -53,7 +60,7 @@ func TestCreateUser(t *testing.T) {
 func TestGetUserByToken(t *testing.T) {
 	s := newTestStore(t)
 
-	user, _ := s.CreateUser("bob:test", "bob")
+	user, _ := s.CreateUser(testBob, "bob")
 	found, ok := s.GetUserByToken(user.Token)
 	if !ok {
 		t.Fatal("expected to find user by token")
@@ -71,7 +78,7 @@ func TestGetUserByToken(t *testing.T) {
 func TestGetUserByID(t *testing.T) {
 	s := newTestStore(t)
 
-	user, _ := s.CreateUser("carol:test", "carol")
+	user, _ := s.CreateUser(testCarol, "carol")
 	found, ok := s.GetUserByID(user.ID)
 	if !ok {
 		t.Fatal("expected to find user by ID")
@@ -84,8 +91,8 @@ func TestGetUserByID(t *testing.T) {
 func TestSearchUsers(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
 	s.CreateUser("dalia:test", "dalia")
 
 	results := s.SearchUsers("ali", "")
@@ -103,7 +110,7 @@ func TestSearchUsers(t *testing.T) {
 		t.Errorf("expected 0 results, got %d", len(results))
 	}
 
-	results = s.SearchUsers("ali", "alice:test")
+	results = s.SearchUsers("ali", testAlice)
 	if len(results) != 1 {
 		t.Errorf("expected 1 result (dalia excluding alice), got %d", len(results))
 	}
@@ -112,10 +119,10 @@ func TestSearchUsers(t *testing.T) {
 func TestCreateChat(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
 
-	chat, err := s.CreateChat("alice:test", "bob:test")
+	chat, err := s.CreateChat(testAlice, testBob)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,7 +131,7 @@ func TestCreateChat(t *testing.T) {
 		t.Errorf("expected 2 members, got %d", len(chat.Members))
 	}
 
-	same, err := s.CreateChat("alice:test", "bob:test")
+	same, err := s.CreateChat(testAlice, testBob)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,19 +143,19 @@ func TestCreateChat(t *testing.T) {
 func TestGetUserChats(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	s.CreateUser("carol:test", "carol")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
 
-	s.CreateChat("alice:test", "bob:test")
-	s.CreateChat("alice:test", "carol:test")
+	s.CreateChat(testAlice, testBob)
+	s.CreateChat(testAlice, testCarol)
 
-	chats := s.GetUserChats("alice:test")
+	chats := s.GetUserChats(testAlice)
 	if len(chats) != 2 {
 		t.Errorf("expected 2 chats, got %d", len(chats))
 	}
 
-	chats = s.GetUserChats("bob:test")
+	chats = s.GetUserChats(testBob)
 	if len(chats) != 1 {
 		t.Errorf("expected 1 chat, got %d", len(chats))
 	}
@@ -157,11 +164,11 @@ func TestGetUserChats(t *testing.T) {
 func TestAddMessage(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
 
-	msg, err := s.AddMessage(chat.ID, "alice:test", "alice", "Hello!", "", "", nil)
+	msg, err := s.AddMessage(chat.ID, testAlice, "alice", "Hello!", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -169,14 +176,14 @@ func TestAddMessage(t *testing.T) {
 	if msg.Text != "Hello!" {
 		t.Errorf("expected 'Hello!', got '%s'", msg.Text)
 	}
-	if msg.FromID != "alice:test" {
+	if msg.FromID != testAlice {
 		t.Errorf("expected alice:test, got %s", msg.FromID)
 	}
 	if msg.ChatID != chat.ID {
 		t.Errorf("expected %s, got %s", chat.ID, msg.ChatID)
 	}
 
-	_, err = s.AddMessage("nonexistent", "alice:test", "alice", "test", "", "", nil)
+	_, err = s.AddMessage("nonexistent", testAlice, "alice", "test", "", "", nil)
 	if err == nil {
 		t.Error("expected error for nonexistent chat")
 	}
@@ -185,23 +192,23 @@ func TestAddMessage(t *testing.T) {
 func TestEditMessage(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "Hello", "", "", nil)
 
-	updated, err := s.EditMessage(chat.ID, msg.ID, "alice:test", "Edited!", nil, false)
+	updated, err := s.EditMessage(chat.ID, msg.ID, testAlice, testEdited, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if updated.Text != "Edited!" {
+	if updated.Text != testEdited {
 		t.Errorf("expected 'Edited!', got '%s'", updated.Text)
 	}
 	if updated.EditedAt == nil {
 		t.Error("expected EditedAt to be set")
 	}
 
-	_, err = s.EditMessage(chat.ID, msg.ID, "bob:test", "Hacked!", nil, false)
+	_, err = s.EditMessage(chat.ID, msg.ID, testBob, "Hacked!", nil, false)
 	if err == nil {
 		t.Error("expected error when bob edits alice's message")
 	}
@@ -210,17 +217,17 @@ func TestEditMessage(t *testing.T) {
 func TestDeleteMessage(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "Hello", "", "", nil)
 
-	err := s.DeleteMessage(chat.ID, msg.ID, "alice:test")
+	err := s.DeleteMessage(chat.ID, msg.ID, testAlice)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	err = s.DeleteMessage(chat.ID, "nonexistent", "alice:test")
+	err = s.DeleteMessage(chat.ID, "nonexistent", testAlice)
 	if err == nil {
 		t.Error("expected error for nonexistent message")
 	}
@@ -229,10 +236,10 @@ func TestDeleteMessage(t *testing.T) {
 func TestSetMessageFiles(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "Hello", "", "", nil)
 
 	f1, _ := s.SaveFile("hash1", "image/png", 100, "a.png", "a.png")
 	f2, _ := s.SaveFile("hash2", "application/pdf", 200, "b.pdf", "b.pdf")
@@ -267,30 +274,30 @@ func TestSetMessageFiles(t *testing.T) {
 func TestEditThreadMessage(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	parent, _ := s.AddMessage(chat.ID, "alice:test", "alice", "parent", "", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	parent, _ := s.AddMessage(chat.ID, testAlice, "alice", "parent", "", "", nil)
 	thread, _ := s.CreateThread(chat.ID, parent.ID, parent.Text, parent.FromNick)
-	msg, _ := s.AddThreadMessage(thread.ID, "alice:test", "alice", "Hello", "", "", nil)
+	msg, _ := s.AddThreadMessage(thread.ID, testAlice, "alice", "Hello", "", "", nil)
 
-	updated, err := s.EditThreadMessage(thread.ID, msg.ID, "alice:test", "Edited!", nil, false)
+	updated, err := s.EditThreadMessage(thread.ID, msg.ID, testAlice, testEdited, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if updated.Text != "Edited!" {
+	if updated.Text != testEdited {
 		t.Errorf("expected 'Edited!', got '%s'", updated.Text)
 	}
 	if updated.EditedAt == nil {
 		t.Error("expected EditedAt to be set")
 	}
 
-	_, err = s.EditThreadMessage(thread.ID, msg.ID, "bob:test", "Hacked!", nil, false)
+	_, err = s.EditThreadMessage(thread.ID, msg.ID, testBob, "Hacked!", nil, false)
 	if err == nil {
 		t.Error("expected error when bob edits alice's thread message")
 	}
 
-	_, err = s.EditThreadMessage("nonexistent", msg.ID, "alice:test", "x", nil, false)
+	_, err = s.EditThreadMessage("nonexistent", msg.ID, testAlice, "x", nil, false)
 	if err == nil {
 		t.Error("expected error for nonexistent thread")
 	}
@@ -299,12 +306,12 @@ func TestEditThreadMessage(t *testing.T) {
 func TestMessageLocation(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
 
 	loc := &model.Location{Lat: 51.505, Lng: -0.09}
-	msg, err := s.AddMessage(chat.ID, "alice:test", "alice", "Meet here", "", "", loc)
+	msg, err := s.AddMessage(chat.ID, testAlice, "alice", "Meet here", "", "", loc)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -332,13 +339,13 @@ func TestMessageLocation(t *testing.T) {
 func TestEditMessageLocation(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "x", "", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "x", "", "", nil)
 
 	// Set initial location.
-	updated, err := s.EditMessage(chat.ID, msg.ID, "alice:test", "x", &model.Location{Lat: 1, Lng: 2}, false)
+	updated, err := s.EditMessage(chat.ID, msg.ID, testAlice, "x", &model.Location{Lat: 1, Lng: 2}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -347,7 +354,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Replace with a different location.
-	updated, err = s.EditMessage(chat.ID, msg.ID, "alice:test", "x", &model.Location{Lat: 3, Lng: 4}, false)
+	updated, err = s.EditMessage(chat.ID, msg.ID, testAlice, "x", &model.Location{Lat: 3, Lng: 4}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -356,7 +363,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Clear the location.
-	updated, err = s.EditMessage(chat.ID, msg.ID, "alice:test", "x", nil, true)
+	updated, err = s.EditMessage(chat.ID, msg.ID, testAlice, "x", nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -365,7 +372,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Leave unchanged (no location params).
-	updated, err = s.EditMessage(chat.ID, msg.ID, "alice:test", "new text", nil, false)
+	updated, err = s.EditMessage(chat.ID, msg.ID, testAlice, "new text", nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -377,12 +384,12 @@ func TestEditMessageLocation(t *testing.T) {
 func TestReplyToLocation(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	parent, _ := s.AddMessage(chat.ID, "alice:test", "alice", "x", "", "", &model.Location{Lat: 10, Lng: 20})
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	parent, _ := s.AddMessage(chat.ID, testAlice, "alice", "x", "", "", &model.Location{Lat: 10, Lng: 20})
 
-	reply, err := s.AddMessage(chat.ID, "bob:test", "bob", "reply", "", parent.ID, nil)
+	reply, err := s.AddMessage(chat.ID, testBob, "bob", "reply", "", parent.ID, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -398,12 +405,12 @@ func TestReplyToLocation(t *testing.T) {
 func TestGetMessagesPaginated(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
 
 	for i := 0; i < 10; i++ {
-		s.AddMessage(chat.ID, "alice:test", "alice", fmt.Sprintf("msg-%d", i), "", "", nil)
+		s.AddMessage(chat.ID, testAlice, "alice", fmt.Sprintf("msg-%d", i), "", "", nil)
 	}
 
 	msgs, next, hasMore := s.GetMessagesPaginated(chat.ID, 4, "")
@@ -457,14 +464,14 @@ func TestCreateRemoteChat(t *testing.T) {
 
 func TestAddRawMessage(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
 
 	msg := &model.Message{
 		ID:     "raw-1",
 		ChatID: chat.ID,
-		FromID: "bob:test",
+		FromID: testBob,
 		Text:   "from remote",
 	}
 
@@ -489,13 +496,13 @@ func TestAddRawMessage(t *testing.T) {
 
 func TestEditRawMessage(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	s.AddMessage(chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
 
 	now := time.Now()
-	err := s.EditRawMessage(chat.ID, "msg-1", "Edited!", now, nil, false)
+	err := s.EditRawMessage(chat.ID, "msg-1", testEdited, now, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -504,7 +511,7 @@ func TestEditRawMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Text != "Edited!" {
+	if msg.Text != testEdited {
 		t.Errorf("expected 'Edited!', got '%s'", msg.Text)
 	}
 	if msg.EditedAt == nil {
@@ -519,10 +526,10 @@ func TestEditRawMessage(t *testing.T) {
 
 func TestDeleteRawMessage(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	s.AddMessage(chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
 
 	err := s.DeleteRawMessage(chat.ID, "msg-1")
 	if err != nil {
@@ -542,10 +549,10 @@ func TestDeleteRawMessage(t *testing.T) {
 
 func TestCreateThreadAndGet(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	s.AddMessage(chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
 
 	thread, err := s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
 	if err != nil {
@@ -585,11 +592,11 @@ func TestCreateThreadAndGet(t *testing.T) {
 func TestGetThreadsForChat(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Msg1", "m1", "", nil)
-	s.AddMessage(chat.ID, "alice:test", "alice", "Msg2", "m2", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	s.AddMessage(chat.ID, testAlice, "alice", "Msg1", "m1", "", nil)
+	s.AddMessage(chat.ID, testAlice, "alice", "Msg2", "m2", "", nil)
 
 	s.CreateThread(chat.ID, "m1", "Msg1", "alice")
 	s.CreateThread(chat.ID, "m2", "Msg2", "alice")
@@ -607,10 +614,10 @@ func TestGetThreadsForChat(t *testing.T) {
 
 func TestCreateChatIsPrivate(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
 
-	chat, err := s.CreateChat("alice:test", "bob:test")
+	chat, err := s.CreateChat(testAlice, testBob)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -622,11 +629,11 @@ func TestCreateChatIsPrivate(t *testing.T) {
 
 func TestCreateGroupChatBasic(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	s.CreateUser("carol:test", "carol")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
 
-	chat, err := s.CreateGroupChat("Team", "alice:test", []string{"bob:test", "carol:test"})
+	chat, err := s.CreateGroupChat("Team", testAlice, []string{testBob, testCarol})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -637,7 +644,7 @@ func TestCreateGroupChatBasic(t *testing.T) {
 	if chat.Name != "Team" {
 		t.Errorf("expected name=Team, got %q", chat.Name)
 	}
-	if chat.OwnerID != "alice:test" {
+	if chat.OwnerID != testAlice {
 		t.Errorf("expected ownerId=alice:test, got %q", chat.OwnerID)
 	}
 	if len(chat.Members) != 3 {
@@ -647,19 +654,19 @@ func TestCreateGroupChatBasic(t *testing.T) {
 
 func TestCreateGroupChatUnlimitedDuplicates(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	s.CreateUser("carol:test", "carol")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
 
-	c1, _ := s.CreateGroupChat("G1", "alice:test", []string{"bob:test", "carol:test"})
-	c2, _ := s.CreateGroupChat("G2", "alice:test", []string{"bob:test", "carol:test"})
-	c3, _ := s.CreateGroupChat("G3", "alice:test", []string{"bob:test", "carol:test"})
+	c1, _ := s.CreateGroupChat("G1", testAlice, []string{testBob, testCarol})
+	c2, _ := s.CreateGroupChat("G2", testAlice, []string{testBob, testCarol})
+	c3, _ := s.CreateGroupChat("G3", testAlice, []string{testBob, testCarol})
 
 	if c1.ID == c2.ID || c2.ID == c3.ID || c1.ID == c3.ID {
 		t.Errorf("expected 3 distinct IDs, got %s %s %s", c1.ID, c2.ID, c3.ID)
 	}
 
-	chats := s.GetUserChats("alice:test")
+	chats := s.GetUserChats(testAlice)
 	if len(chats) != 3 {
 		t.Errorf("expected 3 chats for alice, got %d", len(chats))
 	}
@@ -667,11 +674,11 @@ func TestCreateGroupChatUnlimitedDuplicates(t *testing.T) {
 
 func TestCreateGroupChatDeduplicates(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	s.CreateUser("carol:test", "carol")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
 
-	chat, err := s.CreateGroupChat("G", "alice:test", []string{"alice:test", "bob:test", "carol:test"})
+	chat, err := s.CreateGroupChat("G", testAlice, []string{testAlice, testBob, testCarol})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -683,11 +690,11 @@ func TestCreateGroupChatDeduplicates(t *testing.T) {
 
 func TestCreateGroupChatValidation(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
 
 	// owner + bob = 2 members, valid
-	chat, err := s.CreateGroupChat("G", "alice:test", []string{"alice:test", "bob:test"})
+	chat, err := s.CreateGroupChat("G", testAlice, []string{testAlice, testBob})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -698,9 +705,9 @@ func TestCreateGroupChatValidation(t *testing.T) {
 
 func TestCreateGroupChatSolo(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
+	s.CreateUser(testAlice, "alice")
 
-	chat, err := s.CreateGroupChat("Solo", "alice:test", nil)
+	chat, err := s.CreateGroupChat("Solo", testAlice, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -708,7 +715,7 @@ func TestCreateGroupChatSolo(t *testing.T) {
 	if chat.Type != "group" {
 		t.Errorf("expected type=group, got %q", chat.Type)
 	}
-	if chat.OwnerID != "alice:test" {
+	if chat.OwnerID != testAlice {
 		t.Errorf("expected ownerId=alice:test, got %q", chat.OwnerID)
 	}
 	if len(chat.Members) != 1 {
@@ -718,12 +725,12 @@ func TestCreateGroupChatSolo(t *testing.T) {
 
 func TestAddChatMember(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	s.CreateUser("carol:test", "carol")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
 	s.CreateUser("dave:test", "dave")
 
-	chat, _ := s.CreateGroupChat("G", "alice:test", []string{"bob:test", "carol:test"})
+	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
 
 	if err := s.AddChatMember(chat.ID, "dave:test"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -743,21 +750,21 @@ func TestAddChatMember(t *testing.T) {
 		t.Errorf("expected still 4 members after duplicate add, got %d", len(got.Members))
 	}
 
-	privateChat, _ := s.CreateChat("alice:test", "bob:test")
-	if err := s.AddChatMember(privateChat.ID, "carol:test"); err == nil {
+	privateChat, _ := s.CreateChat(testAlice, testBob)
+	if err := s.AddChatMember(privateChat.ID, testCarol); err == nil {
 		t.Error("expected error adding member to private chat")
 	}
 }
 
 func TestRemoveChatMember(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	s.CreateUser("carol:test", "carol")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
 
-	chat, _ := s.CreateGroupChat("G", "alice:test", []string{"bob:test", "carol:test"})
+	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
 
-	if err := s.RemoveChatMember(chat.ID, "bob:test"); err != nil {
+	if err := s.RemoveChatMember(chat.ID, testBob); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -766,7 +773,7 @@ func TestRemoveChatMember(t *testing.T) {
 		t.Errorf("expected 2 members, got %d", len(got.Members))
 	}
 
-	if err := s.RemoveChatMember(chat.ID, "carol:test"); err != nil {
+	if err := s.RemoveChatMember(chat.ID, testCarol); err != nil {
 		t.Fatalf("unexpected error removing carol: %v", err)
 	}
 
@@ -775,7 +782,7 @@ func TestRemoveChatMember(t *testing.T) {
 		t.Errorf("expected 1 member remaining, got %d", len(got.Members))
 	}
 
-	if err := s.RemoveChatMember(chat.ID, "alice:test"); err == nil {
+	if err := s.RemoveChatMember(chat.ID, testAlice); err == nil {
 		t.Error("expected error: cannot remove the last member")
 	}
 
@@ -786,11 +793,11 @@ func TestRemoveChatMember(t *testing.T) {
 
 func TestUpdateChatName(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	s.CreateUser("carol:test", "carol")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
 
-	chat, _ := s.CreateGroupChat("Old", "alice:test", []string{"bob:test", "carol:test"})
+	chat, _ := s.CreateGroupChat("Old", testAlice, []string{testBob, testCarol})
 
 	updated, err := s.UpdateChatName(chat.ID, "New")
 	if err != nil {
@@ -800,7 +807,7 @@ func TestUpdateChatName(t *testing.T) {
 		t.Errorf("expected New, got %q", updated.Name)
 	}
 
-	privateChat, _ := s.CreateChat("alice:test", "bob:test")
+	privateChat, _ := s.CreateChat(testAlice, testBob)
 	if _, err := s.UpdateChatName(privateChat.ID, "X"); err == nil {
 		t.Error("expected error renaming private chat")
 	}
@@ -808,12 +815,12 @@ func TestUpdateChatName(t *testing.T) {
 
 func TestUpdateChatAvatar(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	s.CreateUser("carol:test", "carol")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
 	f, _ := s.SaveFile("hash", "image/png", 100, "a.png", "a.png")
 
-	chat, _ := s.CreateGroupChat("G", "alice:test", []string{"bob:test", "carol:test"})
+	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
 
 	updated, err := s.UpdateChatAvatar(chat.ID, f.ID)
 	if err != nil {
@@ -826,14 +833,14 @@ func TestUpdateChatAvatar(t *testing.T) {
 
 func TestDeleteChatCascade(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	s.CreateUser("carol:test", "carol")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
 
-	chat, _ := s.CreateGroupChat("G", "alice:test", []string{"bob:test", "carol:test"})
-	msg, _ := s.AddMessage(chat.ID, "alice:test", "alice", "hi", "", "", nil)
+	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
+	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "hi", "", "", nil)
 	thread, _ := s.CreateThread(chat.ID, msg.ID, "hi", "alice")
-	s.AddThreadMessage(thread.ID, "bob:test", "bob", "reply", "", "", nil)
+	s.AddThreadMessage(thread.ID, testBob, "bob", "reply", "", "", nil)
 	f, _ := s.SaveFile("h", "image/png", 1, "a.png", "a.png")
 	s.AddMessageFiles(msg.ID, []string{f.ID})
 
@@ -868,9 +875,9 @@ func TestDeleteChatCascade(t *testing.T) {
 
 func TestDeleteChatRejectsPrivate(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
 
 	if err := s.DeleteChat(chat.ID); err == nil {
 		t.Error("expected error deleting private chat")
@@ -879,12 +886,12 @@ func TestDeleteChatRejectsPrivate(t *testing.T) {
 
 func TestGetChatsByAvatarFileID(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	s.CreateUser("carol:test", "carol")
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
 	f, _ := s.SaveFile("avatar-hash", "image/png", 100, "a.png", "a.png")
 
-	chat, _ := s.CreateGroupChat("G", "alice:test", []string{"bob:test", "carol:test"})
+	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
 	if _, err := s.UpdateChatAvatar(chat.ID, f.ID); err != nil {
 		t.Fatalf("set avatar: %v", err)
 	}
@@ -908,13 +915,13 @@ func TestGetChatsByAvatarFileID(t *testing.T) {
 
 func TestAddThreadMessage(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	s.AddMessage(chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
 	thread, _ := s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
 
-	msg, err := s.AddThreadMessage(thread.ID, "bob:test", "bob", "Reply", "", "", nil)
+	msg, err := s.AddThreadMessage(thread.ID, testBob, "bob", "Reply", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -935,7 +942,7 @@ func TestAddThreadMessage(t *testing.T) {
 		t.Errorf("expected 1 thread message, got %d", len(msgs))
 	}
 
-	_, err = s.AddThreadMessage("nonexistent", "alice:test", "alice", "test", "", "", nil)
+	_, err = s.AddThreadMessage("nonexistent", testAlice, "alice", "test", "", "", nil)
 	if err == nil {
 		t.Error("expected error for nonexistent thread")
 	}
@@ -943,18 +950,18 @@ func TestAddThreadMessage(t *testing.T) {
 
 func TestAddConnection(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	user, _ := s.GetUserByID("alice:test")
+	s.CreateUser(testAlice, "alice")
+	user, _ := s.GetUserByID(testAlice)
 
 	if !user.Online {
 		t.Error("expected user to be online after creation")
 	}
 
-	s.AddConnection("alice:test")
+	s.AddConnection(testAlice)
 
-	s.RemoveConnection("alice:test")
+	s.RemoveConnection(testAlice)
 
-	user, _ = s.GetUserByID("alice:test")
+	user, _ = s.GetUserByID(testAlice)
 	if user.Online {
 		t.Error("expected user to be offline after RemoveConnection")
 	}
@@ -962,20 +969,20 @@ func TestAddConnection(t *testing.T) {
 
 func TestAddConnectionMultiple(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
+	s.CreateUser(testAlice, "alice")
 
-	s.AddConnection("alice:test")
-	s.AddConnection("alice:test")
-	s.RemoveConnection("alice:test")
+	s.AddConnection(testAlice)
+	s.AddConnection(testAlice)
+	s.RemoveConnection(testAlice)
 
-	user, _ := s.GetUserByID("alice:test")
+	user, _ := s.GetUserByID(testAlice)
 	if !user.Online {
 		t.Error("expected user to stay online after one RemoveConnection (still one left)")
 	}
 
-	s.RemoveConnection("alice:test")
+	s.RemoveConnection(testAlice)
 
-	user, _ = s.GetUserByID("alice:test")
+	user, _ = s.GetUserByID(testAlice)
 	if user.Online {
 		t.Error("expected user to be offline after all connections removed")
 	}
@@ -983,10 +990,10 @@ func TestAddConnectionMultiple(t *testing.T) {
 
 func TestGetMessageValue(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Hello", "msg-1", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	s.AddMessage(chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
 
 	msg1, err := s.GetMessage(chat.ID, "msg-1")
 	if err != nil {
@@ -1006,10 +1013,10 @@ func TestGetMessageValue(t *testing.T) {
 
 func TestGetThreadValue(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser("alice:test", "alice")
-	s.CreateUser("bob:test", "bob")
-	chat, _ := s.CreateChat("alice:test", "bob:test")
-	s.AddMessage(chat.ID, "alice:test", "alice", "Parent", "parent-1", "", nil)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+	s.AddMessage(chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
 	s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
 
 	threads := s.GetThreadsForChat(chat.ID)

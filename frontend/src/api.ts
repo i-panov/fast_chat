@@ -81,6 +81,8 @@ export interface PendingFile {
 	fileType: "photo" | "video" | "audio" | "file";
 }
 
+export type MessageStatus = "sending" | "failed";
+
 export interface Message {
 	id: string;
 	chatId: string;
@@ -92,7 +94,7 @@ export interface Message {
 	replyTo?: ReplyToInfo;
 	files?: FileInfo[];
 	location?: Location;
-	status?: "sending" | "failed";
+	status?: MessageStatus;
 }
 
 export interface Thread {

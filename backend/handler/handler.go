@@ -427,7 +427,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 		Type       string   `json:"type"`
 		WithUserID string   `json:"withUserId"`
 		Name       string   `json:"name"`
-		MemberIDs  []string `json:"memberIds"`
+		MemberIDs  []string `json:"memberIDs"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -507,13 +507,16 @@ func (h *Handler) createGroupChat(w http.ResponseWriter, r *http.Request, user *
 
 	seen := make(map[string]struct{}, len(memberIDs)+1)
 	cleaned := make([]string, 0, len(memberIDs)+1)
+
 	add := func(id string) {
 		if id == "" {
 			return
 		}
+
 		if _, ok := seen[id]; ok {
 			return
 		}
+
 		seen[id] = struct{}{}
 		cleaned = append(cleaned, id)
 	}
@@ -528,6 +531,7 @@ func (h *Handler) createGroupChat(w http.ResponseWriter, r *http.Request, user *
 
 			return
 		}
+
 		if _, ok := h.store.GetUserByID(m); !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "user not found: " + m})
 
@@ -622,6 +626,7 @@ func (h *Handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
 
 			return
 		}
+
 		updated = u
 	}
 
@@ -730,6 +735,7 @@ func (h *Handler) AddChatMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, _ := h.store.GetChat(chatID)
+
 	enriched := h.enrichChat(updated)
 	for _, memberID := range updated.Members {
 		h.hub.Send(memberID, SSEEvent{Event: "chat_member_added", Data: map[string]interface{}{
@@ -779,6 +785,7 @@ func (h *Handler) RemoveChatMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, _ := h.store.GetChat(chatID)
+
 	enriched := h.enrichChat(updated)
 	for _, memberID := range updated.Members {
 		h.hub.Send(memberID, SSEEvent{Event: "chat_member_removed", Data: map[string]interface{}{
@@ -900,7 +907,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo
 	defer r.Body.Close() //nolint:errcheck
 
 	user := getUser(r)
@@ -1529,7 +1536,7 @@ func (h *Handler) FederatedHandleTyping(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) { //nolint:gocognit,gocyclo
 	defer r.Body.Close() //nolint:errcheck
 
 	user := getUser(r)
@@ -1900,7 +1907,7 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
 }
 
-func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) { //nolint:gocognit,gocyclo
 	defer r.Body.Close() //nolint:errcheck
 
 	user := getUser(r)

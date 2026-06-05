@@ -21,7 +21,7 @@ import {
 	RotateCcw,
 	Trash2,
 } from "lucide-react";
-import { isValidElement, useLayoutEffect, useRef, useState } from "react";
+import { isValidElement, memo, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -32,6 +32,14 @@ import { extractCodeText, formatCoords } from "../../utils/chat.ts";
 import { ImageLightbox } from "./ImageLightbox.tsx";
 import { LocationLightbox } from "./LocationLightbox.tsx";
 import { LocationMiniMap } from "./LocationMiniMap.tsx";
+
+// Константы для стилей
+const CODE_BLOCK_MAX_HEIGHT = 300;
+const FILE_ATTACHMENT_MAX_SIZE = 300;
+const MENU_MIN_WIDTH = 140;
+const BORDER_RADIUS_SM = 6;
+const BORDER_RADIUS_XS = 4;
+const BORDER_RADIUS_CODE = 3;
 
 interface CodeBlockProps {
 	className?: string;
@@ -45,10 +53,10 @@ function CodeBlock({ className, code, lang }: CodeBlockProps) {
 	return (
 		<div
 			style={{
-				maxHeight: "300px",
+				maxHeight: CODE_BLOCK_MAX_HEIGHT,
 				overflow: "auto",
 				background: "var(--mantine-color-dark-7)",
-				borderRadius: "4px",
+				borderRadius: BORDER_RADIUS_XS,
 				marginTop: "4px",
 				marginBottom: "2px",
 			}}
@@ -120,8 +128,8 @@ function FileAttachment({
 						alt={file.originalName}
 						style={{
 							maxWidth: "100%",
-							maxHeight: 300,
-							borderRadius: 6,
+							maxHeight: FILE_ATTACHMENT_MAX_SIZE,
+							borderRadius: BORDER_RADIUS_SM,
 							objectFit: "contain",
 							cursor: "pointer",
 							display: "block",
@@ -137,8 +145,8 @@ function FileAttachment({
 					alt={file.originalName}
 					style={{
 						maxWidth: "100%",
-						maxHeight: 300,
-						borderRadius: 6,
+						maxHeight: FILE_ATTACHMENT_MAX_SIZE,
+						borderRadius: BORDER_RADIUS_SM,
 						objectFit: "contain",
 						cursor: "pointer",
 						display: "block",
@@ -156,8 +164,8 @@ function FileAttachment({
 				preload="metadata"
 				style={{
 					maxWidth: "100%",
-					maxHeight: 300,
-					borderRadius: 6,
+					maxHeight: FILE_ATTACHMENT_MAX_SIZE,
+					borderRadius: BORDER_RADIUS_SM,
 					display: "block",
 				}}
 			>
@@ -179,7 +187,7 @@ function FileAttachment({
 					gap: 8,
 					padding: "6px 10px",
 					background: "var(--mantine-color-dark-6)",
-					borderRadius: 6,
+					borderRadius: BORDER_RADIUS_SM,
 					width: "100%",
 					cursor: "pointer",
 				}}
@@ -210,7 +218,7 @@ function FileAttachment({
 					gap: 8,
 					padding: "6px 10px",
 					background: "var(--mantine-color-dark-6)",
-					borderRadius: 6,
+					borderRadius: BORDER_RADIUS_SM,
 					width: "100%",
 					cursor: "pointer",
 				}}
@@ -266,7 +274,7 @@ function ReplyFilePreview({
 						width: 24,
 						height: 24,
 						objectFit: "cover",
-						borderRadius: 3,
+						borderRadius: BORDER_RADIUS_XS,
 						flexShrink: 0,
 					}}
 				/>
@@ -351,7 +359,31 @@ function isWithinTTL(createdAt: string, ttl: number): boolean {
 	return (Date.now() - new Date(createdAt).getTime()) / 1000 <= ttl;
 }
 
-export function MessageBubble({
+// Функция сравнения для мемоизации
+function areEqual(prev: Props, next: Props): boolean {
+	return (
+		prev.text === next.text &&
+		prev.isOwn === next.isOwn &&
+		prev.fromNick === next.fromNick &&
+		prev.time === next.time &&
+		prev.chatId === next.chatId &&
+		prev.msgId === next.msgId &&
+		prev.editedAt === next.editedAt &&
+		prev.replyTo === next.replyTo &&
+		prev.files === next.files &&
+		prev.location === next.location &&
+		prev.editTTL === next.editTTL &&
+		prev.deleteTTL === next.deleteTTL &&
+		prev.createdAt === next.createdAt &&
+		prev.threadId === next.threadId &&
+		prev.threadMessageCount === next.threadMessageCount &&
+		prev.isInThread === next.isInThread &&
+		prev.status === next.status &&
+		prev.showAuthorNick === next.showAuthorNick
+	);
+}
+
+export const MessageBubble = memo(function MessageBubble({
 	text,
 	isOwn,
 	fromNick,
@@ -460,7 +492,7 @@ export function MessageBubble({
 							padding: "2px 6px",
 							borderLeft: "3px solid var(--mantine-color-blue-5)",
 							background: "var(--mantine-color-dark-6)",
-							borderRadius: 4,
+							borderRadius: BORDER_RADIUS_XS,
 							overflow: "hidden",
 							cursor: "pointer",
 						}}
@@ -544,7 +576,7 @@ export function MessageBubble({
 												style={{
 													background: "var(--mantine-color-dark-7)",
 													padding: "1px 4px",
-													borderRadius: "3px",
+													borderRadius: BORDER_RADIUS_CODE,
 													fontSize: "0.85em",
 												}}
 											>
@@ -638,8 +670,10 @@ export function MessageBubble({
 							left: menuPos.x,
 							top: menuPos.y,
 							zIndex: 1000,
-							minWidth: "140px",
+							minWidth: MENU_MIN_WIDTH,
 						}}
+						role="menu"
+						aria-label="Message actions"
 					>
 						<Stack gap={0}>
 							<Button
@@ -652,6 +686,7 @@ export function MessageBubble({
 									navigator.clipboard.writeText(text);
 									setMenuPos(null);
 								}}
+								role="menuitem"
 							>
 								<ActionIcon variant="transparent" color="gray" size={18} mr={6}>
 									<Copy size={14} />
@@ -669,6 +704,7 @@ export function MessageBubble({
 										onStartEdit(chatId, msgId, text, files, threadId);
 										setMenuPos(null);
 									}}
+									role="menuitem"
 								>
 									<ActionIcon
 										variant="transparent"
@@ -692,6 +728,7 @@ export function MessageBubble({
 										onRetry(chatId, msgId);
 										setMenuPos(null);
 									}}
+									role="menuitem"
 								>
 									<ActionIcon
 										variant="transparent"
@@ -715,6 +752,7 @@ export function MessageBubble({
 										onReply?.(chatId, msgId);
 										setMenuPos(null);
 									}}
+									role="menuitem"
 								>
 									<ActionIcon
 										variant="transparent"
@@ -738,6 +776,7 @@ export function MessageBubble({
 										onCreateThread?.(chatId, msgId);
 										setMenuPos(null);
 									}}
+									role="menuitem"
 								>
 									<ActionIcon
 										variant="transparent"
@@ -761,6 +800,7 @@ export function MessageBubble({
 										onDelete(chatId, msgId);
 										setMenuPos(null);
 									}}
+									role="menuitem"
 								>
 									<ActionIcon
 										variant="transparent"
@@ -795,4 +835,4 @@ export function MessageBubble({
 			)}
 		</>
 	);
-}
+}, areEqual);

@@ -16,6 +16,13 @@ import (
 	"fast_chat/model"
 )
 
+const (
+	chatTypePrivate = "private"
+	chatTypeGroup   = "group"
+	fieldText       = "text"
+	fieldEditedAt   = "edited_at"
+)
+
 var (
 	ErrChatNotFound    = errors.New("chat not found")
 	ErrMessageNotFound = errors.New("message not found")
@@ -128,7 +135,7 @@ func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
 
 		chatIDQuery := s.db.Model(&model.Chat{}).
 			Select("id").
-			Where("id IN ? AND type = ?", chatIDs, "private")
+			Where("id IN ? AND type = ?", chatIDs, chatTypePrivate)
 
 		var foundID string
 		if err := chatIDQuery.Limit(1).Row().Scan(&foundID); err == nil {
@@ -143,7 +150,7 @@ func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
 	id := generateID()
 	chat := &model.Chat{
 		ID:        id,
-		Type:      "private",
+		Type:      chatTypePrivate,
 		CreatedAt: time.Now(),
 	}
 
@@ -172,26 +179,29 @@ func (s *Store) CreateGroupChat(name, ownerID string, memberIDs []string) (*mode
 		if id == "" {
 			return
 		}
+
 		if _, ok := seen[id]; ok {
 			return
 		}
+
 		seen[id] = struct{}{}
 		dedup = append(dedup, id)
 	}
 
 	add(ownerID)
+
 	for _, m := range memberIDs {
 		add(m)
 	}
 
 	if len(dedup) < 1 {
-		return nil, fmt.Errorf("group chat must have at least one member (the owner)")
+		return nil, errors.New("group chat must have at least one member (the owner)")
 	}
 
 	id := generateID()
 	chat := &model.Chat{
 		ID:        id,
-		Type:      "group",
+		Type:      chatTypeGroup,
 		Name:      name,
 		OwnerID:   ownerID,
 		CreatedAt: time.Now(),
@@ -221,8 +231,8 @@ func (s *Store) AddChatMember(chatID, userID string) error {
 		return ErrChatNotFound
 	}
 
-	if chat.Type != "group" {
-		return fmt.Errorf("cannot add members to non-group chat")
+	if chat.Type != chatTypeGroup {
+		return errors.New("cannot add members to non-group chat")
 	}
 
 	for _, m := range chat.Members {
@@ -240,12 +250,12 @@ func (s *Store) RemoveChatMember(chatID, userID string) error {
 		return ErrChatNotFound
 	}
 
-	if chat.Type != "group" {
-		return fmt.Errorf("cannot remove members from non-group chat")
+	if chat.Type != chatTypeGroup {
+		return errors.New("cannot remove members from non-group chat")
 	}
 
 	if len(chat.Members) <= 1 {
-		return fmt.Errorf("cannot remove the last member")
+		return errors.New("cannot remove the last member")
 	}
 
 	return s.db.Where("chat_id = ? AND user_id = ?", chatID, userID).Delete(&ChatMember{}).Error
@@ -257,8 +267,8 @@ func (s *Store) UpdateChatName(chatID, name string) (*model.Chat, error) {
 		return nil, ErrChatNotFound
 	}
 
-	if chat.Type != "group" {
-		return nil, fmt.Errorf("cannot rename non-group chat")
+	if chat.Type != chatTypeGroup {
+		return nil, errors.New("cannot rename non-group chat")
 	}
 
 	if err := s.db.Model(&model.Chat{}).Where("id = ?", chatID).Update("name", name).Error; err != nil {
@@ -276,8 +286,8 @@ func (s *Store) UpdateChatAvatar(chatID, fileID string) (*model.Chat, error) {
 		return nil, ErrChatNotFound
 	}
 
-	if chat.Type != "group" {
-		return nil, fmt.Errorf("cannot set avatar on non-group chat")
+	if chat.Type != chatTypeGroup {
+		return nil, errors.New("cannot set avatar on non-group chat")
 	}
 
 	if err := s.db.Model(&model.Chat{}).Where("id = ?", chatID).Update("avatar_file_id", fileID).Error; err != nil {
@@ -310,8 +320,8 @@ func (s *Store) DeleteChat(chatID string) error {
 		return ErrChatNotFound
 	}
 
-	if chat.Type != "group" {
-		return fmt.Errorf("cannot delete non-group chat")
+	if chat.Type != chatTypeGroup {
+		return errors.New("cannot delete non-group chat")
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
@@ -402,16 +412,21 @@ func (s *Store) EditMessage(chatID, messageID, userID, newText string, location 
 	msg.EditedAt = &now
 
 	updates := map[string]interface{}{
-		"text":      newText,
-		"edited_at": &now,
+		fieldText:     newText,
+		fieldEditedAt: &now,
 	}
 
 	switch {
 	case clearLocation:
 		updates["location"] = nil
 		msg.Location = nil
+
 	case location != nil:
-		raw, _ := json.Marshal(location)
+		raw, err := json.Marshal(location)
+		if err != nil {
+			return model.Message{}, err
+		}
+
 		updates["location"] = string(raw)
 		msg.Location = location
 	}
@@ -445,16 +460,21 @@ func (s *Store) EditThreadMessage(threadID, messageID, userID, newText string, l
 	msg.EditedAt = &now
 
 	updates := map[string]interface{}{
-		"text":      newText,
-		"edited_at": &now,
+		fieldText:     newText,
+		fieldEditedAt: &now,
 	}
 
 	switch {
 	case clearLocation:
 		updates["location"] = nil
 		msg.Location = nil
+
 	case location != nil:
-		raw, _ := json.Marshal(location)
+		raw, err := json.Marshal(location)
+		if err != nil {
+			return model.Message{}, err
+		}
+
 		updates["location"] = string(raw)
 		msg.Location = location
 	}
@@ -577,7 +597,7 @@ func (s *Store) CreateRemoteChat(chat *model.Chat) {
 	}
 
 	if chat.Type == "" {
-		chat.Type = "private"
+		chat.Type = chatTypePrivate
 	}
 
 	s.db.Create(chat)
@@ -593,14 +613,17 @@ func (s *Store) CreateRemoteChat(chat *model.Chat) {
 
 func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Time, location *model.Location, clearLocation bool) error {
 	updates := map[string]interface{}{
-		"text":      text,
-		"edited_at": &editedAt,
+		fieldText:     text,
+		fieldEditedAt: &editedAt,
 	}
 
 	if clearLocation {
 		updates["location"] = nil
 	} else if location != nil {
-		raw, _ := json.Marshal(location)
+		raw, err := json.Marshal(location)
+		if err != nil {
+			return err
+		}
 		updates["location"] = string(raw)
 	}
 

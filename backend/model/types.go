@@ -11,14 +11,14 @@ type User struct {
 }
 
 type Chat struct {
-	ID           string    `gorm:"primaryKey"             json:"id"`
+	ID           string    `gorm:"primaryKey"              json:"id"`
 	Type         string    `gorm:"default:'private';index" json:"type"`
-	Name         string    `gorm:"default:''"             json:"name"`
-	OwnerID      string    `gorm:"default:''"             json:"ownerId"`
-	AvatarFileID string    `gorm:"default:''"             json:"-"`
-	Members      []string  `gorm:"-"                      json:"-"`
-	CreatedAt    time.Time `gorm:"not null"               json:"createdAt"`
-	RemoteServer string    `gorm:"default:''"             json:"-"`
+	Name         string    `gorm:"default:''"              json:"name"`
+	OwnerID      string    `gorm:"default:''"              json:"ownerId"`
+	AvatarFileID string    `gorm:"default:''"              json:"-"`
+	Members      []string  `gorm:"-"                       json:"-"`
+	CreatedAt    time.Time `gorm:"not null"                json:"createdAt"`
+	RemoteServer string    `gorm:"default:''"              json:"-"`
 }
 
 type ReplyToInfo struct {

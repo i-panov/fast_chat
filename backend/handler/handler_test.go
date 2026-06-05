@@ -19,6 +19,8 @@ import (
 	"fast_chat/store"
 )
 
+const testChatTypeGroup = "group"
+
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
 
@@ -420,7 +422,7 @@ func registerTestUser(t *testing.T, h *Handler, nick string) testAccount {
 	}
 }
 
-func authReq(method, path, token string, body string) *http.Request {
+func authReq(method, path, token, body string) *http.Request {
 	var r *http.Request
 	if body == "" {
 		r = httptest.NewRequestWithContext(context.Background(), method, path, http.NoBody)
@@ -451,7 +453,7 @@ func TestCreateGroupChat(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	chat := resp["chat"].(map[string]interface{})
 
-	if chat["type"] != "group" {
+	if chat["type"] != testChatTypeGroup {
 		t.Errorf("expected type=group, got %v", chat["type"])
 	}
 	if chat["name"] != "Team" {
