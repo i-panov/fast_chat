@@ -7,6 +7,10 @@ import { emitNotification } from "../utils/notify.ts";
 interface UseMessagesParams {
 	token: string | undefined;
 	chatId: string | null;
+	messagesMap: Record<string, Message[]>;
+	setMessagesMap: React.Dispatch<
+		React.SetStateAction<Record<string, Message[]>>
+	>;
 }
 
 interface UseMessagesReturn {
@@ -14,68 +18,53 @@ interface UseMessagesReturn {
 	hasMore: boolean;
 	isLoadingMore: boolean;
 	loadMore: () => Promise<void>;
-	refreshMessages: (chatId: string) => Promise<void>;
+}
+
+const PAGE_SIZE = 30;
+
+function setMap(
+	map: Record<string, Message[]>,
+	chatId: string,
+	updater: (prev: Message[]) => Message[],
+): Record<string, Message[]> {
+	return { ...map, [chatId]: updater(map[chatId] ?? []) };
 }
 
 export function useMessages({
 	token,
 	chatId,
+	messagesMap,
+	setMessagesMap,
 }: UseMessagesParams): UseMessagesReturn {
-	const [messages, setMessages] = useState<Message[]>([]);
 	const [hasMore, setHasMore] = useState(false);
 	const [isLoadingMore, setIsLoadingMore] = useState(false);
 
-	const messagesRef = useRef<Record<string, Message[]>>({});
 	const nextCursorsRef = useRef<Record<string, string | null>>({});
 	const loadingMoreRef = useRef(false);
 
 	// Загрузка сообщений при смене чата
 	useEffect(() => {
 		if (!token || !chatId) {
-			setMessages([]);
+			setHasMore(false);
 			return;
 		}
 
-		if (messagesRef.current[chatId]) {
-			setMessages(messagesRef.current[chatId]);
+		if (messagesMap[chatId] !== undefined) {
+			setHasMore(nextCursorsRef.current[chatId] !== null);
 			return;
 		}
 
-		getMessages(token, chatId, 30)
+		getMessages(token, chatId, PAGE_SIZE)
 			.then(({ messages: msgs, nextCursor }) => {
-				messagesRef.current[chatId] = msgs;
-				setMessages(msgs);
-				const nxt = nextCursor;
-				nextCursorsRef.current[chatId] = nxt != null && nxt !== "" ? nxt : null;
-				setHasMore(nxt != null && nxt !== "");
+				setMessagesMap((prev) => ({ ...prev, [chatId]: msgs }));
+				const nxt = nextCursor != null && nextCursor !== "" ? nextCursor : null;
+				nextCursorsRef.current[chatId] = nxt;
+				setHasMore(nxt !== null);
 			})
 			.catch(() => {
 				emitNotification(i18n.t("error.loadMessages"));
 			});
-	}, [token, chatId]);
-
-	const refreshMessages = useCallback(
-		async (newChatId: string) => {
-			if (!token) return;
-
-			try {
-				const { messages: msgs, nextCursor } = await getMessages(
-					token,
-					newChatId,
-					30,
-				);
-				messagesRef.current[newChatId] = msgs;
-				setMessages(msgs);
-				const nxt = nextCursor;
-				nextCursorsRef.current[newChatId] =
-					nxt != null && nxt !== "" ? nxt : null;
-				setHasMore(nxt != null && nxt !== "");
-			} catch {
-				emitNotification(i18n.t("error.loadMessages"));
-			}
-		},
-		[token],
-	);
+	}, [token, chatId, messagesMap, setMessagesMap]);
 
 	const loadMore = useCallback(async () => {
 		if (!chatId || !token) return;
@@ -88,26 +77,28 @@ export function useMessages({
 		setIsLoadingMore(true);
 
 		try {
-			const res = await getMessages(token, chatId, 30, cursor);
-			const existing = messagesRef.current[chatId] ?? [];
-			messagesRef.current[chatId] = [...res.messages, ...existing];
-			setMessages(messagesRef.current[chatId]);
-			const nxt = res.nextCursor;
-			nextCursorsRef.current[chatId] = nxt != null && nxt !== "" ? nxt : null;
-			setHasMore(nxt != null && nxt !== "");
+			const res = await getMessages(token, chatId, PAGE_SIZE, cursor);
+			setMessagesMap((prev) =>
+				setMap(prev, chatId, (existing) => [...res.messages, ...existing]),
+			);
+			const nxt =
+				res.nextCursor != null && res.nextCursor !== "" ? res.nextCursor : null;
+			nextCursorsRef.current[chatId] = nxt;
+			setHasMore(nxt !== null);
 		} catch {
 			emitNotification(i18n.t("error.loadMessages"));
 		} finally {
 			setIsLoadingMore(false);
 			loadingMoreRef.current = false;
 		}
-	}, [chatId, token]);
+	}, [chatId, token, setMessagesMap]);
+
+	const messages = chatId !== null ? (messagesMap[chatId] ?? []) : [];
 
 	return {
 		messages,
 		hasMore,
 		isLoadingMore,
 		loadMore,
-		refreshMessages,
 	};
 }

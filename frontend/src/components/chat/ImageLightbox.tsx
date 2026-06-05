@@ -43,9 +43,12 @@ export function ImageLightbox({ images, startIndex, token, onClose }: Props) {
 		: current.url;
 
 	return (
-		<button
-			type="button"
-			aria-label="Close image viewer"
+		// biome-ignore lint/a11y/noNoninteractiveElementInteractions: backdrop click closes dialog
+		<div
+			role="dialog"
+			aria-modal="true"
+			aria-label="Image viewer"
+			tabIndex={-1}
 			onClick={(e) => {
 				if (e.target === e.currentTarget) onClose();
 			}}
@@ -60,8 +63,6 @@ export function ImageLightbox({ images, startIndex, token, onClose }: Props) {
 				display: "flex",
 				alignItems: "center",
 				justifyContent: "center",
-				border: "none",
-				padding: 0,
 				cursor: "pointer",
 			}}
 		>
@@ -150,6 +151,6 @@ export function ImageLightbox({ images, startIndex, token, onClose }: Props) {
 					{index + 1} / {images.length}
 				</div>
 			)}
-		</button>
+		</div>
 	);
 }

@@ -6,7 +6,7 @@ interface UsePendingFilesReturn {
 	setPendingFiles: React.Dispatch<React.SetStateAction<PendingFile[]>>;
 	handleAttachFiles: (files: File[]) => void;
 	handleRemoveFile: (fileId: string) => void;
-	handleClearAll: () => void;
+	clearAllPendingFiles: () => void;
 }
 
 function getFileType(mimeType: string): "photo" | "video" | "audio" | "file" {
@@ -14,6 +14,18 @@ function getFileType(mimeType: string): "photo" | "video" | "audio" | "file" {
 	if (mimeType.startsWith("video/")) return "video";
 	if (mimeType.startsWith("audio/")) return "audio";
 	return "file";
+}
+
+function revokeIfTracked(
+	cleanupRef: React.MutableRefObject<Set<string>>,
+	blobUrl: string,
+) {
+	try {
+		URL.revokeObjectURL(blobUrl);
+		cleanupRef.current.delete(blobUrl);
+	} catch {
+		/* ignore */
+	}
 }
 
 export function usePendingFiles(): UsePendingFilesReturn {
@@ -35,49 +47,36 @@ export function usePendingFiles(): UsePendingFilesReturn {
 	}, []);
 
 	const handleAttachFiles = (files: File[]) => {
-		for (const file of files) {
+		const newEntries: PendingFile[] = files.map((file) => {
 			const blobUrl = URL.createObjectURL(file);
 			cleanupRef.current.add(blobUrl);
-
-			setPendingFiles((prev) => [
-				...prev,
-				{
-					id: crypto.randomUUID(),
-					file,
-					blobUrl,
-					originalName: file.name,
-					size: file.size,
-					mimeType: file.type,
-					fileType: getFileType(file.type),
-				},
-			]);
-		}
+			return {
+				id: crypto.randomUUID(),
+				file,
+				blobUrl,
+				originalName: file.name,
+				size: file.size,
+				mimeType: file.type,
+				fileType: getFileType(file.type),
+			};
+		});
+		setPendingFiles((prev) => [...prev, ...newEntries]);
 	};
 
 	const handleRemoveFile = (fileId: string) => {
 		setPendingFiles((prev) => {
 			const removed = prev.find((f) => f.id === fileId);
 			if (removed) {
-				try {
-					URL.revokeObjectURL(removed.blobUrl);
-					cleanupRef.current.delete(removed.blobUrl);
-				} catch {
-					/* ignore */
-				}
+				revokeIfTracked(cleanupRef, removed.blobUrl);
 			}
 			return prev.filter((f) => f.id !== fileId);
 		});
 	};
 
-	const handleClearAll = () => {
+	const clearAllPendingFiles = () => {
 		setPendingFiles((prev) => {
 			prev.forEach((f) => {
-				try {
-					URL.revokeObjectURL(f.blobUrl);
-					cleanupRef.current.delete(f.blobUrl);
-				} catch {
-					/* ignore */
-				}
+				revokeIfTracked(cleanupRef, f.blobUrl);
 			});
 			return [];
 		});
@@ -88,6 +87,6 @@ export function usePendingFiles(): UsePendingFilesReturn {
 		setPendingFiles,
 		handleAttachFiles,
 		handleRemoveFile,
-		handleClearAll,
+		clearAllPendingFiles,
 	};
 }

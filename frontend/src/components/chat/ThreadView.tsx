@@ -98,8 +98,8 @@ export function ThreadView({
 	const { t } = useTranslation();
 
 	const handleRetry = useCallback(
-		(_chatId: string, messageId: string) => {
-			onRetry?.(thread.id, messageId);
+		async (_chatId: string, messageId: string) => {
+			await onRetry?.(thread.id, messageId);
 		},
 		[onRetry, thread.id],
 	);

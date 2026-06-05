@@ -1,4 +1,4 @@
-import { Anchor, Group, Modal, Stack, Text } from "@mantine/core";
+import { Anchor, Button, Group, Modal, Stack, Text } from "@mantine/core";
 import type L from "leaflet";
 import { MapPin } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -103,38 +103,19 @@ export function LocationLightbox({
 					</Anchor>
 					<Group gap="xs">
 						{editable && onRemove !== undefined && (
-							<button
-								type="button"
+							<Button
+								variant="outline"
+								color="red"
+								size="xs"
 								onClick={onRemove}
-								style={{
-									background: "transparent",
-									border: "1px solid var(--mantine-color-red-5)",
-									color: "var(--mantine-color-red-5)",
-									padding: "4px 12px",
-									borderRadius: 4,
-									cursor: "pointer",
-									fontSize: 14,
-								}}
 							>
 								{t("input.locationClear")}
-							</button>
+							</Button>
 						)}
 						{editable && onChange !== undefined && (
-							<button
-								type="button"
-								onClick={handleSave}
-								style={{
-									background: "var(--mantine-color-blue-6)",
-									border: "none",
-									color: "white",
-									padding: "4px 12px",
-									borderRadius: 4,
-									cursor: "pointer",
-									fontSize: 14,
-								}}
-							>
+							<Button size="xs" onClick={handleSave}>
 								{t("input.save")}
-							</button>
+							</Button>
 						)}
 					</Group>
 				</Group>

@@ -49,6 +49,8 @@ export function NotificationToast() {
 			{toasts.map((t) => (
 				<div
 					key={t.id}
+					role={t.type === "error" ? "alert" : "status"}
+					aria-live={t.type === "error" ? "assertive" : "polite"}
 					style={{
 						padding: "10px 16px",
 						borderRadius: "8px",

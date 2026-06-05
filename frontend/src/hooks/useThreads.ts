@@ -11,6 +11,16 @@ import { emitNotification } from "../utils/notify.ts";
 interface UseThreadsParams {
 	token: string | undefined;
 	chatId: string | null;
+	threadsMap: Record<string, Thread>;
+	setThreadsMap: React.Dispatch<React.SetStateAction<Record<string, Thread>>>;
+	messageToThreadMap: Record<string, string>;
+	setMessageToThreadMap: React.Dispatch<
+		React.SetStateAction<Record<string, string>>
+	>;
+	threadMessagesMap: Record<string, Message[]>;
+	setThreadMessagesMap: React.Dispatch<
+		React.SetStateAction<Record<string, Message[]>>
+	>;
 }
 
 interface UseThreadsReturn {
@@ -25,35 +35,30 @@ interface UseThreadsReturn {
 	openThread: (threadId: string) => void;
 	closeThread: () => void;
 	loadMoreThreadMessages: () => Promise<void>;
-	setActiveThreadMessages: React.Dispatch<React.SetStateAction<Message[]>>;
 }
+
+const PAGE_SIZE = 30;
 
 export function useThreads({
 	token,
 	chatId,
+	threadsMap,
+	setThreadsMap,
+	messageToThreadMap,
+	setMessageToThreadMap,
+	threadMessagesMap,
+	setThreadMessagesMap,
 }: UseThreadsParams): UseThreadsReturn {
-	const [threads, setThreads] = useState<Record<string, Thread>>({});
-	const [messageToThread, setMessageToThread] = useState<
-		Record<string, string>
-	>({});
 	const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-	const [activeThreadMessages, setActiveThreadMessages] = useState<Message[]>(
-		[],
-	);
 	const [threadHasMore, setThreadHasMore] = useState(false);
 	const [threadIsLoadingMore, setThreadIsLoadingMore] = useState(false);
 
-	const threadMessagesRef = useRef<Record<string, Message[]>>({});
 	const threadNextCursorsRef = useRef<Record<string, string | null>>({});
 	const threadLoadingMoreRef = useRef(false);
 
 	// Загрузка веток при смене чата
 	useEffect(() => {
-		if (!token || !chatId) {
-			setThreads({});
-			setMessageToThread({});
-			return;
-		}
+		if (!token || !chatId) return;
 
 		getThreads(token, chatId)
 			.then(({ threads: ts }) => {
@@ -63,42 +68,49 @@ export function useThreads({
 					threadMap[t.id] = t;
 					msgToThread[t.parentMessageId] = t.id;
 				}
-				setThreads((prev) => ({ ...prev, ...threadMap }));
-				setMessageToThread((prev) => ({ ...prev, ...msgToThread }));
+				setThreadsMap((prev) => ({ ...prev, ...threadMap }));
+				setMessageToThreadMap((prev) => ({ ...prev, ...msgToThread }));
 			})
 			.catch(() => {
 				/* ignore */
 			});
-	}, [token, chatId]);
+	}, [token, chatId, setThreadsMap, setMessageToThreadMap]);
 
 	// Загрузка сообщений активной ветки
 	useEffect(() => {
 		if (!token || !activeThreadId) {
-			setActiveThreadMessages([]);
+			setThreadHasMore(false);
 			return;
 		}
 
-		if (threadMessagesRef.current[activeThreadId] !== undefined) {
-			setActiveThreadMessages(threadMessagesRef.current[activeThreadId]);
+		if (threadMessagesMap[activeThreadId] !== undefined) {
+			setThreadHasMore(threadNextCursorsRef.current[activeThreadId] !== null);
 			return;
 		}
 
-		const thread = threads[activeThreadId];
+		const thread = threadsMap[activeThreadId];
 		if (!thread) return;
 
-		getThreadMessages(token, thread.chatId, activeThreadId, 30)
+		getThreadMessages(token, thread.chatId, activeThreadId, PAGE_SIZE)
 			.then(({ messages: msgs, nextCursor }) => {
-				threadMessagesRef.current[activeThreadId] = msgs;
-				setActiveThreadMessages(msgs);
-				const nxt = nextCursor;
-				threadNextCursorsRef.current[activeThreadId] =
-					nxt != null && nxt !== "" ? nxt : null;
-				setThreadHasMore(nxt != null && nxt !== "");
+				setThreadMessagesMap((prev) => ({
+					...prev,
+					[activeThreadId]: msgs,
+				}));
+				const nxt = nextCursor != null && nextCursor !== "" ? nextCursor : null;
+				threadNextCursorsRef.current[activeThreadId] = nxt;
+				setThreadHasMore(nxt !== null);
 			})
 			.catch(() => {
 				emitNotification(i18n.t("error.loadMessages"));
 			});
-	}, [activeThreadId, token, threads]);
+	}, [
+		activeThreadId,
+		token,
+		threadsMap,
+		threadMessagesMap,
+		setThreadMessagesMap,
+	]);
 
 	const createThread = useCallback(
 		async (chatId: string, messageId: string) => {
@@ -106,20 +118,19 @@ export function useThreads({
 
 			try {
 				const { thread } = await apiCreateThread(token, chatId, messageId);
-				setThreads((prev) => ({ ...prev, [thread.id]: thread }));
-				setMessageToThread((prev) => ({
+				setThreadsMap((prev) => ({ ...prev, [thread.id]: thread }));
+				setMessageToThreadMap((prev) => ({
 					...prev,
 					[thread.parentMessageId]: thread.id,
 				}));
 				setActiveThreadId(thread.id);
 			} catch {
-				// Пробуем найти существующую ветку
 				try {
 					const { threads: ts } = await getThreads(token, chatId);
 					const existing = ts.find((t) => t.parentMessageId === messageId);
 					if (existing) {
-						setThreads((prev) => ({ ...prev, [existing.id]: existing }));
-						setMessageToThread((prev) => ({
+						setThreadsMap((prev) => ({ ...prev, [existing.id]: existing }));
+						setMessageToThreadMap((prev) => ({
 							...prev,
 							[messageId]: existing.id,
 						}));
@@ -132,7 +143,7 @@ export function useThreads({
 				emitNotification(i18n.t("error.createThread"));
 			}
 		},
-		[token],
+		[token, setThreadsMap, setMessageToThreadMap],
 	);
 
 	const openThread = useCallback((threadId: string) => {
@@ -154,41 +165,41 @@ export function useThreads({
 		setThreadIsLoadingMore(true);
 
 		try {
-			const thread = threads[activeThreadId];
+			const thread = threadsMap[activeThreadId];
 			if (!thread) return;
 
 			const res = await getThreadMessages(
 				token,
 				thread.chatId,
 				activeThreadId,
-				30,
+				PAGE_SIZE,
 				cursor,
 			);
-			const existing = threadMessagesRef.current[activeThreadId] ?? [];
-			threadMessagesRef.current[activeThreadId] = [
-				...res.messages,
-				...existing,
-			];
-			setActiveThreadMessages(threadMessagesRef.current[activeThreadId]);
-			const nxt = res.nextCursor;
-			threadNextCursorsRef.current[activeThreadId] =
-				nxt != null && nxt !== "" ? nxt : null;
-			setThreadHasMore(nxt != null && nxt !== "");
+			setThreadMessagesMap((prev) => ({
+				...prev,
+				[activeThreadId]: [...res.messages, ...(prev[activeThreadId] ?? [])],
+			}));
+			const nxt =
+				res.nextCursor != null && res.nextCursor !== "" ? res.nextCursor : null;
+			threadNextCursorsRef.current[activeThreadId] = nxt;
+			setThreadHasMore(nxt !== null);
 		} catch {
 			emitNotification(i18n.t("error.loadMessages"));
 		} finally {
 			setThreadIsLoadingMore(false);
 			threadLoadingMoreRef.current = false;
 		}
-	}, [activeThreadId, token, threads]);
+	}, [activeThreadId, token, threadsMap, setThreadMessagesMap]);
 
 	const activeThread = activeThreadId
-		? (threads[activeThreadId] ?? null)
+		? (threadsMap[activeThreadId] ?? null)
 		: null;
+	const activeThreadMessages =
+		activeThreadId !== null ? (threadMessagesMap[activeThreadId] ?? []) : [];
 
 	return {
-		threads,
-		messageToThread,
+		threads: threadsMap,
+		messageToThread: messageToThreadMap,
 		activeThreadId,
 		activeThread,
 		activeThreadMessages,
@@ -198,6 +209,5 @@ export function useThreads({
 		openThread,
 		closeThread,
 		loadMoreThreadMessages,
-		setActiveThreadMessages,
 	};
 }

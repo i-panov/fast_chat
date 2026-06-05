@@ -1,5 +1,5 @@
 import { useCallback, useRef } from "react";
-import type { Location, PendingFile } from "../api.ts";
+import type { FileInfo, Location, PendingFile } from "../api.ts";
 import {
 	deleteMessage,
 	editMessage,
@@ -13,8 +13,6 @@ import { emitNotification } from "../utils/notify.ts";
 
 interface UseMessageSenderParams {
 	token: string;
-	userId: string;
-	userNick: string;
 }
 
 interface SendMessageParams {
@@ -50,25 +48,23 @@ interface UseMessageSenderReturn {
 		isThread?: boolean,
 		threadId?: string,
 	) => Promise<void>;
-	uploadFiles: (files: PendingFile[]) => Promise<string[]>;
+	uploadFiles: (files: PendingFile[]) => Promise<FileInfo[]>;
 }
 
 export function useMessageSender({
 	token,
-	userId: _userId,
-	userNick: _userNick,
 }: UseMessageSenderParams): UseMessageSenderReturn {
 	const sendingRef = useRef(false);
 
 	const uploadFiles = useCallback(
-		async (files: PendingFile[]): Promise<string[]> => {
-			const fileIDs: string[] = [];
+		async (files: PendingFile[]): Promise<FileInfo[]> => {
+			const infos: FileInfo[] = [];
 			for (const pf of files) {
 				const { file: uploaded } = await uploadFile(token, pf.file);
-				fileIDs.push(uploaded.id);
+				infos.push(uploaded);
 				URL.revokeObjectURL(pf.blobUrl);
 			}
-			return fileIDs;
+			return infos;
 		},
 		[token],
 	);
@@ -110,8 +106,6 @@ export function useMessageSender({
 						location,
 					);
 				}
-			} catch {
-				emitNotification(i18n.t("error.send"));
 			} finally {
 				sendingRef.current = false;
 			}
@@ -174,14 +168,10 @@ export function useMessageSender({
 			threadId?: string,
 		) => {
 			const msgId = messageId;
-			try {
-				if (isThread && threadId) {
-					await sendThreadMessage(token, chatId, threadId, text, msgId);
-				} else {
-					await sendMessage(token, chatId, text, msgId);
-				}
-			} catch {
-				emitNotification(i18n.t("error.send"));
+			if (isThread && threadId) {
+				await sendThreadMessage(token, chatId, threadId, text, msgId);
+			} else {
+				await sendMessage(token, chatId, text, msgId);
 			}
 		},
 		[token],

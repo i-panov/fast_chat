@@ -10,29 +10,24 @@ interface UseChatListParams {
 
 interface UseChatListReturn {
 	chats: Chat[];
+	setChats: React.Dispatch<React.SetStateAction<Chat[]>>;
 	activeChatId: string | null;
 	activeChat: Chat | undefined;
-	isLoading: boolean;
 	selectChat: (chatId: string) => void;
-	refreshChats: () => Promise<void>;
 }
 
 export function useChatList({ token }: UseChatListParams): UseChatListReturn {
 	const [chats, setChats] = useState<Chat[]>([]);
 	const [activeChatId, setActiveChatId] = useState<string | null>(null);
-	const [isLoading, setIsLoading] = useState(false);
 
 	const loadChats = useCallback(async () => {
 		if (!token) return;
 
-		setIsLoading(true);
 		try {
 			const { chats: fetchedChats } = await getChats(token);
 			setChats(fetchedChats);
 		} catch {
 			emitNotification(i18n.t("error.loadChats"));
-		} finally {
-			setIsLoading(false);
 		}
 	}, [token]);
 
@@ -49,18 +44,13 @@ export function useChatList({ token }: UseChatListParams): UseChatListReturn {
 		setActiveChatId(chatId);
 	}, []);
 
-	const refreshChats = useCallback(async () => {
-		await loadChats();
-	}, [loadChats]);
-
 	const activeChat = chats.find((c) => c.id === activeChatId);
 
 	return {
 		chats,
+		setChats,
 		activeChatId,
 		activeChat,
-		isLoading,
 		selectChat,
-		refreshChats,
 	};
 }

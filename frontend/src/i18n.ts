@@ -6,6 +6,15 @@ import ru from "./locales/ru.json";
 
 const SUPPORTED_LANGS = ["en", "ru"];
 
+function pickLang(raw: string): string {
+	const base = raw.split("-")[0]?.toLowerCase() ?? "";
+	return SUPPORTED_LANGS.includes(base) ? base : "en";
+}
+
+export function getCurrentLocale(): string {
+	return pickLang(i18n.language);
+}
+
 i18n
 	.use(LanguageDetector)
 	.use(initReactI18next)
@@ -25,4 +34,4 @@ i18n
 	});
 
 export default i18n;
-export { SUPPORTED_LANGS };
+export { SUPPORTED_LANGS, pickLang };

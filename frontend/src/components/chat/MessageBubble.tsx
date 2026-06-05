@@ -17,15 +17,25 @@ import {
 	FileIcon,
 	MapPin,
 	MessageCircle,
+	MoreVertical,
 	Pencil,
 	RotateCcw,
 	Trash2,
 } from "lucide-react";
-import { isValidElement, memo, useLayoutEffect, useRef, useState } from "react";
+import {
+	isValidElement,
+	memo,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { FileInfo, Location, ReplyToInfo } from "../../api.ts";
+import { getCurrentLocale } from "../../i18n.ts";
 import { useAudioPlayer } from "../../useAudioPlayer.tsx";
 import { useAuth } from "../../useAuth.tsx";
 import { extractCodeText, formatCoords } from "../../utils/chat.ts";
@@ -414,8 +424,10 @@ export const MessageBubble = memo(function MessageBubble({
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
 	const [locationLightboxOpen, setLocationLightboxOpen] = useState(false);
 	const menuRef = useRef<HTMLDivElement>(null);
-	const { t, i18n } = useTranslation();
-	const locale = i18n.language.split("-")[0];
+	const menuButtonRef = useRef<HTMLButtonElement>(null);
+	const firstMenuItemRef = useRef<HTMLButtonElement>(null);
+	const { t } = useTranslation();
+	const locale = getCurrentLocale();
 	const { activeAccount } = useAuth();
 	const token = activeAccount?.token;
 
@@ -452,6 +464,35 @@ export const MessageBubble = memo(function MessageBubble({
 			el.style.top = `${window.innerHeight - rect.height - 8}px`;
 		}
 	}, [menuPos]);
+
+	useEffect(() => {
+		if (!menuPos) return;
+		firstMenuItemRef.current?.focus();
+	}, [menuPos]);
+
+	const closeMenu = useCallback(() => {
+		closeMenu();
+		menuButtonRef.current?.focus();
+	}, []);
+
+	const openMenu = useCallback(() => {
+		const btn = menuButtonRef.current;
+		if (btn === null) return;
+		const rect = btn.getBoundingClientRect();
+		setMenuPos({ x: rect.left, y: rect.bottom + 4 });
+	}, []);
+
+	useEffect(() => {
+		if (!menuPos) return;
+		function onKey(e: KeyboardEvent) {
+			if (e.key === "Escape") {
+				e.preventDefault();
+				closeMenu();
+			}
+		}
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [menuPos, closeMenu]);
 
 	const editedLabel =
 		editedAt !== undefined
@@ -629,6 +670,26 @@ export const MessageBubble = memo(function MessageBubble({
 							)}
 							{editedLabel ?? time}
 						</Text>
+						<ActionIcon
+							ref={menuButtonRef}
+							variant="subtle"
+							color="gray"
+							size="sm"
+							aria-label={t("message.menuActions")}
+							aria-haspopup="menu"
+							aria-expanded={menuPos !== null}
+							onClick={(e) => {
+								e.stopPropagation();
+								if (menuPos !== null) {
+									closeMenu();
+								} else {
+									openMenu();
+								}
+							}}
+							style={{ flexShrink: 0, marginLeft: 4 }}
+						>
+							<MoreVertical size={16} />
+						</ActionIcon>
 					</Group>
 				)}
 			</Paper>
@@ -660,7 +721,7 @@ export const MessageBubble = memo(function MessageBubble({
 							zIndex: 999,
 							cursor: "default",
 						}}
-						onClick={() => setMenuPos(null)}
+						onClick={() => closeMenu()}
 						aria-label="Close menu"
 					/>
 					<Paper
@@ -677,6 +738,7 @@ export const MessageBubble = memo(function MessageBubble({
 					>
 						<Stack gap={0}>
 							<Button
+								ref={firstMenuItemRef}
 								variant="subtle"
 								color="gray"
 								fullWidth
@@ -684,7 +746,7 @@ export const MessageBubble = memo(function MessageBubble({
 								style={{ borderRadius: 0 }}
 								onClick={() => {
 									navigator.clipboard.writeText(text);
-									setMenuPos(null);
+									closeMenu();
 								}}
 								role="menuitem"
 							>
@@ -702,7 +764,7 @@ export const MessageBubble = memo(function MessageBubble({
 									style={{ borderRadius: 0 }}
 									onClick={() => {
 										onStartEdit(chatId, msgId, text, files, threadId);
-										setMenuPos(null);
+										closeMenu();
 									}}
 									role="menuitem"
 								>
@@ -726,7 +788,7 @@ export const MessageBubble = memo(function MessageBubble({
 									style={{ borderRadius: 0 }}
 									onClick={() => {
 										onRetry(chatId, msgId);
-										setMenuPos(null);
+										closeMenu();
 									}}
 									role="menuitem"
 								>
@@ -750,7 +812,7 @@ export const MessageBubble = memo(function MessageBubble({
 									style={{ borderRadius: 0 }}
 									onClick={() => {
 										onReply?.(chatId, msgId);
-										setMenuPos(null);
+										closeMenu();
 									}}
 									role="menuitem"
 								>
@@ -774,7 +836,7 @@ export const MessageBubble = memo(function MessageBubble({
 									style={{ borderRadius: 0 }}
 									onClick={() => {
 										onCreateThread?.(chatId, msgId);
-										setMenuPos(null);
+										closeMenu();
 									}}
 									role="menuitem"
 								>
@@ -798,7 +860,7 @@ export const MessageBubble = memo(function MessageBubble({
 									style={{ borderRadius: 0 }}
 									onClick={() => {
 										onDelete(chatId, msgId);
-										setMenuPos(null);
+										closeMenu();
 									}}
 									role="menuitem"
 								>

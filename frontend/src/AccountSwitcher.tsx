@@ -14,7 +14,7 @@ import {
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import i18n, { SUPPORTED_LANGS } from "./i18n.ts";
+import i18n, { getCurrentLocale, SUPPORTED_LANGS } from "./i18n.ts";
 import { useAuth } from "./useAuth.tsx";
 
 interface Props {
@@ -311,7 +311,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 								value: l,
 								label: t(`lang.${l}`),
 							}))}
-							value={i18n.language.split("-")[0]}
+							value={getCurrentLocale()}
 							onChange={(val) => {
 								if (val !== null) i18n.changeLanguage(val);
 							}}

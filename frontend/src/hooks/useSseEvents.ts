@@ -1,58 +1,41 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback } from "react";
 import type { Chat, Message, Thread, TypingPayload } from "../api.ts";
 import { useSse } from "../useSse.ts";
-
-const SEEN_IDS_MAX = 1000;
 
 interface UseSseEventsParams {
 	token: string;
 	setChats: React.Dispatch<React.SetStateAction<Chat[]>>;
-	setMessages: React.Dispatch<React.SetStateAction<Record<string, Message[]>>>;
-	setThreads: React.Dispatch<React.SetStateAction<Record<string, Thread>>>;
-	setThreadMessages: React.Dispatch<
+	setMessagesMap: React.Dispatch<
 		React.SetStateAction<Record<string, Message[]>>
 	>;
-	setMessageToThread: React.Dispatch<
+	setThreadsMap: React.Dispatch<React.SetStateAction<Record<string, Thread>>>;
+	setThreadMessagesMap: React.Dispatch<
+		React.SetStateAction<Record<string, Message[]>>
+	>;
+	setMessageToThreadMap: React.Dispatch<
 		React.SetStateAction<Record<string, string>>
 	>;
 	addTypingUser: (payload: TypingPayload) => void;
 	clearTyping: (chatId: string, userId: string) => void;
+	onSseClosed?: () => void;
 }
 
 export function useSseEvents({
 	token,
 	setChats,
-	setMessages,
-	setThreads,
-	setThreadMessages,
-	setMessageToThread,
+	setMessagesMap,
+	setThreadsMap,
+	setThreadMessagesMap,
+	setMessageToThreadMap,
 	addTypingUser,
 	clearTyping,
+	onSseClosed,
 }: UseSseEventsParams) {
-	const seenIds = useRef<Set<string>>(new Set());
-	const isMountedRef = useRef(true);
-
-	useEffect(() => {
-		return () => {
-			isMountedRef.current = false;
-		};
-	}, []);
-
 	const handler = useCallback(
 		(event: string, data: unknown) => {
-			if (!isMountedRef.current) return;
-
 			if (event === "new_message") {
 				const msg = data as Message;
-				if (seenIds.current.has(msg.id)) return;
-
-				seenIds.current.add(msg.id);
-				if (seenIds.current.size > SEEN_IDS_MAX) {
-					const arr = Array.from(seenIds.current);
-					seenIds.current = new Set(arr.slice(-SEEN_IDS_MAX));
-				}
-
-				setMessages((prev) => {
+				setMessagesMap((prev) => {
 					const list = prev[msg.chatId] ?? [];
 					const idx = list.findIndex((m) => m.id === msg.id);
 					if (idx !== -1) {
@@ -60,14 +43,11 @@ export function useSseEvents({
 						next[idx] = msg;
 						return { ...prev, [msg.chatId]: next };
 					}
-					return {
-						...prev,
-						[msg.chatId]: [...list, msg],
-					};
+					return { ...prev, [msg.chatId]: [...list, msg] };
 				});
 			} else if (event === "message_updated") {
 				const msg = data as Message;
-				setMessages((prev) => {
+				setMessagesMap((prev) => {
 					const msgs = prev[msg.chatId];
 					if (msgs === undefined) return prev;
 					return {
@@ -98,17 +78,17 @@ export function useSseEvents({
 					chatId: string;
 					messageId: string;
 				};
-				setMessages((prev) => ({
+				setMessagesMap((prev) => ({
 					...prev,
 					[chatId]: (prev[chatId] ?? []).filter((m) => m.id !== messageId),
 				}));
 			} else if (event === "thread_created") {
 				const thread = data as Thread;
-				setThreads((prev) => {
+				setThreadsMap((prev) => {
 					if (prev[thread.id] !== undefined) return prev;
 					return { ...prev, [thread.id]: thread };
 				});
-				setMessageToThread((prev) => ({
+				setMessageToThreadMap((prev) => ({
 					...prev,
 					[thread.parentMessageId]: thread.id,
 				}));
@@ -117,7 +97,7 @@ export function useSseEvents({
 					threadId: string;
 					message: Message;
 				};
-				setThreadMessages((prev) => {
+				setThreadMessagesMap((prev) => {
 					const list = prev[threadId] ?? [];
 					const idx = list.findIndex((m) => m.id === message.id);
 					if (idx !== -1) {
@@ -125,12 +105,9 @@ export function useSseEvents({
 						next[idx] = message;
 						return { ...prev, [threadId]: next };
 					}
-					return {
-						...prev,
-						[threadId]: [...list, message],
-					};
+					return { ...prev, [threadId]: [...list, message] };
 				});
-				setThreads((prev) => {
+				setThreadsMap((prev) => {
 					const t = prev[threadId];
 					if (t === undefined) return prev;
 					return {
@@ -147,16 +124,19 @@ export function useSseEvents({
 					userId: string;
 				};
 				clearTyping(chatId, userId);
+			} else if (event === "sse_closed") {
+				onSseClosed?.();
 			}
 		},
 		[
-			setMessages,
+			setMessagesMap,
 			setChats,
-			setThreads,
-			setThreadMessages,
-			setMessageToThread,
+			setThreadsMap,
+			setThreadMessagesMap,
+			setMessageToThreadMap,
 			addTypingUser,
 			clearTyping,
+			onSseClosed,
 		],
 	);
 

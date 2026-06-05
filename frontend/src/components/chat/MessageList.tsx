@@ -1,7 +1,9 @@
 import { Loader, Text } from "@mantine/core";
-import { Fragment, useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import type { FileInfo, Message, Thread } from "../../api.ts";
+import { getCurrentLocale } from "../../i18n.ts";
 import { formatDateLabel, formatTime } from "../../utils/chat.ts";
 import { MessageBubble } from "./MessageBubble.tsx";
 
@@ -10,6 +12,26 @@ function DateSeparator({ dateStr }: { dateStr: string }) {
 		<Text ta="center" size="xs" c="dimmed" py={6}>
 			{formatDateLabel(dateStr)}
 		</Text>
+	);
+}
+
+function LoadingHeader() {
+	const { t } = useTranslation();
+	return (
+		<div
+			style={{
+				display: "flex",
+				justifyContent: "center",
+				alignItems: "center",
+				gap: 6,
+				padding: "6px 0 2px",
+			}}
+		>
+			<Loader size="xs" type="dots" />
+			<Text component="span" size="xs" c="dimmed">
+				{t("chat.loading")}
+			</Text>
+		</div>
 	);
 }
 
@@ -44,7 +66,7 @@ interface Props {
 	messageToThread?: Record<string, string>;
 	threads?: Record<string, Thread>;
 	isInThread?: boolean;
-	onRetry?: (chatId: string, messageId: string) => void;
+	onRetry?: (chatId: string, messageId: string) => Promise<void>;
 	scrollToMessageId?: string | null;
 	showAuthorForGroup?: boolean;
 }
@@ -69,6 +91,12 @@ export function MessageList({
 	scrollToMessageId,
 	showAuthorForGroup,
 }: Props) {
+	const { t } = useTranslation();
+	const locale = getCurrentLocale();
+	const virtuosoRef = useRef<VirtuosoHandle>(null);
+	const onLoadMoreRef = useRef(onLoadMore);
+	const prevScrollToRef = useRef<string | null>(null);
+
 	const handleStartEdit = useCallback(
 		(
 			chatId: string,
@@ -81,96 +109,129 @@ export function MessageList({
 		},
 		[onStartEdit],
 	);
-	const { t, i18n } = useTranslation();
-	const containerRef = useRef<HTMLDivElement>(null);
-	const sentinelRef = useRef<HTMLDivElement>(null);
-	const scrollAnchorRef = useRef(0);
-	const prevScrollToRef = useRef<string | null>(null);
-	const onLoadMoreRef = useRef(onLoadMore);
-
-	const locale = i18n.language.split("-")[0];
-
-	// Обновляем ref при изменении onLoadMore
-	useEffect(() => {
-		onLoadMoreRef.current = onLoadMore;
-	}, [onLoadMore]);
-
-	useEffect(() => {
-		const el = sentinelRef.current;
-		if (!el || !hasMore || isLoadingMore) return;
-
-		const observer = new IntersectionObserver(
-			([entry]) => {
-				if (entry.isIntersecting && onLoadMoreRef.current) {
-					const container = containerRef.current;
-					if (container) {
-						scrollAnchorRef.current =
-							container.scrollHeight - container.scrollTop;
-					}
-					onLoadMoreRef.current();
-				}
-			},
-			{ rootMargin: "200px 0px" },
-		);
-
-		observer.observe(el);
-		return () => observer.disconnect();
-	}, [hasMore, isLoadingMore]);
-
-	useEffect(() => {
-		if (!isLoadingMore && scrollAnchorRef.current > 0) {
-			const container = containerRef.current;
-			if (container) {
-				container.scrollTop = container.scrollHeight - scrollAnchorRef.current;
-			}
-			scrollAnchorRef.current = 0;
-		}
-	}, [isLoadingMore]);
-
-	useEffect(() => {
-		if (
-			scrollToMessageId === undefined ||
-			scrollToMessageId === null ||
-			scrollToMessageId === prevScrollToRef.current
-		)
-			return;
-
-		prevScrollToRef.current = scrollToMessageId;
-
-		const el = containerRef.current?.querySelector(
-			`[data-message-id="${scrollToMessageId}"]`,
-		);
-		if (el) {
-			el.scrollIntoView({ behavior: "smooth", block: "center" });
-			flashElement(el as HTMLElement);
-		}
-	}, [scrollToMessageId]);
 
 	const handleReplyClick = useCallback((messageId: string) => {
 		prevScrollToRef.current = messageId;
-		const el = containerRef.current?.querySelector(
+		const el = document.querySelector(
 			`[data-message-id="${messageId}"]`,
-		);
-		if (el) {
+		) as HTMLElement | null;
+		if (el !== null) {
 			el.scrollIntoView({ behavior: "smooth", block: "center" });
-			flashElement(el as HTMLElement);
+			flashElement(el);
 		}
 	}, []);
 
-	const datedMessages = useMemo(() => {
+	const datedMessages = (() => {
 		const fmt: Intl.DateTimeFormatOptions = {
 			day: "2-digit",
 			month: "2-digit",
 			year: "numeric",
 		};
 		let lastDateKey = "";
-		return messages.map((msg) => {
+		const result: Array<{
+			type: "separator" | "message";
+			key: string;
+			showAuthor: boolean;
+			msg: Message;
+		}> = [];
+		for (let i = 0; i < messages.length; i++) {
+			const msg = messages[i];
 			const dateKey = new Date(msg.createdAt).toLocaleDateString(locale, fmt);
 			const showSeparator = dateKey !== lastDateKey;
 			lastDateKey = dateKey;
-			return { msg, showSeparator };
-		});
-	}, [messages, locale]);
+			if (showSeparator) {
+				result.push({
+					type: "separator",
+					key: `sep-${dateKey}`,
+					showAuthor: false,
+					msg,
+				});
+			}
+			const prev = i > 0 ? messages[i - 1] : undefined;
+			const showAuthor =
+				showAuthorForGroup === true &&
+				(prev === undefined || prev.fromId !== msg.fromId);
+			result.push({
+				type: "message",
+				key: msg.id,
+				showAuthor,
+				msg,
+			});
+		}
+		return result;
+	})();
+
+	const itemContent = useCallback(
+		(_index: number, entry: (typeof datedMessages)[number]) => {
+			if (entry.type === "separator") {
+				return (
+					<div style={{ textAlign: "center", padding: "6px 0 8px" }}>
+						<DateSeparator dateStr={entry.msg.createdAt} />
+					</div>
+				);
+			}
+			const msg = entry.msg;
+			const isOwn = msg.fromId === userId;
+			return (
+				<div
+					style={{
+						display: "flex",
+						flexDirection: "column",
+						alignItems: isOwn ? "flex-end" : "flex-start",
+						padding: "0 12px 20px",
+					}}
+				>
+					<MessageBubble
+						text={msg.text}
+						isOwn={isOwn}
+						fromNick={msg.fromNick}
+						time={formatTime(msg.createdAt, locale)}
+						chatId={msg.chatId}
+						msgId={msg.id}
+						editedAt={msg.editedAt}
+						replyTo={msg.replyTo}
+						files={msg.files}
+						location={msg.location}
+						onReplyClick={handleReplyClick}
+						onStartEdit={handleStartEdit}
+						onDelete={onDelete}
+						onReply={onReply}
+						editTTL={editTTL}
+						deleteTTL={deleteTTL}
+						createdAt={msg.createdAt}
+						onCreateThread={onCreateThread}
+						onOpenThread={onOpenThread}
+						threadId={messageToThread?.[msg.id]}
+						threadMessageCount={
+							messageToThread?.[msg.id] !== undefined
+								? threads?.[messageToThread[msg.id]]?.messageCount
+								: undefined
+						}
+						isInThread={isInThread}
+						status={msg.status}
+						onRetry={onRetry}
+						showAuthorNick={entry.showAuthor}
+					/>
+				</div>
+			);
+		},
+		[
+			userId,
+			locale,
+			handleStartEdit,
+			handleReplyClick,
+			onDelete,
+			onReply,
+			editTTL,
+			deleteTTL,
+			onCreateThread,
+			onOpenThread,
+			messageToThread,
+			threads,
+			isInThread,
+			onRetry,
+		],
+	);
 
 	if (messages.length === 0) {
 		return (
@@ -190,65 +251,38 @@ export function MessageList({
 	}
 
 	return (
-		<div
-			ref={containerRef}
-			style={{
-				flex: 1,
-				overflowY: "auto",
-				padding: "var(--mantine-spacing-md)",
+		<Virtuoso
+			ref={virtuosoRef}
+			style={{ flex: 1 }}
+			data={datedMessages}
+			itemContent={itemContent}
+			followOutput="smooth"
+			initialTopMostItemIndex={datedMessages.length - 1}
+			startReached={() => {
+				if (hasMore && !isLoadingMore) {
+					onLoadMoreRef.current?.();
+				}
 			}}
-		>
-			{isLoadingMore && (
-				<Text ta="center" size="xs" c="dimmed" py={4}>
-					<Loader size="xs" type="dots" />
-					{t("chat.loading")}
-				</Text>
-			)}
-			<div ref={sentinelRef} style={{ height: 1 }} />
-			<div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-				{datedMessages.map(({ msg, showSeparator }, idx) => {
-					const prev = idx > 0 ? datedMessages[idx - 1].msg : undefined;
-					const showAuthor =
-						showAuthorForGroup === true &&
-						(prev === undefined || prev.fromId !== msg.fromId);
-					return (
-						<Fragment key={msg.id}>
-							{showSeparator && <DateSeparator dateStr={msg.createdAt} />}
-							<MessageBubble
-								text={msg.text}
-								isOwn={msg.fromId === userId}
-								fromNick={msg.fromNick}
-								time={formatTime(msg.createdAt, locale)}
-								chatId={msg.chatId}
-								msgId={msg.id}
-								editedAt={msg.editedAt}
-								replyTo={msg.replyTo}
-								files={msg.files}
-								location={msg.location}
-								onReplyClick={handleReplyClick}
-								onStartEdit={handleStartEdit}
-								onDelete={onDelete}
-								onReply={onReply}
-								editTTL={editTTL}
-								deleteTTL={deleteTTL}
-								createdAt={msg.createdAt}
-								onCreateThread={onCreateThread}
-								onOpenThread={onOpenThread}
-								threadId={messageToThread?.[msg.id]}
-								threadMessageCount={
-									messageToThread?.[msg.id] !== undefined
-										? threads?.[messageToThread[msg.id]]?.messageCount
-										: undefined
-								}
-								isInThread={isInThread}
-								status={msg.status}
-								onRetry={onRetry}
-								showAuthorNick={showAuthor}
-							/>
-						</Fragment>
-					);
-				})}
-			</div>
-		</div>
+			components={{
+				Header: isLoadingMore === true ? LoadingHeader : undefined,
+			}}
+			rangeChanged={(range) => {
+				if (scrollToMessageId === undefined || scrollToMessageId === null)
+					return;
+				if (scrollToMessageId === prevScrollToRef.current) return;
+				const idx = datedMessages.findIndex(
+					(e) => e.type === "message" && e.msg.id === scrollToMessageId,
+				);
+				if (idx === -1) return;
+				if (idx >= range.startIndex && idx <= range.endIndex) {
+					prevScrollToRef.current = scrollToMessageId;
+					virtuosoRef.current?.scrollToIndex({ index: idx, align: "center" });
+					const el = document.querySelector(
+						`[data-message-id="${scrollToMessageId}"]`,
+					) as HTMLElement | null;
+					if (el !== null) flashElement(el);
+				}
+			}}
+		/>
 	);
 }

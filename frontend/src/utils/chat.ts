@@ -1,5 +1,5 @@
 import type { Chat, Location, MemberInfo } from "../api.ts";
-import i18n from "../i18n.ts";
+import { getCurrentLocale, default as i18n } from "../i18n.ts";
 
 export function otherNick(members: MemberInfo[], myId: string): string {
 	return members.find((m) => m.id !== myId)?.nick ?? i18n.t("chat.unknownUser");
@@ -24,7 +24,7 @@ export function formatDateLabel(isoStr: string, locale?: string): string {
 	const yesterday = new Date(today);
 	yesterday.setDate(yesterday.getDate() - 1);
 
-	const loc = locale ?? i18n.language.split("-")[0];
+	const loc = locale ?? getCurrentLocale();
 	const fmt: Intl.DateTimeFormatOptions = {
 		day: "2-digit",
 		month: "2-digit",
@@ -41,7 +41,7 @@ export function formatDateLabel(isoStr: string, locale?: string): string {
 
 export function formatTime(isoStr: string, locale?: string): string {
 	const d = new Date(isoStr);
-	const loc = locale ?? i18n.language.split("-")[0];
+	const loc = locale ?? getCurrentLocale();
 	return d.toLocaleTimeString(loc, {
 		hour: "2-digit",
 		minute: "2-digit",

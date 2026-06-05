@@ -133,6 +133,7 @@ export function LocationPickerModal({
 					}}
 				>
 					<MapContainer
+						key={`${initial?.lat ?? DEFAULT_CENTER[0]}-${initial?.lng ?? DEFAULT_CENTER[1]}`}
 						center={center}
 						zoom={zoom}
 						style={{ height: "100%", width: "100%" }}
@@ -196,7 +197,7 @@ export function LocationPickerModal({
 					📍 {formatCoords(position)}
 				</Text>
 				{errorKey !== null && (
-					<Text size="sm" c="red">
+					<Text size="sm" c="red" role="alert" aria-live="assertive">
 						{t(errorKey)}
 					</Text>
 				)}
