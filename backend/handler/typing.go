@@ -1,0 +1,106 @@
+package handler
+
+import (
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"fast_chat/model"
+)
+
+const (
+	typingThrottleInterval = 2 * time.Second
+)
+
+func (h *Handler) HandleTyping(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+	chatID := r.PathValue("id")
+
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if !isMember(chat, user.ID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return
+	}
+
+	var req struct {
+		Active bool `json:"active"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	if !req.Active {
+		h.sendTypingEvent(r, chat, chatID, user.ID, user.Nick, "typing_stop", nil)
+
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+
+		return
+	}
+
+	key := chatID + ":" + user.ID
+	if last, ok := h.hub.lastTyping.Load(key); ok {
+		if time.Since(last.(time.Time)) < typingThrottleInterval { //nolint:errcheck
+			writeJSON(w, http.StatusOK, map[string]string{"status": "throttled"})
+
+			return
+		}
+	}
+
+	h.hub.lastTyping.Store(key, time.Now())
+
+	h.sendTypingEvent(r, chat, chatID, user.ID, user.Nick, "typing", map[string]string{
+		"chatId": chatID,
+		"userId": user.ID,
+		"nick":   user.Nick,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// sendTypingEvent dispatches a typing indicator to all chat members (local and remote).
+// extra fields override the default typing_stop payload when supplied.
+func (h *Handler) sendTypingEvent(r *http.Request, chat *model.Chat, chatID, userID, nick, eventName string, extra map[string]string) {
+	payload := map[string]string{
+		"chatId": chatID,
+		"userId": userID,
+	}
+
+	for k, v := range extra {
+		payload[k] = v
+	}
+
+	event := SSEEvent{Event: eventName, Data: payload}
+
+	for _, memberID := range chat.Members {
+		if memberID != userID {
+			h.hub.Send(memberID, event)
+		}
+	}
+
+	if chat.RemoteServer != "" {
+		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/typing")
+
+		body := map[string]interface{}{
+			"userId": userID,
+			"active": eventName == "typing",
+		}
+
+		if nick != "" {
+			body["nick"] = nick
+		}
+
+		_, _ = h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, body) //nolint:errcheck
+	}
+}

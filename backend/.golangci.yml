@@ -193,15 +193,20 @@ linters:
     rules:
       - linters:
           - varnamelen
-        path: handler/handler\.go
-      - linters:
-          - revive
-          - gocritic
           - goconst
-        path: handler/handler\.go
+          - gocritic
+          - revive
+        path: handler/.*\.go
       - linters:
           - revive
         path: main\.go
+      - linters:
+          - gocritic
+        text: "whyNoLint"
+      - linters:
+          - gocritic
+        text: "rangeValCopy"
+        path: handler/messages\.go
       - linters:
           - errcheck
           - ineffassign

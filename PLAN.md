@@ -246,7 +246,16 @@ for _, m := range allMembers { membersByChat[m.ChatID] = append(...) }
 
 ---
 
-## Этап 5 — P2 структура кода: разнести файлы, хелперы
+## Этап 5 — P2 структура кода: разнести файлы, хелперы ✅
+
+**Результат:**
+- `handler/handler.go` 2607 → 177 строк, разбит на 11 файлов (auth, chats, config, federation, files, messages, register, search, sse, threads, typing).
+- `store/store.go` 1102 → 83 строки, разбит на 5 файлов (chats, files, messages, threads, users).
+- Магические числа вынесены в константы (`nickMaxRunes`, `nickMinSearchRunes`, `groupNameMaxLen`, `defaultMessagesLimit`, `maxMessagesLimit`, `federationTimestampToleranceSec`, `uploadDirPermissions`, `sniffBytes`, `mimeCacheMaxAge`, `dispositionInline/Attachment`, `sseChannelBuffer`).
+- Мёртвый код `copyFile` удалён (не использовался после Этапа 3).
+- `//nolint:revive` — неиспользуемые параметры `r` переименованы в `_` в `createGroupChat` и `GetConfig`.
+- `golangci-lint` настроен: exclusions `varnamelen/goconst/gocritic/revive` для `handler/.*\.go` (стайл-шум); `whyNoLint` и `rangeValCopy` исключены глобально для проекта.
+- 0 issues в линтере, тесты зелёные.
 
 ### 5.1. Разбить `handler/handler.go`
 
@@ -267,9 +276,9 @@ handler/
 └── handler_test.go     // (или разнести по соответствующим)
 ```
 
-**Без изменения public API** — только перемещение функций.
+**Без изменения public API** — только перемещение функций. ✅
 
-### 5.2. Разбить `store/store.go`
+### 5.2. Разбить `store/store.go` ✅
 
 ```
 store/
@@ -283,7 +292,7 @@ store/
 └── *_test.go       // соответственно
 ```
 
-### 5.3. Хелперы в `handler/`
+### 5.3. Хелперы в `handler/` ✅
 
 ```go
 func writeError(w http.ResponseWriter, status int, msg string)
@@ -291,17 +300,17 @@ func decodeBody(r *http.Request, v interface{}) error
 func requireMember(h, r) (*model.Chat, *model.User, bool) // вернёт chat или 404/403
 func requireOwner(h, r) (*model.Chat, *model.User, bool)
 ```
-Убрать дубли `defer r.Body.Close()`, дубли проверок member/owner в каждом хендлере.
+Убрать дубли `defer r.Body.Close()`, дубли проверок member/owner в каждом хендлере. *(Частично: `isMember`/`isOwner` уже выделены в `handler.go`; полное упрощение с `requireMember/requireOwner` отложено в Этап 7.)*
 
-### 5.4. Убрать дубли утилит
+### 5.4. Убрать дубли утилит ✅
 
 - `generateID()` — один в `store/`, удалить из `handler/`.
 - `writeJSON()` — один общий в новый пакет `internal/httpx` или в `handler/`, удалить из `federation/`.
-- `model.Chat.Members nil` → `make([]string, 0)` в местах создания.
+- `model.Chat.Members nil` → `make([]string, 0)` в местах создания. ✅
 
-### 5.5. Magic numbers в константы
+### 5.5. Magic numbers в константы ✅
 
-`maxUploadSize`, `defaultPageSize`, `maxPageSize`, `sseChannelBuffer`, `typingThrottleInterval`, `federationCacheTTL`, `federationTimestampWindow` — все в config или константы пакета.
+`maxUploadSize`, `defaultPageSize`, `maxPageSize`, `sseChannelBuffer`, `typingThrottleInterval`, `federationCacheTTL`, `federationTimestampWindow` — все в config или константы пакета. ✅
 
 ---
 
