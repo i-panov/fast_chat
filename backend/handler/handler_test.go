@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -984,5 +985,97 @@ func TestFederatedEditMessageRejectsLocalAuthor(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSearchUsersRejectsShortQuery(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice")
+	registerTestUser(t, h, "bob")
+
+	for _, q := range []string{"", "a", "  "} {
+		req := authReq(http.MethodGet, "/api/users/search?q="+url.QueryEscape(q), alice.token, "")
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.SearchUsers)(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("q=%q: expected 200, got %d", q, w.Code)
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+
+		users, _ := resp["users"].([]interface{})
+		if len(users) != 0 {
+			t.Errorf("q=%q: expected empty users, got %d", q, len(users))
+		}
+	}
+
+	// Two runes must work.
+	req := authReq(http.MethodGet, "/api/users/search?q=bo", alice.token, "")
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.SearchUsers)(w, req)
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	users, _ := resp["users"].([]interface{})
+	if len(users) != 1 {
+		t.Errorf("q=al: expected 1 result, got %d", len(users))
+	}
+}
+
+func TestRegisterNickLengthIsRuneBased(t *testing.T) {
+	h := newTestHandler(t)
+
+	// 20 кириллических символов — 80 байт. Должно пройти (20 рун).
+	nick := strings.Repeat("я", 20)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(`{"nick":"`+nick+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.Register(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected 201 for 20-rune nick, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 21 руна — должно быть отвергнуто.
+	nick = strings.Repeat("я", 21)
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(`{"nick":"`+nick+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	h.Register(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for 21-rune nick, got %d", w.Code)
+	}
+}
+
+func TestFederatedSearchUsersRejectsShortQuery(t *testing.T) {
+	h := newTestHandler(t)
+	registerTestUser(t, h, "alice")
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/federated/users/search?q=a", http.NoBody)
+	w := httptest.NewRecorder()
+	h.FederatedSearchUsers(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	users, _ := resp["users"].([]interface{})
+	if len(users) != 0 {
+		t.Errorf("expected empty users for short query, got %d", len(users))
 	}
 }

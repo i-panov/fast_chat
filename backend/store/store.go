@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"fast_chat/model"
 )
@@ -44,15 +45,18 @@ func generateID() string {
 }
 
 type Store struct {
-	db     *gorm.DB
-	connMu sync.Mutex
-	conns  map[string]int
+	db       *gorm.DB
+	connMu   sync.Mutex
+	conns    map[string]int
+	onlineMu sync.RWMutex
+	online   map[string]struct{}
 }
 
 func New(db *gorm.DB) *Store {
 	return &Store{
-		db:    db,
-		conns: make(map[string]int),
+		db:     db,
+		conns:  make(map[string]int),
+		online: make(map[string]struct{}),
 	}
 }
 
@@ -69,10 +73,9 @@ func (s *Store) CreateUser(fullID, nick string) (*model.User, error) {
 	}
 
 	user := &model.User{
-		ID:     fullID,
-		Nick:   nick,
-		Token:  generateID(),
-		Online: true,
+		ID:    fullID,
+		Nick:  nick,
+		Token: generateID(),
 	}
 
 	if err := s.db.Create(user).Error; err != nil {
@@ -113,11 +116,20 @@ func (s *Store) SearchUsers(query, excludeID string) []model.PublicUser {
 
 	s.db.Where("LOWER(nick) LIKE ? AND id != ?", "%"+q+"%", excludeID).Find(&users)
 
-	if users == nil {
+	if len(users) == 0 {
 		return []model.PublicUser{}
 	}
 
-	return model.PublicUsers(users)
+	s.onlineMu.RLock()
+	defer s.onlineMu.RUnlock()
+
+	out := make([]model.PublicUser, 0, len(users))
+	for _, u := range users {
+		_, online := s.online[u.ID]
+		out = append(out, model.PublicUser{ID: u.ID, Nick: u.Nick, Online: online})
+	}
+
+	return out
 }
 
 func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
@@ -559,7 +571,10 @@ func (s *Store) AddRawMessage(msg *model.Message) error {
 		return ErrChatNotFound
 	}
 
-	return s.db.Create(msg).Error
+	// Idempotent insert: if a row with the same primary key already
+	// exists (e.g. a federated message replayed by a retrying client),
+	// silently succeed rather than failing the whole request.
+	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(msg).Error
 }
 
 func (s *Store) GetMessages(chatID string) []model.Message {
@@ -821,7 +836,9 @@ func (s *Store) AddConnection(userID string) {
 	s.connMu.Unlock()
 
 	if prev == 0 {
-		s.db.Model(&model.User{}).Where("id = ?", userID).Update("online", true)
+		s.onlineMu.Lock()
+		s.online[userID] = struct{}{}
+		s.onlineMu.Unlock()
 	}
 }
 
@@ -836,9 +853,23 @@ func (s *Store) RemoveConnection(userID string) {
 
 	s.connMu.Unlock()
 
-	if remaining == 0 {
-		s.db.Model(&model.User{}).Where("id = ?", userID).Update("online", false)
+	if remaining <= 0 {
+		s.onlineMu.Lock()
+		delete(s.online, userID)
+		s.onlineMu.Unlock()
 	}
+}
+
+// IsOnline reports whether the user currently has at least one active
+// connection. Online state is tracked in memory only — it is intentionally
+// lost across server restarts.
+func (s *Store) IsOnline(userID string) bool {
+	s.onlineMu.RLock()
+	defer s.onlineMu.RUnlock()
+
+	_, ok := s.online[userID]
+
+	return ok
 }
 
 func (s *Store) SaveFile(hash, mimeType string, size int64, originalName, storagePath string) (*model.File, error) {
@@ -971,9 +1002,11 @@ func (s *Store) GetFileChats(fileID string) ([]string, error) {
 	return chatIDs, nil
 }
 
-// Close marks all users offline and closes the database connection.
+// Close clears in-memory state and closes the database connection.
 func (s *Store) Close() {
-	s.db.Model(&model.User{}).Where("1 = 1").Update("online", false)
+	s.onlineMu.Lock()
+	s.online = make(map[string]struct{})
+	s.onlineMu.Unlock()
 
 	sqlDB, err := s.db.DB()
 	if err == nil {

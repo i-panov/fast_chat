@@ -121,18 +121,16 @@ func LoadOrGenerateKeys(keyDir string) (*rsa.PrivateKey, error) {
 // B over the same request.
 //
 // serverDomain is the caller's own server domain (e.g. "chat.example.com").
-func (m *Manager) Sign(method, requestURI string, body []byte, timestamp int64) string {
+func (m *Manager) Sign(method, requestURI string, body []byte, timestamp int64) (string, error) {
 	data := signedPayload(m.serverDomain, method, requestURI, body, timestamp)
 	hash := sha256.Sum256([]byte(data))
 
 	sig, err := rsa.SignPKCS1v15(rand.Reader, m.privateKey, crypto.SHA256, hash[:])
 	if err != nil {
-		log.Printf("federation sign failed: %v", err)
-
-		return ""
+		return "", fmt.Errorf("federation sign: %w", err)
 	}
 
-	return base64.StdEncoding.EncodeToString(sig)
+	return base64.StdEncoding.EncodeToString(sig), nil
 }
 
 // Verify checks the RSA signature against the remote server's public key

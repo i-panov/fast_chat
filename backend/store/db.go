@@ -26,9 +26,6 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	// All users offline on start
-	db.Model(&model.User{}).Where("1 = 1").Update("online", false)
-
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, err

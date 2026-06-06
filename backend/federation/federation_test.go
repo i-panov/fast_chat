@@ -28,6 +28,17 @@ func newTestManager(t *testing.T, serverDomain string) *Manager {
 	return m
 }
 
+func mustSign(t *testing.T, m *Manager, method, requestURI string, body []byte, ts int64) string {
+	t.Helper()
+
+	sig, err := m.Sign(method, requestURI, body, ts)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	return sig
+}
+
 func TestServerDomain(t *testing.T) {
 	m := newTestManager(t, "chat.example.com")
 	if got := m.ServerDomain(); got != "chat.example.com" {
@@ -46,7 +57,7 @@ func TestSignVerifyRoundtrip(t *testing.T) {
 
 	ts := time.Now().Unix()
 	body := []byte(`{"hello":"world"}`)
-	sig := other.Sign(http.MethodPost, "/api/federated/messages", body, ts)
+	sig := mustSign(t, other, http.MethodPost, "/api/federated/messages", body, ts)
 
 	if !m.Verify(context.Background(), remote, sig, http.MethodPost, "/api/federated/messages", body, ts) {
 		t.Fatal("Verify returned false for a freshly signed payload")
@@ -68,7 +79,7 @@ func TestVerifyRejectsWrongServer(t *testing.T) {
 
 	ts := time.Now().Unix()
 	body := []byte("payload")
-	sig := other.Sign(http.MethodPost, "/x", body, ts)
+	sig := mustSign(t, other, http.MethodPost, "/x", body, ts)
 
 	if m.Verify(context.Background(), "remote-b.test", sig, http.MethodPost, "/x", body, ts) {
 		t.Fatal("Verify accepted a signature minted for a different server")
@@ -82,7 +93,7 @@ func TestVerifyRejectsTamperedBody(t *testing.T) {
 	m.cachePublicKey("remote.test", other.publicKey, time.Hour)
 
 	ts := time.Now().Unix()
-	sig := other.Sign(http.MethodPost, "/x", []byte("original"), ts)
+	sig := mustSign(t, other, http.MethodPost, "/x", []byte("original"), ts)
 
 	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", []byte("tampered"), ts) {
 		t.Fatal("Verify accepted a signature over a tampered body")
@@ -96,7 +107,7 @@ func TestVerifyRejectsExpiredTimestamp(t *testing.T) {
 	m.cachePublicKey("remote.test", other.publicKey, time.Hour)
 
 	old := time.Now().Add(-2 * time.Hour).Unix()
-	sig := other.Sign(http.MethodPost, "/x", nil, old)
+	sig := mustSign(t, other, http.MethodPost, "/x", nil, old)
 
 	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", nil, old) {
 		t.Fatal("Verify accepted a signature with an old timestamp")
@@ -110,7 +121,7 @@ func TestVerifyRejectsFutureTimestamp(t *testing.T) {
 	m.cachePublicKey("remote.test", other.publicKey, time.Hour)
 
 	future := time.Now().Add(2 * time.Hour).Unix()
-	sig := other.Sign(http.MethodPost, "/x", nil, future)
+	sig := mustSign(t, other, http.MethodPost, "/x", nil, future)
 
 	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", nil, future) {
 		t.Fatal("Verify accepted a signature with a future timestamp")
@@ -125,7 +136,7 @@ func TestVerifyRejectsReplay(t *testing.T) {
 
 	ts := time.Now().Unix()
 	body := []byte("hello")
-	sig := other.Sign(http.MethodPost, "/x", body, ts)
+	sig := mustSign(t, other, http.MethodPost, "/x", body, ts)
 
 	if !m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", body, ts) {
 		t.Fatal("first Verify call should succeed")

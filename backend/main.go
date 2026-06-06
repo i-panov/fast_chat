@@ -246,6 +246,8 @@ func main() {
 
 	fedManager.Close()
 
+	handlerInstance.Close()
+
 	s.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

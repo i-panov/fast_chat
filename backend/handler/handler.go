@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"fast_chat/config"
 	"fast_chat/federation"
@@ -52,11 +53,49 @@ type SSEHub struct {
 	mu         sync.RWMutex
 	clients    map[string][]chan SSEEvent
 	lastTyping sync.Map // key "chatID:userID" → time.Time
+	closeCh    chan struct{}
 }
 
 func NewSSEHub() *SSEHub {
-	return &SSEHub{
+	hub := &SSEHub{
 		clients: make(map[string][]chan SSEEvent),
+		closeCh: make(chan struct{}),
+	}
+	go hub.cleanupLastTyping()
+
+	return hub
+}
+
+// Close stops the hub's background goroutines.
+func (h *SSEHub) Close() {
+	select {
+	case <-h.closeCh:
+	default:
+		close(h.closeCh)
+	}
+}
+
+func (h *SSEHub) cleanupLastTyping() {
+	ticker := time.NewTicker(typingThrottleInterval * 5)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			cutoff := time.Now().Add(-typingThrottleInterval * 5)
+
+			h.lastTyping.Range(func(k, v any) bool {
+				ts, ok := v.(time.Time)
+				if !ok || ts.Before(cutoff) {
+					h.lastTyping.Delete(k)
+				}
+
+				return true
+			})
+
+		case <-h.closeCh:
+			return
+		}
 	}
 }
 
@@ -104,8 +143,9 @@ func (h *SSEHub) Send(userID string, event SSEEvent) {
 }
 
 type memberInfo struct {
-	ID   string `json:"id"`
-	Nick string `json:"nick"`
+	ID     string `json:"id"`
+	Nick   string `json:"nick"`
+	Online bool   `json:"online,omitempty"`
 }
 
 type chatResponse struct {
@@ -146,6 +186,11 @@ func New(s *store.Store, cfg *config.Config, fm *federation.Manager) *Handler {
 	}
 }
 
+// Close stops the handler's background goroutines (SSE hub cleanup loop).
+func (h *Handler) Close() {
+	h.hub.Close()
+}
+
 func (h *Handler) enrichChat(c *model.Chat) chatResponse {
 	cr := chatResponse{
 		ID:        c.ID,
@@ -163,7 +208,7 @@ func (h *Handler) enrichChat(c *model.Chat) chatResponse {
 
 	for _, member := range c.Members {
 		if u, ok := h.store.GetUserByID(member); ok {
-			cr.Members = append(cr.Members, memberInfo{ID: member, Nick: u.Nick})
+			cr.Members = append(cr.Members, memberInfo{ID: member, Nick: u.Nick, Online: h.store.IsOnline(member)})
 		} else {
 			cr.Members = append(cr.Members, memberInfo{ID: member, Nick: member})
 		}
@@ -204,7 +249,11 @@ func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string,
 	}
 
 	timestamp := time.Now().Unix()
-	signature := h.fedManager.Sign(method, parsedURL.RequestURI(), bodyBytes, timestamp)
+
+	signature, err := h.fedManager.Sign(method, parsedURL.RequestURI(), bodyBytes, timestamp)
+	if err != nil {
+		return nil, fmt.Errorf("federation sign: %w", err)
+	}
 
 	var bodyReader io.Reader
 	if bodyBytes != nil {
@@ -320,7 +369,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Nick = strings.TrimSpace(req.Nick)
-	if req.Nick == "" || len(req.Nick) > 20 {
+	if req.Nick == "" || utf8.RuneCountInString(req.Nick) > 20 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "nick must be 1-20 characters"})
 
 		return
@@ -348,7 +397,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remoteNick, remoteDomain string) {
-	if remoteNick == "" || remoteDomain == "" {
+	if remoteNick == "" || remoteDomain == "" || utf8.RuneCountInString(remoteNick) < 2 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "invalid search query"})
 
 		return
@@ -406,6 +455,12 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 
 	if idx := strings.Index(query, ":"); idx != -1 {
 		h.searchFederated(w, r, query[:idx], query[idx+1:])
+
+		return
+	}
+
+	if utf8.RuneCountInString(strings.TrimSpace(query)) < 2 {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"users": []model.PublicUser{}})
 
 		return
 	}
@@ -1123,7 +1178,23 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	defer file.Close() //nolint:errcheck
 
-	tempFile, err := os.CreateTemp("", "upload-*")
+	// Storage name is a UUID with no extension so the client cannot influence
+	// the on-disk filename (e.g. ".php" tricks behind a misconfigured reverse
+	// proxy).
+	dateDir := time.Now().Format("20060102")
+	storageName := generateID()
+	relativePath := filepath.Join(dateDir, storageName)
+	fullPath := filepath.Join(h.cfg.UploadDir, relativePath)
+
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil { //nolint:gosec // paths are controlled
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to process file"})
+
+		return
+	}
+
+	// Stage in the destination directory so the final os.Rename is atomic
+	// on the same filesystem (avoids EXDEV across /tmp and UploadDir).
+	tempFile, err := os.CreateTemp(filepath.Dir(fullPath), ".upload-*"+filepath.Ext(storageName)+".tmp") //nolint:gosec
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to process file"})
 
@@ -1176,7 +1247,11 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tempFile.Close() //nolint:errcheck,gosec
+	if err := tempFile.Close(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to finalize file"})
+
+		return
+	}
 
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
@@ -1187,15 +1262,10 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Storage name is a UUID with no extension so the client cannot influence
-	// the on-disk filename (e.g. ".php" tricks behind a misconfigured reverse
-	// proxy).
-	dateDir := time.Now().Format("20060102")
-	storageName := generateID()
-	relativePath := filepath.Join(dateDir, storageName)
-	fullPath := filepath.Join(h.cfg.UploadDir, relativePath)
-
-	if err := copyFile(tempPath, fullPath); err != nil {
+	// Atomic publish: rename moves the staged file into place in a single
+	// step, so readers either see the previous version or the new one —
+	// never a partially written file.
+	if err := os.Rename(tempPath, fullPath); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to save file"})
 
 		return
@@ -1320,9 +1390,12 @@ func copyFile(srcPath, dstPath string) error {
 	}
 	defer dst.Close() //nolint:errcheck
 
-	_, err = io.Copy(dst, src)
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
 
-	return err
+	// Force the bytes to disk before the caller can rely on dstPath.
+	return dst.Sync()
 }
 
 func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
@@ -1359,6 +1432,13 @@ func userIDBelongsToServer(userID, serverDomain string) bool {
 // FederatedSearchUsers handles search requests from remote servers (no auth).
 func (h *Handler) FederatedSearchUsers(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
+
+	if utf8.RuneCountInString(strings.TrimSpace(query)) < 2 {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"users": []model.PublicUser{}})
+
+		return
+	}
+
 	users := h.store.SearchUsers(query, "")
 
 	if users == nil {
@@ -1505,19 +1585,13 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.ReplyToID != "" {
-		msgs := h.store.GetMessages(chatID)
-
-		for idx := range msgs {
-			if msgs[idx].ID == req.ReplyToID {
-				msg.ReplyTo = &model.ReplyToInfo{
-					MessageID: req.ReplyToID,
-					Text:      msgs[idx].Text,
-					FromNick:  msgs[idx].FromNick,
-					Files:     h.store.GetMessageFilesForReply(msgs[idx].ID),
-					Location:  msgs[idx].Location,
-				}
-
-				break
+		if parent, err := h.store.GetMessage(chatID, req.ReplyToID); err == nil {
+			msg.ReplyTo = &model.ReplyToInfo{
+				MessageID: req.ReplyToID,
+				Text:      parent.Text,
+				FromNick:  parent.FromNick,
+				Files:     h.store.GetMessageFilesForReply(parent.ID),
+				Location:  parent.Location,
 			}
 		}
 	}

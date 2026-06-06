@@ -951,18 +951,20 @@ func TestAddThreadMessage(t *testing.T) {
 func TestAddConnection(t *testing.T) {
 	s := newTestStore(t)
 	s.CreateUser(testAlice, "alice")
-	user, _ := s.GetUserByID(testAlice)
 
-	if !user.Online {
-		t.Error("expected user to be online after creation")
+	if s.IsOnline(testAlice) {
+		t.Error("expected user to be offline right after creation")
 	}
 
 	s.AddConnection(testAlice)
 
+	if !s.IsOnline(testAlice) {
+		t.Error("expected user to be online after AddConnection")
+	}
+
 	s.RemoveConnection(testAlice)
 
-	user, _ = s.GetUserByID(testAlice)
-	if user.Online {
+	if s.IsOnline(testAlice) {
 		t.Error("expected user to be offline after RemoveConnection")
 	}
 }
@@ -975,15 +977,13 @@ func TestAddConnectionMultiple(t *testing.T) {
 	s.AddConnection(testAlice)
 	s.RemoveConnection(testAlice)
 
-	user, _ := s.GetUserByID(testAlice)
-	if !user.Online {
+	if !s.IsOnline(testAlice) {
 		t.Error("expected user to stay online after one RemoveConnection (still one left)")
 	}
 
 	s.RemoveConnection(testAlice)
 
-	user, _ = s.GetUserByID(testAlice)
-	if user.Online {
+	if s.IsOnline(testAlice) {
 		t.Error("expected user to be offline after all connections removed")
 	}
 }
@@ -1026,5 +1026,65 @@ func TestGetThreadValue(t *testing.T) {
 	thread1.ChatID = "modified"
 	if thread2.ChatID == "modified" {
 		t.Error("GetThread should return a copy")
+	}
+}
+
+func TestAddRawMessageIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+
+	msg := &model.Message{
+		ID:     "dup-1",
+		ChatID: chat.ID,
+		FromID: testBob,
+		Text:   "original",
+	}
+
+	if err := s.AddRawMessage(msg); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+
+	// A federated retry with the same ID should not error.
+	msg.Text = "replay"
+	if err := s.AddRawMessage(msg); err != nil {
+		t.Fatalf("second insert (replay): %v", err)
+	}
+
+	msgs := s.GetMessages(chat.ID)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message after replay, got %d", len(msgs))
+	}
+	if msgs[0].Text != "original" {
+		t.Errorf("replay overwrote original text: %q", msgs[0].Text)
+	}
+}
+
+func TestSearchUsersOnlineState(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+
+	if s.IsOnline(testAlice) {
+		t.Fatal("alice should start offline")
+	}
+
+	s.AddConnection(testAlice)
+
+	results := s.SearchUsers("ali", "")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].Online {
+		t.Error("expected alice to appear online in search results")
+	}
+
+	results = s.SearchUsers("bob", "")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 bob result, got %d", len(results))
+	}
+	if results[0].Online {
+		t.Error("bob has no connection, must be offline")
 	}
 }
