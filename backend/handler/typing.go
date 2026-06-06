@@ -20,13 +20,13 @@ func (h *Handler) HandleTyping(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if !isMember(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		writeError(w, http.StatusForbidden, errKeyNotMember)
 
 		return
 	}
@@ -36,7 +36,7 @@ func (h *Handler) HandleTyping(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
@@ -92,7 +92,7 @@ func (h *Handler) sendTypingEvent(r *http.Request, chat *model.Chat, chatID, use
 	if chat.RemoteServer != "" {
 		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/typing")
 
-		body := map[string]interface{}{
+		body := map[string]any{
 			"userId": userID,
 			"active": eventName == "typing",
 		}

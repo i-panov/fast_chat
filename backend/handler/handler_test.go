@@ -79,12 +79,12 @@ func TestRegister(t *testing.T) {
 		t.Errorf("expected 201, got %d", w.Code)
 	}
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
 
-	user, ok := resp["user"].(map[string]interface{})
+	user, ok := resp["user"].(map[string]any)
 	if !ok {
 		t.Fatal("expected user in response")
 	}
@@ -129,12 +129,12 @@ func TestRegisterResponseDoesNotDuplicateToken(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
 
-	user, ok := resp["user"].(map[string]interface{})
+	user, ok := resp["user"].(map[string]any)
 	if !ok {
 		t.Fatal("expected user object")
 	}
@@ -224,7 +224,7 @@ func TestAuthMiddleware(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Register(w, req)
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	token, _ := resp["token"].(string)
 
@@ -281,10 +281,10 @@ func TestCreateChat(t *testing.T) {
 	w1 := httptest.NewRecorder()
 	h.Register(w1, req1)
 
-	var resp1 map[string]interface{}
+	var resp1 map[string]any
 	json.Unmarshal(w1.Body.Bytes(), &resp1)
 	aliceToken := resp1["token"].(string)
-	aliceUser := resp1["user"].(map[string]interface{})
+	aliceUser := resp1["user"].(map[string]any)
 	aliceID := aliceUser["id"].(string)
 
 	regBody2 := `{"nick":"bob"}`
@@ -293,9 +293,9 @@ func TestCreateChat(t *testing.T) {
 	w2 := httptest.NewRecorder()
 	h.Register(w2, req2)
 
-	var resp2 map[string]interface{}
+	var resp2 map[string]any
 	json.Unmarshal(w2.Body.Bytes(), &resp2)
-	bobID := resp2["user"].(map[string]interface{})["id"].(string)
+	bobID := resp2["user"].(map[string]any)["id"].(string)
 
 	t.Run("create chat", func(t *testing.T) {
 		body := `{"withUserId":"` + bobID + `"}`
@@ -309,10 +309,10 @@ func TestCreateChat(t *testing.T) {
 			t.Errorf("expected 201, got %d: %s", w.Code, w.Body.String())
 		}
 
-		var chatResp map[string]interface{}
+		var chatResp map[string]any
 		json.Unmarshal(w.Body.Bytes(), &chatResp)
-		chat := chatResp["chat"].(map[string]interface{})
-		members := chat["members"].([]interface{})
+		chat := chatResp["chat"].(map[string]any)
+		members := chat["members"].([]any)
 		if len(members) != 2 {
 			t.Errorf("expected 2 members, got %d", len(members))
 		}
@@ -352,7 +352,7 @@ func TestGetMessages(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Register(w, req)
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	aliceToken := resp["token"].(string)
 
@@ -361,9 +361,9 @@ func TestGetMessages(t *testing.T) {
 	bobReq.Header.Set("Content-Type", "application/json")
 	bobW := httptest.NewRecorder()
 	h.Register(bobW, bobReq)
-	var bobResp map[string]interface{}
+	var bobResp map[string]any
 	json.Unmarshal(bobW.Body.Bytes(), &bobResp)
-	bobID := bobResp["user"].(map[string]interface{})["id"].(string)
+	bobID := bobResp["user"].(map[string]any)["id"].(string)
 
 	// Create chat
 	chatBody := `{"withUserId":"` + bobID + `"}`
@@ -372,9 +372,9 @@ func TestGetMessages(t *testing.T) {
 	chatReq.Header.Set("Authorization", "Bearer "+aliceToken)
 	chatW := httptest.NewRecorder()
 	h.AuthMiddleware(h.CreateChat)(chatW, chatReq)
-	var chatResp map[string]interface{}
+	var chatResp map[string]any
 	json.Unmarshal(chatW.Body.Bytes(), &chatResp)
-	chatID := chatResp["chat"].(map[string]interface{})["id"].(string)
+	chatID := chatResp["chat"].(map[string]any)["id"].(string)
 
 	// Send message
 	msgBody := `{"text":"hello"}`
@@ -400,9 +400,9 @@ func TestGetMessages(t *testing.T) {
 		t.Errorf("expected 200, got %d", getW.Code)
 	}
 
-	var getResp map[string]interface{}
+	var getResp map[string]any
 	json.Unmarshal(getW.Body.Bytes(), &getResp)
-	msgs, ok := getResp["messages"].([]interface{})
+	msgs, ok := getResp["messages"].([]any)
 	if !ok {
 		t.Fatal("expected messages array")
 	}
@@ -422,7 +422,7 @@ func TestGetConfig(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 
 	if resp["messageEditTTL"] != float64(300) {
@@ -484,14 +484,14 @@ func registerTestUser(t *testing.T, h *Handler, nick string) testAccount {
 		t.Fatalf("register %s: expected 201, got %d: %s", nick, w.Code, w.Body.String())
 	}
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
 
 	return testAccount{
 		token: resp["token"].(string),
-		id:    resp["user"].(map[string]interface{})["id"].(string),
+		id:    resp["user"].(map[string]any)["id"].(string),
 	}
 }
 
@@ -522,9 +522,9 @@ func TestCreateGroupChat(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	chat := resp["chat"].(map[string]interface{})
+	chat := resp["chat"].(map[string]any)
 
 	if chat["type"] != testChatTypeGroup {
 		t.Errorf("expected type=group, got %v", chat["type"])
@@ -535,7 +535,7 @@ func TestCreateGroupChat(t *testing.T) {
 	if chat["ownerId"] != alice.id {
 		t.Errorf("expected ownerId=%s, got %v", alice.id, chat["ownerId"])
 	}
-	members := chat["members"].([]interface{})
+	members := chat["members"].([]any)
 	if len(members) != 3 {
 		t.Errorf("expected 3 members, got %d", len(members))
 	}
@@ -594,14 +594,14 @@ func TestCreateGroupChat_Solo(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	chat := resp["chat"].(map[string]interface{})
+	chat := resp["chat"].(map[string]any)
 
 	if chat["ownerId"] != alice.id {
 		t.Errorf("expected ownerId=%s, got %v", alice.id, chat["ownerId"])
 	}
-	members := chat["members"].([]interface{})
+	members := chat["members"].([]any)
 	if len(members) != 1 {
 		t.Errorf("expected 1 member, got %d", len(members))
 	}
@@ -620,9 +620,9 @@ func TestGroupPermissions(t *testing.T) {
 	if createW.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", createW.Code, createW.Body.String())
 	}
-	var created map[string]interface{}
+	var created map[string]any
 	json.Unmarshal(createW.Body.Bytes(), &created)
-	chatID := created["chat"].(map[string]interface{})["id"].(string)
+	chatID := created["chat"].(map[string]any)["id"].(string)
 
 	t.Run("owner can rename", func(t *testing.T) {
 		req := authReq(http.MethodPatch, "/api/chats/"+chatID, alice.token, `{"name":"New"}`)
@@ -728,9 +728,9 @@ func TestDeleteGroupChat(t *testing.T) {
 	createReq := authReq(http.MethodPost, "/api/chats", alice.token, createBody)
 	createW := httptest.NewRecorder()
 	h.AuthMiddleware(h.CreateChat)(createW, createReq)
-	var created map[string]interface{}
+	var created map[string]any
 	json.Unmarshal(createW.Body.Bytes(), &created)
-	chatID := created["chat"].(map[string]interface{})["id"].(string)
+	chatID := created["chat"].(map[string]any)["id"].(string)
 
 	// non-owner cannot delete
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/api/chats/"+chatID, http.NoBody)
@@ -773,9 +773,9 @@ func TestServeFileForGroupAvatar(t *testing.T) {
 	createReq := authReq(http.MethodPost, "/api/chats", alice.token, createBody)
 	createW := httptest.NewRecorder()
 	h.AuthMiddleware(h.CreateChat)(createW, createReq)
-	var created map[string]interface{}
+	var created map[string]any
 	json.Unmarshal(createW.Body.Bytes(), &created)
-	chatID := created["chat"].(map[string]interface{})["id"].(string)
+	chatID := created["chat"].(map[string]any)["id"].(string)
 
 	f, _ := h.store.SaveFile("avatar-hash", "image/png", 70, "a.png", "a.png")
 
@@ -823,9 +823,9 @@ func TestPrivateChatUnaffectedByGroup(t *testing.T) {
 	if privW.Code != http.StatusCreated {
 		t.Fatalf("private create: %d %s", privW.Code, privW.Body.String())
 	}
-	var privResp map[string]interface{}
+	var privResp map[string]any
 	json.Unmarshal(privW.Body.Bytes(), &privResp)
-	privChat := privResp["chat"].(map[string]interface{})
+	privChat := privResp["chat"].(map[string]any)
 	if privChat["type"] != "private" {
 		t.Errorf("expected private, got %v", privChat["type"])
 	}
@@ -837,9 +837,9 @@ func TestPrivateChatUnaffectedByGroup(t *testing.T) {
 	if privW2.Code != http.StatusCreated {
 		t.Fatalf("private create2: %d", privW2.Code)
 	}
-	var privResp2 map[string]interface{}
+	var privResp2 map[string]any
 	json.Unmarshal(privW2.Body.Bytes(), &privResp2)
-	if privResp2["chat"].(map[string]interface{})["id"] != privChat["id"] {
+	if privResp2["chat"].(map[string]any)["id"] != privChat["id"] {
 		t.Error("expected same private chat id on second call")
 	}
 }
@@ -1002,12 +1002,12 @@ func TestSearchUsersRejectsShortQuery(t *testing.T) {
 			t.Errorf("q=%q: expected 200, got %d", q, w.Code)
 		}
 
-		var resp map[string]interface{}
+		var resp map[string]any
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
 
-		users, _ := resp["users"].([]interface{})
+		users, _ := resp["users"].([]any)
 		if len(users) != 0 {
 			t.Errorf("q=%q: expected empty users, got %d", q, len(users))
 		}
@@ -1018,12 +1018,12 @@ func TestSearchUsersRejectsShortQuery(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.AuthMiddleware(h.SearchUsers)(w, req)
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
-	users, _ := resp["users"].([]interface{})
+	users, _ := resp["users"].([]any)
 	if len(users) != 1 {
 		t.Errorf("q=al: expected 1 result, got %d", len(users))
 	}
@@ -1069,12 +1069,12 @@ func TestFederatedSearchUsersRejectsShortQuery(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	var resp map[string]interface{}
+	var resp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
 
-	users, _ := resp["users"].([]interface{})
+	users, _ := resp["users"].([]any)
 	if len(users) != 0 {
 		t.Errorf("expected empty users for short query, got %d", len(users))
 	}

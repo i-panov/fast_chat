@@ -24,14 +24,14 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil { //nolint:gosec // limited by MaxBytesReader above
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{mapKeyError: errKeyFileTooLarge})
+		writeError(w, http.StatusRequestEntityTooLarge, errKeyFileTooLarge)
 
 		return
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "missing file"})
+		writeError(w, http.StatusBadRequest, "missing file")
 
 		return
 	}
@@ -47,7 +47,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	fullPath := filepath.Join(h.cfg.UploadDir, relativePath)
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), uploadDirPermissions); err != nil { //nolint:gosec // paths are controlled
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to process file"})
+		writeError(w, http.StatusInternalServerError, "failed to process file")
 
 		return
 	}
@@ -56,7 +56,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	// on the same filesystem (avoids EXDEV across /tmp and UploadDir).
 	tempFile, err := os.CreateTemp(filepath.Dir(fullPath), ".upload-*"+filepath.Ext(storageName)+".tmp") //nolint:gosec
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to process file"})
+		writeError(w, http.StatusInternalServerError, "failed to process file")
 
 		return
 	}
@@ -73,7 +73,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	peekN, peekErr := io.ReadFull(file, peek)
 	if peekErr != nil && peekErr != io.ErrUnexpectedEOF && peekErr != io.EOF {
 		tempFile.Close() //nolint:errcheck,gosec
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to read file"})
+		writeError(w, http.StatusInternalServerError, "failed to read file")
 
 		return
 	}
@@ -85,7 +85,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := peekAndHash.Write(peek[:peekN]); err != nil {
 		tempFile.Close() //nolint:errcheck,gosec
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to write file"})
+		writeError(w, http.StatusInternalServerError, "failed to write file")
 
 		return
 	}
@@ -93,7 +93,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	size, err := io.Copy(peekAndHash, file)
 	if err != nil {
 		tempFile.Close() //nolint:errcheck,gosec
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to read file"})
+		writeError(w, http.StatusInternalServerError, "failed to read file")
 
 		return
 	}
@@ -102,13 +102,13 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	if err := tempFile.Sync(); err != nil {
 		tempFile.Close() //nolint:errcheck,gosec
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to persist file"})
+		writeError(w, http.StatusInternalServerError, "failed to persist file")
 
 		return
 	}
 
 	if err := tempFile.Close(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to finalize file"})
+		writeError(w, http.StatusInternalServerError, "failed to finalize file")
 
 		return
 	}
@@ -117,7 +117,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	existing, ok := h.store.FindFileByHash(hash)
 	if ok {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"file": existing.ToFileInfo()})
+		writeJSON(w, http.StatusOK, map[string]any{"file": existing.ToFileInfo()})
 
 		return
 	}
@@ -126,19 +126,19 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	// step, so readers either see the previous version or the new one —
 	// never a partially written file.
 	if err := os.Rename(tempPath, fullPath); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to save file"})
+		writeError(w, http.StatusInternalServerError, "failed to save file")
 
 		return
 	}
 
 	saved, err := h.store.SaveFile(hash, mimeType, size, header.Filename, relativePath)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to save file metadata"})
+		writeError(w, http.StatusInternalServerError, "failed to save file metadata")
 
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"file": saved.ToFileInfo()})
+	writeJSON(w, http.StatusCreated, map[string]any{"file": saved.ToFileInfo()})
 }
 
 func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
@@ -147,7 +147,7 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 
 	fileRecord, err := h.store.GetFile(fileID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "file not found"})
+		writeError(w, http.StatusNotFound, "file not found")
 
 		return
 	}
@@ -155,7 +155,7 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	hasAccess := h.userCanAccessFile(user.ID, fileID)
 
 	if !hasAccess {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		writeError(w, http.StatusForbidden, errKeyNotMember)
 
 		return
 	}

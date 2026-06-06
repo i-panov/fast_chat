@@ -21,7 +21,7 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if utf8.RuneCountInString(strings.TrimSpace(query)) < nickMinSearchRunes {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"users": []model.PublicUser{}})
+		writeJSON(w, http.StatusOK, map[string]any{"users": []model.PublicUser{}})
 
 		return
 	}
@@ -31,12 +31,12 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 		users = []model.PublicUser{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
+	writeJSON(w, http.StatusOK, map[string]any{"users": users})
 }
 
 func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remoteNick, remoteDomain string) {
 	if remoteNick == "" || remoteDomain == "" || utf8.RuneCountInString(remoteNick) < nickMinSearchRunes {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "invalid search query"})
+		writeError(w, http.StatusBadRequest, "invalid search query")
 
 		return
 	}
@@ -47,7 +47,7 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 			users = []model.PublicUser{}
 		}
 
-		writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
+		writeJSON(w, http.StatusOK, map[string]any{"users": users})
 
 		return
 	}
@@ -56,7 +56,7 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 
 	data, err := h.doFederatedRequest(r.Context(), http.MethodGet, remoteURL, nil)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusBadGateway, err.Error())
 
 		return
 	}
@@ -66,7 +66,7 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 	}
 
 	if err := json.Unmarshal(data, &result); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to parse remote response"})
+		writeError(w, http.StatusInternalServerError, "failed to parse remote response")
 
 		return
 	}
@@ -84,5 +84,5 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 		out[idx] = model.PublicUser{ID: result.Users[idx].ID, Nick: nick, Online: result.Users[idx].Online}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"users": out})
+	writeJSON(w, http.StatusOK, map[string]any{"users": out})
 }

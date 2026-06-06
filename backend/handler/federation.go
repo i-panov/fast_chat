@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -31,7 +30,7 @@ func remoteServerFromID(id string) string {
 	return ""
 }
 
-func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string, body interface{}) ([]byte, error) {
+func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string, body any) ([]byte, error) {
 	var bodyBytes []byte
 
 	if body != nil {
@@ -94,7 +93,7 @@ func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string,
 func authorizeFederatedSource(w http.ResponseWriter, chat *model.Chat, r *http.Request) bool {
 	remoteServer := r.Header.Get("X-Federation-Server")
 	if remoteServer == "" || chat.RemoteServer != remoteServer {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		writeError(w, http.StatusForbidden, errKeyNotMember)
 
 		return false
 	}
@@ -142,7 +141,7 @@ func (h *Handler) FederatedSearchUsers(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 
 	if utf8.RuneCountInString(strings.TrimSpace(query)) < nickMinSearchRunes {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"users": []model.PublicUser{}})
+		writeJSON(w, http.StatusOK, map[string]any{"users": []model.PublicUser{}})
 
 		return
 	}
@@ -153,7 +152,7 @@ func (h *Handler) FederatedSearchUsers(w http.ResponseWriter, r *http.Request) {
 		users = []model.PublicUser{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
+	writeJSON(w, http.StatusOK, map[string]any{"users": users})
 }
 
 // FederatedCreateChat creates a chat on behalf of a remote server.
@@ -167,26 +166,26 @@ func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
 
 	if len(req.Members) != 2 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "federated chat must have exactly 2 members"})
+		writeError(w, http.StatusBadRequest, "federated chat must have exactly 2 members")
 
 		return
 	}
 
 	headerServer := r.Header.Get("X-Federation-Server")
 	if headerServer == "" || req.RemoteServer != headerServer {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "remote server mismatch"})
+		writeError(w, http.StatusForbidden, "remote server mismatch")
 
 		return
 	}
 
 	if !federatedChatMembersValid(req.Members, headerServer, h.fedManager.ServerDomain()) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "members must belong to federation endpoints"})
+		writeError(w, http.StatusBadRequest, "members must belong to federation endpoints")
 
 		return
 	}
@@ -211,7 +210,7 @@ func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
 		h.hub.Send(memberID, SSEEvent{Event: "chat_created", Data: enriched})
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"chat": enriched})
+	writeJSON(w, http.StatusCreated, map[string]any{"chat": enriched})
 }
 
 // FederatedSendMessage handles incoming messages from remote servers.
@@ -222,7 +221,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
@@ -241,19 +240,19 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
 
 	if !userIDBelongsToServer(req.FromID, chat.RemoteServer) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "fromId does not belong to remote server"})
+		writeError(w, http.StatusForbidden, "fromId does not belong to remote server")
 
 		return
 	}
 
 	if req.Location != nil && !validCoords(req.Location.Lat, req.Location.Lng) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "invalid coordinates"})
+		writeError(w, http.StatusBadRequest, "invalid coordinates")
 
 		return
 	}
@@ -281,7 +280,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.AddRawMessage(&msg); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 
 		return
 	}
@@ -290,7 +289,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 		h.hub.Send(memberID, SSEEvent{Event: "new_message", Data: &msg})
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
+	writeJSON(w, http.StatusCreated, map[string]any{"message": msg})
 }
 
 // FederatedEditMessage handles incoming message edits from remote servers.
@@ -302,7 +301,7 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
@@ -313,13 +312,13 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 
 	stored, err := h.store.GetMessage(chatID, messageID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+		writeError(w, http.StatusNotFound, "message not found")
 
 		return
 	}
 
 	if !userIDBelongsToServer(stored.FromID, chat.RemoteServer) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "message author does not belong to remote server"})
+		writeError(w, http.StatusForbidden, "message author does not belong to remote server")
 
 		return
 	}
@@ -331,14 +330,14 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
 
 	location, clearLocation, locErr := parseLocationPatch(req.Location)
 	if locErr != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: locErr.Error()})
+		writeError(w, http.StatusBadRequest, locErr.Error())
 
 		return
 	}
@@ -346,14 +345,14 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 
 	if err := h.store.EditRawMessage(chatID, messageID, req.Text, now, location, clearLocation); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusNotFound, err.Error())
 
 		return
 	}
 
 	if req.FileIDs != nil {
 		if err := h.store.SetMessageFiles(messageID, req.FileIDs); err != nil {
-			log.Printf("federated edit: failed to set message files: %v", err)
+			logger.Info("federated edit: failed to set message files", "err", err)
 		}
 	}
 
@@ -385,7 +384,7 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": updated})
+	writeJSON(w, http.StatusOK, map[string]any{"message": updated})
 }
 
 // FederatedDeleteMessage handles incoming message deletions from remote servers.
@@ -395,7 +394,7 @@ func (h *Handler) FederatedDeleteMessage(w http.ResponseWriter, r *http.Request)
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
@@ -406,19 +405,19 @@ func (h *Handler) FederatedDeleteMessage(w http.ResponseWriter, r *http.Request)
 
 	stored, err := h.store.GetMessage(chatID, messageID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+		writeError(w, http.StatusNotFound, "message not found")
 
 		return
 	}
 
 	if !userIDBelongsToServer(stored.FromID, chat.RemoteServer) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "message author does not belong to remote server"})
+		writeError(w, http.StatusForbidden, "message author does not belong to remote server")
 
 		return
 	}
 
 	if err := h.store.DeleteRawMessage(chatID, messageID); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusNotFound, err.Error())
 
 		return
 	}
@@ -435,7 +434,7 @@ func (h *Handler) FederatedHandleTyping(w http.ResponseWriter, r *http.Request) 
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
@@ -451,7 +450,7 @@ func (h *Handler) FederatedHandleTyping(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
@@ -490,7 +489,7 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
@@ -501,13 +500,13 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 
 	stored, err := h.store.GetMessage(threadID, messageID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+		writeError(w, http.StatusNotFound, "message not found")
 
 		return
 	}
 
 	if !userIDBelongsToServer(stored.FromID, chat.RemoteServer) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "message author does not belong to remote server"})
+		writeError(w, http.StatusForbidden, "message author does not belong to remote server")
 
 		return
 	}
@@ -519,14 +518,14 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
 
 	location, clearLocation, locErr := parseLocationPatch(req.Location)
 	if locErr != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: locErr.Error()})
+		writeError(w, http.StatusBadRequest, locErr.Error())
 
 		return
 	}
@@ -534,14 +533,14 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 	now := time.Now()
 
 	if err := h.store.EditRawMessage(threadID, messageID, req.Text, now, location, clearLocation); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusNotFound, err.Error())
 
 		return
 	}
 
 	if req.FileIDs != nil {
 		if err := h.store.SetMessageFiles(messageID, req.FileIDs); err != nil {
-			log.Printf("federated edit thread message: failed to set files: %v", err)
+			logger.Info("federated edit thread message: failed to set files", "err", err)
 		}
 	}
 
@@ -568,7 +567,7 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 	}
 
 	if chat != nil {
-		eventData := map[string]interface{}{
+		eventData := map[string]any{
 			"threadId": threadID,
 			"message":  updated,
 		}
@@ -578,5 +577,5 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": updated})
+	writeJSON(w, http.StatusOK, map[string]any{"message": updated})
 }

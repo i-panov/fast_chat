@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -137,6 +138,10 @@ func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
+
 	cfg := config.Load()
 
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o750); err != nil {
@@ -231,15 +236,15 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Server starting on %s", addr) //nolint:gosec // addr is ":<port>" from env or default
+		slog.Info("server starting", "addr", addr)
 
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("Server error: %v", err)
+			slog.Error("server error", "err", err)
 		}
 	}()
 
 	<-quit
-	log.Println("Shutting down server...")
+	slog.Info("shutting down server")
 
 	close(rl.closeCh)
 	close(registerRL.closeCh)
@@ -254,8 +259,8 @@ func main() {
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("Server forced to shutdown: %v", err)
+		slog.Error("server forced to shutdown", "err", err)
 	}
 
-	log.Println("Server stopped")
+	slog.Info("server stopped")
 }

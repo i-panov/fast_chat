@@ -131,13 +131,13 @@ func TestServeFileForcesAttachmentForHTML(t *testing.T) {
 		t.Fatalf("chat create: %d %s", chatW.Code, chatW.Body.String())
 	}
 
-	var resp map[string]interface{}
+	var resp map[string]any
 
 	if err := json.Unmarshal(chatW.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
 
-	chatID := resp["chat"].(map[string]interface{})["id"].(string)
+	chatID := resp["chat"].(map[string]any)["id"].(string)
 
 	htmlFileID := uploadAndGetFileID(t, h, alice.token, "doc.html", htmlDoc)
 
@@ -186,13 +186,13 @@ func TestServeFileAllowsInlineForImage(t *testing.T) {
 	chatW := httptest.NewRecorder()
 	h.AuthMiddleware(h.CreateChat)(chatW, chatReq)
 
-	var resp map[string]interface{}
+	var resp map[string]any
 
 	if err := json.Unmarshal(chatW.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
 
-	chatID := resp["chat"].(map[string]interface{})["id"].(string)
+	chatID := resp["chat"].(map[string]any)["id"].(string)
 
 	pngFileID := uploadAndGetFileID(t, h, alice.token, "image.png", tinyPNG)
 

@@ -46,7 +46,7 @@ func (s *Store) EditMessage(chatID, messageID, userID, newText string, location 
 	msg.Text = newText
 	msg.EditedAt = &now
 
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		fieldText:     newText,
 		fieldEditedAt: &now,
 	}
@@ -182,7 +182,7 @@ func (s *Store) DeleteMessage(chatID, messageID, userID string) error {
 }
 
 func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Time, location *model.Location, clearLocation bool) error {
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		fieldText:     text,
 		fieldEditedAt: &editedAt,
 	}

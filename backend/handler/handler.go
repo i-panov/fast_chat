@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +16,10 @@ import (
 	"fast_chat/model"
 	"fast_chat/store"
 )
+
+// logger is the structured logger used by the handler package.
+// It defaults to slog.Default() and may be overridden in tests.
+var logger = slog.Default()
 
 const (
 	mapKeyError        = "error"
@@ -167,11 +171,21 @@ func generateID() string {
 	return hex.EncodeToString(buf)
 }
 
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("writeJSON: failed to encode response: %v", err)
+		logger.Error("writeJSON: failed to encode response", "err", err)
 	}
+}
+
+// errResp is the standard error body returned by the API.
+type errResp struct {
+	Error string `json:"error"`
+}
+
+// writeError sends a JSON error response with the given status and message.
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, errResp{Error: message})
 }

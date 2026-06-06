@@ -354,15 +354,13 @@ backend\:test:
 
 ---
 
-## Этап 7 — P3 косметика и улучшения (OPTIONAL)
+## Этап 7 — P3 косметика и улучшения (OPTIONAL) ✅
 
-- `interface{}` → `any`.
-- `errResp` struct вместо `map[string]string`.
-- Structured logging через `log/slog` (есть в std с 1.21).
-- OpenTelemetry (опционально).
-- Метрики (prometheus middleware).
-- API-документация (Swagger или просто docs/api.md).
-- Контейнеризация (Dockerfile) — если нужно.
+**Результат:**
+- `interface{}` → `any` (везде, ~60 мест).
+- `errResp` struct + `writeError(w, status, message)` helper. Все `map[string]string{mapKeyError: X}` заменены на `writeError(w, status, X)`.
+- Structured logging через `log/slog`: `handler/handler.go` имеет package-level `logger = slog.Default()`. Все `log.Printf` в handler/* и в `main.go` (start/stop/error) заменены на `logger.Info/Error` с structured args.
+- Не сделано: OpenTelemetry, метрики, API-документация, Dockerfile (отложено / не нужно).
 
 ---
 

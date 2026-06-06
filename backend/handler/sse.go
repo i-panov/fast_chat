@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,7 +16,7 @@ const (
 
 type SSEEvent struct {
 	Event string
-	Data  interface{}
+	Data  any
 }
 
 type SSEHub struct {
@@ -108,7 +107,7 @@ func (h *SSEHub) Send(userID string, event SSEEvent) {
 		select {
 		case ch <- event:
 		default:
-			log.Printf("SSE channel full for user %s, dropping event", userID) //nolint:gosec // userID is a system-generated UUID
+			logger.Info("SSE channel full, dropping event", "userID", userID)
 		}
 	}
 }

@@ -393,7 +393,7 @@ func savePublicKey(path string, key *rsa.PublicKey) error {
 	return os.WriteFile(path, pemData, 0o644) //nolint:gosec // public key is public
 }
 
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 

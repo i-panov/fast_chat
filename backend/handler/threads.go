@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -26,39 +25,39 @@ func (h *Handler) CreateThread(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if !isMember(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		writeError(w, http.StatusForbidden, errKeyNotMember)
 
 		return
 	}
 
 	msg, err := h.store.GetMessage(chatID, messageID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+		writeError(w, http.StatusNotFound, "message not found")
 
 		return
 	}
 
 	if h.isThreadChat(chatID) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "cannot create thread on a thread message"})
+		writeError(w, http.StatusBadRequest, "cannot create thread on a thread message")
 
 		return
 	}
 
 	if _, exists := h.store.GetThreadByParentMessage(chatID, messageID); exists {
-		writeJSON(w, http.StatusConflict, map[string]string{mapKeyError: "thread already exists"})
+		writeError(w, http.StatusConflict, "thread already exists")
 
 		return
 	}
 
 	thread, err := h.store.CreateThread(chatID, messageID, msg.Text, msg.FromNick)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 
 		return
 	}
@@ -67,7 +66,7 @@ func (h *Handler) CreateThread(w http.ResponseWriter, r *http.Request) {
 		h.hub.Send(memberID, SSEEvent{Event: "thread_created", Data: thread})
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"thread": thread})
+	writeJSON(w, http.StatusCreated, map[string]any{"thread": thread})
 }
 
 func (h *Handler) GetThreadMessages(w http.ResponseWriter, r *http.Request) {
@@ -76,20 +75,20 @@ func (h *Handler) GetThreadMessages(w http.ResponseWriter, r *http.Request) {
 
 	thread, ok := h.store.GetThread(threadID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "thread not found"})
+		writeError(w, http.StatusNotFound, "thread not found")
 
 		return
 	}
 
 	chat, ok := h.store.GetChat(thread.ChatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if !isMember(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		writeError(w, http.StatusForbidden, errKeyNotMember)
 
 		return
 	}
@@ -114,7 +113,7 @@ func (h *Handler) GetThreadMessages(w http.ResponseWriter, r *http.Request) {
 		messages[i].Files = files
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"messages":   messages,
 		"nextCursor": nextCursor,
 	})
@@ -128,20 +127,20 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 
 	thread, ok := h.store.GetThread(threadID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "thread not found"})
+		writeError(w, http.StatusNotFound, "thread not found")
 
 		return
 	}
 
 	chat, ok := h.store.GetChat(thread.ChatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if !isMember(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		writeError(w, http.StatusForbidden, errKeyNotMember)
 
 		return
 	}
@@ -155,41 +154,41 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
 
 	req.Text = strings.TrimSpace(req.Text)
 	if req.Text == "" && len(req.FileIDs) == 0 && req.Location == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
+		writeError(w, http.StatusBadRequest, errKeyEmptyMessage)
 
 		return
 	}
 
 	if req.Location != nil && !validCoords(req.Location.Lat, req.Location.Lng) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "invalid coordinates"})
+		writeError(w, http.StatusBadRequest, "invalid coordinates")
 
 		return
 	}
 
 	msg, err := h.store.AddThreadMessage(threadID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID, req.Location)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 
 		return
 	}
 
 	if len(req.FileIDs) > 0 {
 		if err := h.store.AddMessageFiles(msg.ID, req.FileIDs); err != nil {
-			log.Printf("failed to link files to thread message: %v", err)
+			logger.Info("failed to link files to thread message", "err", err)
 		}
 
 		files, _ := h.store.GetMessageFiles(msg.ID) //nolint:errcheck
 		msg.Files = files
 	}
 
-	eventData := map[string]interface{}{
+	eventData := map[string]any{
 		"threadId": threadID,
 		"message":  msg,
 	}
@@ -198,7 +197,7 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 		h.hub.Send(memberID, SSEEvent{Event: "thread_message_new", Data: eventData})
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": msg})
+	writeJSON(w, http.StatusCreated, map[string]any{"message": msg})
 }
 
 func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) { //nolint:gocognit,gocyclo
@@ -210,26 +209,26 @@ func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) { //
 
 	thread, ok := h.store.GetThread(threadID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "thread not found"})
+		writeError(w, http.StatusNotFound, "thread not found")
 
 		return
 	}
 
 	chat, ok := h.store.GetChat(thread.ChatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if !isMember(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		writeError(w, http.StatusForbidden, errKeyNotMember)
 
 		return
 	}
 
 	if h.cfg.MessageEditTTL < 0 {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "editing not allowed"})
+		writeError(w, http.StatusForbidden, "editing not allowed")
 
 		return
 	}
@@ -237,13 +236,13 @@ func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) { //
 	if h.cfg.MessageEditTTL > 0 {
 		existing, err := h.store.GetMessage(threadID, messageID)
 		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+			writeError(w, http.StatusNotFound, "message not found")
 
 			return
 		}
 
 		if time.Since(existing.CreatedAt) > time.Duration(h.cfg.MessageEditTTL)*time.Second {
-			writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "edit window expired"})
+			writeError(w, http.StatusForbidden, "edit window expired")
 
 			return
 		}
@@ -256,14 +255,14 @@ func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) { //
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
 
 	location, clearLocation, locErr := parseLocationPatch(req.Location)
 	if locErr != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: locErr.Error()})
+		writeError(w, http.StatusBadRequest, locErr.Error())
 
 		return
 	}
@@ -273,21 +272,21 @@ func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) { //
 	hasLocation := location != nil
 
 	if req.Text == "" && len(req.FileIDs) == 0 && !hasLocation && !clearLocation {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyEmptyMessage})
+		writeError(w, http.StatusBadRequest, errKeyEmptyMessage)
 
 		return
 	}
 
 	updated, err := h.store.EditThreadMessage(threadID, messageID, user.ID, req.Text, location, clearLocation)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 
 		return
 	}
 
 	if req.FileIDs != nil {
 		if err := h.store.SetMessageFiles(messageID, req.FileIDs); err != nil {
-			log.Printf("failed to set thread message files: %v", err)
+			logger.Info("failed to set thread message files", "err", err)
 		}
 
 		files, _ := h.store.GetMessageFiles(messageID) //nolint:errcheck
@@ -297,7 +296,7 @@ func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) { //
 	if chat.RemoteServer != "" {
 		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+thread.ChatID+"/threads/"+threadID+"/messages/"+messageID)
 
-		fedBody := map[string]interface{}{
+		fedBody := map[string]any{
 			"text": req.Text,
 		}
 
@@ -311,11 +310,11 @@ func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) { //
 
 		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPatch, fedURL, fedBody)
 		if fedErr != nil {
-			log.Printf("federated edit thread message failed: %v", fedErr)
+			logger.Info("federated edit thread message failed", "err", fedErr)
 		}
 	}
 
-	eventData := map[string]interface{}{
+	eventData := map[string]any{
 		"threadId": threadID,
 		"message":  &updated,
 	}
@@ -324,7 +323,7 @@ func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) { //
 		h.hub.Send(memberID, SSEEvent{Event: "thread_message_updated", Data: eventData})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": &updated})
+	writeJSON(w, http.StatusOK, map[string]any{"message": &updated})
 }
 
 func (h *Handler) GetThreads(w http.ResponseWriter, r *http.Request) {
@@ -333,18 +332,18 @@ func (h *Handler) GetThreads(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if !isMember(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		writeError(w, http.StatusForbidden, errKeyNotMember)
 
 		return
 	}
 
 	threads := h.store.GetThreadsForChat(chatID)
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"threads": threads})
+	writeJSON(w, http.StatusOK, map[string]any{"threads": threads})
 }

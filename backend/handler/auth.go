@@ -37,7 +37,7 @@ func (h *Handler) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		user, ok := h.store.GetUserByToken(token)
 		if !ok {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{mapKeyError: errKeyUnauthorized})
+			writeError(w, http.StatusUnauthorized, errKeyUnauthorized)
 
 			return
 		}
@@ -54,28 +54,28 @@ func (h *Handler) FederatedAuthMiddleware(next http.HandlerFunc) http.HandlerFun
 		timestampStr := r.Header.Get("X-Federation-Timestamp")
 
 		if serverDomain == "" || signature == "" || timestampStr == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{mapKeyError: "missing federation headers"})
+			writeError(w, http.StatusUnauthorized, "missing federation headers")
 
 			return
 		}
 
 		timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
 		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{mapKeyError: "invalid timestamp"})
+			writeError(w, http.StatusUnauthorized, "invalid timestamp")
 
 			return
 		}
 
 		now := time.Now().Unix()
 		if now-timestamp > federationTimestampToleranceSec || timestamp-now > federationTimestampToleranceSec {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{mapKeyError: "timestamp out of bounds"})
+			writeError(w, http.StatusUnauthorized, "timestamp out of bounds")
 
 			return
 		}
 
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to read body"})
+			writeError(w, http.StatusInternalServerError, "failed to read body")
 
 			return
 		}
@@ -83,7 +83,7 @@ func (h *Handler) FederatedAuthMiddleware(next http.HandlerFunc) http.HandlerFun
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 		if !h.fedManager.Verify(r.Context(), serverDomain, signature, r.Method, r.URL.RequestURI(), bodyBytes, timestamp) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{mapKeyError: "invalid signature"})
+			writeError(w, http.StatusUnauthorized, "invalid signature")
 
 			return
 		}

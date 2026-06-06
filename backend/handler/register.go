@@ -20,20 +20,20 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
 
 	req.Nick = strings.TrimSpace(req.Nick)
 	if req.Nick == "" || utf8.RuneCountInString(req.Nick) > nickMaxRunes {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "nick must be 1-20 characters"})
+		writeError(w, http.StatusBadRequest, "nick must be 1-20 characters")
 
 		return
 	}
 
 	if strings.Contains(req.Nick, ":") {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "nick must not contain ':'"})
+		writeError(w, http.StatusBadRequest, "nick must not contain ':'")
 
 		return
 	}
@@ -42,12 +42,12 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.store.CreateUser(fullID, req.Nick)
 	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusConflict, err.Error())
 
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{
+	writeJSON(w, http.StatusCreated, map[string]any{
 		"user":  user.Public(),
 		"token": user.Token,
 	})

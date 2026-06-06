@@ -153,7 +153,7 @@ func (s *Store) EditThreadMessage(threadID, messageID, userID, newText string, l
 	msg.Text = newText
 	msg.EditedAt = &now
 
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		fieldText:     newText,
 		fieldEditedAt: &now,
 	}

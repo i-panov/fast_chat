@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 
@@ -40,7 +39,7 @@ func (h *Handler) GetChats(w http.ResponseWriter, r *http.Request) {
 		resp = append(resp, h.enrichChatFromNicks(c, nicks))
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"chats": resp})
+	writeJSON(w, http.StatusOK, map[string]any{"chats": resp})
 }
 
 func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +55,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
@@ -68,13 +67,13 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.WithUserID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "withUserId required for private chat"})
+		writeError(w, http.StatusBadRequest, "withUserId required for private chat")
 
 		return
 	}
 
 	if req.WithUserID == user.ID {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "cannot chat with yourself"})
+		writeError(w, http.StatusBadRequest, "cannot chat with yourself")
 
 		return
 	}
@@ -86,7 +85,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 
 	if remoteServer == "" {
 		if _, ok := h.store.GetUserByID(req.WithUserID); !ok {
-			writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "user not found"})
+			writeError(w, http.StatusNotFound, "user not found")
 
 			return
 		}
@@ -94,7 +93,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 
 	chat, err := h.store.CreateChat(user.ID, req.WithUserID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 
 		return
 	}
@@ -107,25 +106,25 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 
 		fedURL := h.federatedURL(remoteServer, "/api/federated/chats")
 
-		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, map[string]interface{}{
+		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, map[string]any{
 			"chatId":       chat.ID,
 			"members":      chat.Members,
 			"remoteServer": h.cfg.ServerDomain,
 		})
 		if fedErr != nil {
-			log.Printf("federated create chat failed: %v", fedErr)
+			logger.Info("federated create chat failed", "err", fedErr)
 		}
 	} else {
 		h.hub.Send(req.WithUserID, SSEEvent{Event: "chat_created", Data: enriched})
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"chat": enriched})
+	writeJSON(w, http.StatusCreated, map[string]any{"chat": enriched})
 }
 
 func (h *Handler) createGroupChat(w http.ResponseWriter, _ *http.Request, user *model.User, name string, memberIDs []string) {
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > groupNameMaxLen {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "group name must be 1-60 characters"})
+		writeError(w, http.StatusBadRequest, "group name must be 1-60 characters")
 
 		return
 	}
@@ -152,13 +151,13 @@ func (h *Handler) createGroupChat(w http.ResponseWriter, _ *http.Request, user *
 	for _, memberID := range cleaned {
 		remoteServer := remoteServerFromID(memberID)
 		if remoteServer != "" && remoteServer != h.cfg.ServerDomain {
-			writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "group chat members must be on the same server"})
+			writeError(w, http.StatusBadRequest, "group chat members must be on the same server")
 
 			return
 		}
 
 		if _, ok := h.store.GetUserByID(memberID); !ok {
-			writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "user not found: " + memberID})
+			writeError(w, http.StatusNotFound, "user not found: "+memberID)
 
 			return
 		}
@@ -166,7 +165,7 @@ func (h *Handler) createGroupChat(w http.ResponseWriter, _ *http.Request, user *
 
 	chat, err := h.store.CreateGroupChat(name, user.ID, cleaned)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusBadRequest, err.Error())
 
 		return
 	}
@@ -177,7 +176,7 @@ func (h *Handler) createGroupChat(w http.ResponseWriter, _ *http.Request, user *
 		h.hub.Send(memberID, SSEEvent{Event: "chat_created", Data: enriched})
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"chat": enriched})
+	writeJSON(w, http.StatusCreated, map[string]any{"chat": enriched})
 }
 
 func (h *Handler) GetChat(w http.ResponseWriter, r *http.Request) {
@@ -186,18 +185,18 @@ func (h *Handler) GetChat(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if !isMember(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+		writeError(w, http.StatusForbidden, errKeyNotMember)
 
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"chat": h.enrichChat(chat)})
+	writeJSON(w, http.StatusOK, map[string]any{"chat": h.enrichChat(chat)})
 }
 
 func (h *Handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
@@ -208,19 +207,19 @@ func (h *Handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if chat.Type != "group" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "only group chats can be updated"})
+		writeError(w, http.StatusBadRequest, "only group chats can be updated")
 
 		return
 	}
 
 	if !isOwner(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "only owner can update"})
+		writeError(w, http.StatusForbidden, "only owner can update")
 
 		return
 	}
@@ -230,7 +229,7 @@ func (h *Handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
@@ -240,14 +239,14 @@ func (h *Handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" || len(name) > groupNameMaxLen {
-			writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "group name must be 1-60 characters"})
+			writeError(w, http.StatusBadRequest, "group name must be 1-60 characters")
 
 			return
 		}
 
 		updatedChat, err := h.store.UpdateChatName(chatID, name)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+			writeError(w, http.StatusInternalServerError, err.Error())
 
 			return
 		}
@@ -260,7 +259,7 @@ func (h *Handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
 		h.hub.Send(memberID, SSEEvent{Event: "chat_updated", Data: enriched})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"chat": enriched})
+	writeJSON(w, http.StatusOK, map[string]any{"chat": enriched})
 }
 
 func (h *Handler) DeleteChat(w http.ResponseWriter, r *http.Request) {
@@ -269,25 +268,25 @@ func (h *Handler) DeleteChat(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if chat.Type != "group" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "only group chats can be deleted"})
+		writeError(w, http.StatusBadRequest, "only group chats can be deleted")
 
 		return
 	}
 
 	if !isOwner(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "only owner can delete"})
+		writeError(w, http.StatusForbidden, "only owner can delete")
 
 		return
 	}
 
 	if err := h.store.DeleteChat(chatID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 
 		return
 	}
@@ -307,19 +306,19 @@ func (h *Handler) AddChatMember(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if chat.Type != "group" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "only group chats can add members"})
+		writeError(w, http.StatusBadRequest, "only group chats can add members")
 
 		return
 	}
 
 	if !isOwner(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "only owner can add members"})
+		writeError(w, http.StatusForbidden, "only owner can add members")
 
 		return
 	}
@@ -329,32 +328,32 @@ func (h *Handler) AddChatMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
 
 	if req.UserID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "userId required"})
+		writeError(w, http.StatusBadRequest, "userId required")
 
 		return
 	}
 
 	remoteServer := remoteServerFromID(req.UserID)
 	if remoteServer != "" && remoteServer != h.cfg.ServerDomain {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "members must be on the same server"})
+		writeError(w, http.StatusBadRequest, "members must be on the same server")
 
 		return
 	}
 
 	if _, ok := h.store.GetUserByID(req.UserID); !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "user not found"})
+		writeError(w, http.StatusNotFound, "user not found")
 
 		return
 	}
 
 	if err := h.store.AddChatMember(chatID, req.UserID); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusBadRequest, err.Error())
 
 		return
 	}
@@ -363,14 +362,14 @@ func (h *Handler) AddChatMember(w http.ResponseWriter, r *http.Request) {
 
 	enriched := h.enrichChat(updated)
 	for _, memberID := range updated.Members {
-		h.hub.Send(memberID, SSEEvent{Event: "chat_member_added", Data: map[string]interface{}{
+		h.hub.Send(memberID, SSEEvent{Event: "chat_member_added", Data: map[string]any{
 			"chatId": chatID,
 			"userId": req.UserID,
 			"chat":   enriched,
 		}})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"chat": enriched})
+	writeJSON(w, http.StatusOK, map[string]any{"chat": enriched})
 }
 
 func (h *Handler) RemoveChatMember(w http.ResponseWriter, r *http.Request) {
@@ -380,31 +379,31 @@ func (h *Handler) RemoveChatMember(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if chat.Type != "group" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "only group chats can remove members"})
+		writeError(w, http.StatusBadRequest, "only group chats can remove members")
 
 		return
 	}
 
 	if targetUserID != user.ID && !isOwner(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "only owner can remove other members"})
+		writeError(w, http.StatusForbidden, "only owner can remove other members")
 
 		return
 	}
 
 	if isOwner(chat, targetUserID) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "owner cannot leave the group; delete the group instead"})
+		writeError(w, http.StatusBadRequest, "owner cannot leave the group; delete the group instead")
 
 		return
 	}
 
 	if err := h.store.RemoveChatMember(chatID, targetUserID); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusBadRequest, err.Error())
 
 		return
 	}
@@ -413,7 +412,7 @@ func (h *Handler) RemoveChatMember(w http.ResponseWriter, r *http.Request) {
 
 	enriched := h.enrichChat(updated)
 	for _, memberID := range updated.Members {
-		h.hub.Send(memberID, SSEEvent{Event: "chat_member_removed", Data: map[string]interface{}{
+		h.hub.Send(memberID, SSEEvent{Event: "chat_member_removed", Data: map[string]any{
 			"chatId":  chatID,
 			"userId":  targetUserID,
 			"chat":    enriched,
@@ -423,7 +422,7 @@ func (h *Handler) RemoveChatMember(w http.ResponseWriter, r *http.Request) {
 
 	h.hub.Send(targetUserID, SSEEvent{Event: "chat_deleted", Data: map[string]string{"chatId": chatID}})
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"chat": enriched})
+	writeJSON(w, http.StatusOK, map[string]any{"chat": enriched})
 }
 
 func (h *Handler) UpdateChatAvatar(w http.ResponseWriter, r *http.Request) {
@@ -434,19 +433,19 @@ func (h *Handler) UpdateChatAvatar(w http.ResponseWriter, r *http.Request) {
 
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 
 		return
 	}
 
 	if chat.Type != "group" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "only group chats have an avatar"})
+		writeError(w, http.StatusBadRequest, "only group chats have an avatar")
 
 		return
 	}
 
 	if !isOwner(chat, user.ID) {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "only owner can set avatar"})
+		writeError(w, http.StatusForbidden, "only owner can set avatar")
 
 		return
 	}
@@ -456,26 +455,26 @@ func (h *Handler) UpdateChatAvatar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 
 		return
 	}
 
 	if req.FileID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "fileId required"})
+		writeError(w, http.StatusBadRequest, "fileId required")
 
 		return
 	}
 
 	if _, err := h.store.GetFile(req.FileID); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "file not found"})
+		writeError(w, http.StatusNotFound, "file not found")
 
 		return
 	}
 
 	updated, err := h.store.UpdateChatAvatar(chatID, req.FileID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: err.Error()})
+		writeError(w, http.StatusInternalServerError, err.Error())
 
 		return
 	}
@@ -485,5 +484,5 @@ func (h *Handler) UpdateChatAvatar(w http.ResponseWriter, r *http.Request) {
 		h.hub.Send(memberID, SSEEvent{Event: "chat_updated", Data: enriched})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"chat": enriched})
+	writeJSON(w, http.StatusOK, map[string]any{"chat": enriched})
 }
