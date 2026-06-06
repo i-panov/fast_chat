@@ -1332,6 +1332,30 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// authorizeFederatedSource verifies that the request is from the server
+// that owns the given chat. It writes a 403 and returns false otherwise.
+func authorizeFederatedSource(w http.ResponseWriter, chat *model.Chat, r *http.Request) bool {
+	remoteServer := r.Header.Get("X-Federation-Server")
+	if remoteServer == "" || chat.RemoteServer != remoteServer {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
+
+		return false
+	}
+
+	return true
+}
+
+// userIDBelongsToServer returns true if userID is a federated ID whose
+// domain suffix matches the given server domain.
+func userIDBelongsToServer(userID, serverDomain string) bool {
+	idx := strings.LastIndex(userID, ":")
+	if idx < 0 || idx == len(userID)-1 {
+		return false
+	}
+
+	return userID[idx+1:] == serverDomain
+}
+
 // FederatedSearchUsers handles search requests from remote servers (no auth).
 func (h *Handler) FederatedSearchUsers(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
@@ -1366,6 +1390,19 @@ func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	headerServer := r.Header.Get("X-Federation-Server")
+	if headerServer == "" || req.RemoteServer != headerServer {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "remote server mismatch"})
+
+		return
+	}
+
+	if !federatedChatMembersValid(req.Members, headerServer, h.fedManager.ServerDomain()) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: "members must belong to federation endpoints"})
+
+		return
+	}
+
 	if _, ok := h.store.GetChat(req.ChatID); ok {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "already exists"})
 
@@ -1389,6 +1426,30 @@ func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"chat": enriched})
 }
 
+// federatedChatMembersValid checks that exactly one member belongs to the
+// remote server and the other to the local server.
+func federatedChatMembersValid(members []string, remoteServer, localServer string) bool {
+	if remoteServer == "" || localServer == "" {
+		return false
+	}
+
+	remoteCount := 0
+	localCount := 0
+
+	for _, m := range members {
+		switch {
+		case userIDBelongsToServer(m, remoteServer):
+			remoteCount++
+		case userIDBelongsToServer(m, localServer):
+			localCount++
+		default:
+			return false
+		}
+	}
+
+	return remoteCount == 1 && localCount == 1
+}
+
 // FederatedSendMessage handles incoming messages from remote servers.
 func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close() //nolint:errcheck
@@ -1399,6 +1460,10 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
 
+		return
+	}
+
+	if !authorizeFederatedSource(w, chat, r) {
 		return
 	}
 
@@ -1413,6 +1478,12 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{mapKeyError: errKeyInvalidBody})
+
+		return
+	}
+
+	if !userIDBelongsToServer(req.FromID, chat.RemoteServer) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "fromId does not belong to remote server"})
 
 		return
 	}
@@ -1471,6 +1542,30 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	chatID := r.PathValue("id")
 	messageID := r.PathValue("messageId")
 
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if !authorizeFederatedSource(w, chat, r) {
+		return
+	}
+
+	stored, err := h.store.GetMessage(chatID, messageID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+
+		return
+	}
+
+	if !userIDBelongsToServer(stored.FromID, chat.RemoteServer) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "message author does not belong to remote server"})
+
+		return
+	}
+
 	var req struct {
 		Text     string          `json:"text"`
 		FileIDs  []string        `json:"fileIDs,omitempty"`
@@ -1526,8 +1621,7 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		updated.Location = stored.Location
 	}
 
-	chat, ok := h.store.GetChat(chatID)
-	if ok {
+	if chat != nil {
 		for _, memberID := range chat.Members {
 			h.hub.Send(memberID, SSEEvent{Event: "message_updated", Data: updated})
 		}
@@ -1544,6 +1638,23 @@ func (h *Handler) FederatedDeleteMessage(w http.ResponseWriter, r *http.Request)
 	chat, ok := h.store.GetChat(chatID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if !authorizeFederatedSource(w, chat, r) {
+		return
+	}
+
+	stored, err := h.store.GetMessage(chatID, messageID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+
+		return
+	}
+
+	if !userIDBelongsToServer(stored.FromID, chat.RemoteServer) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "message author does not belong to remote server"})
 
 		return
 	}
@@ -1571,10 +1682,7 @@ func (h *Handler) FederatedHandleTyping(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	remoteServer := r.Header.Get("X-Federation-Server")
-	if remoteServer == "" || chat.RemoteServer != remoteServer {
-		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: errKeyNotMember})
-
+	if !authorizeFederatedSource(w, chat, r) {
 		return
 	}
 
@@ -2118,6 +2226,30 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 	threadID := r.PathValue("threadId")
 	messageID := r.PathValue("messageId")
 
+	chat, ok := h.store.GetChat(chatID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: errKeyChatNotFound})
+
+		return
+	}
+
+	if !authorizeFederatedSource(w, chat, r) {
+		return
+	}
+
+	stored, err := h.store.GetMessage(threadID, messageID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{mapKeyError: "message not found"})
+
+		return
+	}
+
+	if !userIDBelongsToServer(stored.FromID, chat.RemoteServer) {
+		writeJSON(w, http.StatusForbidden, map[string]string{mapKeyError: "message author does not belong to remote server"})
+
+		return
+	}
+
 	var req struct {
 		Text     string          `json:"text"`
 		FileIDs  []string        `json:"fileIDs,omitempty"`
@@ -2173,8 +2305,7 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 		updated.Location = stored.Location
 	}
 
-	chat, ok := h.store.GetChat(chatID)
-	if ok {
+	if chat != nil {
 		eventData := map[string]interface{}{
 			"threadId": threadID,
 			"message":  updated,

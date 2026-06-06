@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -839,5 +840,149 @@ func TestPrivateChatUnaffectedByGroup(t *testing.T) {
 	json.Unmarshal(privW2.Body.Bytes(), &privResp2)
 	if privResp2["chat"].(map[string]interface{})["id"] != privChat["id"] {
 		t.Error("expected same private chat id on second call")
+	}
+}
+
+func TestFederatedSendMessageRejectsMismatchedFromID(t *testing.T) {
+	h := newTestHandler(t)
+
+	chat := &model.Chat{
+		ID:           "remote-chat-1",
+		Members:      []string{"alice:remote.test", "bob:localhost:8080"},
+		CreatedAt:    time.Now(),
+		RemoteServer: "remote.test",
+	}
+	h.store.CreateRemoteChat(chat)
+
+	body := `{"id":"m1","fromId":"alice:other.test","fromNick":"alice","text":"hi"}`
+	req := httptest.NewRequestWithContext(
+		context.Background(), http.MethodPost,
+		"/api/federated/chats/remote-chat-1/messages", strings.NewReader(body),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Federation-Server", "remote.test")
+	req.SetPathValue("id", "remote-chat-1")
+
+	w := httptest.NewRecorder()
+	// Skip FederatedAuthMiddleware — call the handler directly to test
+	// server-binding logic in isolation. Signature verification is
+	// covered by federation_test.go.
+	h.FederatedSendMessage(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFederatedSendMessageRejectsWrongServerHeader(t *testing.T) {
+	h := newTestHandler(t)
+
+	chat := &model.Chat{
+		ID:           "remote-chat-2",
+		Members:      []string{"alice:remote.test", "bob:localhost:8080"},
+		CreatedAt:    time.Now(),
+		RemoteServer: "remote.test",
+	}
+	h.store.CreateRemoteChat(chat)
+
+	body := `{"id":"m1","fromId":"alice:remote.test","fromNick":"alice","text":"hi"}`
+	req := httptest.NewRequestWithContext(
+		context.Background(), http.MethodPost,
+		"/api/federated/chats/remote-chat-2/messages", strings.NewReader(body),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	// Header claims a different sender than the chat's owner.
+	req.Header.Set("X-Federation-Server", "evil.test")
+	req.SetPathValue("id", "remote-chat-2")
+
+	w := httptest.NewRecorder()
+	h.FederatedSendMessage(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFederatedCreateChatRejectsMismatchedRemoteServer(t *testing.T) {
+	h := newTestHandler(t)
+
+	// Body says remote=test, header says X-Federation-Server=evil.
+	body := `{"chatId":"x1","members":["a:remote.test","b:localhost:8080"],"remoteServer":"remote.test"}`
+	req := httptest.NewRequestWithContext(
+		context.Background(), http.MethodPost,
+		"/api/federated/chats", strings.NewReader(body),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Federation-Server", "evil.test")
+
+	w := httptest.NewRecorder()
+	h.FederatedCreateChat(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFederatedCreateChatRejectsUnfederatedMembers(t *testing.T) {
+	h := newTestHandler(t)
+
+	// Members without ":domain" suffix are invalid federation IDs.
+	body := `{"chatId":"x2","members":["alice","bob:localhost:8080"],"remoteServer":"remote.test"}`
+	req := httptest.NewRequestWithContext(
+		context.Background(), http.MethodPost,
+		"/api/federated/chats", strings.NewReader(body),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Federation-Server", "remote.test")
+
+	w := httptest.NewRecorder()
+	h.FederatedCreateChat(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFederatedEditMessageRejectsLocalAuthor(t *testing.T) {
+	h := newTestHandler(t)
+
+	// A federated chat whose remote server is "remote.test", but the
+	// message author belongs to OUR server — the remote must not be
+	// allowed to edit messages written by locals.
+	chat := &model.Chat{
+		ID:           "remote-chat-3",
+		Members:      []string{"alice:remote.test", "bob:localhost:8080"},
+		CreatedAt:    time.Now(),
+		RemoteServer: "remote.test",
+	}
+	h.store.CreateRemoteChat(chat)
+
+	msg := &model.Message{
+		ID:        "m1",
+		ChatID:    "remote-chat-3",
+		FromID:    "bob:localhost:8080",
+		FromNick:  "bob",
+		Text:      "original",
+		CreatedAt: time.Now(),
+	}
+	if err := h.store.AddRawMessage(msg); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"text":"hijacked"}`
+	req := httptest.NewRequestWithContext(
+		context.Background(), http.MethodPatch,
+		"/api/federated/chats/remote-chat-3/messages/m1", strings.NewReader(body),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Federation-Server", "remote.test")
+	req.SetPathValue("id", "remote-chat-3")
+	req.SetPathValue("messageId", "m1")
+
+	w := httptest.NewRecorder()
+	h.FederatedEditMessage(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }

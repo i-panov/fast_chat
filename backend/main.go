@@ -244,6 +244,8 @@ func main() {
 	close(rl.closeCh)
 	close(registerRL.closeCh)
 
+	fedManager.Close()
+
 	s.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

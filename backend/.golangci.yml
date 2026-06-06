@@ -212,6 +212,10 @@ linters:
           - gosec
           - staticcheck
           - usetesting
+          - dupl
+          - goconst
+          - funlen
+          - cyclop
         path: .*_test\.go
 
 formatters:

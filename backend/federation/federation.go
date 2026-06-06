@@ -19,19 +19,27 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	wellKnownPath = "/.well-known/fast-chat"
-	privFileName  = "federation.priv"
-	pubFileName   = "federation.pub"
-	cacheTTL      = 1 * time.Hour
+	wellKnownPath      = "/.well-known/fast-chat"
+	privFileName       = "federation.priv"
+	pubFileName        = "federation.pub"
+	cacheTTL           = 1 * time.Hour
+	replayWindow       = 10 * time.Minute
+	nonceCleanupTick   = 1 * time.Minute
+	timestampTolerance = 5 * time.Minute
 )
 
 type cacheEntry struct {
 	key       *rsa.PublicKey
+	expiresAt time.Time
+}
+
+type nonceEntry struct {
 	expiresAt time.Time
 }
 
@@ -45,11 +53,18 @@ type Manager struct {
 	mu            sync.RWMutex
 	pubKeyCache   map[string]*cacheEntry
 	cacheDuration time.Duration
+	nonces        sync.Map // key = "serverDomain:signature" → nonceEntry
+	closeCh       chan struct{}
+}
+
+// ServerDomain returns the local server's domain as configured at startup.
+func (m *Manager) ServerDomain() string {
+	return m.serverDomain
 }
 
 // New creates a new federation manager.
 func New(privateKey *rsa.PrivateKey, serverDomain, scheme string, timeoutSec int) *Manager {
-	return &Manager{
+	mgr := &Manager{
 		privateKey:    privateKey,
 		publicKey:     &privateKey.PublicKey,
 		serverDomain:  serverDomain,
@@ -57,7 +72,17 @@ func New(privateKey *rsa.PrivateKey, serverDomain, scheme string, timeoutSec int
 		client:        &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
 		pubKeyCache:   make(map[string]*cacheEntry),
 		cacheDuration: cacheTTL,
+		closeCh:       make(chan struct{}),
 	}
+
+	go mgr.cleanupNonces()
+
+	return mgr
+}
+
+// Close stops the manager's background goroutines.
+func (m *Manager) Close() {
+	close(m.closeCh)
 }
 
 // LoadOrGenerateKeys loads an existing RSA key pair or generates a new one.
@@ -90,22 +115,35 @@ func LoadOrGenerateKeys(keyDir string) (*rsa.PrivateKey, error) {
 	return privateKey, nil
 }
 
-// Sign creates a base64-encoded RSA-SHA256 signature for the given request data.
+// Sign creates a base64-encoded RSA-SHA256 signature for the given request
+// data. The signature covers the sender's serverDomain so that a signature
+// minted for server A cannot be replayed by an attacker claiming to be server
+// B over the same request.
+//
+// serverDomain is the caller's own server domain (e.g. "chat.example.com").
 func (m *Manager) Sign(method, requestURI string, body []byte, timestamp int64) string {
-	data := method + requestURI + string(body) + strconv.FormatInt(timestamp, 10)
+	data := signedPayload(m.serverDomain, method, requestURI, body, timestamp)
 	hash := sha256.Sum256([]byte(data))
 
 	sig, err := rsa.SignPKCS1v15(rand.Reader, m.privateKey, crypto.SHA256, hash[:])
 	if err != nil {
 		log.Printf("federation sign failed: %v", err)
+
 		return ""
 	}
 
 	return base64.StdEncoding.EncodeToString(sig)
 }
 
-// Verify checks the RSA signature against the remote server's public key.
+// Verify checks the RSA signature against the remote server's public key
+// and rejects replays. serverDomain is the asserted sender identity (the
+// value of the X-Federation-Server header) and must match the domain the
+// signature was minted for.
 func (m *Manager) Verify(ctx context.Context, serverDomain, signature, method, requestURI string, body []byte, timestamp int64) bool {
+	if !m.timestampFresh(timestamp) {
+		return false
+	}
+
 	publicKey := m.getPublicKey(ctx, serverDomain)
 	if publicKey == nil {
 		return false
@@ -116,10 +154,83 @@ func (m *Manager) Verify(ctx context.Context, serverDomain, signature, method, r
 		return false
 	}
 
-	data := method + requestURI + string(body) + strconv.FormatInt(timestamp, 10)
+	data := signedPayload(serverDomain, method, requestURI, body, timestamp)
 	hash := sha256.Sum256([]byte(data))
 
-	return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hash[:], sigBytes) == nil
+	if rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hash[:], sigBytes) != nil {
+		return false
+	}
+
+	return m.markNonceFresh(serverDomain, signature)
+}
+
+func (m *Manager) timestampFresh(ts int64) bool {
+	now := time.Now().Unix()
+
+	delta := now - ts
+	if delta < 0 {
+		delta = -delta
+	}
+
+	return delta <= int64(timestampTolerance.Seconds())
+}
+
+func (m *Manager) markNonceFresh(serverDomain, signature string) bool {
+	key := serverDomain + ":" + signature
+	entry := nonceEntry{expiresAt: time.Now().Add(replayWindow)}
+
+	if _, loaded := m.nonces.LoadOrStore(key, entry); loaded {
+		// We've seen this exact (server, signature) pair before. Even if
+		// the prior entry is technically past its expiry (clock skew,
+		// slow cleanup tick), a duplicate signature is never legitimate
+		// during the freshness window.
+		return false
+	}
+
+	return true
+}
+
+func (m *Manager) cleanupNonces() {
+	ticker := time.NewTicker(nonceCleanupTick)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+
+			m.nonces.Range(func(k, v any) bool {
+				entry := v.(nonceEntry) //nolint:errcheck // invariant: only nonceEntry is stored
+				if now.After(entry.expiresAt) {
+					m.nonces.Delete(k)
+				}
+
+				return true
+			})
+
+		case <-m.closeCh:
+			return
+		}
+	}
+}
+
+// signedPayload builds the byte string that is hashed and signed. The
+// pipe-separated layout makes accidental collisions between (method, path,
+// body) tuples vanishingly unlikely and is unambiguous to reconstruct.
+func signedPayload(serverDomain, method, requestURI string, body []byte, timestamp int64) string {
+	var buf strings.Builder
+	buf.Grow(len(serverDomain) + len(method) + len(requestURI) + len(body) + 32)
+	buf.WriteString(serverDomain)
+	buf.WriteByte('|')
+	buf.WriteString(method)
+	buf.WriteByte('|')
+	buf.WriteString(requestURI)
+	buf.WriteByte('|')
+	buf.Write(body)
+	buf.WriteByte('|')
+	buf.WriteString(strconv.FormatInt(timestamp, 10))
+
+	return buf.String()
 }
 
 // WellKnownHandler handles GET /.well-known/fast-chat requests.
