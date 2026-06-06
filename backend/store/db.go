@@ -26,6 +26,10 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	if err := createIndexes(db); err != nil {
+		return nil, err
+	}
+
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, err

@@ -192,6 +192,13 @@ func (h *Handler) Close() {
 }
 
 func (h *Handler) enrichChat(c *model.Chat) chatResponse {
+	return h.enrichChatFromNicks(c, nil)
+}
+
+// enrichChatFromNicks is the same as enrichChat but uses a pre-resolved
+// nicks map (from Store.GetUsersByIDs) to avoid N+1 lookups. Pass nil to
+// fall back to a per-member query.
+func (h *Handler) enrichChatFromNicks(c *model.Chat, nicks map[string]string) chatResponse {
 	cr := chatResponse{
 		ID:        c.ID,
 		Type:      c.Type,
@@ -207,11 +214,18 @@ func (h *Handler) enrichChat(c *model.Chat) chatResponse {
 	}
 
 	for _, member := range c.Members {
-		if u, ok := h.store.GetUserByID(member); ok {
-			cr.Members = append(cr.Members, memberInfo{ID: member, Nick: u.Nick, Online: h.store.IsOnline(member)})
-		} else {
-			cr.Members = append(cr.Members, memberInfo{ID: member, Nick: member})
+		nick, ok := nicks[member]
+		if !ok {
+			if nicks != nil {
+				nick = member
+			} else if u, found := h.store.GetUserByID(member); found {
+				nick = u.Nick
+			} else {
+				nick = member
+			}
 		}
+
+		cr.Members = append(cr.Members, memberInfo{ID: member, Nick: nick, Online: h.store.IsOnline(member)})
 	}
 
 	return cr
@@ -477,9 +491,27 @@ func (h *Handler) GetChats(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	chats := h.store.GetUserChats(user.ID)
 
+	// Collect every member id across every chat, then resolve them in a
+	// single query instead of N*M round-trips.
+	seen := make(map[string]struct{}, len(chats)*2)
+
+	memberIDs := make([]string, 0, len(chats)*2)
+	for _, c := range chats {
+		for _, m := range c.Members {
+			if _, ok := seen[m]; ok {
+				continue
+			}
+
+			seen[m] = struct{}{}
+			memberIDs = append(memberIDs, m)
+		}
+	}
+
+	nicks := h.store.GetUsersByIDs(memberIDs)
+
 	resp := make([]chatResponse, 0, len(chats))
 	for _, c := range chats {
-		resp = append(resp, h.enrichChat(c))
+		resp = append(resp, h.enrichChatFromNicks(c, nicks))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"chats": resp})
@@ -963,9 +995,18 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		messages = []model.Message{}
 	}
 
-	for i := range messages {
-		files, _ := h.store.GetMessageFiles(messages[i].ID) //nolint:errcheck
-		messages[i].Files = files
+	if len(messages) > 0 {
+		ids := make([]string, len(messages))
+		for i, m := range messages {
+			ids[i] = m.ID
+		}
+
+		filesByMsg, err := h.store.GetMessageFilesBatch(ids)
+		if err == nil {
+			for i := range messages {
+				messages[i].Files = filesByMsg[messages[i].ID]
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

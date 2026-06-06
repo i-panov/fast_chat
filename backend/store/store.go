@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -107,6 +106,29 @@ func (s *Store) GetUserByID(id string) (*model.User, bool) {
 	}
 
 	return &user, true
+}
+
+// GetUsersByIDs returns a map of user ID -> nick for the given IDs. IDs
+// that don't resolve are simply absent from the map. Use this in hot paths
+// (e.g. enrichChat over a list of chats) to avoid one query per member.
+func (s *Store) GetUsersByIDs(ids []string) map[string]string {
+	out := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+
+	var rows []struct {
+		ID   string
+		Nick string
+	}
+
+	s.db.Model(&model.User{}).Where("id IN ?", ids).Select("id, nick").Scan(&rows)
+
+	for _, r := range rows {
+		out[r.ID] = r.Nick
+	}
+
+	return out
 }
 
 func (s *Store) SearchUsers(query, excludeID string) []model.PublicUser {
@@ -369,15 +391,35 @@ func (s *Store) GetUserChats(userID string) []*model.Chat {
 
 	s.db.Model(&ChatMember{}).Where("user_id = ?", userID).Pluck("chat_id", &chatIDs)
 
+	if len(chatIDs) == 0 {
+		return nil
+	}
+
 	var chats []*model.Chat
 
 	s.db.Where("id IN ?", chatIDs).Order("created_at DESC").Find(&chats)
 
-	for _, c := range chats {
-		var memberIDs []string
+	// One query for all memberships across all of the user's chats,
+	// instead of one query per chat. The lookup table is small enough
+	// to keep in memory.
+	type memberRow struct {
+		ChatID string
+		UserID string
+	}
 
-		s.db.Model(&ChatMember{}).Where("chat_id = ?", c.ID).Pluck("user_id", &memberIDs)
-		c.Members = memberIDs
+	var rows []memberRow
+	s.db.Model(&ChatMember{}).
+		Where("chat_id IN ?", chatIDs).
+		Select("chat_id, user_id").
+		Scan(&rows)
+
+	membersByChat := make(map[string][]string, len(chats))
+	for _, r := range rows {
+		membersByChat[r.ChatID] = append(membersByChat[r.ChatID], r.UserID)
+	}
+
+	for _, c := range chats {
+		c.Members = membersByChat[c.ID]
 	}
 
 	return chats
@@ -504,13 +546,16 @@ func (s *Store) SetMessageFiles(messageID string, fileIDs []string) error {
 			return err
 		}
 
-		for _, fid := range fileIDs {
-			if err := tx.Create(&model.MessageFile{MessageID: messageID, FileID: fid}).Error; err != nil {
-				return fmt.Errorf("link file %s to message %s: %w", fid, messageID, err)
-			}
+		if len(fileIDs) == 0 {
+			return nil
 		}
 
-		return nil
+		rows := make([]model.MessageFile, 0, len(fileIDs))
+		for _, fid := range fileIDs {
+			rows = append(rows, model.MessageFile{MessageID: messageID, FileID: fid})
+		}
+
+		return tx.Create(&rows).Error
 	})
 }
 
@@ -724,8 +769,6 @@ func (s *Store) GetThreadsForChat(chatID string) []model.Thread {
 }
 
 func (s *Store) paginateMessages(chatID string, limit int, before string) ([]model.Message, string, bool) {
-	var msgs []model.Message
-
 	query := s.db.Where("chat_id = ?", chatID)
 
 	if before != "" {
@@ -744,8 +787,17 @@ func (s *Store) paginateMessages(chatID string, limit int, before string) ([]mod
 			beforeMsg.CreatedAt, beforeMsg.CreatedAt, before)
 	}
 
-	if err := query.Order("created_at DESC, id DESC").Limit(limit).Find(&msgs).Error; err != nil {
+	// Fetch limit+1 in one query and use the extra row as a hasMore
+	// signal — saves a separate COUNT round-trip per page.
+	var msgs []model.Message
+
+	if err := query.Order("created_at DESC, id DESC").Limit(limit + 1).Find(&msgs).Error; err != nil {
 		return nil, "", false
+	}
+
+	hasMore := len(msgs) > limit
+	if hasMore {
+		msgs = msgs[:limit]
 	}
 
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
@@ -756,19 +808,10 @@ func (s *Store) paginateMessages(chatID string, limit int, before string) ([]mod
 		return nil, "", false
 	}
 
-	first := msgs[0]
-
-	var count int64
-	s.db.Model(&model.Message{}).
-		Where("chat_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))",
-			chatID, first.CreatedAt, first.CreatedAt, first.ID).
-		Count(&count)
-
-	hasMore := count > 0
 	nextCursor := ""
 
 	if hasMore {
-		nextCursor = first.ID
+		nextCursor = msgs[0].ID
 	}
 
 	return msgs, nextCursor, hasMore
@@ -918,13 +961,12 @@ func (s *Store) AddMessageFiles(messageID string, fileIDs []string) error {
 		return nil
 	}
 
+	rows := make([]model.MessageFile, 0, len(fileIDs))
 	for _, fid := range fileIDs {
-		if err := s.db.Create(&model.MessageFile{MessageID: messageID, FileID: fid}).Error; err != nil {
-			return fmt.Errorf("link file %s to message %s: %w", fid, messageID, err)
-		}
+		rows = append(rows, model.MessageFile{MessageID: messageID, FileID: fid})
 	}
 
-	return nil
+	return s.db.Create(&rows).Error
 }
 
 func (s *Store) GetMessageFiles(messageID string) ([]model.FileInfo, error) {
@@ -953,6 +995,51 @@ func (s *Store) GetMessageFiles(messageID string) ([]model.FileInfo, error) {
 	}
 
 	return result, nil
+}
+
+// GetMessageFilesBatch returns file info for many message IDs in two
+// queries (link table + files), regardless of how many messages are
+// requested. Use this in handler paths that fan out a list of messages.
+func (s *Store) GetMessageFilesBatch(messageIDs []string) (map[string][]model.FileInfo, error) {
+	out := make(map[string][]model.FileInfo, len(messageIDs))
+	if len(messageIDs) == 0 {
+		return out, nil
+	}
+
+	var links []model.MessageFile
+	if err := s.db.Where("message_id IN ?", messageIDs).Find(&links).Error; err != nil {
+		return nil, err
+	}
+
+	if len(links) == 0 {
+		return out, nil
+	}
+
+	fileIDs := make([]string, 0, len(links))
+	for _, link := range links {
+		fileIDs = append(fileIDs, link.FileID)
+	}
+
+	var files []model.File
+	if err := s.db.Where("id IN ?", fileIDs).Find(&files).Error; err != nil {
+		return nil, err
+	}
+
+	filesByID := make(map[string]model.File, len(files))
+	for _, file := range files {
+		filesByID[file.ID] = file
+	}
+
+	for _, link := range links {
+		file, ok := filesByID[link.FileID]
+		if !ok {
+			continue
+		}
+
+		out[link.MessageID] = append(out[link.MessageID], file.ToFileInfo())
+	}
+
+	return out, nil
 }
 
 // GetMessageFilesForReply returns files for embedding into a ReplyToInfo.

@@ -1088,3 +1088,81 @@ func TestSearchUsersOnlineState(t *testing.T) {
 		t.Error("bob has no connection, must be offline")
 	}
 }
+
+func TestGetMessageFilesBatch(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	chat, _ := s.CreateChat(testAlice, testBob)
+
+	m1, _ := s.AddMessage(chat.ID, testAlice, "alice", "with file 1", "m-1", "", nil)
+	m2, _ := s.AddMessage(chat.ID, testAlice, "alice", "with two files", "m-2", "", nil)
+	m3, _ := s.AddMessage(chat.ID, testAlice, "alice", "no file", "m-3", "", nil)
+
+	f1, _ := s.SaveFile("h1", "text/plain", 10, "a.txt", "a.txt")
+	f2, _ := s.SaveFile("h2", "text/plain", 20, "b.txt", "b.txt")
+
+	if err := s.AddMessageFiles(m1.ID, []string{f1.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddMessageFiles(m2.ID, []string{f1.ID, f2.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := s.GetMessageFilesBatch([]string{m1.ID, m2.ID, m3.ID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := len(files[m1.ID]); got != 1 {
+		t.Errorf("m1: expected 1 file, got %d", got)
+	}
+	if got := len(files[m2.ID]); got != 2 {
+		t.Errorf("m2: expected 2 files, got %d", got)
+	}
+	if _, ok := files[m3.ID]; ok {
+		t.Errorf("m3 should not have any files entry, got %v", files[m3.ID])
+	}
+}
+
+func TestGetMessageFilesBatchEmpty(t *testing.T) {
+	s := newTestStore(t)
+
+	files, err := s.GetMessageFilesBatch(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(files))
+	}
+}
+
+func TestGetUsersByIDs(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateUser(testAlice, "alice")
+	s.CreateUser(testBob, "bob")
+	s.CreateUser(testCarol, "carol")
+
+	got := s.GetUsersByIDs([]string{testAlice, testBob, "nonexistent"})
+	if got[testAlice] != "alice" {
+		t.Errorf("alice: got %q, want %q", got[testAlice], "alice")
+	}
+	if got[testBob] != "bob" {
+		t.Errorf("bob: got %q, want %q", got[testBob], "bob")
+	}
+	if _, ok := got["nonexistent"]; ok {
+		t.Error("nonexistent id should not be in the map")
+	}
+}
+
+func TestGetUsersByIDsEmpty(t *testing.T) {
+	s := newTestStore(t)
+
+	got := s.GetUsersByIDs(nil)
+	if got == nil {
+		t.Error("expected non-nil map")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(got))
+	}
+}
