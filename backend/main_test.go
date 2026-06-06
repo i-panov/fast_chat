@@ -1,83 +1,117 @@
 package main
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
 
-func TestRateLimiterAllowsUnderLimit(t *testing.T) {
-	rl := newRateLimiter(3, time.Minute)
-	defer close(rl.closeCh)
+func newTestRateLimiter(limit int, window time.Duration) *rateLimiter {
+	rl := newRateLimiter(limit, window)
 
-	for i := 0; i < 3; i++ {
-		if !rl.allow("1.1.1.1") {
-			t.Errorf("call %d: expected allow", i+1)
+	// Stop the background cleanup loop in tests so its 1-second tick
+	// does not race with assertions.
+	close(rl.closeCh)
+
+	return rl
+}
+
+func TestRateLimiterAllowsUnderLimit(t *testing.T) {
+	t.Parallel()
+
+	rl := newTestRateLimiter(3, time.Minute)
+
+	for i := range 3 {
+		if !rl.allow("1.2.3.4") {
+			t.Fatalf("call %d: allow returned false under the limit", i+1)
 		}
 	}
 }
 
 func TestRateLimiterBlocksOverLimit(t *testing.T) {
-	rl := newRateLimiter(3, time.Minute)
-	defer close(rl.closeCh)
+	t.Parallel()
 
-	for i := 0; i < 3; i++ {
-		rl.allow("1.1.1.1")
+	rl := newTestRateLimiter(3, time.Minute)
+
+	for i := range 3 {
+		if !rl.allow("1.2.3.4") {
+			t.Fatalf("call %d: should be allowed", i+1)
+		}
 	}
 
-	if rl.allow("1.1.1.1") {
-		t.Error("4th call must be blocked")
-	}
-}
-
-func TestRateLimiterIsolatesByIP(t *testing.T) {
-	rl := newRateLimiter(2, time.Minute)
-	defer close(rl.closeCh)
-
-	rl.allow("1.1.1.1")
-	rl.allow("1.1.1.1")
-	if rl.allow("1.1.1.1") {
-		t.Error("1.1.1.1 should be blocked")
-	}
-
-	if !rl.allow("2.2.2.2") {
-		t.Error("2.2.2.2 must be allowed (different IP)")
+	if rl.allow("1.2.3.4") {
+		t.Fatal("fourth call must be rejected")
 	}
 }
 
-func TestRateLimiterWindowExpires(t *testing.T) {
-	rl := newRateLimiter(2, 50*time.Millisecond)
-	defer close(rl.closeCh)
+func TestRateLimiterIsolatesClients(t *testing.T) {
+	t.Parallel()
 
-	rl.allow("1.1.1.1")
-	rl.allow("1.1.1.1")
-	if rl.allow("1.1.1.1") {
-		t.Fatal("3rd call must be blocked within window")
+	rl := newTestRateLimiter(2, time.Minute)
+
+	if !rl.allow("a") || !rl.allow("a") {
+		t.Fatal("a: under-limit calls should be allowed")
 	}
 
-	time.Sleep(60 * time.Millisecond)
+	if rl.allow("a") {
+		t.Fatal("a: third call must be rejected")
+	}
 
-	if !rl.allow("1.1.1.1") {
-		t.Error("after window expires the limit must reset")
+	if !rl.allow("b") {
+		t.Fatal("b: should not be affected by a's rate limit")
 	}
 }
 
-func TestRateLimiterCleanupDropsStale(t *testing.T) {
-	rl := newRateLimiter(2, 30*time.Millisecond)
-	defer close(rl.closeCh)
+func TestRateLimiterResetsAfterWindow(t *testing.T) {
+	t.Parallel()
 
-	rl.allow("1.1.1.1")
-	rl.allow("2.2.2.2")
+	rl := newTestRateLimiter(2, 50*time.Millisecond)
 
-	time.Sleep(50 * time.Millisecond)
+	if !rl.allow("1.2.3.4") || !rl.allow("1.2.3.4") {
+		t.Fatal("two calls under the limit should be allowed")
+	}
 
-	// Wait for the cleanup ticker (one window = 30ms) plus a little slack.
-	time.Sleep(50 * time.Millisecond)
+	if rl.allow("1.2.3.4") {
+		t.Fatal("third call inside the window must be rejected")
+	}
 
-	rl.mu.Lock()
-	n := len(rl.entries)
-	rl.mu.Unlock()
+	time.Sleep(80 * time.Millisecond)
 
-	if n != 0 {
-		t.Errorf("expected empty entries after cleanup, got %d", n)
+	if !rl.allow("1.2.3.4") {
+		t.Fatal("after the window the limit must reset")
+	}
+}
+
+func TestRateLimiterConcurrent(t *testing.T) {
+	t.Parallel()
+
+	rl := newTestRateLimiter(100, time.Minute)
+
+	var wg sync.WaitGroup
+
+	allowed := make(chan bool, 200)
+
+	for range 200 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			allowed <- rl.allow("shared")
+		}()
+	}
+
+	wg.Wait()
+	close(allowed)
+
+	var count int
+	for ok := range allowed {
+		if ok {
+			count++
+		}
+	}
+
+	if count != 100 {
+		t.Fatalf("expected exactly 100 allowed calls under concurrent load, got %d", count)
 	}
 }

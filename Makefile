@@ -9,6 +9,9 @@ backend\:run:
 backend\:lint:
 	cd backend && ~/go/bin/golangci-lint run ./...
 
+backend\:test:
+	cd backend && go test -race -count=1 ./...
+
 frontend\:run:
 	cd frontend && VITE_API_PROXY=$(API_PROXY) npx vite --host --port $(FRONTEND_PORT)
 

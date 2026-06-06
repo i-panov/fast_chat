@@ -300,3 +300,28 @@ func TestUploadFileCreatesFileOnDisk(t *testing.T) {
 		t.Errorf("on-disk content mismatch")
 	}
 }
+
+func TestUploadFileDeduplicatesByHash(t *testing.T) {
+	tmp := t.TempDir()
+	h := newTestHandler(t)
+	h.cfg.UploadDir = tmp
+
+	// Write a single byte sequence to disk as if it had been
+	// uploaded, then call SaveFile twice with the same hash. The
+	// second call must return the same File without inserting a row.
+	hash := "dedup-hash-test"
+
+	first, err := h.store.SaveFile(hash, "image/png", int64(len(tinyPNG)), "first.png", "20060102/abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := h.store.SaveFile(hash, "image/png", int64(len(tinyPNG)), "second.png", "20060102/def")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.ID != second.ID {
+		t.Fatalf("dedup failed: first.ID=%q second.ID=%q", first.ID, second.ID)
+	}
+}

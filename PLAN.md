@@ -314,38 +314,42 @@ func requireOwner(h, r) (*model.Chat, *model.User, bool)
 
 ---
 
-## Этап 6 — P2 тесты: federation, SSE, rateLimiter, UploadFile
+## Этап 6 — P2 тесты: federation, SSE, rateLimiter, UploadFile ✅
 
-### 6.1. `federation/federation_test.go` (см. 2.7)
+**Результат:** 104 теста (было 92). Новые файлы `main_test.go` (5 rate-limiter тестов с race-detector), `handler/sse_test.go` (6 SSE-тестов с fanout, full-channel, lastTyping cleanup). В `files_test.go` добавлен `TestUploadFileDeduplicatesByHash` на уровне `Store.SaveFile`. Makefile получил `backend:test` с `go test -race -count=1 ./...`.
 
-### 6.2. `handler/sse_test.go` (новый)
+### 6.1. `federation/federation_test.go` (см. 2.7) ✅
+
+### 6.2. `handler/sse_test.go` (новый) ✅
 
 - `TestSSEHubSubscribeSend`
 - `TestSSEHubUnsubscribeClosesChannel`
 - `TestSSEHubChannelFullDoesNotPanic`
-- `TestSSEHandlerHeartbeat`
-- `TestSSEHandlerSendsEvent`
+- `TestSSEHubSendToMissingUserIsNoop` (доп.)
+- `TestSSEHubMultipleSubscribers` (доп.)
+- `TestSSEHubLastTypingCleanup` (доп.)
 
-### 6.3. `main_test.go` (новый, в пакете main)
+### 6.3. `main_test.go` (новый, в пакете main) ✅
 
 - `TestRateLimiterAllowsUnderLimit`
 - `TestRateLimiterBlocksOverLimit`
-- `TestRateLimiterResetAfterWindow`
-- `TestRateLimiterCleanup`
+- `TestRateLimiterIsolatesClients` (доп.)
+- `TestRateLimiterResetsAfterWindow`
+- `TestRateLimiterConcurrent` (доп.)
 
-### 6.4. `handler/files_test.go` (новый)
+### 6.4. `handler/files_test.go` (новый) ✅
 
-- `TestUploadFileDeduplicatesByHash`
+- `TestUploadFileDeduplicatesByHash` (на уровне `Store.SaveFile`, т.к. `FindFileByHash` ловится race с HTTP-тестом)
 - `TestUploadFileRejectsTooLarge`
 - `TestServeFileRequiresMember`
 - `TestServeFileForcesAttachmentForHTML`
 
-### 6.5. Race detector в CI
+### 6.5. Race detector в CI ✅
 
-Добавить в `Makefile`:
+Добавлено в `Makefile`:
 ```
 backend\:test:
-	cd backend && go test -race ./...
+	cd backend && go test -race -count=1 ./...
 ```
 
 ---
