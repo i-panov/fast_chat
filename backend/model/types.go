@@ -6,8 +6,30 @@ import "time"
 type User struct {
 	ID     string `gorm:"primaryKey"           json:"id"`
 	Nick   string `gorm:"not null"             json:"nick"`
-	Token  string `gorm:"uniqueIndex;not null" json:"token,omitempty"`
+	Token  string `gorm:"uniqueIndex;not null" json:"-"`
 	Online bool   `gorm:"default:false"        json:"online"`
+}
+
+// PublicUser is a User representation safe to expose via API (no token).
+type PublicUser struct {
+	ID     string `json:"id"`
+	Nick   string `json:"nick"`
+	Online bool   `json:"online"`
+}
+
+// Public returns a token-free view of the user.
+func (u *User) Public() PublicUser {
+	return PublicUser{ID: u.ID, Nick: u.Nick, Online: u.Online}
+}
+
+// PublicUsers maps a slice of users to their public representation.
+func PublicUsers(users []User) []PublicUser {
+	out := make([]PublicUser, len(users))
+	for i := range users {
+		out[i] = users[i].Public()
+	}
+
+	return out
 }
 
 type Chat struct {

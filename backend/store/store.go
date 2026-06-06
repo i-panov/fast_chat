@@ -106,7 +106,7 @@ func (s *Store) GetUserByID(id string) (*model.User, bool) {
 	return &user, true
 }
 
-func (s *Store) SearchUsers(query, excludeID string) []model.User {
+func (s *Store) SearchUsers(query, excludeID string) []model.PublicUser {
 	q := strings.ToLower(query)
 
 	var users []model.User
@@ -114,10 +114,10 @@ func (s *Store) SearchUsers(query, excludeID string) []model.User {
 	s.db.Where("LOWER(nick) LIKE ? AND id != ?", "%"+q+"%", excludeID).Find(&users)
 
 	if users == nil {
-		return []model.User{}
+		return []model.PublicUser{}
 	}
 
-	return users
+	return model.PublicUsers(users)
 }
 
 func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {

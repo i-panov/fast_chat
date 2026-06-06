@@ -37,8 +37,11 @@ const (
 	errKeyFileTooLarge = "file too large"
 
 	sseHeartbeatInterval = 30 * time.Second
-	maxUploadSize        = 50 << 20 // 50 MB
 )
+
+// maxUploadSize is the maximum file size accepted by UploadFile, in bytes.
+// Declared as a var (not const) so tests can shrink the limit.
+var maxUploadSize int64 = 50 << 20 // 50 MB
 
 type SSEEvent struct {
 	Event string
@@ -339,7 +342,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"user":  user,
+		"user":  user.Public(),
 		"token": user.Token,
 	})
 }
@@ -354,7 +357,7 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 	if remoteDomain == h.cfg.ServerDomain {
 		users := h.store.SearchUsers(remoteNick, getUser(r).ID)
 		if users == nil {
-			users = []model.User{}
+			users = []model.PublicUser{}
 		}
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
@@ -381,11 +384,20 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 		return
 	}
 
+	// Remote response may include token (if remote is unpatched); strip defensively.
+	// Nick comes from ID since remote users have no local nick.
+	out := make([]model.PublicUser, len(result.Users))
 	for i := range result.Users {
-		result.Users[i].Nick = result.Users[i].ID
+		// Strip trailing ":domain" from ID for display purposes.
+		nick := result.Users[i].ID
+		if idx := strings.Index(nick, ":"); idx != -1 {
+			nick = nick[:idx]
+		}
+
+		out[i] = model.PublicUser{ID: result.Users[i].ID, Nick: nick, Online: result.Users[i].Online}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"users": result.Users})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"users": out})
 }
 
 func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
@@ -400,7 +412,7 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 
 	users := h.store.SearchUsers(query, user.ID)
 	if users == nil {
-		users = []model.User{}
+		users = []model.PublicUser{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
@@ -1122,13 +1134,44 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	defer os.Remove(tempPath) //nolint:errcheck
 
-	hasher := sha256.New()
-	multiWriter := io.MultiWriter(tempFile, hasher)
+	// Detect MIME type from the first 512 bytes of the file body, ignoring the
+	// client-supplied Content-Type. This blocks an attacker from uploading
+	// .html and serving it as text/html.
+	peek := make([]byte, 512)
 
-	size, err := io.Copy(multiWriter, file)
+	peekN, peekErr := io.ReadFull(file, peek)
+	if peekErr != nil && peekErr != io.ErrUnexpectedEOF && peekErr != io.EOF {
+		tempFile.Close() //nolint:errcheck,gosec
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to read file"})
+
+		return
+	}
+
+	mimeType := http.DetectContentType(peek[:peekN])
+
+	hasher := sha256.New()
+	peekAndHash := io.MultiWriter(tempFile, hasher)
+
+	if _, err := peekAndHash.Write(peek[:peekN]); err != nil {
+		tempFile.Close() //nolint:errcheck,gosec
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to write file"})
+
+		return
+	}
+
+	size, err := io.Copy(peekAndHash, file)
 	if err != nil {
 		tempFile.Close() //nolint:errcheck,gosec
 		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to read file"})
+
+		return
+	}
+
+	size += int64(peekN)
+
+	if err := tempFile.Sync(); err != nil {
+		tempFile.Close() //nolint:errcheck,gosec
+		writeJSON(w, http.StatusInternalServerError, map[string]string{mapKeyError: "failed to persist file"})
 
 		return
 	}
@@ -1137,11 +1180,6 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
-	mimeType := header.Header.Get("Content-Type")
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
-	}
-
 	existing, ok := h.store.FindFileByHash(hash)
 	if ok {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"file": existing.ToFileInfo()})
@@ -1149,9 +1187,11 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Storage name is a UUID with no extension so the client cannot influence
+	// the on-disk filename (e.g. ".php" tricks behind a misconfigured reverse
+	// proxy).
 	dateDir := time.Now().Format("20060102")
-	ext := filepath.Ext(header.Filename)
-	storageName := generateID() + ext
+	storageName := generateID()
 	relativePath := filepath.Join(dateDir, storageName)
 	fullPath := filepath.Join(h.cfg.UploadDir, relativePath)
 
@@ -1191,10 +1231,52 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fullPath := filepath.Join(h.cfg.UploadDir, fileRecord.StoragePath)
+
+	// Defense in depth: tell the browser never to MIME-sniff or execute inline
+	// scripts, and force download for anything that could be interpreted as
+	// HTML/JS/SVG (XSS via uploaded file).
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	w.Header().Set("Content-Type", fileRecord.MimeType)
-	w.Header().Set("Content-Disposition", "inline; filename=\""+fileRecord.OriginalName+"\"")
+
+	disposition := "attachment"
+	if isInlinableMIME(fileRecord.MimeType) {
+		disposition = "inline"
+	}
+
+	w.Header().Set("Content-Disposition", disposition+"; filename=\""+sanitizeFilename(fileRecord.OriginalName)+"\"")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
+
 	http.ServeFile(w, r, fullPath) //nolint:gosec // path is controlled, generated UUID
+}
+
+// isInlinableMIME reports whether the given MIME type is safe to serve inline
+// in a browser. Everything else is forced to attachment to neutralise XSS via
+// uploaded HTML/JS/SVG/documents.
+func isInlinableMIME(mime string) bool {
+	switch {
+	case strings.HasPrefix(mime, "image/"),
+		strings.HasPrefix(mime, "video/"),
+		strings.HasPrefix(mime, "audio/"),
+		mime == "application/pdf":
+		return true
+	}
+
+	return false
+}
+
+// sanitizeFilename strips characters that could break out of the
+// Content-Disposition header or be misinterpreted by the browser.
+func sanitizeFilename(name string) string {
+	r := strings.NewReplacer(
+		"\"", "",
+		"\\", "",
+		"\n", "",
+		"\r", "",
+		";", "",
+	)
+
+	return r.Replace(name)
 }
 
 // userCanAccessFile returns true if the user has access to the file via any
@@ -1256,7 +1338,7 @@ func (h *Handler) FederatedSearchUsers(w http.ResponseWriter, r *http.Request) {
 	users := h.store.SearchUsers(query, "")
 
 	if users == nil {
-		users = []model.User{}
+		users = []model.PublicUser{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})

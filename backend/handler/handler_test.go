@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -90,6 +91,76 @@ func TestRegister(t *testing.T) {
 	}
 	if _, ok := resp["token"]; !ok {
 		t.Error("expected token in response")
+	}
+}
+
+func TestSearchUsersDoesNotLeakToken(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice")
+	bob := registerTestUser(t, h, "bob")
+
+	req := authReq(http.MethodGet, "/api/users/search?q=bo", alice.token, "")
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.SearchUsers)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if bytes.Contains(w.Body.Bytes(), []byte("token")) {
+		t.Errorf("search response must not include token field; body: %s", w.Body.String())
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte(bob.token)) {
+		t.Errorf("search response must not include bob's actual token; body: %s", w.Body.String())
+	}
+}
+
+func TestRegisterResponseDoesNotDuplicateToken(t *testing.T) {
+	h := newTestHandler(t)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(`{"nick":"unique1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.Register(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	user, ok := resp["user"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected user object")
+	}
+	if _, has := user["token"]; has {
+		t.Error("user object must not include token")
+	}
+	if _, has := resp["token"]; !has {
+		t.Error("top-level token required")
+	}
+}
+
+func TestFederatedSearchUsersDoesNotLeakToken(t *testing.T) {
+	h := newTestHandler(t)
+
+	// Register some local users so the federated search has results to expose.
+	registerTestUser(t, h, "alice")
+	registerTestUser(t, h, "bob")
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/federated/users/search?q=al", http.NoBody)
+	w := httptest.NewRecorder()
+	h.FederatedSearchUsers(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if bytes.Contains(w.Body.Bytes(), []byte("token")) {
+		t.Errorf("federated search response must not include token field; body: %s", w.Body.String())
 	}
 }
 

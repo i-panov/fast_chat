@@ -169,7 +169,10 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/config", handlerInstance.GetConfig)
-	mux.HandleFunc("POST /api/register", handlerInstance.Register)
+
+	// Stricter rate limit for /api/register to prevent account farming.
+	registerRL := newRateLimiter(5, 10*time.Minute)
+	mux.Handle("POST /api/register", rateLimitMiddleware(registerRL)(http.HandlerFunc(handlerInstance.Register)))
 	mux.HandleFunc("GET /api/events", handlerInstance.SSE)
 	mux.HandleFunc("GET /api/users/search", handlerInstance.AuthMiddleware(handlerInstance.SearchUsers))
 	mux.HandleFunc("GET /api/chats", handlerInstance.AuthMiddleware(handlerInstance.GetChats))
@@ -239,6 +242,7 @@ func main() {
 	log.Println("Shutting down server...")
 
 	close(rl.closeCh)
+	close(registerRL.closeCh)
 
 	s.Close()
 
