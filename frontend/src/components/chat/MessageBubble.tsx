@@ -471,7 +471,7 @@ export const MessageBubble = memo(function MessageBubble({
 	}, [menuPos]);
 
 	const closeMenu = useCallback(() => {
-		closeMenu();
+		setMenuPos(null);
 		menuButtonRef.current?.focus();
 	}, []);
 
