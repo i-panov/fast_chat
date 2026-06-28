@@ -181,6 +181,7 @@ func main() {
 	mux.HandleFunc("GET /api/events", handlerInstance.SSE)
 	mux.HandleFunc("GET /api/users/search", handlerInstance.AuthMiddleware(handlerInstance.SearchUsers))
 	mux.HandleFunc("GET /api/chats", handlerInstance.AuthMiddleware(handlerInstance.GetChats))
+	mux.HandleFunc("GET /api/sync", handlerInstance.AuthMiddleware(handlerInstance.Sync))
 	mux.HandleFunc("POST /api/chats", handlerInstance.AuthMiddleware(handlerInstance.CreateChat))
 	mux.HandleFunc("GET /api/chats/{id}", handlerInstance.AuthMiddleware(handlerInstance.GetChat))
 	mux.HandleFunc("PATCH /api/chats/{id}", handlerInstance.AuthMiddleware(handlerInstance.UpdateChat))

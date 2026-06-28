@@ -8,9 +8,18 @@ import type {
 	TypingPayload,
 	User,
 } from "../api.ts";
-import { createChat, getConfig, sendTyping } from "../api.ts";
+import {
+	createChat,
+	editThreadMessage,
+	getConfig,
+	sendThreadMessage,
+	sendTyping,
+	uploadFile,
+} from "../api.ts";
 import type { EditingMessage, ReplyTarget } from "../context/ChatPageContext";
+import { chatsRepo } from "../db/chatsRepo.ts";
 import i18n from "../i18n.ts";
+import { scheduleSync, setTokenProvider } from "../sync/syncEngine.ts";
 import { useAuth } from "../useAuth";
 import { emitNotification } from "../utils/notify.ts";
 import { useChatList } from "./useChatList";
@@ -20,8 +29,10 @@ import { useMessageEditor } from "./useMessageEditor";
 import { useMessageSearch } from "./useMessageSearch";
 import { useMessageSender } from "./useMessageSender";
 import { useMessages } from "./useMessages";
+import { useNetworkStatus, useOnlineNotifications } from "./useNetworkStatus";
 import { usePendingFiles } from "./usePendingFiles";
 import { useSseEvents } from "./useSseEvents";
+import { useSyncStatus } from "./useSyncStatus";
 import { useThreads } from "./useThreads";
 import { useTyping } from "./useTyping";
 
@@ -36,9 +47,9 @@ export interface ChatPageState {
 	chats: Chat[];
 	activeChatId: string | null;
 	activeChat: Chat | undefined;
-	selectChat: (chatId: string) => void;
+	selectChat: (chatId: string | null) => void;
 
-	activeMessages: Message[];
+	activeMessages: Array<Message & { status: "sent" | "queued" | "failed" }>;
 	hasMore: boolean;
 	isLoadingMore: boolean;
 	loadMoreMessages: (chatId: string | null) => Promise<void>;
@@ -58,15 +69,7 @@ export interface ChatPageState {
 	typingUsers: Record<string, TypingPayload[]>;
 	handleTyping: (chatId: string, active: boolean) => void;
 
-	pendingFiles: Array<{
-		id: string;
-		file: File;
-		blobUrl: string;
-		originalName: string;
-		size: number;
-		mimeType: string;
-		fileType: "photo" | "video" | "audio" | "file";
-	}>;
+	pendingFiles: PendingFileLite[];
 	handleAttachFiles: (files: File[]) => void;
 	handleRemoveFile: (id: string) => void;
 
@@ -132,6 +135,19 @@ export interface ChatPageState {
 	handleRemoveGroupMember: (userId: string) => Promise<void>;
 	handleDeleteGroup: () => Promise<void>;
 	handleUploadGroupAvatar: (file: File) => Promise<void>;
+
+	isOnline: boolean;
+	syncState: "idle" | "syncing" | "error";
+}
+
+interface PendingFileLite {
+	id: string;
+	file: File;
+	blobUrl: string;
+	originalName: string;
+	size: number;
+	mimeType: string;
+	fileType: "photo" | "video" | "audio" | "file";
 }
 
 export type { EditingMessage, ReplyTarget } from "../context/ChatPageContext";
@@ -147,8 +163,10 @@ export { useMessageEditor } from "./useMessageEditor";
 export { useMessageSearch } from "./useMessageSearch";
 export { useMessageSender } from "./useMessageSender";
 export { useMessages } from "./useMessages";
+export { useNetworkStatus } from "./useNetworkStatus";
 export { usePendingFiles } from "./usePendingFiles";
 export { useSseEvents } from "./useSseEvents";
+export { useSyncStatus } from "./useSyncStatus";
 export { useThreads } from "./useThreads";
 export { useTyping } from "./useTyping";
 
@@ -161,7 +179,6 @@ export function useChatPage(): ChatPageState {
 	const [config, setConfig] = useState<ChatPageState["config"]>(null);
 	const [inputText, setInputText] = useState("");
 
-	const [messagesMap, setMessagesMap] = useState<Record<string, Message[]>>({});
 	const [threadsMap, setThreadsMap] = useState<Record<string, Thread>>({});
 	const [messageToThreadMap, setMessageToThreadMap] = useState<
 		Record<string, string>
@@ -172,11 +189,9 @@ export function useChatPage(): ChatPageState {
 
 	const configAbortRef = useRef<AbortController | null>(null);
 
-	const { chats, setChats, activeChatId, activeChat, selectChat } = useChatList(
-		{
-			token,
-		},
-	);
+	const { chats, activeChatId, activeChat, selectChat } = useChatList({
+		token,
+	});
 	const {
 		messages: activeMessages,
 		hasMore,
@@ -185,8 +200,6 @@ export function useChatPage(): ChatPageState {
 	} = useMessages({
 		token,
 		chatId: activeChatId,
-		messagesMap,
-		setMessagesMap,
 	});
 	const {
 		threads,
@@ -217,7 +230,7 @@ export function useChatPage(): ChatPageState {
 		handleRemoveFile: removeFile,
 		clearAllPendingFiles,
 	} = usePendingFiles();
-	const { sendMessage, editMessage, deleteMessage, retryMessage, uploadFiles } =
+	const { sendMessage, editMessage, deleteMessage, retryMessage } =
 		useMessageSender({
 			token: token ?? "",
 		});
@@ -272,69 +285,20 @@ export function useChatPage(): ChatPageState {
 		token,
 		userId: user?.id,
 		activeChatId,
-		setChats,
 		selectChat,
 	});
 
-	const loadChatsRef = useRef<(() => Promise<void>) | null>(null);
-	const loadChats = useCallback(async () => {
-		if (!token) return;
-		try {
-			const { chats: fetchedChats } = await (
-				await import("../api.ts")
-			).getChats(token);
-			setChats(fetchedChats);
-		} catch {
-			/* handled in useChatList */
-		}
-	}, [token, setChats]);
-	loadChatsRef.current = loadChats;
+	const isOnline = useNetworkStatus();
+	const syncState = useSyncStatus();
 
-	const markMessageStatus = useCallback(
-		(
-			chatId: string,
-			msgId: string,
-			status: "sending" | "failed",
-			threadId?: string,
-		) => {
-			if (threadId !== undefined) {
-				setThreadMessagesMap((prev) => {
-					const list = prev[threadId];
-					if (list === undefined) return prev;
-					return {
-						...prev,
-						[threadId]: list.map((m) =>
-							m.id === msgId ? { ...m, status } : m,
-						),
-					};
-				});
-			} else {
-				setMessagesMap((prev) => {
-					const list = prev[chatId];
-					if (list === undefined) return prev;
-					return {
-						...prev,
-						[chatId]: list.map((m) => (m.id === msgId ? { ...m, status } : m)),
-					};
-				});
-			}
-		},
-		[],
-	);
+	useEffect(() => {
+		setTokenProvider(() => token ?? null);
+	}, [token]);
 
-	const insertOptimistic = useCallback((msg: Message, threadId?: string) => {
-		if (threadId !== undefined) {
-			setThreadMessagesMap((prev) => ({
-				...prev,
-				[threadId]: [...(prev[threadId] ?? []), msg],
-			}));
-		} else {
-			setMessagesMap((prev) => ({
-				...prev,
-				[msg.chatId]: [...(prev[msg.chatId] ?? []), msg],
-			}));
-		}
+	const handleBackOnline = useCallback(() => {
+		scheduleSync();
 	}, []);
+	useOnlineNotifications(handleBackOnline);
 
 	useEffect(() => {
 		if (!token) {
@@ -354,16 +318,11 @@ export function useChatPage(): ChatPageState {
 
 	useSseEvents({
 		token: token ?? "",
-		setChats,
-		setMessagesMap,
 		setThreadsMap,
 		setThreadMessagesMap,
 		setMessageToThreadMap,
 		addTypingUser,
 		clearTyping,
-		onSseClosed: () => {
-			loadChatsRef.current?.();
-		},
 	});
 
 	const handleTyping = useCallback(
@@ -421,91 +380,64 @@ export function useChatPage(): ChatPageState {
 			const text = inputText.trim();
 			if (!text && pendingFiles.length === 0 && !pendingLocation) return;
 
-			const msgId = crypto.randomUUID();
-			let fileInfos: FileInfo[] = [];
-
-			if (pendingFiles.length > 0) {
-				fileInfos = await uploadFiles(pendingFiles);
-			}
-
 			if (editingMessage !== null) {
-				const location =
+				const nextLocation =
 					editingMessage.location === undefined
 						? undefined
 						: editingMessage.location;
-				await editMessage({
-					chatId: editingMessage.chatId,
-					messageId: editingMessage.messageId,
-					text,
-					fileIDs:
-						fileInfos.length > 0
-							? fileInfos.map((f) => f.id)
-							: editingMessage.files?.map((f) => f.id),
-					location: location ?? null,
-					clearLocation: location === null,
-					isThread: !!editingMessage.threadId,
-					threadId: editingMessage.threadId,
-				});
+				const isThread = !!editingMessage.threadId;
+
+				if (isThread && editingMessage.threadId !== undefined) {
+					const fileIDs =
+						pendingFiles.length > 0
+							? pendingFiles.map((f) => f.id)
+							: editingMessage.files?.map((f) => f.id);
+					try {
+						await editThreadMessage(
+							token,
+							editingMessage.chatId,
+							editingMessage.threadId,
+							editingMessage.messageId,
+							text,
+							fileIDs,
+							{ location: nextLocation, clearLocation: nextLocation === null },
+						);
+					} catch {
+						emitNotification(i18n.t("error.send"));
+					}
+				} else {
+					await editMessage({
+						chatId: editingMessage.chatId,
+						messageId: editingMessage.messageId,
+						text,
+						pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
+						location: nextLocation,
+						clearLocation: nextLocation === null,
+					});
+				}
 				clearEditing();
 			} else if (pendingChatWith !== null) {
 				const { chat } = await createChat(token, {
 					type: "private",
 					withUserId: pendingChatWith,
 				});
-				setChats((prev) => {
-					if (prev.some((c) => c.id === chat.id)) return prev;
-					return [...prev, chat];
-				});
+				await chatsRepo.upsert(chat);
 				selectChat(chat.id);
-				insertOptimistic({
-					id: msgId,
+				await sendMessage({
 					chatId: chat.id,
-					fromId: user.id,
-					fromNick: user.nick,
 					text,
-					createdAt: new Date().toISOString(),
-					files: fileInfos.length > 0 ? fileInfos : undefined,
+					pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
 					location: pendingLocation ?? undefined,
-					status: "sending",
 				});
-				try {
-					await sendMessage({
-						chatId: chat.id,
-						text,
-						msgId,
-						fileIDs: fileInfos.map((f) => f.id),
-						location: pendingLocation ?? undefined,
-					});
-				} catch {
-					markMessageStatus(chat.id, msgId, "failed");
-					emitNotification(i18n.t("error.send"));
-				}
 				clearPendingChat();
 			} else if (activeChatId !== null) {
-				insertOptimistic({
-					id: msgId,
+				await sendMessage({
 					chatId: activeChatId,
-					fromId: user.id,
-					fromNick: user.nick,
 					text,
-					createdAt: new Date().toISOString(),
-					files: fileInfos.length > 0 ? fileInfos : undefined,
+					pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
 					location: pendingLocation ?? undefined,
-					status: "sending",
+					replyToId: replyToMessage?.messageId,
 				});
-				try {
-					await sendMessage({
-						chatId: activeChatId,
-						text,
-						msgId,
-						replyToId: replyToMessage?.messageId,
-						fileIDs: fileInfos.map((f) => f.id),
-						location: pendingLocation ?? undefined,
-					});
-				} catch {
-					markMessageStatus(activeChatId, msgId, "failed");
-					emitNotification(i18n.t("error.send"));
-				}
 			}
 
 			setInputText("");
@@ -523,14 +455,10 @@ export function useChatPage(): ChatPageState {
 			pendingChatWith,
 			activeChatId,
 			replyToMessage,
-			uploadFiles,
-			editMessage,
 			sendMessage,
+			editMessage,
 			selectChat,
 			clearAllPendingFiles,
-			setChats,
-			insertOptimistic,
-			markMessageStatus,
 			clearEditing,
 			clearPendingChat,
 			clearReply,
@@ -547,59 +475,94 @@ export function useChatPage(): ChatPageState {
 			if (!text && pendingFiles.length === 0 && !pendingLocation) return;
 
 			const msgId = crypto.randomUUID();
-			let fileInfos: FileInfo[] = [];
-
-			if (pendingFiles.length > 0) {
-				fileInfos = await uploadFiles(pendingFiles);
-			}
 
 			if (editingMessage?.threadId) {
-				const location =
+				const nextLocation =
 					editingMessage.location === undefined
 						? undefined
 						: editingMessage.location;
-				await editMessage({
-					chatId: editingMessage.chatId,
-					messageId: editingMessage.messageId,
-					text,
-					fileIDs:
-						fileInfos.length > 0
-							? fileInfos.map((f) => f.id)
-							: editingMessage.files?.map((f) => f.id),
-					location: location ?? null,
-					clearLocation: location === null,
-					isThread: true,
-					threadId: editingMessage.threadId,
-				});
+				const fileIDs =
+					pendingFiles.length > 0
+						? pendingFiles.map((f) => f.id)
+						: editingMessage.files?.map((f) => f.id);
+				try {
+					await editThreadMessage(
+						token,
+						editingMessage.chatId,
+						editingMessage.threadId,
+						editingMessage.messageId,
+						text,
+						fileIDs,
+						{ location: nextLocation, clearLocation: nextLocation === null },
+					);
+				} catch {
+					emitNotification(i18n.t("error.send"));
+				}
 				clearEditing();
 			} else {
-				insertOptimistic(
-					{
-						id: msgId,
-						chatId: activeChatId,
-						fromId: user?.id ?? "",
-						fromNick: user?.nick ?? "",
-						text,
-						createdAt: new Date().toISOString(),
-						files: fileInfos.length > 0 ? fileInfos : undefined,
-						location: pendingLocation ?? undefined,
-						status: "sending",
-					},
-					activeThreadId,
-				);
+				setThreadMessagesMap((prev) => ({
+					...prev,
+					[activeThreadId]: [
+						...(prev[activeThreadId] ?? []),
+						{
+							id: msgId,
+							chatId: activeChatId,
+							fromId: user?.id ?? "",
+							fromNick: user?.nick ?? "",
+							text,
+							createdAt: new Date().toISOString(),
+							files:
+								pendingFiles.length > 0
+									? pendingFiles.map((pf) => ({
+											id: pf.id,
+											originalName: pf.originalName,
+											size: pf.size,
+											mimeType: pf.mimeType,
+											fileType: pf.fileType,
+											url: pf.blobUrl,
+										}))
+									: undefined,
+							location: pendingLocation ?? undefined,
+							status: "queued",
+						},
+					],
+				}));
 				try {
-					await sendMessage({
-						chatId: activeChatId,
+					const uploadedFileIds: string[] = [];
+					for (const pf of pendingFiles) {
+						const { file: uploaded } = await uploadFile(token, pf.file);
+						uploadedFileIds.push(uploaded.id);
+					}
+
+					await sendThreadMessage(
+						token,
+						activeChatId,
+						activeThreadId,
 						text,
 						msgId,
-						replyToId: replyToMessage?.messageId,
-						fileIDs: fileInfos.map((f) => f.id),
-						location: pendingLocation ?? undefined,
-						isThread: true,
-						threadId: activeThreadId,
+						replyToMessage?.messageId,
+						uploadedFileIds.length > 0 ? uploadedFileIds : undefined,
+						pendingLocation ?? undefined,
+					);
+					setThreadMessagesMap((prev) => {
+						const list = prev[activeThreadId] ?? [];
+						return {
+							...prev,
+							[activeThreadId]: list.map((m) =>
+								m.id === msgId ? { ...m, status: "sent" as const } : m,
+							),
+						};
 					});
 				} catch {
-					markMessageStatus(activeChatId, msgId, "failed", activeThreadId);
+					setThreadMessagesMap((prev) => {
+						const list = prev[activeThreadId] ?? [];
+						return {
+							...prev,
+							[activeThreadId]: list.map((m) =>
+								m.id === msgId ? { ...m, status: "failed" as const } : m,
+							),
+						};
+					});
 					emitNotification(i18n.t("error.send"));
 				}
 			}
@@ -620,12 +583,7 @@ export function useChatPage(): ChatPageState {
 			pendingLocation,
 			editingMessage,
 			replyToMessage,
-			uploadFiles,
-			editMessage,
-			sendMessage,
 			clearAllPendingFiles,
-			insertOptimistic,
-			markMessageStatus,
 			clearEditing,
 			clearReply,
 			clearPendingLocation,
@@ -634,7 +592,7 @@ export function useChatPage(): ChatPageState {
 
 	const handleDeleteMessage = useCallback(
 		(chatId: string, messageId: string) => {
-			deleteMessage(chatId, messageId);
+			void deleteMessage(chatId, messageId);
 		},
 		[deleteMessage],
 	);
@@ -649,38 +607,59 @@ export function useChatPage(): ChatPageState {
 
 	const handleRetryMessage = useCallback(
 		async (chatId: string, messageId: string) => {
-			const msg = activeMessages.find((m) => m.id === messageId);
-			if (!msg) return;
-			markMessageStatus(chatId, messageId, "sending");
-			try {
-				await retryMessage(chatId, messageId, msg.text);
-			} catch {
-				markMessageStatus(chatId, messageId, "failed");
-				emitNotification(i18n.t("error.send"));
-			}
+			await retryMessage(chatId, messageId);
 		},
-		[activeMessages, retryMessage, markMessageStatus],
+		[retryMessage],
 	);
 
 	const handleRetryThreadMessage = useCallback(
 		async (threadId: string, messageId: string) => {
+			if (!activeThread) return;
 			const msg = activeThreadMessages.find((m) => m.id === messageId);
-			if (!msg || !activeThread) return;
-			markMessageStatus(activeThread.chatId, messageId, "sending", threadId);
+			if (!msg) return;
+			setThreadMessagesMap((prev) => {
+				const list = prev[threadId];
+				if (list === undefined) return prev;
+				return {
+					...prev,
+					[threadId]: list.map((m) =>
+						m.id === messageId ? { ...m, status: "queued" as const } : m,
+					),
+				};
+			});
 			try {
-				await retryMessage(
+				await sendThreadMessage(
+					token ?? "",
 					activeThread.chatId,
-					messageId,
-					msg.text,
-					true,
 					threadId,
+					msg.text,
+					messageId,
 				);
+				setThreadMessagesMap((prev) => {
+					const list = prev[threadId];
+					if (list === undefined) return prev;
+					return {
+						...prev,
+						[threadId]: list.map((m) =>
+							m.id === messageId ? { ...m, status: "sent" as const } : m,
+						),
+					};
+				});
 			} catch {
-				markMessageStatus(activeThread.chatId, messageId, "failed", threadId);
+				setThreadMessagesMap((prev) => {
+					const list = prev[threadId];
+					if (list === undefined) return prev;
+					return {
+						...prev,
+						[threadId]: list.map((m) =>
+							m.id === messageId ? { ...m, status: "failed" as const } : m,
+						),
+					};
+				});
 				emitNotification(i18n.t("error.send"));
 			}
 		},
-		[activeThreadMessages, activeThread, retryMessage, markMessageStatus],
+		[activeThread, activeThreadMessages, token],
 	);
 
 	return {
@@ -710,7 +689,7 @@ export function useChatPage(): ChatPageState {
 		handleCreateThread,
 		typingUsers,
 		handleTyping,
-		pendingFiles,
+		pendingFiles: pendingFiles as PendingFileLite[],
 		handleAttachFiles: handleAttachFilesWrapped,
 		handleRemoveFile,
 		config,
@@ -754,5 +733,7 @@ export function useChatPage(): ChatPageState {
 		handleRemoveGroupMember,
 		handleDeleteGroup,
 		handleUploadGroupAvatar,
+		isOnline,
+		syncState,
 	};
 }

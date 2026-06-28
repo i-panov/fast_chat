@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Chat } from "../api.ts";
-import { getChats } from "../api.ts";
-import i18n from "../i18n.ts";
-import { emitNotification } from "../utils/notify.ts";
+import { chatsRepo } from "../db/chatsRepo.ts";
+import type { StoredChat } from "../db/schema.ts";
+import { useLiveQuery } from "../db/useLiveQuery.ts";
+import { scheduleSync } from "../sync/syncEngine.ts";
 
 interface UseChatListParams {
 	token: string | undefined;
@@ -10,45 +11,36 @@ interface UseChatListParams {
 
 interface UseChatListReturn {
 	chats: Chat[];
-	setChats: React.Dispatch<React.SetStateAction<Chat[]>>;
 	activeChatId: string | null;
 	activeChat: Chat | undefined;
-	selectChat: (chatId: string) => void;
+	selectChat: (chatId: string | null) => void;
+}
+
+function stripMetadata(sc: StoredChat): Chat {
+	const { _updatedAt: _u, ...rest } = sc;
+	void _u;
+	return rest;
 }
 
 export function useChatList({ token }: UseChatListParams): UseChatListReturn {
-	const [chats, setChats] = useState<Chat[]>([]);
 	const [activeChatId, setActiveChatId] = useState<string | null>(null);
-
-	const loadChats = useCallback(async () => {
-		if (!token) return;
-
-		try {
-			const { chats: fetchedChats } = await getChats(token);
-			setChats(fetchedChats);
-		} catch {
-			emitNotification(i18n.t("error.loadChats"));
-		}
-	}, [token]);
+	const query = useCallback(() => chatsRepo.getAll(), []);
+	const storedChats = useLiveQuery<StoredChat[]>(query);
 
 	useEffect(() => {
-		if (!token) {
-			setChats([]);
-			return;
-		}
+		if (token === undefined) return;
+		scheduleSync();
+	}, [token]);
 
-		loadChats();
-	}, [token, loadChats]);
+	const chats = storedChats?.map(stripMetadata) ?? [];
+	const activeChat = chats.find((c) => c.id === activeChatId);
 
-	const selectChat = useCallback((chatId: string) => {
+	const selectChat = useCallback((chatId: string | null) => {
 		setActiveChatId(chatId);
 	}, []);
 
-	const activeChat = chats.find((c) => c.id === activeChatId);
-
 	return {
 		chats,
-		setChats,
 		activeChatId,
 		activeChat,
 		selectChat,

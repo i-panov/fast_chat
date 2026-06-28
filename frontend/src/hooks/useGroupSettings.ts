@@ -10,13 +10,14 @@ import {
 	uploadChatAvatar,
 	uploadFile,
 } from "../api.ts";
+import { chatsRepo } from "../db/chatsRepo.ts";
+import { scheduleSync } from "../sync/syncEngine.ts";
 
 export interface UseGroupSettingsParams {
 	token: string | undefined;
 	userId: string | undefined;
 	activeChatId: string | null;
-	setChats: React.Dispatch<React.SetStateAction<Chat[]>>;
-	selectChat: (chatId: string) => void;
+	selectChat: (chatId: string | null) => void;
 }
 
 export interface UseGroupSettingsReturn {
@@ -40,7 +41,6 @@ export function useGroupSettings({
 	token,
 	userId,
 	activeChatId,
-	setChats,
 	selectChat,
 }: UseGroupSettingsParams): UseGroupSettingsReturn {
 	const [createGroupOpen, setCreateGroupOpen] = useState(false);
@@ -57,14 +57,11 @@ export function useGroupSettings({
 				name,
 				memberIds,
 			});
-			setChats((prev) => {
-				if (prev.some((c) => c.id === chat.id)) return prev;
-				return [...prev, chat];
-			});
+			await chatsRepo.upsert(chat);
 			setCreateGroupOpen(false);
 			selectChat(chat.id);
 		},
-		[token, setChats, selectChat],
+		[token, selectChat],
 	);
 
 	const openGroupSettings = useCallback(
@@ -74,6 +71,7 @@ export function useGroupSettings({
 			try {
 				const { chat } = await getChatInfo(token, chatId);
 				setGroupSettings(chat);
+				await chatsRepo.upsert(chat);
 			} catch {
 				setGroupSettingsChatId(null);
 			}
@@ -91,9 +89,9 @@ export function useGroupSettings({
 			if (!token || !groupSettingsChatId) return;
 			const { chat } = await updateChat(token, groupSettingsChatId, { name });
 			setGroupSettings(chat);
-			setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+			await chatsRepo.upsert(chat);
 		},
-		[token, groupSettingsChatId, setChats],
+		[token, groupSettingsChatId],
 	);
 
 	const handleAddGroupMember = useCallback(
@@ -105,9 +103,9 @@ export function useGroupSettings({
 				userIdToAdd,
 			);
 			setGroupSettings(chat);
-			setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+			await chatsRepo.upsert(chat);
 		},
-		[token, groupSettingsChatId, setChats],
+		[token, groupSettingsChatId],
 	);
 
 	const handleRemoveGroupMember = useCallback(
@@ -119,11 +117,11 @@ export function useGroupSettings({
 				userIdToRemove,
 			);
 			setGroupSettings(chat);
-			setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+			await chatsRepo.upsert(chat);
 			if (userIdToRemove === userId) {
 				closeGroupSettings();
 				if (activeChatId === groupSettingsChatId) {
-					selectChat("");
+					selectChat(null);
 				}
 			}
 		},
@@ -134,22 +132,20 @@ export function useGroupSettings({
 			closeGroupSettings,
 			activeChatId,
 			selectChat,
-			setChats,
 		],
 	);
 
 	const handleDeleteGroup = useCallback(async () => {
 		if (!token || !groupSettingsChatId) return;
 		await deleteChat(token, groupSettingsChatId);
-		setChats((prev) => prev.filter((c) => c.id !== groupSettingsChatId));
+		scheduleSync();
 		if (activeChatId === groupSettingsChatId) {
-			selectChat("");
+			selectChat(null);
 		}
 		closeGroupSettings();
 	}, [
 		token,
 		groupSettingsChatId,
-		setChats,
 		activeChatId,
 		selectChat,
 		closeGroupSettings,
@@ -165,9 +161,9 @@ export function useGroupSettings({
 				uploaded.id,
 			);
 			setGroupSettings(chat);
-			setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+			await chatsRepo.upsert(chat);
 		},
-		[token, groupSettingsChatId, setChats],
+		[token, groupSettingsChatId],
 	);
 
 	return {

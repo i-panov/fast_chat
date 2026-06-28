@@ -53,7 +53,7 @@ interface ChatPageContextValue {
 	pendingChatNick: string | null;
 
 	// Действия
-	selectChat: (chatId: string) => void;
+	selectChat: (chatId: string | null) => void;
 	selectPendingChat: (withUserId: string, withUserNick: string) => void;
 	setInputText: (v: string) => void;
 	handleSend: (e: React.FormEvent<HTMLFormElement>) => Promise<void>;

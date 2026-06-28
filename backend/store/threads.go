@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"fast_chat/model"
 )
@@ -111,18 +112,20 @@ func (s *Store) AddThreadMessage(threadID, fromID, fromNick, text, messageID, re
 		id = generateID()
 	}
 
+	now := time.Now()
 	msg := model.Message{
 		ID:        id,
 		ChatID:    threadID,
 		FromID:    fromID,
 		FromNick:  fromNick,
 		Text:      text,
-		CreatedAt: time.Now(),
+		CreatedAt: now,
+		UpdatedAt: now,
 		ReplyTo:   replyTo,
 		Location:  location,
 	}
 
-	if err := s.db.Create(&msg).Error; err != nil {
+	if err := s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&msg).Error; err != nil {
 		return nil, err
 	}
 
@@ -152,10 +155,12 @@ func (s *Store) EditThreadMessage(threadID, messageID, userID, newText string, l
 	now := time.Now()
 	msg.Text = newText
 	msg.EditedAt = &now
+	msg.UpdatedAt = now
 
 	updates := map[string]any{
-		fieldText:     newText,
-		fieldEditedAt: &now,
+		fieldText:      newText,
+		fieldEditedAt:  &now,
+		fieldUpdatedAt: now,
 	}
 
 	switch {

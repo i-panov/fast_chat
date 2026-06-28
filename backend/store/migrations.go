@@ -1,6 +1,8 @@
 package store
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 )
 
@@ -38,6 +40,22 @@ func createIndexes(db *gorm.DB) error {
 		// authorization also joins the other way by file_id.
 		"CREATE INDEX IF NOT EXISTS idx_message_files_message ON message_files(message_id)",
 		"CREATE INDEX IF NOT EXISTS idx_message_files_file ON message_files(file_id)",
+
+		// Sync delta queries scan messages and tombstones by chat_id
+		// filtered by timestamp.
+		"CREATE INDEX IF NOT EXISTS idx_messages_chat_updated ON messages(chat_id, updated_at)",
+		"CREATE INDEX IF NOT EXISTS idx_deleted_messages_chat_time ON deleted_messages(chat_id, deleted_at)",
+		"CREATE INDEX IF NOT EXISTS idx_deleted_chats_user_time ON deleted_chats(user_id, deleted_at)",
+	}
+
+	// One-shot backfill: rows inserted before the UpdatedAt column
+	// existed have updated_at = epoch, which would otherwise cause
+	// the very first sync to re-download the entire chat history.
+	if err := db.Exec(
+		"UPDATE messages SET updated_at = created_at WHERE updated_at = ?",
+		time.Unix(0, 0),
+	).Error; err != nil {
+		return err
 	}
 
 	for _, stmt := range statements {

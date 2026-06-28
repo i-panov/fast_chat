@@ -107,11 +107,30 @@ type Message struct {
 	FromID    string       `gorm:"not null"           json:"fromId"`
 	FromNick  string       `gorm:"not null"           json:"fromNick"`
 	Text      string       `gorm:"not null"           json:"text"`
-	CreatedAt time.Time    `gorm:"not null"           json:"createdAt"`
+	CreatedAt time.Time    `gorm:"not null;default:0"          json:"createdAt"`
+	UpdatedAt time.Time    `gorm:"not null;default:0"          json:"-"`
 	EditedAt  *time.Time   `json:"editedAt,omitempty"`
 	ReplyTo   *ReplyToInfo `gorm:"serializer:json"    json:"replyTo,omitempty"`
 	Location  *Location    `gorm:"serializer:json"    json:"location,omitempty"`
 	Files     []FileInfo   `gorm:"-"                  json:"files,omitempty"`
+}
+
+// DeletedMessage is a tombstone: it records that a message was removed
+// at a given time. Used to ship delete events to offline clients via
+// /api/sync without polluting the main messages table.
+type DeletedMessage struct {
+	ChatID    string    `gorm:"primaryKey"     json:"chatId"`
+	MessageID string    `gorm:"primaryKey"     json:"messageId"`
+	DeletedAt time.Time `gorm:"index;not null" json:"deletedAt"`
+}
+
+// DeletedChat is a tombstone for group chats that were deleted while
+// the user was offline. Tracked separately so the sync endpoint can
+// tell the client to drop the chat from its local cache.
+type DeletedChat struct {
+	ChatID    string    `gorm:"primaryKey"     json:"chatId"`
+	UserID    string    `gorm:"primaryKey"     json:"userId"`
+	DeletedAt time.Time `gorm:"index;not null" json:"deletedAt"`
 }
 
 type Thread struct {

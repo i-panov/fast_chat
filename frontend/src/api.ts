@@ -23,7 +23,7 @@ async function request<T>(
 	}
 	if (!res.ok) {
 		const body = (await res.json().catch(() => ({}))) as Record<string, string>;
-		throw new Error(body.error ?? `HTTP ${String(res.status)}`);
+		throw new Error(`http ${res.status}: ${body.error ?? ""}`);
 	}
 	return res.json() as Promise<T>;
 }
@@ -81,7 +81,7 @@ export interface PendingFile {
 	fileType: "photo" | "video" | "audio" | "file";
 }
 
-export type MessageStatus = "sending" | "failed";
+export type MessageStatus = "sent" | "queued" | "failed";
 
 export interface Message {
 	id: string;
@@ -376,4 +376,28 @@ export function sendTyping(token: string, chatId: string, active: boolean) {
 
 export function getConfig() {
 	return request<AppConfig>("/api/config", undefined);
+}
+
+export interface SyncDeletedMessage {
+	chatId: string;
+	messageId: string;
+	deletedAt: string;
+}
+
+export interface SyncDeletedChat {
+	chatId: string;
+	deletedAt: string;
+}
+
+export interface SyncResponse {
+	serverNow: string;
+	chats: Chat[];
+	deletedChats: SyncDeletedChat[];
+	messages: Message[];
+	deletedMessages: SyncDeletedMessage[];
+}
+
+export function getSync(token: string, since: string): Promise<SyncResponse> {
+	const params = new URLSearchParams({ since });
+	return request<SyncResponse>(`/api/sync?${params.toString()}`, token);
 }

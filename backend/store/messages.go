@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	fieldText     = "text"
-	fieldEditedAt = "edited_at"
+	fieldText      = "text"
+	fieldEditedAt  = "edited_at"
+	fieldUpdatedAt = "updated_at"
 )
 
 var (
@@ -45,10 +46,12 @@ func (s *Store) EditMessage(chatID, messageID, userID, newText string, location 
 	now := time.Now()
 	msg.Text = newText
 	msg.EditedAt = &now
+	msg.UpdatedAt = now
 
 	updates := map[string]any{
-		fieldText:     newText,
-		fieldEditedAt: &now,
+		fieldText:      newText,
+		fieldEditedAt:  &now,
+		fieldUpdatedAt: now,
 	}
 
 	switch {
@@ -123,18 +126,23 @@ func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID 
 		id = generateID()
 	}
 
+	now := time.Now()
 	msg := model.Message{
 		ID:        id,
 		ChatID:    chatID,
 		FromID:    fromID,
 		FromNick:  fromNick,
 		Text:      text,
-		CreatedAt: time.Now(),
+		CreatedAt: now,
+		UpdatedAt: now,
 		ReplyTo:   replyTo,
 		Location:  location,
 	}
 
-	if err := s.db.Create(&msg).Error; err != nil {
+	// Idempotent insert: if a row with the same primary key already
+	// exists (e.g. a retried send from the offline outbox), silently
+	// succeed rather than failing the whole request.
+	if err := s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&msg).Error; err != nil {
 		return nil, err
 	}
 
@@ -178,13 +186,27 @@ func (s *Store) DeleteMessage(chatID, messageID, userID string) error {
 		return ErrNotYourMessage
 	}
 
-	return s.db.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{}).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{}).Error; err != nil {
+			return err
+		}
+
+		// Tombstone: lets the /api/sync delta tell offline clients
+		// that this message was removed. Upsert in case a previous
+		// delete was retried and the tombstone already exists.
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.DeletedMessage{
+			ChatID:    chatID,
+			MessageID: messageID,
+			DeletedAt: time.Now(),
+		}).Error
+	})
 }
 
 func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Time, location *model.Location, clearLocation bool) error {
 	updates := map[string]any{
-		fieldText:     text,
-		fieldEditedAt: &editedAt,
+		fieldText:      text,
+		fieldEditedAt:  &editedAt,
+		fieldUpdatedAt: editedAt,
 	}
 
 	if clearLocation {
@@ -208,13 +230,24 @@ func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Tim
 }
 
 func (s *Store) DeleteRawMessage(chatID, messageID string) error {
-	result := s.db.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
+	now := time.Now()
 
-	if result.RowsAffected == 0 {
-		return ErrMessageNotFound
-	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
+		if result.RowsAffected == 0 {
+			return ErrMessageNotFound
+		}
 
-	return result.Error
+		if err := result.Error; err != nil {
+			return err
+		}
+
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.DeletedMessage{
+			ChatID:    chatID,
+			MessageID: messageID,
+			DeletedAt: now,
+		}).Error
+	})
 }
 
 func (s *Store) paginateMessages(chatID string, limit int, before string) ([]model.Message, string, bool) {

@@ -71,8 +71,15 @@
 	"message.failed": "Failed to send",
 	"message.openInMap": "Open in OpenStreetMap",
 	"message.location": "Location",
+	"message.queued": "Queued",
 
 	"input.replyingTo": "Replying to @{{nick}}",
+
+	"sync.offline": "Offline",
+	"sync.syncing": "Syncing...",
+	"sync.pending_one": "{{count}} pending",
+	"sync.pending_other": "{{count}} pending",
+	"sync.error": "Sync error",
 
 	"date.today": "Today",
 	"date.yesterday": "Yesterday",

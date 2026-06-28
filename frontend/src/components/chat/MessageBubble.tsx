@@ -358,7 +358,7 @@ interface Props {
 	threadId?: string;
 	threadMessageCount?: number;
 	isInThread?: boolean;
-	status?: "sending" | "failed";
+	status?: "sent" | "queued" | "failed";
 	onRetry?: (chatId: string, messageId: string) => void;
 	showAuthorNick?: boolean;
 }
@@ -434,20 +434,20 @@ export const MessageBubble = memo(function MessageBubble({
 	const canEdit =
 		isOwn &&
 		isWithinTTL(createdAt, editTTL) &&
-		status !== "sending" &&
+		status !== "queued" &&
 		status !== "failed";
 	const canDelete =
 		isOwn &&
-		(status === "sending" ||
+		(status === "queued" ||
 			status === "failed" ||
 			isWithinTTL(createdAt, deleteTTL));
 	const canReply =
-		onReply !== undefined && status !== "sending" && status !== "failed";
+		onReply !== undefined && status !== "queued" && status !== "failed";
 	const canCreateThread =
 		onCreateThread !== undefined &&
 		threadId === undefined &&
 		!isInThread &&
-		status !== "sending" &&
+		status !== "queued" &&
 		status !== "failed";
 
 	const photoFiles = (files ?? []).filter((f) => f.fileType === "photo");
@@ -659,7 +659,9 @@ export const MessageBubble = memo(function MessageBubble({
 								gap: 4,
 							}}
 						>
-							{status === "sending" && <Loader size={4} />}
+							{status === "queued" && (
+								<Loader size={4} aria-label={t("message.queued")} />
+							)}
 							{status === "failed" && (
 								<span
 									style={{ color: "var(--mantine-color-red-5)" }}

@@ -72,8 +72,16 @@
 	"message.failed": "Не удалось отправить",
 	"message.openInMap": "Открыть в OpenStreetMap",
 	"message.location": "Местоположение",
+	"message.queued": "В очереди",
 
 	"input.replyingTo": "Ответ @{{nick}}",
+
+	"sync.offline": "Нет сети",
+	"sync.syncing": "Синхронизация...",
+	"sync.pending_one": "В очереди: {{count}} сообщение",
+	"sync.pending_few": "В очереди: {{count}} сообщения",
+	"sync.pending_many": "В очереди: {{count}} сообщений",
+	"sync.error": "Ошибка синхронизации",
 
 	"date.today": "Сегодня",
 	"date.yesterday": "Вчера",

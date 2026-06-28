@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"fast_chat/model"
 )
@@ -223,19 +224,14 @@ func (s *Store) DeleteChat(chatID string) error {
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		var msgIDs []string
-		if err := tx.Model(&model.Message{}).Where("chat_id = ?", chatID).Pluck("id", &msgIDs).Error; err != nil {
+		now := time.Now()
+
+		if err := writeChatDeleteTombs(tx, chatID, chat.Members, now); err != nil {
 			return err
 		}
 
-		if len(msgIDs) > 0 {
-			if err := tx.Where("message_id IN ?", msgIDs).Delete(&model.MessageFile{}).Error; err != nil {
-				return err
-			}
-
-			if err := tx.Where("chat_id = ?", chatID).Delete(&model.Message{}).Error; err != nil {
-				return err
-			}
+		if err := writeMessageDeleteTombs(tx, chatID, now); err != nil {
+			return err
 		}
 
 		if err := tx.Where("chat_id = ?", chatID).Delete(&model.Thread{}).Error; err != nil {
@@ -248,6 +244,53 @@ func (s *Store) DeleteChat(chatID string) error {
 
 		return tx.Where("id = ?", chatID).Delete(&model.Chat{}).Error
 	})
+}
+
+func writeChatDeleteTombs(tx *gorm.DB, chatID string, members []string, at time.Time) error {
+	if len(members) == 0 {
+		return nil
+	}
+
+	tombs := make([]model.DeletedChat, 0, len(members))
+	for _, memberID := range members {
+		tombs = append(tombs, model.DeletedChat{
+			ChatID:    chatID,
+			UserID:    memberID,
+			DeletedAt: at,
+		})
+	}
+
+	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&tombs).Error
+}
+
+func writeMessageDeleteTombs(tx *gorm.DB, chatID string, at time.Time) error {
+	var msgIDs []string
+	if err := tx.Model(&model.Message{}).Where("chat_id = ?", chatID).Pluck("id", &msgIDs).Error; err != nil {
+		return err
+	}
+
+	if len(msgIDs) == 0 {
+		return nil
+	}
+
+	tombs := make([]model.DeletedMessage, 0, len(msgIDs))
+	for _, mid := range msgIDs {
+		tombs = append(tombs, model.DeletedMessage{
+			ChatID:    chatID,
+			MessageID: mid,
+			DeletedAt: at,
+		})
+	}
+
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&tombs).Error; err != nil {
+		return err
+	}
+
+	if err := tx.Where("message_id IN ?", msgIDs).Delete(&model.MessageFile{}).Error; err != nil {
+		return err
+	}
+
+	return tx.Where("chat_id = ?", chatID).Delete(&model.Message{}).Error
 }
 
 func (s *Store) GetUserChats(userID string) []*model.Chat {

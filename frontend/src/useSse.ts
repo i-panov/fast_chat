@@ -43,6 +43,42 @@ export function useSse(token: string, onEvent: EventHandler) {
 			}
 		});
 
+		source.addEventListener("chat_updated", (e) => {
+			try {
+				const data = JSON.parse(e.data as string) as Record<string, unknown>;
+				onEventRef.current("chat_updated", data);
+			} catch {
+				/* ignore */
+			}
+		});
+
+		source.addEventListener("chat_deleted", (e) => {
+			try {
+				const data = JSON.parse(e.data as string) as Record<string, unknown>;
+				onEventRef.current("chat_deleted", data);
+			} catch {
+				/* ignore */
+			}
+		});
+
+		source.addEventListener("chat_member_added", (e) => {
+			try {
+				const data = JSON.parse(e.data as string) as Record<string, unknown>;
+				onEventRef.current("chat_member_added", data);
+			} catch {
+				/* ignore */
+			}
+		});
+
+		source.addEventListener("chat_member_removed", (e) => {
+			try {
+				const data = JSON.parse(e.data as string) as Record<string, unknown>;
+				onEventRef.current("chat_member_removed", data);
+			} catch {
+				/* ignore */
+			}
+		});
+
 		source.addEventListener("message_updated", (e) => {
 			try {
 				const data = JSON.parse(e.data as string) as Record<string, unknown>;

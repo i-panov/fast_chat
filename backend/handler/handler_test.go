@@ -32,7 +32,7 @@ func newTestStore(t *testing.T) *store.Store {
 		t.Fatal(err)
 	}
 
-	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &store.ChatMember{}, &model.Message{}, &model.Thread{}, &model.File{}, &model.MessageFile{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &store.ChatMember{}, &model.Message{}, &model.Thread{}, &model.File{}, &model.MessageFile{}, &model.DeletedMessage{}, &model.DeletedChat{}); err != nil {
 		t.Fatal(err)
 	}
 
