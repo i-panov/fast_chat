@@ -12,6 +12,7 @@ import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { FileInfo, Location, PendingFile } from "../../api.ts";
+import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { formatCoords } from "../../utils/chat.ts";
 
@@ -105,17 +106,14 @@ function useVideoThumbnail(blobUrl: string | undefined): string | null {
 
 function ReplyFilePreviewInline({
 	files,
-	token,
+	photoBlobUrl,
 }: {
 	files: FileInfo[];
-	token: string | undefined;
+	photoBlobUrl: string | null;
 }) {
 	if (files.length === 0) return null;
 	const first = files[0];
 	const extra = files.length - 1;
-	const url = token
-		? `${first.url}?token=${encodeURIComponent(token)}`
-		: first.url;
 
 	return (
 		<div
@@ -126,9 +124,9 @@ function ReplyFilePreviewInline({
 				marginTop: 2,
 			}}
 		>
-			{first.fileType === "photo" ? (
+			{first.fileType === "photo" && photoBlobUrl ? (
 				<img
-					src={url}
+					src={photoBlobUrl}
 					alt=""
 					style={{
 						width: 20,
@@ -138,6 +136,8 @@ function ReplyFilePreviewInline({
 						flexShrink: 0,
 					}}
 				/>
+			) : first.fileType === "photo" ? (
+				<Loader size="xs" />
 			) : (
 				<FileIcon
 					size={18}
@@ -250,15 +250,15 @@ function PendingFilePreview({
 function ExistingFilePreview({
 	file,
 	onRemove,
-	token,
 }: {
 	file: FileInfo;
 	onRemove: () => void;
-	token: string | undefined;
 }) {
-	const url = token
-		? `${file.url}?token=${encodeURIComponent(token)}`
-		: file.url;
+	const { activeAccount } = useAuth();
+	const { blobUrl, loading } = useFileUrl(
+		file.fileType === "photo" ? file.url : undefined,
+		activeAccount?.token,
+	);
 
 	return (
 		<Paper
@@ -273,9 +273,9 @@ function ExistingFilePreview({
 				opacity: 0.85,
 			}}
 		>
-			{file.fileType === "photo" ? (
+			{file.fileType === "photo" && blobUrl ? (
 				<img
-					src={url}
+					src={blobUrl}
 					alt=""
 					style={{
 						width: PREVIEW_SIZE,
@@ -284,6 +284,8 @@ function ExistingFilePreview({
 						borderRadius: PREVIEW_BORDER_RADIUS,
 					}}
 				/>
+			) : file.fileType === "photo" && loading ? (
+				<Loader size="xs" />
 			) : (
 				<FileIcon size={24} style={{ flexShrink: 0 }} />
 			)}
@@ -378,8 +380,15 @@ export function InputBar({
 }: Props) {
 	const { t } = useTranslation();
 	const { activeAccount } = useAuth();
-	const token = activeAccount?.token;
 	const fileInputRef = useRef<HTMLInputElement>(null);
+
+	const replyPhotoFile = replyToFiles?.[0];
+	const replyPhotoUrl =
+		replyPhotoFile?.fileType === "photo" ? replyPhotoFile.url : undefined;
+	const { blobUrl: replyPhotoBlobUrl } = useFileUrl(
+		replyPhotoUrl,
+		activeAccount?.token,
+	);
 
 	function handleAttachClick() {
 		fileInputRef.current?.click();
@@ -461,7 +470,7 @@ export function InputBar({
 								(replyToFiles ?? []).length > 0 && (
 									<ReplyFilePreviewInline
 										files={replyToFiles ?? []}
-										token={token}
+										photoBlobUrl={replyPhotoBlobUrl}
 									/>
 								)
 							)}
@@ -516,7 +525,6 @@ export function InputBar({
 							<ExistingFilePreview
 								key={file.id}
 								file={file}
-								token={token}
 								onRemove={() => onRemoveExistingFile?.(file.id)}
 							/>
 						))}

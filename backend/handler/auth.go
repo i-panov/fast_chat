@@ -31,10 +31,6 @@ func (h *Handler) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		token := r.Header.Get("Authorization")
 		token = strings.TrimPrefix(token, "Bearer ")
 
-		if token == "" {
-			token = r.URL.Query().Get("token")
-		}
-
 		user, ok := h.store.GetUserByToken(token)
 		if !ok {
 			writeError(w, http.StatusUnauthorized, errKeyUnauthorized)

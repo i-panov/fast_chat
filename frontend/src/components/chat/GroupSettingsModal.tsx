@@ -5,6 +5,7 @@ import {
 	FileButton,
 	Group,
 	Image,
+	Loader,
 	Modal,
 	ScrollArea,
 	Stack,
@@ -16,8 +17,8 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Chat, User } from "../../api.ts";
 import { searchUsers } from "../../api.ts";
+import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { useAuth } from "../../useAuth.tsx";
-import { withToken } from "../../utils/chat.ts";
 
 interface Props {
 	open: boolean;
@@ -43,8 +44,9 @@ export function GroupSettingsModal({
 	const { t } = useTranslation();
 	const { activeAccount } = useAuth();
 	const myId = activeAccount?.user.id ?? "";
-	const token = activeAccount?.token;
 	const isOwner = chat !== null && chat.ownerId === myId;
+
+	const avatarBlobUrlResult = useFileUrl(chat?.avatarUrl, activeAccount?.token);
 
 	const [editingName, setEditingName] = useState(false);
 	const [nameDraft, setNameDraft] = useState("");
@@ -124,15 +126,21 @@ export function GroupSettingsModal({
 		>
 			<Stack gap="md">
 				<Group gap="md" align="center">
-					{chat.avatarUrl !== undefined && chat.avatarUrl !== "" ? (
+					{chat.avatarUrl !== undefined &&
+					chat.avatarUrl !== "" &&
+					avatarBlobUrlResult.blobUrl ? (
 						<Image
-							src={withToken(chat.avatarUrl, token)}
+							src={avatarBlobUrlResult.blobUrl}
 							alt={t("chat.avatarAlt")}
 							w={64}
 							h={64}
 							radius="xl"
 							fit="cover"
 						/>
+					) : chat.avatarUrl !== undefined &&
+						chat.avatarUrl !== "" &&
+						avatarBlobUrlResult.loading ? (
+						<Loader size="lg" />
 					) : (
 						<Avatar size={64} radius="xl" color="blue">
 							{chat.name.charAt(0).toUpperCase() || "#"}

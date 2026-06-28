@@ -12,12 +12,6 @@ export function chatTitle(chat: Chat, myId: string): string {
 	return otherNick(chat.members, myId);
 }
 
-export function withToken(url: string, token: string | undefined): string {
-	if (token === undefined || token === "") return url;
-	const sep = url.includes("?") ? "&" : "?";
-	return `${url}${sep}token=${encodeURIComponent(token)}`;
-}
-
 export function formatDateLabel(isoStr: string, locale?: string): string {
 	const d = new Date(isoStr);
 	const today = new Date();

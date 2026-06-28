@@ -13,6 +13,7 @@ import {
 	Check,
 	Copy,
 	CornerUpLeft,
+	Download,
 	FileAudio,
 	FileIcon,
 	MapPin,
@@ -35,10 +36,13 @@ import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { FileInfo, Location, ReplyToInfo } from "../../api.ts";
+import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import { useMediaUrl } from "../../hooks/useMediaUrl.ts";
 import { getCurrentLocale } from "../../i18n.ts";
 import { useAudioPlayer } from "../../useAudioPlayer.tsx";
 import { useAuth } from "../../useAuth.tsx";
 import { extractCodeText, formatCoords } from "../../utils/chat.ts";
+import { downloadFile } from "../../utils/downloadFile.ts";
 import { ImageLightbox } from "./ImageLightbox.tsx";
 import { LocationLightbox } from "./LocationLightbox.tsx";
 import { LocationMiniMap } from "./LocationMiniMap.tsx";
@@ -112,46 +116,35 @@ function CodeBlock({ className, code, lang }: CodeBlockProps) {
 	);
 }
 
-function FileAttachment({
+function PhotoAttachment({
 	file,
 	onPhotoClick,
 }: {
 	file: FileInfo;
 	onPhotoClick?: () => void;
 }) {
-	const { play, currentTrack, isPlaying } = useAudioPlayer();
 	const { activeAccount } = useAuth();
-	const token = activeAccount?.token;
-	const url = token
-		? `${file.url}?token=${encodeURIComponent(token)}`
-		: file.url;
+	const { blobUrl, loading, error } = useFileUrl(
+		file.url,
+		activeAccount?.token,
+	);
 
-	if (file.fileType === "photo") {
-		if (onPhotoClick) {
-			return (
-				<UnstyledButton
-					onClick={onPhotoClick}
-					style={{ display: "block", padding: 0, lineHeight: 0 }}
-				>
-					<img
-						src={url}
-						alt={file.originalName}
-						style={{
-							maxWidth: "100%",
-							maxHeight: FILE_ATTACHMENT_MAX_SIZE,
-							borderRadius: BORDER_RADIUS_SM,
-							objectFit: "contain",
-							cursor: "pointer",
-							display: "block",
-						}}
-					/>
-				</UnstyledButton>
-			);
-		}
+	if (loading) return <Loader size="sm" />;
+	if (error || !blobUrl)
 		return (
-			<a href={url} target="_blank" rel="noreferrer">
+			<Text size="xs" c="red">
+				Failed to load image
+			</Text>
+		);
+
+	if (onPhotoClick) {
+		return (
+			<UnstyledButton
+				onClick={onPhotoClick}
+				style={{ display: "block", padding: 0, lineHeight: 0 }}
+			>
 				<img
-					src={url}
+					src={blobUrl}
 					alt={file.originalName}
 					style={{
 						maxWidth: "100%",
@@ -162,88 +155,139 @@ function FileAttachment({
 						display: "block",
 					}}
 				/>
-			</a>
+			</UnstyledButton>
 		);
 	}
-
-	if (file.fileType === "video") {
-		return (
-			<video
-				src={url}
-				controls
-				preload="metadata"
+	return (
+		<a href={blobUrl} target="_blank" rel="noreferrer">
+			<img
+				src={blobUrl}
+				alt={file.originalName}
 				style={{
 					maxWidth: "100%",
 					maxHeight: FILE_ATTACHMENT_MAX_SIZE,
 					borderRadius: BORDER_RADIUS_SM,
+					objectFit: "contain",
+					cursor: "pointer",
 					display: "block",
 				}}
-			>
-				<track kind="captions" />
-			</video>
-		);
-	}
+			/>
+		</a>
+	);
+}
 
-	if (file.fileType === "audio") {
-		const isCurrentTrack = currentTrack?.fileId === file.id;
-		const thisIsPlaying = isCurrentTrack && isPlaying;
-		const buttonIcon = thisIsPlaying ? "⏸" : "▶";
+function VideoAttachment({ file }: { file: FileInfo }) {
+	const { activeAccount } = useAuth();
+	const { mediaUrl, loading, error } = useMediaUrl(
+		file.url,
+		activeAccount?.token,
+	);
 
+	if (loading) return <Loader size="sm" />;
+	if (error || !mediaUrl)
 		return (
-			<UnstyledButton
-				style={{
-					display: "flex",
-					alignItems: "center",
-					gap: 8,
-					padding: "6px 10px",
-					background: "var(--mantine-color-dark-6)",
-					borderRadius: BORDER_RADIUS_SM,
-					width: "100%",
-					cursor: "pointer",
-				}}
-				onClick={() => play({ fileId: file.id, url, name: file.originalName })}
-			>
-				<Text size="lg">{buttonIcon}</Text>
-				<FileAudio size={20} />
-				<div style={{ overflow: "hidden", minWidth: 0 }}>
-					<Text size="sm" truncate="end">
-						{file.originalName}
-					</Text>
-				</div>
-			</UnstyledButton>
+			<Text size="xs" c="red">
+				Failed to load video
+			</Text>
 		);
-	}
 
 	return (
-		<a
-			href={url}
-			target="_blank"
-			rel="noreferrer"
-			style={{ textDecoration: "none" }}
+		<video
+			src={mediaUrl}
+			controls
+			preload="metadata"
+			style={{
+				maxWidth: "100%",
+				maxHeight: FILE_ATTACHMENT_MAX_SIZE,
+				borderRadius: BORDER_RADIUS_SM,
+				display: "block",
+			}}
 		>
-			<UnstyledButton
-				style={{
-					display: "flex",
-					alignItems: "center",
-					gap: 8,
-					padding: "6px 10px",
-					background: "var(--mantine-color-dark-6)",
-					borderRadius: BORDER_RADIUS_SM,
-					width: "100%",
-					cursor: "pointer",
-				}}
-			>
-				<FileIcon size={24} />
-				<div style={{ overflow: "hidden", minWidth: 0 }}>
-					<Text size="sm" truncate="end">
-						{file.originalName}
-					</Text>
-					<Text size="xs" c="dimmed">
-						{formatSize(file.size)}
-					</Text>
-				</div>
-			</UnstyledButton>
-		</a>
+			<track kind="captions" />
+		</video>
+	);
+}
+
+function AudioAttachment({ file }: { file: FileInfo }) {
+	const { play, currentTrack, isPlaying } = useAudioPlayer();
+	const { activeAccount } = useAuth();
+	const { blobUrl, loading, error } = useFileUrl(
+		file.url,
+		activeAccount?.token,
+	);
+
+	if (loading) return <Loader size="sm" />;
+	if (error || !blobUrl)
+		return (
+			<Text size="xs" c="red">
+				Failed to load audio
+			</Text>
+		);
+
+	const isCurrentTrack = currentTrack?.fileId === file.id;
+	const thisIsPlaying = isCurrentTrack && isPlaying;
+	const buttonIcon = thisIsPlaying ? "⏸" : "▶";
+
+	return (
+		<UnstyledButton
+			style={{
+				display: "flex",
+				alignItems: "center",
+				gap: 8,
+				padding: "6px 10px",
+				background: "var(--mantine-color-dark-6)",
+				borderRadius: BORDER_RADIUS_SM,
+				width: "100%",
+				cursor: "pointer",
+			}}
+			onClick={() =>
+				play({ fileId: file.id, url: blobUrl, name: file.originalName })
+			}
+		>
+			<Text size="lg">{buttonIcon}</Text>
+			<FileAudio size={20} />
+			<div style={{ overflow: "hidden", minWidth: 0 }}>
+				<Text size="sm" truncate="end">
+					{file.originalName}
+				</Text>
+			</div>
+		</UnstyledButton>
+	);
+}
+
+function FileDownloadAttachment({ file }: { file: FileInfo }) {
+	const { activeAccount } = useAuth();
+	const [downloading, setDownloading] = useState(false);
+
+	return (
+		<UnstyledButton
+			style={{
+				display: "flex",
+				alignItems: "center",
+				gap: 8,
+				padding: "6px 10px",
+				background: "var(--mantine-color-dark-6)",
+				borderRadius: BORDER_RADIUS_SM,
+				width: "100%",
+				cursor: "pointer",
+			}}
+			onClick={() => {
+				setDownloading(true);
+				downloadFile(file.url, file.originalName, activeAccount?.token).finally(
+					() => setDownloading(false),
+				);
+			}}
+		>
+			{downloading ? <Loader size="sm" /> : <Download size={24} />}
+			<div style={{ overflow: "hidden", minWidth: 0 }}>
+				<Text size="sm" truncate="end">
+					{file.originalName}
+				</Text>
+				<Text size="xs" c="dimmed">
+					{formatSize(file.size)}
+				</Text>
+			</div>
+		</UnstyledButton>
 	);
 }
 
@@ -255,17 +299,14 @@ function formatSize(bytes: number): string {
 
 function ReplyFilePreview({
 	files,
-	token,
+	photoBlobUrl,
 }: {
 	files: FileInfo[];
-	token: string | undefined;
+	photoBlobUrl: string | null;
 }) {
 	if (files.length === 0) return null;
 	const first = files[0];
 	const extra = files.length - 1;
-	const url = token
-		? `${first.url}?token=${encodeURIComponent(token)}`
-		: first.url;
 
 	return (
 		<div
@@ -276,9 +317,9 @@ function ReplyFilePreview({
 				marginTop: 2,
 			}}
 		>
-			{first.fileType === "photo" ? (
+			{first.fileType === "photo" && photoBlobUrl ? (
 				<img
-					src={url}
+					src={photoBlobUrl}
 					alt=""
 					style={{
 						width: 24,
@@ -288,6 +329,8 @@ function ReplyFilePreview({
 						flexShrink: 0,
 					}}
 				/>
+			) : first.fileType === "photo" ? (
+				<Loader size="xs" />
 			) : (
 				<FileIcon
 					size={20}
@@ -429,7 +472,15 @@ export const MessageBubble = memo(function MessageBubble({
 	const { t } = useTranslation();
 	const locale = getCurrentLocale();
 	const { activeAccount } = useAuth();
-	const token = activeAccount?.token;
+
+	// Preload reply photo blob URL
+	const replyPhotoFile = replyTo?.files?.[0];
+	const replyPhotoUrl =
+		replyPhotoFile?.fileType === "photo" ? replyPhotoFile.url : undefined;
+	const { blobUrl: replyPhotoBlobUrl } = useFileUrl(
+		replyPhotoUrl,
+		activeAccount?.token,
+	);
 
 	const canEdit =
 		isOwn &&
@@ -556,7 +607,10 @@ export const MessageBubble = memo(function MessageBubble({
 								{replyTo.text}
 							</Text>
 						) : (
-							<ReplyFilePreview files={replyTo.files ?? []} token={token} />
+							<ReplyFilePreview
+								files={replyTo.files ?? []}
+								photoBlobUrl={replyPhotoBlobUrl}
+							/>
 						)}
 						{replyTo.location !== undefined && (
 							<ReplyLocationChip location={replyTo.location} />
@@ -570,15 +624,24 @@ export const MessageBubble = memo(function MessageBubble({
 								file.fileType === "photo"
 									? photoFiles.findIndex((p) => p.id === file.id)
 									: -1;
-							return (
-								<FileAttachment
-									key={file.id}
-									file={file}
-									onPhotoClick={
-										photoIdx >= 0 ? () => setLightboxIdx(photoIdx) : undefined
-									}
-								/>
-							);
+							if (file.fileType === "photo") {
+								return (
+									<PhotoAttachment
+										key={file.id}
+										file={file}
+										onPhotoClick={
+											photoIdx >= 0 ? () => setLightboxIdx(photoIdx) : undefined
+										}
+									/>
+								);
+							}
+							if (file.fileType === "video") {
+								return <VideoAttachment key={file.id} file={file} />;
+							}
+							if (file.fileType === "audio") {
+								return <AudioAttachment key={file.id} file={file} />;
+							}
+							return <FileDownloadAttachment key={file.id} file={file} />;
 						})}
 					</div>
 				)}
@@ -885,7 +948,6 @@ export const MessageBubble = memo(function MessageBubble({
 				<ImageLightbox
 					images={photoFiles}
 					startIndex={lightboxIdx}
-					token={token}
 					onClose={() => setLightboxIdx(null)}
 				/>
 			)}

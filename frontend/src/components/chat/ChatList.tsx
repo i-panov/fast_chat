@@ -1,9 +1,53 @@
-import { Avatar, Button, Group, Image, ScrollArea, Text } from "@mantine/core";
+import { Avatar, Button, Group, Loader, ScrollArea, Text } from "@mantine/core";
 import { Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Chat } from "../../api.ts";
+import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { useAuth } from "../../useAuth.tsx";
-import { chatTitle, withToken } from "../../utils/chat.ts";
+import { chatTitle } from "../../utils/chat.ts";
+
+function ChatAvatar({
+	avatarUrl,
+	title,
+	isGroup,
+}: {
+	avatarUrl: string | undefined;
+	title: string;
+	isGroup: boolean;
+}) {
+	const { activeAccount } = useAuth();
+	const { blobUrl, loading } = useFileUrl(
+		isGroup && avatarUrl ? avatarUrl : undefined,
+		activeAccount?.token,
+	);
+
+	if (isGroup && avatarUrl && blobUrl) {
+		return (
+			<img
+				src={blobUrl}
+				alt=""
+				style={{
+					width: 28,
+					height: 28,
+					borderRadius: "50%",
+					objectFit: "cover",
+					flexShrink: 0,
+				}}
+			/>
+		);
+	}
+	if (isGroup && avatarUrl && loading) {
+		return <Loader size="sm" />;
+	}
+	if (isGroup) {
+		return (
+			<Avatar size={28} radius="xl" color="blue">
+				{title.charAt(0).toUpperCase() || "#"}
+			</Avatar>
+		);
+	}
+	return null;
+}
 
 interface Props {
 	chats: Chat[];
@@ -14,8 +58,6 @@ interface Props {
 
 export function ChatList({ chats, activeChatId, userId, onSelectChat }: Props) {
 	const { t } = useTranslation();
-	const { activeAccount } = useAuth();
-	const token = activeAccount?.token;
 
 	return (
 		<ScrollArea style={{ flex: 1 }}>
@@ -50,22 +92,11 @@ export function ChatList({ chats, activeChatId, userId, onSelectChat }: Props) {
 						onClick={() => onSelectChat(chat.id)}
 					>
 						<Group gap={8} wrap="nowrap" style={{ width: "100%" }}>
-							{isGroup &&
-							chat.avatarUrl !== undefined &&
-							chat.avatarUrl !== "" ? (
-								<Image
-									src={withToken(chat.avatarUrl, token)}
-									alt={t("chat.avatarAlt")}
-									w={28}
-									h={28}
-									radius="xl"
-									fit="cover"
-								/>
-							) : isGroup ? (
-								<Avatar size={28} radius="xl" color="blue">
-									{title.charAt(0).toUpperCase() || "#"}
-								</Avatar>
-							) : null}
+							<ChatAvatar
+								avatarUrl={chat.avatarUrl}
+								title={title}
+								isGroup={isGroup}
+							/>
 							<div style={{ minWidth: 0, flex: 1 }}>
 								<Text size="sm" truncate>
 									{isGroup ? title : `@${title}`}

@@ -2,16 +2,24 @@ import { ActionIcon } from "@mantine/core";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { FileInfo } from "../../api.ts";
+import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import { useAuth } from "../../useAuth.tsx";
 
 interface Props {
 	images: FileInfo[];
 	startIndex: number;
-	token: string | undefined;
 	onClose: () => void;
 }
 
-export function ImageLightbox({ images, startIndex, token, onClose }: Props) {
+export function ImageLightbox({ images, startIndex, onClose }: Props) {
 	const [index, setIndex] = useState(startIndex);
+	const { activeAccount } = useAuth();
+
+	const current = images[index];
+	const { blobUrl, loading, error } = useFileUrl(
+		current?.url,
+		activeAccount?.token,
+	);
 
 	const goPrev = useCallback(() => {
 		setIndex((i) => (i - 1 + images.length) % images.length);
@@ -36,11 +44,6 @@ export function ImageLightbox({ images, startIndex, token, onClose }: Props) {
 	}, [images.length, onClose, goPrev, goNext]);
 
 	if (images.length === 0) return null;
-
-	const current = images[index];
-	const url = token
-		? `${current.url}?token=${encodeURIComponent(token)}`
-		: current.url;
 
 	return (
 		// biome-ignore lint/a11y/noNoninteractiveElementInteractions: backdrop click closes dialog
@@ -102,15 +105,21 @@ export function ImageLightbox({ images, startIndex, token, onClose }: Props) {
 				</ActionIcon>
 			)}
 
-			<img
-				src={url}
-				alt={current.originalName}
-				style={{
-					maxWidth: "95vw",
-					maxHeight: "90vh",
-					objectFit: "contain",
-				}}
-			/>
+			{loading ? (
+				<ActionIcon variant="subtle" color="gray" size="xl" loading />
+			) : error || !blobUrl ? (
+				<p style={{ color: "white" }}>Failed to load image</p>
+			) : (
+				<img
+					src={blobUrl}
+					alt={current.originalName}
+					style={{
+						maxWidth: "95vw",
+						maxHeight: "90vh",
+						objectFit: "contain",
+					}}
+				/>
+			)}
 
 			{images.length > 1 && (
 				<ActionIcon

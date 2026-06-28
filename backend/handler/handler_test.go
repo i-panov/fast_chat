@@ -260,13 +260,13 @@ func TestAuthMiddleware(t *testing.T) {
 		}
 	})
 
-	t.Run("token in query", func(t *testing.T) {
+	t.Run("token in query is rejected", func(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?token="+token, http.NoBody)
 		w := httptest.NewRecorder()
 		handler(w, req)
 
-		if w.Code != http.StatusOK {
-			t.Errorf("expected 200, got %d", w.Code)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d", w.Code)
 		}
 	})
 }
