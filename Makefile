@@ -4,7 +4,7 @@ FRONTEND_PORT ?= 5173
 API_PROXY ?= http://localhost:$(BACKEND_PORT)
 
 backend\:run:
-	cd backend && PORT=$(BACKEND_PORT) SERVER_DOMAIN=$(SERVER_DOMAIN) go run .
+	cd backend && go run . --config=../config/dev.yaml
 
 backend\:lint:
 	cd backend && ~/go/bin/golangci-lint run ./...

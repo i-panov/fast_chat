@@ -1,61 +1,145 @@
-// Package config provides application configuration loaded from environment variables.
 package config
 
 import (
-	"log"
+	"fmt"
+	"net"
 	"os"
-	"strconv"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
-// Config holds application settings.
 type Config struct {
-	DBPath            string
-	UploadDir         string
-	MessageEditTTL    int
-	MessageDeleteTTL  int
-	ServerDomain      string
-	CORSOrigin        string
-	FederationScheme  string
-	FederationTimeout int
-	FederationKeyPath string
+	MessageEditTTL  int              `yaml:"message_edit_ttl"`
+	MessageDeleteTTL int             `yaml:"message_delete_ttl"`
+	Server          ServerConfig     `yaml:"server"`
+	Database        DatabaseConfig   `yaml:"database"`
+	Uploads         UploadsConfig    `yaml:"uploads"`
+	CORS            CORSConfig       `yaml:"cors"`
+	Federation      FederationConfig `yaml:"federation"`
+	Email           EmailConfig      `yaml:"email"`
+	Auth            AuthConfig       `yaml:"auth"`
+	RateLimits      RateLimitsConfig `yaml:"rate_limits"`
 }
 
-// Load reads configuration from environment variables with sensible defaults.
-func Load() *Config {
-	return &Config{
-		DBPath:            getEnv("DB_PATH", "data/fast_chat.db"),
-		UploadDir:         getEnv("UPLOAD_DIR", "./data/uploads"),
-		MessageEditTTL:    getEnvInt("MESSAGE_EDIT_TTL", 300),
-		MessageDeleteTTL:  getEnvInt("MESSAGE_DELETE_TTL", 0),
-		ServerDomain:      getEnv("SERVER_DOMAIN", "localhost:8080"),
-		CORSOrigin:        getEnv("CORS_ORIGIN", "*"),
-		FederationScheme:  getEnv("FEDERATION_SCHEME", "https"),
-		FederationTimeout: getEnvInt("FEDERATION_TIMEOUT", 10),
-		FederationKeyPath: getEnv("FEDERATION_KEY_PATH", "keys"),
-	}
+type ServerConfig struct {
+	Host   string `yaml:"host"`
+	Port   int    `yaml:"port"`
+	Domain string // computed from Host + Port
 }
 
-func getEnv(key, defaultVal string) string {
-	val := os.Getenv(key)
-	if val == "" {
-		return defaultVal
-	}
-
-	return val
+type DatabaseConfig struct {
+	Path string `yaml:"path"`
 }
 
-func getEnvInt(key string, defaultVal int) int {
-	val := os.Getenv(key)
-	if val == "" {
-		return defaultVal
-	}
+type UploadsConfig struct {
+	Dir string `yaml:"dir"`
+}
 
-	num, err := strconv.Atoi(val)
+type CORSConfig struct {
+	Origin string `yaml:"origin"`
+}
+
+type FederationConfig struct {
+	Scheme   string `yaml:"scheme"`
+	Timeout  int    `yaml:"timeout"`
+	KeyPath  string `yaml:"key_path"`
+}
+
+type EmailConfig struct {
+	DebugMode     bool       `yaml:"debug_mode"`
+	SMTP          SMTPConfig `yaml:"smtp"`
+	AllowedEmails []string   `yaml:"allowed_emails"`
+}
+
+type SMTPConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	From     string `yaml:"from"`
+}
+
+type AuthConfig struct {
+	TokenExpiry        time.Duration `yaml:"token_expiry"`
+	TokenExpiryWarning time.Duration `yaml:"token_expiry_warning"`
+}
+
+type RateLimitsConfig struct {
+	SendCode   RateLimitConfig `yaml:"send_code"`
+	VerifyCode RateLimitConfig `yaml:"verify_code"`
+	Register   RateLimitConfig `yaml:"register"`
+	General    RateLimitConfig `yaml:"general"`
+}
+
+type RateLimitConfig struct {
+	Limit  int           `yaml:"limit"`
+	Window time.Duration `yaml:"window"`
+}
+
+func Load(configPath string) (*Config, error) {
+	data, err := os.ReadFile(configPath)
 	if err != nil {
-		log.Printf("warn: invalid value %q for %s, using default %d", val, key, defaultVal) //nolint:gosec // controlled environment variable
-
-		return defaultVal
+		return nil, fmt.Errorf("failed to read config file %s: %w", configPath, err)
 	}
 
-	return num
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	if cfg.Database.Path == "" {
+		return nil, fmt.Errorf("database.path is required")
+	}
+	if cfg.Server.Host == "" {
+		return nil, fmt.Errorf("server.host is required")
+	}
+	if cfg.Server.Port == 0 {
+		cfg.Server.Port = 8080
+	}
+	cfg.Server.Domain = net.JoinHostPort(cfg.Server.Host, fmt.Sprintf("%d", cfg.Server.Port))
+	if cfg.MessageEditTTL == 0 {
+		cfg.MessageEditTTL = 300
+	}
+	if cfg.Email.SMTP.From == "" {
+		cfg.Email.SMTP.From = "noreply@fastchat.local"
+	}
+	if cfg.Email.SMTP.Port == 0 {
+		cfg.Email.SMTP.Port = 587
+	}
+	if cfg.Uploads.Dir == "" {
+		cfg.Uploads.Dir = "uploads"
+	}
+	if cfg.Auth.TokenExpiry == 0 {
+		cfg.Auth.TokenExpiry = 24 * time.Hour
+	}
+	if cfg.Auth.TokenExpiryWarning == 0 {
+		cfg.Auth.TokenExpiryWarning = 5 * time.Minute
+	}
+	if cfg.RateLimits.General.Limit == 0 {
+		cfg.RateLimits.General.Limit = 100
+	}
+	if cfg.RateLimits.General.Window == 0 {
+		cfg.RateLimits.General.Window = time.Minute
+	}
+	if cfg.RateLimits.SendCode.Limit == 0 {
+		cfg.RateLimits.SendCode.Limit = 5
+	}
+	if cfg.RateLimits.SendCode.Window == 0 {
+		cfg.RateLimits.SendCode.Window = time.Minute
+	}
+	if cfg.RateLimits.VerifyCode.Limit == 0 {
+		cfg.RateLimits.VerifyCode.Limit = 10
+	}
+	if cfg.RateLimits.VerifyCode.Window == 0 {
+		cfg.RateLimits.VerifyCode.Window = time.Minute
+	}
+	if cfg.RateLimits.Register.Limit == 0 {
+		cfg.RateLimits.Register.Limit = 5
+	}
+	if cfg.RateLimits.Register.Window == 0 {
+		cfg.RateLimits.Register.Window = 10 * time.Minute
+	}
+
+	return &cfg, nil
 }

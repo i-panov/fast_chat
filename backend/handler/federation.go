@@ -18,7 +18,7 @@ import (
 
 // federatedURL builds a federation URL using the configured scheme.
 func (h *Handler) federatedURL(remoteServer, path string) string {
-	return fmt.Sprintf("%s://%s%s", h.cfg.FederationScheme, remoteServer, path)
+	return fmt.Sprintf("%s://%s%s", h.cfg.Federation.Scheme, remoteServer, path)
 }
 
 // remoteServerFromID extracts the server domain from a federated user ID ("nick:domain").
@@ -65,7 +65,7 @@ func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string,
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Federation-Server", h.cfg.ServerDomain)
+	req.Header.Set("X-Federation-Server", h.cfg.Server.Domain)
 	req.Header.Set("X-Federation-Signature", signature)
 	req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
 

@@ -12,6 +12,7 @@ import {
 	createChat,
 	editThreadMessage,
 	getConfig,
+	refreshToken,
 	sendThreadMessage,
 	sendTyping,
 	uploadFile,
@@ -171,7 +172,7 @@ export { useThreads } from "./useThreads";
 export { useTyping } from "./useTyping";
 
 export function useChatPage(): ChatPageState {
-	const { activeAccount, logout } = useAuth();
+	const { activeAccount, logout, updateAccountToken } = useAuth();
 	const user = activeAccount?.user ?? null;
 	const token = activeAccount?.token;
 
@@ -323,6 +324,17 @@ export function useChatPage(): ChatPageState {
 		setMessageToThreadMap,
 		addTypingUser,
 		clearTyping,
+		onTokenExpiring: async (currentToken: string) => {
+			try {
+				const { token: newToken, expiresAt } = await refreshToken(currentToken);
+				updateAccountToken(currentToken, newToken, expiresAt);
+			} catch {
+				logout();
+			}
+		},
+		onTokenExpired: () => {
+			logout();
+		},
 	});
 
 	const handleTyping = useCallback(

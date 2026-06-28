@@ -1,34 +1,32 @@
-// Package model provides data types shared across the application.
 package model
 
 import "time"
 
 type User struct {
-	ID     string `gorm:"primaryKey"           json:"id"`
-	Nick   string `gorm:"not null"             json:"nick"`
-	Token  string `gorm:"uniqueIndex;not null" json:"-"`
-	Online bool   `gorm:"default:false"        json:"online"`
+	ID             string    `gorm:"primaryKey" json:"id"`
+	Email          string    `gorm:"uniqueIndex;not null" json:"email"`
+	Nick           string    `gorm:"uniqueIndex;not null" json:"nick"`
+	Token          string    `gorm:"uniqueIndex;not null" json:"-"`
+	TokenExpiresAt time.Time `gorm:"not null" json:"-"`
+	Online         bool      `gorm:"default:false" json:"online"`
 }
 
-// PublicUser is a User representation safe to expose via API (no token).
 type PublicUser struct {
 	ID     string `json:"id"`
 	Nick   string `json:"nick"`
+	Email  string `json:"email"`
 	Online bool   `json:"online"`
 }
 
-// Public returns a token-free view of the user.
 func (u *User) Public() PublicUser {
-	return PublicUser{ID: u.ID, Nick: u.Nick, Online: u.Online}
+	return PublicUser{ID: u.ID, Nick: u.Nick, Email: u.Email, Online: u.Online}
 }
 
-// PublicUsers maps a slice of users to their public representation.
 func PublicUsers(users []User) []PublicUser {
 	out := make([]PublicUser, len(users))
 	for i := range users {
 		out[i] = users[i].Public()
 	}
-
 	return out
 }
 
@@ -51,7 +49,6 @@ type ReplyToInfo struct {
 	Location  *Location  `json:"location,omitempty"`
 }
 
-// Location represents a point on a map attached to a message.
 type Location struct {
 	Lat float64 `json:"lat"`
 	Lng float64 `json:"lng"`
@@ -115,18 +112,12 @@ type Message struct {
 	Files     []FileInfo   `gorm:"-"                  json:"files,omitempty"`
 }
 
-// DeletedMessage is a tombstone: it records that a message was removed
-// at a given time. Used to ship delete events to offline clients via
-// /api/sync without polluting the main messages table.
 type DeletedMessage struct {
 	ChatID    string    `gorm:"primaryKey"     json:"chatId"`
 	MessageID string    `gorm:"primaryKey"     json:"messageId"`
 	DeletedAt time.Time `gorm:"index;not null" json:"deletedAt"`
 }
 
-// DeletedChat is a tombstone for group chats that were deleted while
-// the user was offline. Tracked separately so the sync endpoint can
-// tell the client to drop the chat from its local cache.
 type DeletedChat struct {
 	ChatID    string    `gorm:"primaryKey"     json:"chatId"`
 	UserID    string    `gorm:"primaryKey"     json:"userId"`

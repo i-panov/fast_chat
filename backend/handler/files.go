@@ -44,7 +44,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	dateDir := time.Now().Format("20060102")
 	storageName := generateID()
 	relativePath := filepath.Join(dateDir, storageName)
-	fullPath := filepath.Join(h.cfg.UploadDir, relativePath)
+	fullPath := filepath.Join(h.cfg.Uploads.Dir, relativePath)
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), uploadDirPermissions); err != nil { //nolint:gosec // paths are controlled
 		writeError(w, http.StatusInternalServerError, "failed to process file")
@@ -53,7 +53,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stage in the destination directory so the final os.Rename is atomic
-	// on the same filesystem (avoids EXDEV across /tmp and UploadDir).
+	// on the same filesystem (avoids EXDEV across /tmp and uploads dir).
 	tempFile, err := os.CreateTemp(filepath.Dir(fullPath), ".upload-*"+filepath.Ext(storageName)+".tmp") //nolint:gosec
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process file")
@@ -160,7 +160,7 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fullPath := filepath.Join(h.cfg.UploadDir, fileRecord.StoragePath)
+	fullPath := filepath.Join(h.cfg.Uploads.Dir, fileRecord.StoragePath)
 
 	// Defense in depth: tell the browser never to MIME-sniff or execute inline
 	// scripts, and force download for anything that could be interpreted as

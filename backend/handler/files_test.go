@@ -70,9 +70,9 @@ func uploadAndGetFileID(t *testing.T, h *Handler, token, filename, body string) 
 func TestUploadFileDetectsPNGFromBody(t *testing.T) {
 	tmp := t.TempDir()
 	h := newTestHandler(t)
-	h.cfg.UploadDir = tmp
+	h.cfg.Uploads.Dir = tmp
 
-	alice := registerTestUser(t, h, "alice")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
 
 	// Claim text/html in the multipart header but ship PNG bytes.
 	id := uploadAndGetFileID(t, h, alice.token, "evil.html", tinyPNG)
@@ -98,9 +98,9 @@ func TestUploadFileDetectsPNGFromBody(t *testing.T) {
 func TestUploadFileDetectsHTMLFromBody(t *testing.T) {
 	tmp := t.TempDir()
 	h := newTestHandler(t)
-	h.cfg.UploadDir = tmp
+	h.cfg.Uploads.Dir = tmp
 
-	alice := registerTestUser(t, h, "alice")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
 
 	// Claim image/png but ship HTML — server should detect text/html.
 	id := uploadAndGetFileID(t, h, alice.token, "doc.html", htmlDoc)
@@ -118,10 +118,10 @@ func TestUploadFileDetectsHTMLFromBody(t *testing.T) {
 func TestServeFileForcesAttachmentForHTML(t *testing.T) {
 	tmp := t.TempDir()
 	h := newTestHandler(t)
-	h.cfg.UploadDir = tmp
+	h.cfg.Uploads.Dir = tmp
 
-	alice := registerTestUser(t, h, "alice")
-	bob := registerTestUser(t, h, "bob")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
 
 	chatBody := `{"withUserId":"` + bob.id + `"}`
 	chatReq := authReq(http.MethodPost, "/api/chats", alice.token, chatBody)
@@ -176,10 +176,10 @@ func TestServeFileForcesAttachmentForHTML(t *testing.T) {
 func TestServeFileAllowsInlineForImage(t *testing.T) {
 	tmp := t.TempDir()
 	h := newTestHandler(t)
-	h.cfg.UploadDir = tmp
+	h.cfg.Uploads.Dir = tmp
 
-	alice := registerTestUser(t, h, "alice")
-	bob := registerTestUser(t, h, "bob")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
 
 	chatBody := `{"withUserId":"` + bob.id + `"}`
 	chatReq := authReq(http.MethodPost, "/api/chats", alice.token, chatBody)
@@ -223,10 +223,10 @@ func TestServeFileAllowsInlineForImage(t *testing.T) {
 func TestServeFileRejectsNonMember(t *testing.T) {
 	tmp := t.TempDir()
 	h := newTestHandler(t)
-	h.cfg.UploadDir = tmp
+	h.cfg.Uploads.Dir = tmp
 
-	alice := registerTestUser(t, h, "alice")
-	eve := registerTestUser(t, h, "eve")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	eve := registerTestUser(t, h, "eve", "eve@test.local")
 
 	fileID := uploadAndGetFileID(t, h, alice.token, "x.png", tinyPNG)
 
@@ -243,9 +243,9 @@ func TestServeFileRejectsNonMember(t *testing.T) {
 func TestUploadFileRespectsSizeLimit(t *testing.T) {
 	tmp := t.TempDir()
 	h := newTestHandler(t)
-	h.cfg.UploadDir = tmp
+	h.cfg.Uploads.Dir = tmp
 
-	alice := registerTestUser(t, h, "alice")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
 
 	prev := maxUploadSize
 	maxUploadSize = 100 * 1024
@@ -275,9 +275,9 @@ func TestUploadFileRespectsSizeLimit(t *testing.T) {
 func TestUploadFileCreatesFileOnDisk(t *testing.T) {
 	tmp := t.TempDir()
 	h := newTestHandler(t)
-	h.cfg.UploadDir = tmp
+	h.cfg.Uploads.Dir = tmp
 
-	alice := registerTestUser(t, h, "alice")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
 
 	id := uploadAndGetFileID(t, h, alice.token, "x.png", tinyPNG)
 
@@ -304,7 +304,7 @@ func TestUploadFileCreatesFileOnDisk(t *testing.T) {
 func TestUploadFileDeduplicatesByHash(t *testing.T) {
 	tmp := t.TempDir()
 	h := newTestHandler(t)
-	h.cfg.UploadDir = tmp
+	h.cfg.Uploads.Dir = tmp
 
 	// Write a single byte sequence to disk as if it had been
 	// uploaded, then call SaveFile twice with the same hash. The

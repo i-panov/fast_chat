@@ -79,7 +79,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	remoteServer := remoteServerFromID(req.WithUserID)
-	if remoteServer == h.cfg.ServerDomain {
+	if remoteServer == h.cfg.Server.Domain {
 		remoteServer = ""
 	}
 
@@ -109,7 +109,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, map[string]any{
 			"chatId":       chat.ID,
 			"members":      chat.Members,
-			"remoteServer": h.cfg.ServerDomain,
+			"remoteServer": h.cfg.Server.Domain,
 		})
 		if fedErr != nil {
 			logger.Info("federated create chat failed", "err", fedErr)
@@ -150,7 +150,7 @@ func (h *Handler) createGroupChat(w http.ResponseWriter, _ *http.Request, user *
 
 	for _, memberID := range cleaned {
 		remoteServer := remoteServerFromID(memberID)
-		if remoteServer != "" && remoteServer != h.cfg.ServerDomain {
+		if remoteServer != "" && remoteServer != h.cfg.Server.Domain {
 			writeError(w, http.StatusBadRequest, "group chat members must be on the same server")
 
 			return
@@ -340,7 +340,7 @@ func (h *Handler) AddChatMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	remoteServer := remoteServerFromID(req.UserID)
-	if remoteServer != "" && remoteServer != h.cfg.ServerDomain {
+	if remoteServer != "" && remoteServer != h.cfg.Server.Domain {
 		writeError(w, http.StatusBadRequest, "members must be on the same server")
 
 		return

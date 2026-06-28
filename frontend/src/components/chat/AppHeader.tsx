@@ -1,77 +1,52 @@
-import { ActionIcon, Group, Loader, Paper, Text, Tooltip } from "@mantine/core";
-import { CloudOff, Loader2, Menu, RefreshCw, Wifi } from "lucide-react";
-import { useCallback } from "react";
+import { ActionIcon, Group, Loader, Paper, Tooltip } from "@mantine/core";
+import { Menu } from "lucide-react";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { outboxRepo } from "../../db/outboxRepo.ts";
-import { useLiveQuery } from "../../db/useLiveQuery.ts";
 import { useNetworkStatus } from "../../hooks/useNetworkStatus.ts";
 import { useSyncStatus } from "../../hooks/useSyncStatus.ts";
-import { runSync } from "../../sync/syncEngine.ts";
 
 interface Props {
 	onSwitcherToggle: () => void;
+}
+
+function Dot({ color, label }: { color: string; label: string }) {
+	return (
+		<Tooltip label={label} withArrow>
+			<div
+				style={{
+					width: 10,
+					height: 10,
+					borderRadius: "50%",
+					background: color,
+				}}
+			/>
+		</Tooltip>
+	);
 }
 
 export function AppHeader({ onSwitcherToggle }: Props) {
 	const { t } = useTranslation();
 	const isOnline = useNetworkStatus();
 	const syncState = useSyncStatus();
-	const query = useCallback(() => outboxRepo.count(), []);
-	const pending = useLiveQuery<number>(query) ?? 0;
 
-	let indicator: React.ReactNode = null;
-	if (!isOnline) {
-		indicator = (
-			<Tooltip label={t("sync.offline")} withArrow>
-				<Group gap={4} align="center">
-					<CloudOff size={16} aria-label={t("sync.offline")} />
-					{pending > 0 && (
-						<Text size="xs" c="dimmed">
-							{t("sync.pending", { count: pending })}
-						</Text>
-					)}
-				</Group>
-			</Tooltip>
-		);
-	} else if (syncState === "syncing") {
+	let indicator: ReactNode;
+	if (syncState === "syncing") {
 		indicator = (
 			<Tooltip label={t("sync.syncing")} withArrow>
 				<Loader size={14} aria-label={t("sync.syncing")} />
 			</Tooltip>
 		);
+	} else if (!isOnline) {
+		indicator = (
+			<Dot color="var(--mantine-color-red-6)" label={t("sync.offline")} />
+		);
 	} else if (syncState === "error") {
 		indicator = (
-			<Tooltip label={t("sync.error")} withArrow>
-				<ActionIcon
-					variant="subtle"
-					color="red"
-					size="sm"
-					onClick={() => void runSync()}
-					aria-label={t("sync.error")}
-				>
-					<RefreshCw size={16} />
-				</ActionIcon>
-			</Tooltip>
-		);
-	} else if (pending > 0) {
-		indicator = (
-			<Tooltip label={t("sync.pending", { count: pending })} withArrow>
-				<ActionIcon
-					variant="subtle"
-					color="gray"
-					size="sm"
-					onClick={() => void runSync()}
-					aria-label={t("sync.pending", { count: pending })}
-				>
-					<Loader2 size={16} />
-				</ActionIcon>
-			</Tooltip>
+			<Dot color="var(--mantine-color-red-6)" label={t("sync.error")} />
 		);
 	} else {
 		indicator = (
-			<Tooltip label={t("sync.syncing")} withArrow>
-				<Wifi size={16} aria-label={t("sync.syncing")} />
-			</Tooltip>
+			<Dot color="var(--mantine-color-green-6)" label={t("sync.online")} />
 		);
 	}
 

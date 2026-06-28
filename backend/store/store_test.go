@@ -33,10 +33,19 @@ func newTestStore(t *testing.T) *Store {
 	return New(db)
 }
 
+func createTestUser(t *testing.T, s *Store, nick string) *model.User {
+	t.Helper()
+	user, err := s.CreateUser(nick+"@test.local", nick, "test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return user
+}
+
 func TestCreateUser(t *testing.T) {
 	s := newTestStore(t)
 
-	user, err := s.CreateUser("alice:localhost:8080", "alice")
+	user, err := s.CreateUser("alice@test.local", "alice", "localhost:8080", 24*time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +60,7 @@ func TestCreateUser(t *testing.T) {
 		t.Error("expected non-empty token")
 	}
 
-	_, err = s.CreateUser("alice:localhost:8080", "alice")
+	_, err = s.CreateUser("alice@test.local", "alice", "localhost:8080", 24*time.Hour)
 	if err == nil {
 		t.Error("expected error for duplicate nick")
 	}
@@ -60,7 +69,7 @@ func TestCreateUser(t *testing.T) {
 func TestGetUserByToken(t *testing.T) {
 	s := newTestStore(t)
 
-	user, _ := s.CreateUser(testBob, "bob")
+	user := createTestUser(t, s, "bob")
 	found, ok := s.GetUserByToken(user.Token)
 	if !ok {
 		t.Fatal("expected to find user by token")
@@ -78,7 +87,7 @@ func TestGetUserByToken(t *testing.T) {
 func TestGetUserByID(t *testing.T) {
 	s := newTestStore(t)
 
-	user, _ := s.CreateUser(testCarol, "carol")
+	user := createTestUser(t, s, "carol")
 	found, ok := s.GetUserByID(user.ID)
 	if !ok {
 		t.Fatal("expected to find user by ID")
@@ -91,9 +100,9 @@ func TestGetUserByID(t *testing.T) {
 func TestSearchUsers(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser("dalia:test", "dalia")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "dalia")
 
 	results := s.SearchUsers("ali", "")
 	if len(results) != 2 {
@@ -119,8 +128,8 @@ func TestSearchUsers(t *testing.T) {
 func TestCreateChat(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 
 	chat, err := s.CreateChat(testAlice, testBob)
 	if err != nil {
@@ -143,9 +152,9 @@ func TestCreateChat(t *testing.T) {
 func TestGetUserChats(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
 
 	s.CreateChat(testAlice, testBob)
 	s.CreateChat(testAlice, testCarol)
@@ -164,8 +173,8 @@ func TestGetUserChats(t *testing.T) {
 func TestAddMessage(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 
 	msg, err := s.AddMessage(chat.ID, testAlice, "alice", "Hello!", "", "", nil)
@@ -192,8 +201,8 @@ func TestAddMessage(t *testing.T) {
 func TestEditMessage(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "Hello", "", "", nil)
 
@@ -217,8 +226,8 @@ func TestEditMessage(t *testing.T) {
 func TestDeleteMessage(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "Hello", "", "", nil)
 
@@ -236,8 +245,8 @@ func TestDeleteMessage(t *testing.T) {
 func TestSetMessageFiles(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "Hello", "", "", nil)
 
@@ -274,8 +283,8 @@ func TestSetMessageFiles(t *testing.T) {
 func TestEditThreadMessage(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	parent, _ := s.AddMessage(chat.ID, testAlice, "alice", "parent", "", "", nil)
 	thread, _ := s.CreateThread(chat.ID, parent.ID, parent.Text, parent.FromNick)
@@ -306,8 +315,8 @@ func TestEditThreadMessage(t *testing.T) {
 func TestMessageLocation(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 
 	loc := &model.Location{Lat: 51.505, Lng: -0.09}
@@ -339,8 +348,8 @@ func TestMessageLocation(t *testing.T) {
 func TestEditMessageLocation(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "x", "", "", nil)
 
@@ -384,8 +393,8 @@ func TestEditMessageLocation(t *testing.T) {
 func TestReplyToLocation(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	parent, _ := s.AddMessage(chat.ID, testAlice, "alice", "x", "", "", &model.Location{Lat: 10, Lng: 20})
 
@@ -405,8 +414,8 @@ func TestReplyToLocation(t *testing.T) {
 func TestGetMessagesPaginated(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 
 	for i := 0; i < 10; i++ {
@@ -441,8 +450,8 @@ func TestGetMessagesPaginated(t *testing.T) {
 func TestCreateRemoteChat(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser("alice:local", "alice")
-	s.CreateUser("bob:remote", "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 
 	chat := &model.Chat{
 		ID:           "remote-chat-id",
@@ -464,8 +473,8 @@ func TestCreateRemoteChat(t *testing.T) {
 
 func TestAddRawMessage(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 
 	msg := &model.Message{
@@ -496,8 +505,8 @@ func TestAddRawMessage(t *testing.T) {
 
 func TestEditRawMessage(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	s.AddMessage(chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
 
@@ -526,8 +535,8 @@ func TestEditRawMessage(t *testing.T) {
 
 func TestDeleteRawMessage(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	s.AddMessage(chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
 
@@ -549,8 +558,8 @@ func TestDeleteRawMessage(t *testing.T) {
 
 func TestCreateThreadAndGet(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	s.AddMessage(chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
 
@@ -592,8 +601,8 @@ func TestCreateThreadAndGet(t *testing.T) {
 func TestGetThreadsForChat(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	s.AddMessage(chat.ID, testAlice, "alice", "Msg1", "m1", "", nil)
 	s.AddMessage(chat.ID, testAlice, "alice", "Msg2", "m2", "", nil)
@@ -614,8 +623,8 @@ func TestGetThreadsForChat(t *testing.T) {
 
 func TestCreateChatIsPrivate(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 
 	chat, err := s.CreateChat(testAlice, testBob)
 	if err != nil {
@@ -629,9 +638,9 @@ func TestCreateChatIsPrivate(t *testing.T) {
 
 func TestCreateGroupChatBasic(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
 
 	chat, err := s.CreateGroupChat("Team", testAlice, []string{testBob, testCarol})
 	if err != nil {
@@ -654,9 +663,9 @@ func TestCreateGroupChatBasic(t *testing.T) {
 
 func TestCreateGroupChatUnlimitedDuplicates(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
 
 	c1, _ := s.CreateGroupChat("G1", testAlice, []string{testBob, testCarol})
 	c2, _ := s.CreateGroupChat("G2", testAlice, []string{testBob, testCarol})
@@ -674,9 +683,9 @@ func TestCreateGroupChatUnlimitedDuplicates(t *testing.T) {
 
 func TestCreateGroupChatDeduplicates(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
 
 	chat, err := s.CreateGroupChat("G", testAlice, []string{testAlice, testBob, testCarol})
 	if err != nil {
@@ -690,8 +699,8 @@ func TestCreateGroupChatDeduplicates(t *testing.T) {
 
 func TestCreateGroupChatValidation(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 
 	// owner + bob = 2 members, valid
 	chat, err := s.CreateGroupChat("G", testAlice, []string{testAlice, testBob})
@@ -705,7 +714,7 @@ func TestCreateGroupChatValidation(t *testing.T) {
 
 func TestCreateGroupChatSolo(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
+	createTestUser(t, s, "alice")
 
 	chat, err := s.CreateGroupChat("Solo", testAlice, nil)
 	if err != nil {
@@ -725,10 +734,10 @@ func TestCreateGroupChatSolo(t *testing.T) {
 
 func TestAddChatMember(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
-	s.CreateUser("dave:test", "dave")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
+	createTestUser(t, s, "dave")
 
 	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
 
@@ -758,9 +767,9 @@ func TestAddChatMember(t *testing.T) {
 
 func TestRemoveChatMember(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
 
 	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
 
@@ -793,9 +802,9 @@ func TestRemoveChatMember(t *testing.T) {
 
 func TestUpdateChatName(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
 
 	chat, _ := s.CreateGroupChat("Old", testAlice, []string{testBob, testCarol})
 
@@ -815,9 +824,9 @@ func TestUpdateChatName(t *testing.T) {
 
 func TestUpdateChatAvatar(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
 	f, _ := s.SaveFile("hash", "image/png", 100, "a.png", "a.png")
 
 	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
@@ -833,9 +842,9 @@ func TestUpdateChatAvatar(t *testing.T) {
 
 func TestDeleteChatCascade(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
 
 	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
 	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "hi", "", "", nil)
@@ -875,8 +884,8 @@ func TestDeleteChatCascade(t *testing.T) {
 
 func TestDeleteChatRejectsPrivate(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 
 	if err := s.DeleteChat(chat.ID); err == nil {
@@ -886,9 +895,9 @@ func TestDeleteChatRejectsPrivate(t *testing.T) {
 
 func TestGetChatsByAvatarFileID(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
 	f, _ := s.SaveFile("avatar-hash", "image/png", 100, "a.png", "a.png")
 
 	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
@@ -915,8 +924,8 @@ func TestGetChatsByAvatarFileID(t *testing.T) {
 
 func TestAddThreadMessage(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	s.AddMessage(chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
 	thread, _ := s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
@@ -950,7 +959,7 @@ func TestAddThreadMessage(t *testing.T) {
 
 func TestAddConnection(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
+	createTestUser(t, s, "alice")
 
 	if s.IsOnline(testAlice) {
 		t.Error("expected user to be offline right after creation")
@@ -971,7 +980,7 @@ func TestAddConnection(t *testing.T) {
 
 func TestAddConnectionMultiple(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
+	createTestUser(t, s, "alice")
 
 	s.AddConnection(testAlice)
 	s.AddConnection(testAlice)
@@ -990,8 +999,8 @@ func TestAddConnectionMultiple(t *testing.T) {
 
 func TestGetMessageValue(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	s.AddMessage(chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
 
@@ -1013,8 +1022,8 @@ func TestGetMessageValue(t *testing.T) {
 
 func TestGetThreadValue(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 	s.AddMessage(chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
 	s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
@@ -1031,8 +1040,8 @@ func TestGetThreadValue(t *testing.T) {
 
 func TestAddRawMessageIsIdempotent(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 
 	msg := &model.Message{
@@ -1063,8 +1072,8 @@ func TestAddRawMessageIsIdempotent(t *testing.T) {
 
 func TestSearchUsersOnlineState(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 
 	if s.IsOnline(testAlice) {
 		t.Fatal("alice should start offline")
@@ -1091,8 +1100,8 @@ func TestSearchUsersOnlineState(t *testing.T) {
 
 func TestGetMessageFilesBatch(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(testAlice, testBob)
 
 	m1, _ := s.AddMessage(chat.ID, testAlice, "alice", "with file 1", "m-1", "", nil)
@@ -1139,9 +1148,9 @@ func TestGetMessageFilesBatchEmpty(t *testing.T) {
 
 func TestGetUsersByIDs(t *testing.T) {
 	s := newTestStore(t)
-	s.CreateUser(testAlice, "alice")
-	s.CreateUser(testBob, "bob")
-	s.CreateUser(testCarol, "carol")
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	createTestUser(t, s, "carol")
 
 	got := s.GetUsersByIDs([]string{testAlice, testBob, "nonexistent"})
 	if got[testAlice] != "alice" {

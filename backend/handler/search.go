@@ -41,7 +41,7 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 		return
 	}
 
-	if remoteDomain == h.cfg.ServerDomain {
+	if remoteDomain == h.cfg.Server.Domain {
 		users := h.store.SearchUsers(remoteNick, getUser(r).ID)
 		if users == nil {
 			users = []model.PublicUser{}

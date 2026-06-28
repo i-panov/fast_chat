@@ -21,8 +21,7 @@ type contextKey string
 const userKey contextKey = "user"
 
 func getUser(r *http.Request) *model.User {
-	user, _ := r.Context().Value(userKey).(*model.User) //nolint:errcheck // expected to be missing in unauthenticated contexts
-
+	user, _ := r.Context().Value(userKey).(*model.User) //nolint:errcheck // type assertion with ok
 	return user
 }
 
@@ -34,7 +33,11 @@ func (h *Handler) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		user, ok := h.store.GetUserByToken(token)
 		if !ok {
 			writeError(w, http.StatusUnauthorized, errKeyUnauthorized)
+			return
+		}
 
+		if time.Now().After(user.TokenExpiresAt) {
+			writeError(w, http.StatusUnauthorized, "token expired")
 			return
 		}
 
@@ -51,28 +54,24 @@ func (h *Handler) FederatedAuthMiddleware(next http.HandlerFunc) http.HandlerFun
 
 		if serverDomain == "" || signature == "" || timestampStr == "" {
 			writeError(w, http.StatusUnauthorized, "missing federation headers")
-
 			return
 		}
 
 		timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid timestamp")
-
 			return
 		}
 
 		now := time.Now().Unix()
 		if now-timestamp > federationTimestampToleranceSec || timestamp-now > federationTimestampToleranceSec {
 			writeError(w, http.StatusUnauthorized, "timestamp out of bounds")
-
 			return
 		}
 
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to read body")
-
 			return
 		}
 
@@ -80,7 +79,6 @@ func (h *Handler) FederatedAuthMiddleware(next http.HandlerFunc) http.HandlerFun
 
 		if !h.fedManager.Verify(r.Context(), serverDomain, signature, r.Method, r.URL.RequestURI(), bodyBytes, timestamp) {
 			writeError(w, http.StatusUnauthorized, "invalid signature")
-
 			return
 		}
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { sseAuth } from "./api.ts";
 
 type EventHandler = (event: string, data: unknown) => void;
 
@@ -12,6 +13,7 @@ function isClosed(source: EventSource): boolean {
 
 export function useSse(token: string, onEvent: EventHandler) {
 	const onEventRef = useRef<EventHandler>(onEvent);
+	const connectionIdRef = useRef<string>(crypto.randomUUID());
 
 	useEffect(() => {
 		onEventRef.current = onEvent;
@@ -22,7 +24,8 @@ export function useSse(token: string, onEvent: EventHandler) {
 			return;
 		}
 
-		const url = `/api/events?token=${encodeURIComponent(token)}`;
+		const connectionId = connectionIdRef.current;
+		const url = `/api/events?connectionId=${encodeURIComponent(connectionId)}`;
 		const source = new EventSource(url);
 
 		source.addEventListener("new_message", (e) => {
@@ -136,6 +139,12 @@ export function useSse(token: string, onEvent: EventHandler) {
 		source.addEventListener("connected", () => {
 			onEventRef.current("connected", null);
 		});
+
+		source.onopen = () => {
+			sseAuth(connectionId, token).catch(() => {
+				source.close();
+			});
+		};
 
 		source.onerror = () => {
 			if (isClosed(source)) {

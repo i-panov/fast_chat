@@ -3,8 +3,8 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -19,24 +19,35 @@ type SSEEvent struct {
 	Data  any
 }
 
+type SSEConnection struct {
+	mu         sync.Mutex
+	ID         string
+	UserID     string
+	Token      string
+	ExpiresAt  time.Time
+	Authorized bool
+	warned     bool
+	Channel    chan SSEEvent
+}
+
 type SSEHub struct {
-	mu         sync.RWMutex
-	clients    map[string][]chan SSEEvent
-	lastTyping sync.Map // key "chatID:userID" → time.Time
-	closeCh    chan struct{}
+	mu          sync.RWMutex
+	connections map[string]*SSEConnection // connectionID -> conn
+	userConns   map[string][]string       // userID -> []connectionID
+	lastTyping  sync.Map
+	closeCh     chan struct{}
 }
 
 func NewSSEHub() *SSEHub {
 	hub := &SSEHub{
-		clients: make(map[string][]chan SSEEvent),
-		closeCh: make(chan struct{}),
+		connections: make(map[string]*SSEConnection),
+		userConns:   make(map[string][]string),
+		closeCh:     make(chan struct{}),
 	}
 	go hub.cleanupLastTyping()
-
 	return hub
 }
 
-// Close stops the hub's background goroutines.
 func (h *SSEHub) Close() {
 	select {
 	case <-h.closeCh:
@@ -53,143 +64,223 @@ func (h *SSEHub) cleanupLastTyping() {
 		select {
 		case <-ticker.C:
 			cutoff := time.Now().Add(-typingThrottleInterval * 5)
-
 			h.lastTyping.Range(func(k, v any) bool {
 				ts, ok := v.(time.Time)
 				if !ok || ts.Before(cutoff) {
 					h.lastTyping.Delete(k)
 				}
-
 				return true
 			})
-
 		case <-h.closeCh:
 			return
 		}
 	}
 }
 
-func (h *SSEHub) Subscribe(userID string) chan SSEEvent {
+func (h *SSEHub) Register(connectionID string) *SSEConnection {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	ch := make(chan SSEEvent, sseChannelBuffer)
-	h.clients[userID] = append(h.clients[userID], ch)
-
-	return ch
-}
-
-func (h *SSEHub) Unsubscribe(userID string, ch chan SSEEvent) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	channels := h.clients[userID]
-	for i, c := range channels {
-		if c == ch {
-			close(c)
-
-			h.clients[userID] = append(channels[:i], channels[i+1:]...)
-
-			break
+	if existing, ok := h.connections[connectionID]; ok {
+		close(existing.Channel)
+		if existing.UserID != "" {
+			conns := h.userConns[existing.UserID]
+			for i, c := range conns {
+				if c == connectionID {
+					h.userConns[existing.UserID] = append(conns[:i], conns[i+1:]...)
+					break
+				}
+			}
 		}
 	}
 
-	if len(h.clients[userID]) == 0 {
-		delete(h.clients, userID)
+	conn := &SSEConnection{
+		ID:      connectionID,
+		Channel: make(chan SSEEvent, sseChannelBuffer),
 	}
+	h.connections[connectionID] = conn
+	return conn
+}
+
+func (h *SSEHub) Unregister(connectionID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	conn, ok := h.connections[connectionID]
+	if !ok {
+		return
+	}
+
+	close(conn.Channel)
+	delete(h.connections, connectionID)
+
+	if conn.UserID != "" {
+		conns := h.userConns[conn.UserID]
+		for i, c := range conns {
+			if c == connectionID {
+				h.userConns[conn.UserID] = append(conns[:i], conns[i+1:]...)
+				break
+			}
+		}
+		if len(h.userConns[conn.UserID]) == 0 {
+			delete(h.userConns, conn.UserID)
+		}
+	}
+}
+
+func (h *SSEHub) GetConnection(connectionID string) *SSEConnection {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.connections[connectionID]
+}
+
+func (h *SSEHub) Authenticate(connectionID, userID, token string, expiresAt time.Time) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	conn, ok := h.connections[connectionID]
+	if !ok {
+		return fmt.Errorf("connection not found")
+	}
+
+	conn.mu.Lock()
+	conn.UserID = userID
+	conn.Token = token
+	conn.ExpiresAt = expiresAt
+	conn.Authorized = true
+	conn.warned = false
+	conn.mu.Unlock()
+
+	h.userConns[userID] = append(h.userConns[userID], connectionID)
+	return nil
 }
 
 func (h *SSEHub) Send(userID string, event SSEEvent) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	for _, ch := range h.clients[userID] {
+	for _, connID := range h.userConns[userID] {
+		conn := h.connections[connID]
+		if conn == nil {
+			continue
+		}
+
+		conn.mu.Lock()
+		if !conn.Authorized || time.Now().After(conn.ExpiresAt) {
+			conn.Authorized = false
+			conn.mu.Unlock()
+			continue
+		}
+		conn.mu.Unlock()
+
 		select {
-		case ch <- event:
+		case conn.Channel <- event:
 		default:
-			logger.Info("SSE channel full, dropping event", "userID", userID)
+			slog.Info("SSE channel full, dropping event", "userID", userID)
 		}
 	}
 }
 
 func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
-	token := r.Header.Get("Authorization")
-	token = strings.TrimPrefix(token, "Bearer ")
-
-	if token == "" {
-		token = r.URL.Query().Get("token")
-	}
-
-	if token == "" {
-		http.Error(w, "token required", http.StatusBadRequest)
-
+	connectionID := r.URL.Query().Get("connectionId")
+	if connectionID == "" {
+		http.Error(w, "connectionId required", http.StatusBadRequest)
 		return
 	}
 
-	user, ok := h.store.GetUserByToken(token)
-	if !ok {
-		http.Error(w, errKeyUnauthorized, http.StatusUnauthorized)
-
-		return
-	}
-
-	h.store.AddConnection(user.ID)
+	conn := h.hub.Register(connectionID)
+	defer func() {
+		h.hub.Unregister(connectionID)
+		conn.mu.Lock()
+		uid := conn.UserID
+		conn.mu.Unlock()
+		if uid != "" {
+			h.store.RemoveConnection(uid)
+		}
+	}()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		h.store.RemoveConnection(user.ID)
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", h.cfg.CORSOrigin)
-
-	ch := h.hub.Subscribe(user.ID)
-
-	defer func() {
-		h.hub.Unsubscribe(user.ID, ch)
-		h.store.RemoveConnection(user.ID)
-	}()
+	w.Header().Set("Access-Control-Allow-Origin", h.cfg.CORS.Origin)
 
 	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"ok\"}\n\n") //nolint:errcheck
-
 	flusher.Flush()
 
 	ctx := r.Context()
-
-	ticker := time.NewTicker(sseHeartbeatInterval)
-	defer ticker.Stop()
+	heartbeat := time.NewTicker(sseHeartbeatInterval)
+	defer heartbeat.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil { //nolint:errcheck
+		case <-heartbeat.C:
+			expired := false
+			warn := false
+
+			conn.mu.Lock()
+			if conn.Authorized {
+				remaining := time.Until(conn.ExpiresAt)
+				if remaining <= 0 {
+					conn.Authorized = false
+					expired = true
+				} else if remaining <= h.cfg.Auth.TokenExpiryWarning && !conn.warned {
+					conn.warned = true
+					warn = true
+				}
+			}
+			expiresAt := conn.ExpiresAt
+			conn.mu.Unlock()
+
+			if expired {
+				sendSSE(w, flusher, "token_expired", map[string]any{
+					"message": "token expired",
+				})
 				return
 			}
+			if warn {
+				sendSSE(w, flusher, "token_expiring", map[string]any{
+					"expiresAt": expiresAt.Format(time.RFC3339),
+				})
+			}
 
+			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
+				return
+			}
 			flusher.Flush()
 
-		case evt, ok := <-ch:
+		case evt, ok := <-conn.Channel:
 			if !ok {
 				return
 			}
 
-			data, marshalErr := json.Marshal(evt.Data)
-			if marshalErr != nil {
+			conn.mu.Lock()
+			authorized := conn.Authorized
+			conn.mu.Unlock()
+			if !authorized {
 				continue
 			}
 
-			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Event, data); err != nil { //nolint:errcheck
-				return
-			}
-
-			flusher.Flush()
+			sendSSE(w, flusher, evt.Event, evt.Data)
 		}
 	}
+}
+
+func sendSSE(w http.ResponseWriter, flusher http.Flusher, event string, data any) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData); err != nil {
+		return
+	}
+	flusher.Flush()
 }

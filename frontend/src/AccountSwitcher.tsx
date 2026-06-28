@@ -1,17 +1,14 @@
 import {
 	Button,
-	Group,
 	Modal,
 	Overlay,
 	ScrollArea,
 	Select,
-	Stack,
 	Text,
-	TextInput,
 	Title,
 	UnstyledButton,
 } from "@mantine/core";
-import type { FormEvent } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import i18n, { getCurrentLocale, SUPPORTED_LANGS } from "./i18n.ts";
@@ -117,108 +114,10 @@ function AccountList({
 	);
 }
 
-function Footer({
-	adding,
-	error,
-	loading,
-	newNick,
-	setNewNick,
-	onSubmit,
-	onCancel,
-	onAddClick,
-}: {
-	adding: boolean;
-	error: string;
-	loading: boolean;
-	newNick: string;
-	setNewNick: (v: string) => void;
-	onSubmit: (e: FormEvent<HTMLFormElement>) => void;
-	onCancel: () => void;
-	onAddClick: () => void;
-}) {
-	const { t } = useTranslation();
-
-	if (!adding) {
-		return (
-			<Button
-				variant="outline"
-				style={{ width: "100%", borderStyle: "dashed" }}
-				onClick={onAddClick}
-			>
-				{t("accounts.add")}
-			</Button>
-		);
-	}
-	return (
-		<form onSubmit={onSubmit}>
-			<Stack gap="xs">
-				<TextInput
-					placeholder={t("accounts.addNick")}
-					maxLength={20}
-					value={newNick}
-					onChange={(e) => setNewNick(e.target.value)}
-				/>
-				{error.length > 0 && (
-					<Text size="sm" c="red">
-						{error}
-					</Text>
-				)}
-				<Group justify="flex-end" gap="xs">
-					<Button
-						type="submit"
-						disabled={loading || newNick.trim().length === 0}
-						loading={loading}
-					>
-						{loading ? t("accounts.adding") : t("accounts.addBtn")}
-					</Button>
-					<Button variant="default" onClick={onCancel}>
-						{t("accounts.cancel")}
-					</Button>
-				</Group>
-			</Stack>
-		</form>
-	);
-}
-
-interface HandleSubmitOpts {
-	newNick: string;
-	login: (nick: string) => Promise<void>;
-	setAdding: (v: boolean) => void;
-	setNewNick: (v: string) => void;
-	setError: (v: string) => void;
-	setLoading: (v: boolean) => void;
-	onClose: () => void;
-	registerError: string;
-}
-
-async function handleSubmit(
-	e: FormEvent<HTMLFormElement>,
-	opts: HandleSubmitOpts,
-) {
-	e.preventDefault();
-	const trimmed = opts.newNick.trim();
-	if (trimmed.length === 0) return;
-	opts.setLoading(true);
-	opts.setError("");
-	try {
-		await opts.login(trimmed);
-		opts.setAdding(false);
-		opts.setNewNick("");
-		opts.onClose();
-	} catch (err) {
-		opts.setError(err instanceof Error ? err.message : opts.registerError);
-	} finally {
-		opts.setLoading(false);
-	}
-}
-
 export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const { t } = useTranslation();
-	const { accounts, activeAccount, switchAccount, login } = useAuth();
-	const [adding, setAdding] = useState(false);
-	const [newNick, setNewNick] = useState("");
-	const [error, setError] = useState("");
-	const [loading, setLoading] = useState(false);
+	const { accounts, activeAccount, switchAccount } = useAuth();
+	const navigate = useNavigate();
 	const [confirmLogout, setConfirmLogout] = useState(false);
 
 	return (
@@ -267,34 +166,24 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 						padding: "16px",
 					}}
 				>
-					<Footer
-						adding={adding}
-						error={error}
-						loading={loading}
-						newNick={newNick}
-						setNewNick={setNewNick}
-						onSubmit={(e) =>
-							handleSubmit(e, {
-								newNick,
-								login,
-								setAdding,
-								setNewNick,
-								setError,
-								setLoading,
-								onClose,
-								registerError: t("error.register"),
-							})
-						}
-						onCancel={() => {
-							setAdding(false);
-							setError("");
+					<Button
+						variant="outline"
+						style={{
+							width: "100%",
+							borderStyle: "dashed",
+							marginBottom: "8px",
 						}}
-						onAddClick={() => setAdding(true)}
-					/>
+						onClick={() => {
+							onClose();
+							navigate({ to: "/login" });
+						}}
+					>
+						{t("accounts.add")}
+					</Button>
 					<Button
 						variant="outline"
 						color="red"
-						style={{ width: "100%", marginTop: "8px" }}
+						style={{ width: "100%" }}
 						onClick={() => setConfirmLogout(true)}
 					>
 						{t("accounts.logout")}
@@ -328,7 +217,9 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					<Text size="sm" mb="md">
 						{t("accounts.logoutConfirm")}
 					</Text>
-					<Group justify="flex-end" gap="xs">
+					<div
+						style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}
+					>
 						<Button variant="default" onClick={() => setConfirmLogout(false)}>
 							{t("accounts.cancel")}
 						</Button>
@@ -342,7 +233,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 						>
 							{t("accounts.logout")}
 						</Button>
-					</Group>
+					</div>
 				</Modal>
 			</div>
 		</>

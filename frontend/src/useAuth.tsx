@@ -6,7 +6,6 @@ import {
 	useEffect,
 	useState,
 } from "react";
-import { register as apiRegister } from "./api.ts";
 import { onUnauthorized } from "./utils/authEvents.ts";
 
 export interface StoredUser {
@@ -17,15 +16,26 @@ export interface StoredUser {
 export interface StoredAccount {
 	token: string;
 	user: StoredUser;
+	email: string;
+	expiresAt: string;
 }
 
 interface AuthContextValue {
 	accounts: StoredAccount[];
 	activeAccount: StoredAccount | null;
 	switchAccount: (token: string) => void;
-	addAccount: (token: string, user: StoredUser) => void;
+	addAccount: (
+		token: string,
+		user: StoredUser,
+		email: string,
+		expiresAt: string,
+	) => void;
 	removeAccount: (token: string) => void;
-	login: (nick: string) => Promise<void>;
+	updateAccountToken: (
+		oldToken: string,
+		newToken: string,
+		newExpiresAt: string,
+	) => void;
 	logout: () => void;
 }
 
@@ -141,17 +151,20 @@ function useAuthState() {
 		writeActiveToken(token);
 	}, []);
 
-	const addAccount = useCallback((token: string, user: StoredUser) => {
-		const updated = readAccounts();
-		if (!updated.some((a) => a.token === token)) {
-			updated.push({ token, user });
-			writeAccounts(updated);
-			setAccounts(updated);
-		}
-		setActiveToken(token);
-		writeActiveToken(token);
-		writeLastActiveToken(token);
-	}, []);
+	const addAccount = useCallback(
+		(token: string, user: StoredUser, email: string, expiresAt: string) => {
+			const updated = readAccounts();
+			if (!updated.some((a) => a.token === token)) {
+				updated.push({ token, user, email, expiresAt });
+				writeAccounts(updated);
+				setAccounts(updated);
+			}
+			setActiveToken(token);
+			writeActiveToken(token);
+			writeLastActiveToken(token);
+		},
+		[],
+	);
 
 	const removeAccount = useCallback(
 		(token: string) => {
@@ -173,12 +186,24 @@ function useAuthState() {
 		[activeToken],
 	);
 
-	const login = useCallback(
-		async (nick: string) => {
-			const { user, token } = await apiRegister(nick);
-			addAccount(token, user);
+	const updateAccountToken = useCallback(
+		(oldToken: string, newToken: string, newExpiresAt: string) => {
+			const updated = readAccounts().map((a) =>
+				a.token === oldToken
+					? { ...a, token: newToken, expiresAt: newExpiresAt }
+					: a,
+			);
+			writeAccounts(updated);
+			setAccounts(updated);
+			if (readActiveToken() === oldToken) {
+				setActiveToken(newToken);
+				writeActiveToken(newToken);
+				if (readLastActiveToken() === oldToken) {
+					writeLastActiveToken(newToken);
+				}
+			}
 		},
-		[addAccount],
+		[],
 	);
 
 	const logout = useCallback(() => {
@@ -196,7 +221,7 @@ function useAuthState() {
 		switchAccount,
 		addAccount,
 		removeAccount,
-		login,
+		updateAccountToken,
 		logout,
 	};
 }

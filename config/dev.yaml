@@ -1,0 +1,24 @@
+server:
+  host: localhost
+  port: 8080
+
+database:
+  path: /tmp/fastchat.db
+
+uploads:
+  dir: uploads
+
+cors:
+  origin: http://localhost:5173
+
+email:
+  debug_mode: true
+  allowed_emails: []
+
+federation:
+  scheme: http
+  key_path: ./federation_keys
+
+auth:
+  token_expiry: 24h
+  token_expiry_warning: 5m

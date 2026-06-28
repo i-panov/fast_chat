@@ -15,17 +15,18 @@ func newTestSSEHub() *SSEHub {
 	return hub
 }
 
-func TestSSEHubSubscribeSend(t *testing.T) {
+func TestSSEHubRegisterSend(t *testing.T) {
 	t.Parallel()
 
 	hub := newTestSSEHub()
 	defer hub.Close()
 
-	ch := hub.Subscribe("user-1")
+	conn := hub.Register("conn-1")
+	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
 	hub.Send("user-1", SSEEvent{Event: "test", Data: "hello"})
 
 	select {
-	case e := <-ch:
+	case e := <-conn.Channel:
 		if e.Event != "test" {
 			t.Fatalf("event = %q, want test", e.Event)
 		}
@@ -34,21 +35,18 @@ func TestSSEHubSubscribeSend(t *testing.T) {
 	}
 }
 
-func TestSSEHubUnsubscribeClosesChannel(t *testing.T) {
+func TestSSEHubUnregisterClosesChannel(t *testing.T) {
 	t.Parallel()
 
 	hub := newTestSSEHub()
 	defer hub.Close()
 
-	ch := hub.Subscribe("user-1")
-	hub.Unsubscribe("user-1", ch)
+	conn := hub.Register("conn-1")
+	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
+	hub.Unregister("conn-1")
 
-	if _, ok := <-ch; ok {
-		t.Fatal("channel should be closed after Unsubscribe")
-	}
-
-	if _, exists := hub.clients["user-1"]; exists {
-		t.Fatal("user entry should be removed when last subscriber leaves")
+	if _, ok := <-conn.Channel; ok {
+		t.Fatal("channel should be closed after Unregister")
 	}
 }
 
@@ -58,12 +56,11 @@ func TestSSEHubChannelFullDoesNotPanic(t *testing.T) {
 	hub := newTestSSEHub()
 	defer hub.Close()
 
-	ch := hub.Subscribe("user-1")
+	conn := hub.Register("conn-1")
+	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
 
 	// Fill the buffer (sseChannelBuffer = 128). One extra Send must
 	// not block and must not panic.
-	_ = ch
-
 	for i := range sseChannelBuffer {
 		hub.Send("user-1", SSEEvent{Event: "flood", Data: i})
 	}
@@ -79,6 +76,11 @@ func TestSSEHubChannelFullDoesNotPanic(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("Send blocked on full channel — must drop, not block")
 	}
+
+	// Drain the buffer so we have a clean state for the next assertion.
+	for range sseChannelBuffer {
+		<-conn.Channel
+	}
 }
 
 func TestSSEHubSendToMissingUserIsNoop(t *testing.T) {
@@ -90,18 +92,21 @@ func TestSSEHubSendToMissingUserIsNoop(t *testing.T) {
 	hub.Send("nobody", SSEEvent{Event: "noop", Data: "x"})
 }
 
-func TestSSEHubMultipleSubscribers(t *testing.T) {
+func TestSSEHubMultipleConnections(t *testing.T) {
 	t.Parallel()
 
 	hub := newTestSSEHub()
 	defer hub.Close()
 
-	ch1 := hub.Subscribe("user-1")
-	ch2 := hub.Subscribe("user-1")
+	conn1 := hub.Register("conn-1")
+	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
+
+	conn2 := hub.Register("conn-2")
+	hub.Authenticate("conn-2", "user-1", "token-2", time.Now().Add(time.Hour))
 
 	hub.Send("user-1", SSEEvent{Event: "fanout", Data: "y"})
 
-	for i, ch := range []chan SSEEvent{ch1, ch2} {
+	for i, ch := range []chan SSEEvent{conn1.Channel, conn2.Channel} {
 		select {
 		case e := <-ch:
 			if e.Event != "fanout" {
@@ -113,19 +118,85 @@ func TestSSEHubMultipleSubscribers(t *testing.T) {
 	}
 }
 
+func TestSSEHubReRegisterReplacesChannel(t *testing.T) {
+	t.Parallel()
+
+	hub := newTestSSEHub()
+	defer hub.Close()
+
+	oldConn := hub.Register("conn-1")
+	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
+
+	newConn := hub.Register("conn-1")
+
+	// Old channel must be closed.
+	if _, ok := <-oldConn.Channel; ok {
+		t.Fatal("old channel should be closed after re-register")
+	}
+
+	// New connection is not yet authorized; after re-register,
+	// Authenticate must be called again.
+	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
+	hub.Send("user-1", SSEEvent{Event: "reconnect", Data: "ok"})
+
+	select {
+	case e := <-newConn.Channel:
+		if e.Event != "reconnect" {
+			t.Fatalf("event = %q, want reconnect", e.Event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timeout waiting for event on new channel")
+	}
+}
+
+func TestSSEHubExpiredToken(t *testing.T) {
+	t.Parallel()
+
+	hub := newTestSSEHub()
+	defer hub.Close()
+
+	conn := hub.Register("conn-1")
+	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(-time.Hour))
+
+	hub.Send("user-1", SSEEvent{Event: "should-not-arrive", Data: "x"})
+
+	select {
+	case <-conn.Channel:
+		t.Fatal("should not receive event on expired connection")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestSSEHubUnauthenticatedUserIsNoop(t *testing.T) {
+	t.Parallel()
+
+	hub := newTestSSEHub()
+	defer hub.Close()
+
+	conn := hub.Register("conn-1")
+	// Not authenticated.
+
+	hub.Send("user-1", SSEEvent{Event: "should-not-arrive", Data: "x"})
+
+	select {
+	case <-conn.Channel:
+		t.Fatal("should not receive event on unauthenticated connection")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestSSEHubLastTypingCleanup(t *testing.T) {
 	t.Parallel()
 
 	hub := &SSEHub{
-		clients: make(map[string][]chan SSEEvent),
-		closeCh: make(chan struct{}),
+		connections: make(map[string]*SSEConnection),
+		userConns:   make(map[string][]string),
+		closeCh:     make(chan struct{}),
 	}
 
 	hub.lastTyping.Store("chat1:user1", time.Now().Add(-typingThrottleInterval*10))
 	hub.lastTyping.Store("chat2:user1", time.Now())
 
-	// Drive one iteration of the cleanup loop inline; we don't want
-	// the background ticker for a deterministic test.
 	cutoff := time.Now().Add(-typingThrottleInterval * 5)
 
 	hub.lastTyping.Range(func(k, v any) bool {

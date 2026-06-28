@@ -31,6 +31,7 @@ async function request<T>(
 export interface User {
 	id: string;
 	nick: string;
+	email?: string;
 	online: boolean;
 }
 
@@ -112,10 +113,55 @@ export interface AppConfig {
 	messageDeleteTTL: number;
 }
 
-export function register(nick: string) {
-	return request<{ user: User; token: string }>("/api/register", undefined, {
+export interface VerifyCodeExisting {
+	isNew: false;
+	user: User;
+	token: string;
+	expiresAt: string;
+}
+
+export interface VerifyCodeNew {
+	isNew: true;
+	setupToken: string;
+}
+
+export type VerifyCodeResult = VerifyCodeExisting | VerifyCodeNew;
+
+export function sendCode(email: string) {
+	return request<{ status: string; debugCode?: string }>(
+		"/api/auth/send-code",
+		undefined,
+		{ method: "POST", body: JSON.stringify({ email }) },
+	);
+}
+
+export function verifyCode(email: string, code: string) {
+	return request<VerifyCodeResult>("/api/auth/verify-code", undefined, {
 		method: "POST",
-		body: JSON.stringify({ nick }),
+		body: JSON.stringify({ email, code }),
+	});
+}
+
+export function completeRegistration(setupToken: string, nick: string) {
+	return request<{ user: User; token: string; expiresAt: string }>(
+		"/api/auth/complete-registration",
+		undefined,
+		{ method: "POST", body: JSON.stringify({ setupToken, nick }) },
+	);
+}
+
+export function refreshToken(token: string) {
+	return request<{ token: string; expiresAt: string }>(
+		"/api/auth/refresh-token",
+		token,
+		{ method: "POST" },
+	);
+}
+
+export function sseAuth(connectionId: string, token: string) {
+	return request<{ status: string }>("/api/auth/sse-auth", undefined, {
+		method: "POST",
+		body: JSON.stringify({ connectionId, token }),
 	});
 }
 

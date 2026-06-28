@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import type { Chat, Message, Thread, TypingPayload } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
@@ -16,6 +16,8 @@ interface UseSseEventsParams {
 	>;
 	addTypingUser: (payload: TypingPayload) => void;
 	clearTyping: (chatId: string, userId: string) => void;
+	onTokenExpiring: (currentToken: string) => Promise<void>;
+	onTokenExpired: () => void;
 }
 
 export function useSseEvents({
@@ -25,7 +27,12 @@ export function useSseEvents({
 	setMessageToThreadMap,
 	addTypingUser,
 	clearTyping,
+	onTokenExpiring,
+	onTokenExpired,
 }: UseSseEventsParams) {
+	const tokenRef = useRef(token);
+	tokenRef.current = token;
+
 	const handler = useCallback(
 		(event: string, data: unknown) => {
 			if (event === "new_message" || event === "message_updated") {
@@ -106,6 +113,14 @@ export function useSseEvents({
 				clearTyping(chatId, userId);
 				return;
 			}
+			if (event === "token_expiring") {
+				void onTokenExpiring(tokenRef.current);
+				return;
+			}
+			if (event === "token_expired") {
+				onTokenExpired();
+				return;
+			}
 			if (event === "sse_closed") {
 				scheduleSync();
 			}
@@ -116,6 +131,8 @@ export function useSseEvents({
 			setMessageToThreadMap,
 			addTypingUser,
 			clearTyping,
+			onTokenExpiring,
+			onTokenExpired,
 		],
 	);
 

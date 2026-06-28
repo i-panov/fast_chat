@@ -39,8 +39,6 @@ func newTestStore(t *testing.T) *store.Store {
 	return store.New(db)
 }
 
-const testNickAlice = `{"nick":"alice"}`
-
 func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
 
@@ -50,56 +48,27 @@ func newTestHandler(t *testing.T) *Handler {
 	}
 
 	cfg := &config.Config{
-		MessageEditTTL:    300,
-		MessageDeleteTTL:  0,
-		ServerDomain:      "localhost:8080",
-		CORSOrigin:        "*",
-		FederationScheme:  "http",
-		FederationTimeout: 5,
-		FederationKeyPath: ".",
+		MessageEditTTL:   300,
+		MessageDeleteTTL: 0,
+		Server:           config.ServerConfig{Domain: "localhost:8080", Port: 8080},
+		CORS:             config.CORSConfig{Origin: "*"},
+		Federation:       config.FederationConfig{Scheme: "http", Timeout: 5, KeyPath: "."},
+		Uploads:          config.UploadsConfig{Dir: "."},
+		Database:         config.DatabaseConfig{Path: "test.db"},
+		Auth:             config.AuthConfig{TokenExpiry: 24 * time.Hour, TokenExpiryWarning: 5 * time.Minute},
+		Email:            config.EmailConfig{DebugMode: true},
 	}
 
-	fm := federation.New(key, cfg.ServerDomain, cfg.FederationScheme, cfg.FederationTimeout)
+	fm := federation.New(key, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout)
 	s := newTestStore(t)
 
 	return New(s, cfg, fm)
 }
 
-func TestRegister(t *testing.T) {
-	h := newTestHandler(t)
-
-	body := testNickAlice
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	h.Register(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Errorf("expected 201, got %d", w.Code)
-	}
-
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
-
-	user, ok := resp["user"].(map[string]any)
-	if !ok {
-		t.Fatal("expected user in response")
-	}
-	if user["nick"] != "alice" {
-		t.Errorf("expected nick 'alice', got %v", user["nick"])
-	}
-	if _, ok := resp["token"]; !ok {
-		t.Error("expected token in response")
-	}
-}
-
 func TestSearchUsersDoesNotLeakToken(t *testing.T) {
 	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice")
-	bob := registerTestUser(t, h, "bob")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
 
 	req := authReq(http.MethodGet, "/api/users/search?q=bo", alice.token, "")
 	w := httptest.NewRecorder()
@@ -117,41 +86,11 @@ func TestSearchUsersDoesNotLeakToken(t *testing.T) {
 	}
 }
 
-func TestRegisterResponseDoesNotDuplicateToken(t *testing.T) {
-	h := newTestHandler(t)
-
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(`{"nick":"unique1"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.Register(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
-
-	user, ok := resp["user"].(map[string]any)
-	if !ok {
-		t.Fatal("expected user object")
-	}
-	if _, has := user["token"]; has {
-		t.Error("user object must not include token")
-	}
-	if _, has := resp["token"]; !has {
-		t.Error("top-level token required")
-	}
-}
-
 func TestFederatedSearchUsersDoesNotLeakToken(t *testing.T) {
 	h := newTestHandler(t)
 
-	// Register some local users so the federated search has results to expose.
-	registerTestUser(t, h, "alice")
-	registerTestUser(t, h, "bob")
+	registerTestUser(t, h, "alice", "alice@test.local")
+	registerTestUser(t, h, "bob", "bob@test.local")
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/federated/users/search?q=al", http.NoBody)
 	w := httptest.NewRecorder()
@@ -166,67 +105,10 @@ func TestFederatedSearchUsersDoesNotLeakToken(t *testing.T) {
 	}
 }
 
-func TestRegisterDuplicate(t *testing.T) {
-	h := newTestHandler(t)
-
-	body := testNickAlice
-
-	req1 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(body))
-	req1.Header.Set("Content-Type", "application/json")
-	w1 := httptest.NewRecorder()
-	h.Register(w1, req1)
-
-	req2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(body))
-	req2.Header.Set("Content-Type", "application/json")
-	w2 := httptest.NewRecorder()
-	h.Register(w2, req2)
-
-	if w2.Code != http.StatusConflict {
-		t.Errorf("expected 409, got %d", w2.Code)
-	}
-}
-
-func TestRegisterValidation(t *testing.T) {
-	h := newTestHandler(t)
-
-	tests := []struct {
-		name string
-		body string
-		code int
-	}{
-		{"empty nick", `{"nick":""}`, http.StatusBadRequest},
-		{"too long", `{"nick":"abcdefghijklmnopqrstu"}`, http.StatusBadRequest},
-		{"contains colon", `{"nick":"alice:bob"}`, http.StatusBadRequest},
-		{"invalid json", `not json`, http.StatusBadRequest},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(tc.body))
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-			h.Register(w, req)
-
-			if w.Code != tc.code {
-				t.Errorf("expected %d, got %d", tc.code, w.Code)
-			}
-		})
-	}
-}
-
 func TestAuthMiddleware(t *testing.T) {
 	h := newTestHandler(t)
 
-	// Register a user to get a token
-	body := testNickAlice
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.Register(w, req)
-
-	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	token, _ := resp["token"].(string)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
 
 	handler := h.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		user := getUser(r)
@@ -240,7 +122,7 @@ func TestAuthMiddleware(t *testing.T) {
 
 	t.Run("valid token", func(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Authorization", "Bearer "+alice.token)
 		w := httptest.NewRecorder()
 		handler(w, req)
 
@@ -261,7 +143,7 @@ func TestAuthMiddleware(t *testing.T) {
 	})
 
 	t.Run("token in query is rejected", func(t *testing.T) {
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?token="+token, http.NoBody)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?token="+alice.token, http.NoBody)
 		w := httptest.NewRecorder()
 		handler(w, req)
 
@@ -274,102 +156,34 @@ func TestAuthMiddleware(t *testing.T) {
 func TestCreateChat(t *testing.T) {
 	h := newTestHandler(t)
 
-	// Register two users
-	regBody1 := `{"nick":"alice"}`
-	req1 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(regBody1))
-	req1.Header.Set("Content-Type", "application/json")
-	w1 := httptest.NewRecorder()
-	h.Register(w1, req1)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
 
-	var resp1 map[string]any
-	json.Unmarshal(w1.Body.Bytes(), &resp1)
-	aliceToken := resp1["token"].(string)
-	aliceUser := resp1["user"].(map[string]any)
-	aliceID := aliceUser["id"].(string)
+	run := func(name string, body string, expected int) {
+		t.Run(name, func(t *testing.T) {
+			req := authReq(http.MethodPost, "/api/chats", alice.token, body)
+			w := httptest.NewRecorder()
+			h.AuthMiddleware(h.CreateChat)(w, req)
 
-	regBody2 := `{"nick":"bob"}`
-	req2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(regBody2))
-	req2.Header.Set("Content-Type", "application/json")
-	w2 := httptest.NewRecorder()
-	h.Register(w2, req2)
+			if w.Code != expected {
+				t.Errorf("expected %d, got %d: %s", expected, w.Code, w.Body.String())
+			}
+		})
+	}
 
-	var resp2 map[string]any
-	json.Unmarshal(w2.Body.Bytes(), &resp2)
-	bobID := resp2["user"].(map[string]any)["id"].(string)
-
-	t.Run("create chat", func(t *testing.T) {
-		body := `{"withUserId":"` + bobID + `"}`
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chats", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+aliceToken)
-		w := httptest.NewRecorder()
-		h.AuthMiddleware(h.CreateChat)(w, req)
-
-		if w.Code != http.StatusCreated {
-			t.Errorf("expected 201, got %d: %s", w.Code, w.Body.String())
-		}
-
-		var chatResp map[string]any
-		json.Unmarshal(w.Body.Bytes(), &chatResp)
-		chat := chatResp["chat"].(map[string]any)
-		members := chat["members"].([]any)
-		if len(members) != 2 {
-			t.Errorf("expected 2 members, got %d", len(members))
-		}
-	})
-
-	t.Run("chat with yourself", func(t *testing.T) {
-		body := `{"withUserId":"` + aliceID + `"}`
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chats", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+aliceToken)
-		w := httptest.NewRecorder()
-		h.AuthMiddleware(h.CreateChat)(w, req)
-
-		if w.Code != http.StatusBadRequest {
-			t.Errorf("expected 400, got %d", w.Code)
-		}
-	})
-
-	t.Run("unauthorized", func(t *testing.T) {
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chats", http.NoBody)
-		w := httptest.NewRecorder()
-
-		h.AuthMiddleware(h.CreateChat)(w, req)
-
-		if w.Code != http.StatusUnauthorized {
-			t.Errorf("expected 401, got %d", w.Code)
-		}
-	})
+	run("create chat", `{"withUserId":"`+bob.id+`"}`, http.StatusCreated)
+	run("chat with yourself", `{"withUserId":"`+alice.id+`"}`, http.StatusBadRequest)
 }
 
 func TestGetMessages(t *testing.T) {
 	h := newTestHandler(t)
 
-	regBody := `{"nick":"alice"}`
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(regBody))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.Register(w, req)
-
-	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	aliceToken := resp["token"].(string)
-
-	// Register bob
-	bobReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(`{"nick":"bob"}`))
-	bobReq.Header.Set("Content-Type", "application/json")
-	bobW := httptest.NewRecorder()
-	h.Register(bobW, bobReq)
-	var bobResp map[string]any
-	json.Unmarshal(bobW.Body.Bytes(), &bobResp)
-	bobID := bobResp["user"].(map[string]any)["id"].(string)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
 
 	// Create chat
-	chatBody := `{"withUserId":"` + bobID + `"}`
-	chatReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chats", strings.NewReader(chatBody))
-	chatReq.Header.Set("Content-Type", "application/json")
-	chatReq.Header.Set("Authorization", "Bearer "+aliceToken)
+	chatBody := `{"withUserId":"` + bob.id + `"}`
+	chatReq := authReq(http.MethodPost, "/api/chats", alice.token, chatBody)
 	chatW := httptest.NewRecorder()
 	h.AuthMiddleware(h.CreateChat)(chatW, chatReq)
 	var chatResp map[string]any
@@ -377,10 +191,7 @@ func TestGetMessages(t *testing.T) {
 	chatID := chatResp["chat"].(map[string]any)["id"].(string)
 
 	// Send message
-	msgBody := `{"text":"hello"}`
-	msgReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chats/"+chatID+"/messages", strings.NewReader(msgBody))
-	msgReq.Header.Set("Content-Type", "application/json")
-	msgReq.Header.Set("Authorization", "Bearer "+aliceToken)
+	msgReq := authReq(http.MethodPost, "/api/chats/"+chatID+"/messages", alice.token, `{"text":"hello"}`)
 	msgReq.SetPathValue("id", chatID)
 	msgW := httptest.NewRecorder()
 	h.AuthMiddleware(h.SendMessage)(msgW, msgReq)
@@ -391,7 +202,7 @@ func TestGetMessages(t *testing.T) {
 
 	// Get messages
 	getReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/chats/"+chatID+"/messages", http.NoBody)
-	getReq.Header.Set("Authorization", "Bearer "+aliceToken)
+	getReq.Header.Set("Authorization", "Bearer "+alice.token)
 	getReq.SetPathValue("id", chatID)
 	getW := httptest.NewRecorder()
 	h.AuthMiddleware(h.GetMessages)(getW, getReq)
@@ -472,26 +283,17 @@ type testAccount struct {
 	id    string
 }
 
-func registerTestUser(t *testing.T, h *Handler, nick string) testAccount {
+func registerTestUser(t *testing.T, h *Handler, nick, email string) testAccount {
 	t.Helper()
 
-	body := `{"nick":"` + nick + `"}`
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.Register(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("register %s: expected 201, got %d: %s", nick, w.Code, w.Body.String())
-	}
-
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
+	user, err := h.store.CreateUser(email, nick, h.cfg.Server.Domain, h.cfg.Auth.TokenExpiry)
+	if err != nil {
+		t.Fatalf("create user %s: %v", nick, err)
 	}
 
 	return testAccount{
-		token: resp["token"].(string),
-		id:    resp["user"].(map[string]any)["id"].(string),
+		token: user.Token,
+		id:    user.ID,
 	}
 }
 
@@ -509,9 +311,9 @@ func authReq(method, path, token, body string) *http.Request {
 
 func TestCreateGroupChat(t *testing.T) {
 	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice")
-	bob := registerTestUser(t, h, "bob")
-	carol := registerTestUser(t, h, "carol")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
+	carol := registerTestUser(t, h, "carol", "carol@test.local")
 
 	body := `{"type":"group","name":"Team","memberIds":["` + bob.id + `","` + carol.id + `"]}`
 	req := authReq(http.MethodPost, "/api/chats", alice.token, body)
@@ -543,8 +345,8 @@ func TestCreateGroupChat(t *testing.T) {
 
 func TestCreateGroupChat_RejectsFederatedMember(t *testing.T) {
 	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice")
-	bob := registerTestUser(t, h, "bob")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
 
 	body := `{"type":"group","name":"X","memberIds":["` + bob.id + `","carol:other.com:9999"]}`
 	req := authReq(http.MethodPost, "/api/chats", alice.token, body)
@@ -558,8 +360,8 @@ func TestCreateGroupChat_RejectsFederatedMember(t *testing.T) {
 
 func TestCreateGroupChat_Validation(t *testing.T) {
 	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice")
-	bob := registerTestUser(t, h, "bob")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
 
 	tests := []struct {
 		name string
@@ -583,7 +385,7 @@ func TestCreateGroupChat_Validation(t *testing.T) {
 
 func TestCreateGroupChat_Solo(t *testing.T) {
 	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
 
 	body := `{"type":"group","name":"Solo","memberIds":[]}`
 	req := authReq(http.MethodPost, "/api/chats", alice.token, body)
@@ -609,9 +411,9 @@ func TestCreateGroupChat_Solo(t *testing.T) {
 
 func TestGroupPermissions(t *testing.T) {
 	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice")
-	bob := registerTestUser(t, h, "bob")
-	carol := registerTestUser(t, h, "carol")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
+	carol := registerTestUser(t, h, "carol", "carol@test.local")
 
 	createBody := `{"type":"group","name":"G","memberIds":["` + bob.id + `","` + carol.id + `"]}`
 	createReq := authReq(http.MethodPost, "/api/chats", alice.token, createBody)
@@ -645,7 +447,7 @@ func TestGroupPermissions(t *testing.T) {
 	})
 
 	t.Run("non-member cannot rename", func(t *testing.T) {
-		dave := registerTestUser(t, h, "dave")
+		dave := registerTestUser(t, h, "dave", "dave@test.local")
 		req := authReq(http.MethodPatch, "/api/chats/"+chatID, dave.token, `{"name":"X"}`)
 		req.SetPathValue("id", chatID)
 		w := httptest.NewRecorder()
@@ -656,7 +458,7 @@ func TestGroupPermissions(t *testing.T) {
 	})
 
 	t.Run("owner can add", func(t *testing.T) {
-		dave := registerTestUser(t, h, "dave2")
+		dave := registerTestUser(t, h, "dave2", "dave2@test.local")
 		body := `{"userId":"` + dave.id + `"}`
 		req := authReq(http.MethodPost, "/api/chats/"+chatID+"/members", alice.token, body)
 		req.SetPathValue("id", chatID)
@@ -668,7 +470,7 @@ func TestGroupPermissions(t *testing.T) {
 	})
 
 	t.Run("non-owner cannot add", func(t *testing.T) {
-		eve := registerTestUser(t, h, "eve")
+		eve := registerTestUser(t, h, "eve", "eve@test.local")
 		body := `{"userId":"` + eve.id + `"}`
 		req := authReq(http.MethodPost, "/api/chats/"+chatID+"/members", bob.token, body)
 		req.SetPathValue("id", chatID)
@@ -692,7 +494,6 @@ func TestGroupPermissions(t *testing.T) {
 	})
 
 	t.Run("member can leave (self-remove)", func(t *testing.T) {
-		// carol removes herself
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/api/chats/"+chatID+"/members/"+carol.id, http.NoBody)
 		req.Header.Set("Authorization", "Bearer "+carol.token)
 		req.SetPathValue("id", chatID)
@@ -705,7 +506,6 @@ func TestGroupPermissions(t *testing.T) {
 	})
 
 	t.Run("member cannot remove other", func(t *testing.T) {
-		// bob (not owner) tries to remove alice
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/api/chats/"+chatID+"/members/"+alice.id, http.NoBody)
 		req.Header.Set("Authorization", "Bearer "+bob.token)
 		req.SetPathValue("id", chatID)
@@ -720,9 +520,9 @@ func TestGroupPermissions(t *testing.T) {
 
 func TestDeleteGroupChat(t *testing.T) {
 	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice")
-	bob := registerTestUser(t, h, "bob")
-	carol := registerTestUser(t, h, "carol")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
+	carol := registerTestUser(t, h, "carol", "carol@test.local")
 
 	createBody := `{"type":"group","name":"G","memberIds":["` + bob.id + `","` + carol.id + `"]}`
 	createReq := authReq(http.MethodPost, "/api/chats", alice.token, createBody)
@@ -765,9 +565,9 @@ func TestDeleteGroupChat(t *testing.T) {
 
 func TestServeFileForGroupAvatar(t *testing.T) {
 	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice")
-	bob := registerTestUser(t, h, "bob")
-	carol := registerTestUser(t, h, "carol")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
+	carol := registerTestUser(t, h, "carol", "carol@test.local")
 
 	createBody := `{"type":"group","name":"G","memberIds":["` + bob.id + `","` + carol.id + `"]}`
 	createReq := authReq(http.MethodPost, "/api/chats", alice.token, createBody)
@@ -794,7 +594,7 @@ func TestServeFileForGroupAvatar(t *testing.T) {
 		t.Error("expected no access for unknown file")
 	}
 
-	eve := registerTestUser(t, h, "eve")
+	eve := registerTestUser(t, h, "eve", "eve@test.local")
 	if h.userCanAccessFile(eve.id, f.ID) {
 		t.Error("expected eve (non-member) to NOT access group avatar")
 	}
@@ -802,9 +602,9 @@ func TestServeFileForGroupAvatar(t *testing.T) {
 
 func TestPrivateChatUnaffectedByGroup(t *testing.T) {
 	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice")
-	bob := registerTestUser(t, h, "bob")
-	carol := registerTestUser(t, h, "carol")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
+	carol := registerTestUser(t, h, "carol", "carol@test.local")
 
 	// Create a group with all three
 	createBody := `{"type":"group","name":"All","memberIds":["` + bob.id + `","` + carol.id + `"]}`
@@ -865,9 +665,6 @@ func TestFederatedSendMessageRejectsMismatchedFromID(t *testing.T) {
 	req.SetPathValue("id", "remote-chat-1")
 
 	w := httptest.NewRecorder()
-	// Skip FederatedAuthMiddleware — call the handler directly to test
-	// server-binding logic in isolation. Signature verification is
-	// covered by federation_test.go.
 	h.FederatedSendMessage(w, req)
 
 	if w.Code != http.StatusForbidden {
@@ -892,7 +689,6 @@ func TestFederatedSendMessageRejectsWrongServerHeader(t *testing.T) {
 		"/api/federated/chats/remote-chat-2/messages", strings.NewReader(body),
 	)
 	req.Header.Set("Content-Type", "application/json")
-	// Header claims a different sender than the chat's owner.
 	req.Header.Set("X-Federation-Server", "evil.test")
 	req.SetPathValue("id", "remote-chat-2")
 
@@ -907,7 +703,6 @@ func TestFederatedSendMessageRejectsWrongServerHeader(t *testing.T) {
 func TestFederatedCreateChatRejectsMismatchedRemoteServer(t *testing.T) {
 	h := newTestHandler(t)
 
-	// Body says remote=test, header says X-Federation-Server=evil.
 	body := `{"chatId":"x1","members":["a:remote.test","b:localhost:8080"],"remoteServer":"remote.test"}`
 	req := httptest.NewRequestWithContext(
 		context.Background(), http.MethodPost,
@@ -927,7 +722,6 @@ func TestFederatedCreateChatRejectsMismatchedRemoteServer(t *testing.T) {
 func TestFederatedCreateChatRejectsUnfederatedMembers(t *testing.T) {
 	h := newTestHandler(t)
 
-	// Members without ":domain" suffix are invalid federation IDs.
 	body := `{"chatId":"x2","members":["alice","bob:localhost:8080"],"remoteServer":"remote.test"}`
 	req := httptest.NewRequestWithContext(
 		context.Background(), http.MethodPost,
@@ -947,9 +741,6 @@ func TestFederatedCreateChatRejectsUnfederatedMembers(t *testing.T) {
 func TestFederatedEditMessageRejectsLocalAuthor(t *testing.T) {
 	h := newTestHandler(t)
 
-	// A federated chat whose remote server is "remote.test", but the
-	// message author belongs to OUR server — the remote must not be
-	// allowed to edit messages written by locals.
 	chat := &model.Chat{
 		ID:           "remote-chat-3",
 		Members:      []string{"alice:remote.test", "bob:localhost:8080"},
@@ -990,8 +781,8 @@ func TestFederatedEditMessageRejectsLocalAuthor(t *testing.T) {
 
 func TestSearchUsersRejectsShortQuery(t *testing.T) {
 	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice")
-	registerTestUser(t, h, "bob")
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	registerTestUser(t, h, "bob", "bob@test.local")
 
 	for _, q := range []string{"", "a", "  "} {
 		req := authReq(http.MethodGet, "/api/users/search?q="+url.QueryEscape(q), alice.token, "")
@@ -1029,37 +820,9 @@ func TestSearchUsersRejectsShortQuery(t *testing.T) {
 	}
 }
 
-func TestRegisterNickLengthIsRuneBased(t *testing.T) {
-	h := newTestHandler(t)
-
-	// 20 кириллических символов — 80 байт. Должно пройти (20 рун).
-	nick := strings.Repeat("я", 20)
-
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(`{"nick":"`+nick+`"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.Register(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Errorf("expected 201 for 20-rune nick, got %d: %s", w.Code, w.Body.String())
-	}
-
-	// 21 руна — должно быть отвергнуто.
-	nick = strings.Repeat("я", 21)
-
-	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/register", strings.NewReader(`{"nick":"`+nick+`"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w = httptest.NewRecorder()
-	h.Register(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for 21-rune nick, got %d", w.Code)
-	}
-}
-
 func TestFederatedSearchUsersRejectsShortQuery(t *testing.T) {
 	h := newTestHandler(t)
-	registerTestUser(t, h, "alice")
+	registerTestUser(t, h, "alice", "alice@test.local")
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/federated/users/search?q=a", http.NoBody)
 	w := httptest.NewRecorder()

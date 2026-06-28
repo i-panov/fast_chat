@@ -1,9 +1,10 @@
-// Package main starts the Fast Chat server.
 package main
 
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -138,47 +139,71 @@ func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
 }
 
 func main() {
+	configPath := flag.String("config", "", "path to config file (required)")
+	flag.Parse()
+
+	if *configPath == "" {
+		fmt.Fprintln(os.Stderr, "FATAL: --config flag is required")
+		os.Exit(1)
+	}
+
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})))
 
-	cfg := config.Load()
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o750); err != nil {
 		log.Printf("FATAL: Failed to create data directory: %v", err)
 		os.Exit(1)
 	}
 
-	if err := os.MkdirAll(cfg.UploadDir, 0o750); err != nil {
+	if err := os.MkdirAll(cfg.Uploads.Dir, 0o750); err != nil {
 		log.Printf("FATAL: Failed to create upload directory: %v", err)
 		os.Exit(1)
 	}
 
-	db, err := store.InitDB(cfg.DBPath)
+	db, err := store.InitDB(cfg.Database.Path)
 	if err != nil {
 		log.Printf("FATAL: Failed to initialize database: %v", err)
 		os.Exit(1)
 	}
 
-	fedKey, err := federation.LoadOrGenerateKeys(cfg.FederationKeyPath)
+	fedKey, err := federation.LoadOrGenerateKeys(cfg.Federation.KeyPath)
 	if err != nil {
 		log.Printf("FATAL: Failed to load federation keys: %v", err)
 		os.Exit(1)
 	}
 
-	fedManager := federation.New(fedKey, cfg.ServerDomain, cfg.FederationScheme, cfg.FederationTimeout)
+	fedManager := federation.New(fedKey, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout)
 
-	s := store.New(db) //nolint:varnamelen // st used across startup/shutdown
-	handlerInstance := handler.New(s, cfg, fedManager)
+	st := store.New(db)
+	st.Codes().StartCleanup(context.Background(), time.Minute)
+	handlerInstance := handler.New(st, cfg, fedManager)
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/config", handlerInstance.GetConfig)
 
-	// Stricter rate limit for /api/register to prevent account farming.
-	registerRL := newRateLimiter(5, 10*time.Minute)
-	mux.Handle("POST /api/register", rateLimitMiddleware(registerRL)(http.HandlerFunc(handlerInstance.Register)))
+	// Auth routes (no auth middleware, rate limited)
+	sendCodeRL := newRateLimiter(cfg.RateLimits.SendCode.Limit, cfg.RateLimits.SendCode.Window)
+	verifyCodeRL := newRateLimiter(cfg.RateLimits.VerifyCode.Limit, cfg.RateLimits.VerifyCode.Window)
+	registerRL := newRateLimiter(cfg.RateLimits.Register.Limit, cfg.RateLimits.Register.Window)
+
+	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL)(http.HandlerFunc(handlerInstance.SendCode)))
+	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL)(http.HandlerFunc(handlerInstance.VerifyCode)))
+	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL)(http.HandlerFunc(handlerInstance.CompleteRegistration)))
+	sseAuthRL := newRateLimiter(30, time.Minute)
+	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL)(http.HandlerFunc(handlerInstance.SSEAuth)))
+	mux.HandleFunc("POST /api/auth/refresh-token", handlerInstance.AuthMiddleware(handlerInstance.RefreshToken))
+
+	// SSE endpoint (no auth middleware — auth happens via SSEAuth)
 	mux.HandleFunc("GET /api/events", handlerInstance.SSE)
+
 	mux.HandleFunc("GET /api/users/search", handlerInstance.AuthMiddleware(handlerInstance.SearchUsers))
 	mux.HandleFunc("GET /api/chats", handlerInstance.AuthMiddleware(handlerInstance.GetChats))
 	mux.HandleFunc("GET /api/sync", handlerInstance.AuthMiddleware(handlerInstance.Sync))
@@ -215,18 +240,13 @@ func main() {
 	// Well-known endpoint (no auth, public key for federation)
 	mux.HandleFunc("GET /.well-known/fast-chat", fedManager.WellKnownHandler)
 
-	rl := newRateLimiter(100, 1*time.Minute)
+	generalRL := newRateLimiter(cfg.RateLimits.General.Limit, cfg.RateLimits.General.Window)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	addr := ":" + port
+	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           corsMiddleware(cfg.CORSOrigin)(rateLimitMiddleware(rl)(mux)),
+		Handler:           corsMiddleware(cfg.CORS.Origin)(rateLimitMiddleware(generalRL)(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      0,
@@ -247,14 +267,17 @@ func main() {
 	<-quit
 	slog.Info("shutting down server")
 
-	close(rl.closeCh)
+	close(generalRL.closeCh)
+	close(sendCodeRL.closeCh)
+	close(verifyCodeRL.closeCh)
 	close(registerRL.closeCh)
+	close(sseAuthRL.closeCh)
 
 	fedManager.Close()
 
 	handlerInstance.Close()
 
-	s.Close()
+	st.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

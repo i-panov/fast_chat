@@ -1,4 +1,3 @@
-// Package store provides data persistence using SQLite via GORM.
 package store
 
 import (
@@ -9,6 +8,7 @@ import (
 
 type Store struct {
 	db       *gorm.DB
+	codes    *CodeStore
 	connMu   sync.Mutex
 	conns    map[string]int
 	onlineMu sync.RWMutex
@@ -17,14 +17,19 @@ type Store struct {
 
 func New(db *gorm.DB) *Store {
 	return &Store{
-		db:     db,
-		conns:  make(map[string]int),
+		db:    db,
+		codes: NewCodeStore(),
+		conns: make(map[string]int),
 		online: make(map[string]struct{}),
 	}
 }
 
 func (s *Store) DB() *gorm.DB {
 	return s.db
+}
+
+func (s *Store) Codes() *CodeStore {
+	return s.codes
 }
 
 func (s *Store) AddConnection(userID string) {
@@ -58,19 +63,14 @@ func (s *Store) RemoveConnection(userID string) {
 	}
 }
 
-// IsOnline reports whether the user currently has at least one active
-// connection. Online state is tracked in memory only — it is intentionally
-// lost across server restarts.
 func (s *Store) IsOnline(userID string) bool {
 	s.onlineMu.RLock()
 	defer s.onlineMu.RUnlock()
 
 	_, ok := s.online[userID]
-
 	return ok
 }
 
-// Close clears in-memory state and closes the database connection.
 func (s *Store) Close() {
 	s.onlineMu.Lock()
 	s.online = make(map[string]struct{})
@@ -78,6 +78,6 @@ func (s *Store) Close() {
 
 	sqlDB, err := s.db.DB()
 	if err == nil {
-		sqlDB.Close() //nolint:errcheck,gosec // closing on shutdown
+		sqlDB.Close()
 	}
 }

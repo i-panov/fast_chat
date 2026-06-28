@@ -1,4 +1,3 @@
-// Package handler provides HTTP handlers and SSE infrastructure for the chat API.
 package handler
 
 import (
@@ -12,13 +11,12 @@ import (
 	"time"
 
 	"fast_chat/config"
+	"fast_chat/email"
 	"fast_chat/federation"
 	"fast_chat/model"
 	"fast_chat/store"
 )
 
-// logger is the structured logger used by the handler package.
-// It defaults to slog.Default() and may be overridden in tests.
 var logger = slog.Default()
 
 const (
@@ -31,9 +29,7 @@ const (
 	errKeyFileTooLarge = "file too large"
 )
 
-// maxUploadSize is the maximum file size accepted by UploadFile, in bytes.
-// Declared as a var (not const) so tests can shrink the limit.
-var maxUploadSize int64 = 50 << 20 // 50 MB
+var maxUploadSize int64 = 50 << 20
 
 type memberInfo struct {
 	ID     string `json:"id"`
@@ -52,24 +48,40 @@ type chatResponse struct {
 }
 
 type Handler struct {
-	store      *store.Store
-	hub        *SSEHub
-	cfg        *config.Config
-	fedManager *federation.Manager
-	fedClient  *http.Client
+	store       *store.Store
+	hub         *SSEHub
+	cfg         *config.Config
+	fedManager  *federation.Manager
+	fedClient   *http.Client
+	emailSender email.Sender
 }
 
 func New(s *store.Store, cfg *config.Config, fm *federation.Manager) *Handler {
+	var es email.Sender
+	if cfg.Email.DebugMode {
+		es = email.NewDebugSender()
+	} else if cfg.Email.SMTP.Host != "" {
+		es = email.NewSMTPSender(
+			cfg.Email.SMTP.Host,
+			cfg.Email.SMTP.Port,
+			cfg.Email.SMTP.Username,
+			cfg.Email.SMTP.Password,
+			cfg.Email.SMTP.From,
+		)
+	} else {
+		es = email.NewDebugSender()
+	}
+
 	return &Handler{
-		store:      s,
-		hub:        NewSSEHub(),
-		cfg:        cfg,
-		fedManager: fm,
-		fedClient:  &http.Client{Timeout: time.Duration(cfg.FederationTimeout) * time.Second},
+		store:       s,
+		hub:         NewSSEHub(),
+		cfg:         cfg,
+		fedManager:  fm,
+		fedClient:   &http.Client{Timeout: time.Duration(cfg.Federation.Timeout) * time.Second},
+		emailSender: es,
 	}
 }
 
-// Close stops the handler's background goroutines (SSE hub cleanup loop).
 func (h *Handler) Close() {
 	h.hub.Close()
 }
@@ -78,9 +90,6 @@ func (h *Handler) enrichChat(c *model.Chat) chatResponse {
 	return h.enrichChatFromNicks(c, nil)
 }
 
-// enrichChatFromNicks is the same as enrichChat but uses a pre-resolved
-// nicks map (from Store.GetUsersByIDs) to avoid N+1 lookups. Pass nil to
-// fall back to a per-member query.
 func (h *Handler) enrichChatFromNicks(c *model.Chat, nicks map[string]string) chatResponse {
 	cr := chatResponse{
 		ID:        c.ID,
@@ -120,7 +129,6 @@ func isMember(chat *model.Chat, userID string) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -128,17 +136,10 @@ func isOwner(chat *model.Chat, userID string) bool {
 	return chat.OwnerID != "" && chat.OwnerID == userID
 }
 
-// validCoords returns true if the latitude and longitude are within valid ranges.
 func validCoords(lat, lng float64) bool {
 	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
 }
 
-// parseLocationPatch decodes a tri-state location patch field.
-//
-//   - empty (field absent)         → nil, false, nil  (leave unchanged)
-//   - JSON null                    → nil, true,  nil  (clear)
-//   - JSON object {lat,lng}         → &Location{...}, false, nil
-//   - malformed                    → nil, false, error
 func parseLocationPatch(raw json.RawMessage) (*model.Location, bool, error) {
 	if len(raw) == 0 {
 		return nil, false, nil
@@ -163,29 +164,24 @@ func parseLocationPatch(raw json.RawMessage) (*model.Location, bool, error) {
 
 func generateID() string {
 	buf := make([]byte, 16)
-
 	if _, err := rand.Read(buf); err != nil {
 		panic("crypto/rand.Read failed: " + err.Error())
 	}
-
 	return hex.EncodeToString(buf)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		logger.Error("writeJSON: failed to encode response", "err", err)
 	}
 }
 
-// errResp is the standard error body returned by the API.
 type errResp struct {
 	Error string `json:"error"`
 }
 
-// writeError sends a JSON error response with the given status and message.
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, errResp{Error: message})
 }

@@ -2,6 +2,8 @@
 package store
 
 import (
+	"log/slog"
+
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -28,6 +30,11 @@ func InitDB(dsn string) (*gorm.DB, error) {
 
 	if err := createIndexes(db); err != nil {
 		return nil, err
+	}
+
+	// Migration: delete users without email (from old registration system).
+	if err := db.Where("email = '' OR email IS NULL").Delete(&model.User{}).Error; err != nil {
+		slog.Warn("failed to migrate users without email", "err", err)
 	}
 
 	sqlDB, err := db.DB()
