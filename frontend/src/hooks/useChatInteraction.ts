@@ -20,7 +20,11 @@ import {
 import type { EditingMessage, ReplyTarget } from "../context/ChatPageContext";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import i18n from "../i18n.ts";
-import { scheduleSync, setTokenProvider } from "../sync/syncEngine.ts";
+import {
+	retryFailedOps,
+	scheduleSync,
+	setTokenProvider,
+} from "../sync/syncEngine.ts";
 import { useAuth } from "../useAuth";
 import { emitNotification } from "../utils/notify.ts";
 import { useChatList } from "./useChatList";
@@ -297,7 +301,7 @@ export function useChatPage(): ChatPageState {
 	}, [token]);
 
 	const handleBackOnline = useCallback(() => {
-		scheduleSync();
+		void retryFailedOps().then(() => scheduleSync());
 	}, []);
 	useOnlineNotifications(handleBackOnline);
 

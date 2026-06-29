@@ -236,18 +236,37 @@ export function useMessageSender({
 	const deleteMessage = useCallback(
 		async (chatId: string, messageId: string) => {
 			const current = await messagesRepo.getById(chatId, messageId);
-			if (current !== undefined) {
-				await messagesRepo.applyDelete(chatId, messageId);
-			}
 
-			await outboxRepo.enqueue({
-				kind: "delete",
-				opId: genId(),
-				chatId,
-				messageId,
-				createdAt: new Date().toISOString(),
-				attempts: 0,
-			});
+			if (current?.status === "failed") {
+				// Message was never sent — clean up locally and drop
+				// any pending blobs so they don't leak.
+				const ops = await outboxRepo.list();
+				const op = ops.find(
+					(o) =>
+						o.chatId === chatId &&
+						((o.kind === "send" && o.msgId === messageId) ||
+							(o.kind === "edit" && o.messageId === messageId)),
+				);
+				if (op !== undefined && op.kind !== "delete") {
+					if (op.pendingFileClientIds.length > 0) {
+						await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
+					}
+					await outboxRepo.remove(op.opId);
+				}
+				await messagesRepo.remove(chatId, messageId);
+			} else {
+				if (current !== undefined) {
+					await messagesRepo.applyDelete(chatId, messageId);
+				}
+				await outboxRepo.enqueue({
+					kind: "delete",
+					opId: genId(),
+					chatId,
+					messageId,
+					createdAt: new Date().toISOString(),
+					attempts: 0,
+				});
+			}
 
 			scheduleSync();
 		},
@@ -258,6 +277,22 @@ export function useMessageSender({
 		async (chatId: string, messageId: string) => {
 			const current = await messagesRepo.getById(chatId, messageId);
 			if (current === undefined) return;
+
+			// Find and reset the failed outbox op
+			const ops = await outboxRepo.list();
+			const op = ops.find(
+				(o) =>
+					o.status === "failed" &&
+					o.chatId === chatId &&
+					((o.kind === "send" && o.msgId === messageId) ||
+						(o.kind === "edit" && o.messageId === messageId)),
+			);
+			if (op !== undefined) {
+				op.status = undefined;
+				op.attempts = 0;
+				await outboxRepo.update(op);
+			}
+
 			await messagesRepo.markStatus(chatId, messageId, "queued");
 			scheduleSync();
 		},

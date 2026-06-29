@@ -274,6 +274,7 @@ export function ChatPage() {
 										threads={s.threads}
 										onRetry={s.handleRetryMessage}
 										showAuthorForGroup={showAuthorForGroup}
+										isOffline={!s.isOnline}
 									/>
 									<InputBar
 										text={s.inputText}

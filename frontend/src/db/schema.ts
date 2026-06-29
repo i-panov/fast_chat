@@ -25,6 +25,7 @@ export interface StoredMessage {
 export interface OutboxOpSend {
 	kind: "send";
 	opId: string;
+	status?: "pending" | "failed";
 	chatId: string;
 	msgId: string;
 	text: string;
@@ -38,6 +39,7 @@ export interface OutboxOpSend {
 export interface OutboxOpEdit {
 	kind: "edit";
 	opId: string;
+	status?: "pending" | "failed";
 	chatId: string;
 	messageId: string;
 	text: string;
@@ -54,6 +56,7 @@ export interface OutboxOpEdit {
 export interface OutboxOpDelete {
 	kind: "delete";
 	opId: string;
+	status?: "pending" | "failed";
 	chatId: string;
 	messageId: string;
 	createdAt: string;

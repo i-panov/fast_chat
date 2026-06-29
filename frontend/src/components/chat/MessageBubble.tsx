@@ -618,7 +618,30 @@ export const MessageBubble = memo(function MessageBubble({
 					</UnstyledButton>
 				)}
 				{(files ?? []).length > 0 && (
-					<div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+					<div
+						style={{
+							display: "flex",
+							flexDirection: "column",
+							gap: 6,
+							position: "relative",
+							opacity: status === "queued" ? 0.6 : 1,
+							transition: "opacity 0.2s",
+						}}
+					>
+						{status === "queued" && (
+							<div
+								style={{
+									position: "absolute",
+									inset: 0,
+									display: "flex",
+									alignItems: "center",
+									justifyContent: "center",
+									zIndex: 1,
+								}}
+							>
+								<Loader size="sm" variant="dots" />
+							</div>
+						)}
 						{files?.map((file) => {
 							const photoIdx =
 								file.fileType === "photo"

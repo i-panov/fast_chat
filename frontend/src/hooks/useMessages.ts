@@ -57,6 +57,7 @@ export function useMessages({
 	const loadMore = useCallback(async () => {
 		if (chatId === null || token === undefined) return;
 		if (loadingMoreRef.current) return;
+		if (typeof navigator !== "undefined" && !navigator.onLine) return;
 
 		const cursor = nextCursorsRef.current[chatId] ?? null;
 		if (cursor === null && nextCursorsRef.current[chatId] !== undefined) return;

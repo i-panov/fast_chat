@@ -1,4 +1,6 @@
+import { messagesRepo } from "../db/messagesRepo.ts";
 import { metaRepo } from "../db/metaRepo.ts";
+import { outboxRepo } from "../db/outboxRepo.ts";
 import { applyDelta, pullDelta } from "./deltaApplier.ts";
 import { processOutbox } from "./outboxProcessor.ts";
 
@@ -93,4 +95,26 @@ export function setTokenProvider(fn: () => string | null): void {
 
 function currentToken(): string | null {
 	return tokenProvider?.() ?? null;
+}
+
+// Retry all terminally failed outbox operations (except deletes).
+// Only call this on explicit online transition, not on every sync
+// tick — otherwise terminal errors (validation, bad request) would
+// loop forever. See useChatInteraction.ts → handleBackOnline.
+export async function retryFailedOps(): Promise<void> {
+	const ops = await outboxRepo.list();
+	const failed = ops.filter(
+		(o) => o.status === "failed" && o.kind !== "delete",
+	);
+
+	for (const op of failed) {
+		op.status = undefined;
+		op.attempts = 0;
+		await outboxRepo.update(op);
+
+		if (op.kind === "send" || op.kind === "edit") {
+			const messageId = op.kind === "send" ? op.msgId : op.messageId;
+			await messagesRepo.markStatus(op.chatId, messageId, "queued");
+		}
+	}
 }

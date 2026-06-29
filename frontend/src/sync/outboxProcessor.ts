@@ -12,6 +12,8 @@ export async function processOutbox(token: string): Promise<void> {
 	const ops = await outboxRepo.list();
 
 	for (const op of ops) {
+		if (op.status === "failed") continue;
+
 		try {
 			await runOp(op, token);
 		} catch (err) {
@@ -20,10 +22,10 @@ export async function processOutbox(token: string): Promise<void> {
 				// and abort the rest. The next tick will retry.
 				return;
 			}
-			// Terminal error (4xx, validation, etc.): drop the op
-			// and any pending files it owns so we don't loop on it.
+			// Terminal error (4xx, validation, etc.): mark the op
+			// as failed so the user can retry it manually and we
+			// don't loop on it.
 			await failOp(op, err);
-			return;
 		}
 	}
 }
@@ -109,9 +111,6 @@ async function runDelete(
 }
 
 async function failOp(op: OutboxOp, _err: unknown): Promise<void> {
-	if (op.kind !== "delete" && op.pendingFileClientIds.length > 0) {
-		await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
-	}
 	if (op.kind === "send" || op.kind === "edit") {
 		const chatId = op.chatId;
 		const messageId = op.kind === "send" ? op.msgId : op.messageId;
@@ -120,7 +119,7 @@ async function failOp(op: OutboxOp, _err: unknown): Promise<void> {
 	if (op.kind === "delete") {
 		await messagesRepo.remove(op.chatId, op.messageId);
 	}
-	await outboxRepo.remove(op.opId);
+	await outboxRepo.update({ ...op, status: "failed" as const });
 }
 
 async function uploadPendingFiles(

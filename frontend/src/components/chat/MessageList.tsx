@@ -69,6 +69,7 @@ interface Props {
 	onRetry?: (chatId: string, messageId: string) => Promise<void>;
 	scrollToMessageId?: string | null;
 	showAuthorForGroup?: boolean;
+	isOffline?: boolean;
 }
 
 export function MessageList({
@@ -90,6 +91,7 @@ export function MessageList({
 	onRetry,
 	scrollToMessageId,
 	showAuthorForGroup,
+	isOffline,
 }: Props) {
 	const { t } = useTranslation();
 	const locale = getCurrentLocale();
@@ -244,7 +246,7 @@ export function MessageList({
 				}}
 			>
 				<Text ta="center" c="dimmed" size="sm">
-					{t("chat.noMessages")}
+					{isOffline ? t("chat.offlineNoMessages") : t("chat.noMessages")}
 				</Text>
 			</div>
 		);
