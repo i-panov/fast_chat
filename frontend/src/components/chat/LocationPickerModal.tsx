@@ -2,16 +2,45 @@ import { Button, Group, Modal, NumberInput, Stack, Text } from "@mantine/core";
 import { Crosshair, Loader, MapPin } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { MapContainer, Marker, TileLayer, useMap } from "react-leaflet";
+import {
+	MapContainer,
+	Marker,
+	TileLayer,
+	useMap,
+	useMapEvents,
+} from "react-leaflet";
 import type { Location } from "../../api.ts";
 import { formatCoords } from "../../utils/chat.ts";
+import {
+	getLastCachedLocation,
+	requestGeolocation,
+} from "../../utils/geolocationCache.ts";
 import "../../utils/leafletIconFix.ts";
+
+function MapAutoSize({ open }: { open: boolean }) {
+	const map = useMap();
+	useEffect(() => {
+		if (!open) return;
+		const timer = setTimeout(() => map.invalidateSize(), 200);
+		return () => clearTimeout(timer);
+	}, [map, open]);
+	return null;
+}
 
 interface Props {
 	open: boolean;
 	initial: Location | null;
 	onClose: () => void;
 	onConfirm: (loc: Location) => void;
+}
+
+function MapClickHandler({ onClick }: { onClick: (loc: Location) => void }) {
+	useMapEvents({
+		click: (e) => {
+			onClick({ lat: e.latlng.lat, lng: e.latlng.lng });
+		},
+	});
+	return null;
 }
 
 function MapRecenter({ center }: { center: [number, number] }) {
@@ -49,15 +78,42 @@ export function LocationPickerModal({
 	const [busy, setBusy] = useState(false);
 	const [errorKey, setErrorKey] = useState<string | null>(null);
 	const markerRef = useRef<L.Marker | null>(null);
+	const autoLocatedRef = useRef(false);
 
 	useEffect(() => {
-		if (!open) return;
+		if (!open) {
+			autoLocatedRef.current = false;
+			return;
+		}
+		setErrorKey(null);
+
 		if (initial !== null) {
 			setPosition({ lat: initial.lat, lng: initial.lng });
 			setCenter([initial.lat, initial.lng]);
 			setZoom(DEFAULT_ZOOM);
+			return;
 		}
-		setErrorKey(null);
+
+		if (!autoLocatedRef.current) {
+			autoLocatedRef.current = true;
+
+			const cached = getLastCachedLocation();
+			if (cached !== null) {
+				setPosition({ lat: cached.lat, lng: cached.lng });
+				setCenter([cached.lat, cached.lng]);
+				setZoom(15);
+			}
+
+			requestGeolocation()
+				.then((loc) => {
+					setPosition({ lat: loc.lat, lng: loc.lng });
+					setCenter([loc.lat, loc.lng]);
+					setZoom(15);
+				})
+				.catch(() => {
+					// stay on cached or default center
+				});
+		}
 	}, [open, initial]);
 
 	function handlePositionChange(loc: Location) {
@@ -65,32 +121,18 @@ export function LocationPickerModal({
 		setCenter([loc.lat, loc.lng]);
 	}
 
-	function useDeviceLocation() {
-		if (
-			typeof navigator === "undefined" ||
-			navigator.geolocation === undefined
-		) {
-			setErrorKey("error.geolocationDenied");
-			return;
-		}
+	async function useDeviceLocation() {
 		setBusy(true);
-		navigator.geolocation.getCurrentPosition(
-			(pos) => {
-				const loc: Location = {
-					lat: pos.coords.latitude,
-					lng: pos.coords.longitude,
-				};
-				handlePositionChange(loc);
-				setZoom(15);
-				setBusy(false);
-				setErrorKey(null);
-			},
-			() => {
-				setBusy(false);
-				setErrorKey("error.geolocationDenied");
-			},
-			{ enableHighAccuracy: true, timeout: 10_000 },
-		);
+		setErrorKey(null);
+		try {
+			const loc = await requestGeolocation();
+			handlePositionChange(loc);
+			setZoom(15);
+		} catch {
+			setErrorKey("error.geolocationDenied");
+		} finally {
+			setBusy(false);
+		}
 	}
 
 	function handleConfirm() {
@@ -139,6 +181,8 @@ export function LocationPickerModal({
 						style={{ height: "100%", width: "100%" }}
 						scrollWheelZoom
 					>
+						<MapAutoSize open={open} />
+						<MapClickHandler onClick={handlePositionChange} />
 						<MapRecenter center={center} />
 						<TileLayer
 							attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'

@@ -3,10 +3,35 @@ import type L from "leaflet";
 import { MapPin } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { MapContainer, Marker, TileLayer } from "react-leaflet";
+import {
+	MapContainer,
+	Marker,
+	TileLayer,
+	useMap,
+	useMapEvents,
+} from "react-leaflet";
 import type { Location } from "../../api.ts";
 import { formatCoords, openStreetMapURL } from "../../utils/chat.ts";
 import "../../utils/leafletIconFix.ts";
+
+function MapClickHandler({ onClick }: { onClick: (loc: Location) => void }) {
+	useMapEvents({
+		click: (e) => {
+			onClick({ lat: e.latlng.lat, lng: e.latlng.lng });
+		},
+	});
+	return null;
+}
+
+function MapAutoSize({ open }: { open: boolean }) {
+	const map = useMap();
+	useEffect(() => {
+		if (!open) return;
+		const timer = setTimeout(() => map.invalidateSize(), 200);
+		return () => clearTimeout(timer);
+	}, [map, open]);
+	return null;
+}
 
 interface Props {
 	open: boolean;
@@ -76,6 +101,12 @@ export function LocationLightbox({
 						style={{ height: "100%", width: "100%" }}
 						scrollWheelZoom
 					>
+						<MapAutoSize open={open} />
+						{editable && (
+							<MapClickHandler
+								onClick={(loc) => setPos({ lat: loc.lat, lng: loc.lng })}
+							/>
+						)}
 						<TileLayer
 							attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 							url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

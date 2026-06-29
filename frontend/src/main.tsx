@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { getRouter } from "./router.tsx";
 import "./i18n.ts";
 import "./styles.css";
+import "leaflet/dist/leaflet.css";
 
 const router = getRouter();
 
