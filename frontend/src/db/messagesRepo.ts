@@ -35,7 +35,9 @@ export const messagesRepo = {
 
 	async upsert(message: Message, status: StoredStatus = "sent"): Promise<void> {
 		const db = await getDB();
-		await db.put("messages", stamp(message, status));
+		const existing = await db.get("messages", message.id);
+		const createdAt = existing?.createdAt ?? message.createdAt;
+		await db.put("messages", { ...stamp(message, status), createdAt });
 		notify();
 	},
 
@@ -46,8 +48,11 @@ export const messagesRepo = {
 		if (messages.length === 0) return;
 		const db = await getDB();
 		const tx = db.transaction("messages", "readwrite");
-		const stamped = messages.map((m) => stamp(m, status));
-		await Promise.all(stamped.map((m) => tx.store.put(m)));
+		for (const m of messages) {
+			const existing = await tx.store.get(m.id);
+			const createdAt = existing?.createdAt ?? m.createdAt;
+			await tx.store.put({ ...stamp(m, status), createdAt });
+		}
 		await tx.done;
 		notify();
 	},
