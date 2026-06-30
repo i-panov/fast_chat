@@ -286,7 +286,7 @@ type testAccount struct {
 func registerTestUser(t *testing.T, h *Handler, nick, email string) testAccount {
 	t.Helper()
 
-	user, err := h.store.CreateUser(email, nick, h.cfg.Server.Domain, h.cfg.Auth.TokenExpiry)
+	user, err := h.store.CreateUser(context.Background(), email, nick, h.cfg.Server.Domain, h.cfg.Auth.TokenExpiry)
 	if err != nil {
 		t.Fatalf("create user %s: %v", nick, err)
 	}
@@ -577,7 +577,7 @@ func TestServeFileForGroupAvatar(t *testing.T) {
 	json.Unmarshal(createW.Body.Bytes(), &created)
 	chatID := created["chat"].(map[string]any)["id"].(string)
 
-	f, _ := h.store.SaveFile("avatar-hash", "image/png", 70, "a.png", "a.png")
+	f, _ := h.store.SaveFile(context.Background(), "avatar-hash", "image/png", 70, "a.png", "a.png")
 
 	req := authReq(http.MethodPost, "/api/chats/"+chatID+"/avatar", alice.token, `{"fileId":"`+f.ID+`"}`)
 	req.SetPathValue("id", chatID)
@@ -587,15 +587,15 @@ func TestServeFileForGroupAvatar(t *testing.T) {
 		t.Fatalf("set avatar: %d %s", w.Code, w.Body.String())
 	}
 
-	if !h.userCanAccessFile(bob.id, f.ID) {
+	if !h.userCanAccessFile(context.Background(), bob.id, f.ID) {
 		t.Error("expected bob to access group avatar")
 	}
-	if h.userCanAccessFile(bob.id, "no-such-file") {
+	if h.userCanAccessFile(context.Background(), bob.id, "no-such-file") {
 		t.Error("expected no access for unknown file")
 	}
 
 	eve := registerTestUser(t, h, "eve", "eve@test.local")
-	if h.userCanAccessFile(eve.id, f.ID) {
+	if h.userCanAccessFile(context.Background(), eve.id, f.ID) {
 		t.Error("expected eve (non-member) to NOT access group avatar")
 	}
 }
@@ -653,7 +653,7 @@ func TestFederatedSendMessageRejectsMismatchedFromID(t *testing.T) {
 		CreatedAt:    time.Now(),
 		RemoteServer: "remote.test",
 	}
-	h.store.CreateRemoteChat(chat)
+	h.store.CreateRemoteChat(context.Background(), chat)
 
 	body := `{"id":"m1","fromId":"alice:other.test","fromNick":"alice","text":"hi"}`
 	req := httptest.NewRequestWithContext(
@@ -681,7 +681,7 @@ func TestFederatedSendMessageRejectsWrongServerHeader(t *testing.T) {
 		CreatedAt:    time.Now(),
 		RemoteServer: "remote.test",
 	}
-	h.store.CreateRemoteChat(chat)
+	h.store.CreateRemoteChat(context.Background(), chat)
 
 	body := `{"id":"m1","fromId":"alice:remote.test","fromNick":"alice","text":"hi"}`
 	req := httptest.NewRequestWithContext(
@@ -747,7 +747,7 @@ func TestFederatedEditMessageRejectsLocalAuthor(t *testing.T) {
 		CreatedAt:    time.Now(),
 		RemoteServer: "remote.test",
 	}
-	h.store.CreateRemoteChat(chat)
+	h.store.CreateRemoteChat(context.Background(), chat)
 
 	msg := &model.Message{
 		ID:        "m1",
@@ -757,7 +757,7 @@ func TestFederatedEditMessageRejectsLocalAuthor(t *testing.T) {
 		Text:      "original",
 		CreatedAt: time.Now(),
 	}
-	if err := h.store.AddRawMessage(msg); err != nil {
+	if err := h.store.AddRawMessage(context.Background(), msg); err != nil {
 		t.Fatal(err)
 	}
 

@@ -30,7 +30,7 @@ func (h *Handler) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		token := r.Header.Get("Authorization")
 		token = strings.TrimPrefix(token, "Bearer ")
 
-		user, ok := h.store.GetUserByToken(token)
+		user, ok := h.store.GetUserByToken(r.Context(), token)
 		if !ok {
 			writeError(w, http.StatusUnauthorized, errKeyUnauthorized)
 			return

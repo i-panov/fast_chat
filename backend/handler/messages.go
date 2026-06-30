@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"fast_chat/model"
+	"fast_chat/sse"
 )
 
 const (
@@ -19,16 +20,14 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	chatID := r.PathValue("id")
 
-	chat, ok := h.store.GetChat(chatID)
+	chat, ok := h.store.GetChat(r.Context(), chatID)
 	if !ok {
 		writeError(w, http.StatusNotFound, errKeyChatNotFound)
-
 		return
 	}
 
 	if !isMember(chat, user.ID) {
 		writeError(w, http.StatusForbidden, errKeyNotMember)
-
 		return
 	}
 
@@ -42,7 +41,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 
 	before := r.URL.Query().Get("before")
 
-	messages, nextCursor, _ := h.store.GetMessagesPaginated(chatID, limit, before)
+	messages, nextCursor, _ := h.store.GetMessagesPaginated(r.Context(), chatID, limit, before)
 	if messages == nil {
 		messages = []model.Message{}
 	}
@@ -53,7 +52,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 			ids[i] = m.ID
 		}
 
-		filesByMsg, err := h.store.GetMessageFilesBatch(ids)
+		filesByMsg, err := h.store.GetMessageFilesBatch(r.Context(), ids)
 		if err == nil {
 			for i := range messages {
 				messages[i].Files = filesByMsg[messages[i].ID]
@@ -73,16 +72,14 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) { //nolint
 	user := getUser(r)
 	chatID := r.PathValue("id")
 
-	chat, ok := h.store.GetChat(chatID)
+	chat, ok := h.store.GetChat(r.Context(), chatID)
 	if !ok {
 		writeError(w, http.StatusNotFound, errKeyChatNotFound)
-
 		return
 	}
 
 	if !isMember(chat, user.ID) {
 		writeError(w, http.StatusForbidden, errKeyNotMember)
-
 		return
 	}
 
@@ -94,68 +91,50 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) { //nolint
 		Location  *model.Location `json:"location,omitempty"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := h.decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
-
 		return
 	}
 
 	req.Text = strings.TrimSpace(req.Text)
 	if req.Text == "" && len(req.FileIDs) == 0 && req.Location == nil {
 		writeError(w, http.StatusBadRequest, errKeyEmptyMessage)
-
 		return
 	}
 
 	if req.Location != nil {
 		if !validCoords(req.Location.Lat, req.Location.Lng) {
 			writeError(w, http.StatusBadRequest, "invalid coordinates")
-
 			return
 		}
 	}
 
-	msg, err := h.store.AddMessage(chatID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID, req.Location)
+	msg, err := h.store.AddMessage(r.Context(), chatID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID, req.Location)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
-
 		return
 	}
 
 	if len(req.FileIDs) > 0 {
-		if err := h.store.AddMessageFiles(msg.ID, req.FileIDs); err != nil {
+		if err := h.store.AddMessageFiles(r.Context(), msg.ID, req.FileIDs); err != nil {
 			logger.Info("failed to link files to message", "err", err)
 		}
 
-		files, _ := h.store.GetMessageFiles(msg.ID) //nolint:errcheck
+		files, _ := h.store.GetMessageFiles(r.Context(), msg.ID) //nolint:errcheck
 		msg.Files = files
 	}
 
-	if chat.RemoteServer != "" {
-		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages")
-
-		fedBody := map[string]any{
-			"id":       msg.ID,
-			"fromId":   msg.FromID,
-			"fromNick": msg.FromNick,
-			"text":     msg.Text,
-		}
-		if req.ReplyToID != "" {
-			fedBody["replyToId"] = req.ReplyToID
-		}
-
-		if req.Location != nil {
-			fedBody["location"] = req.Location
-		}
-
-		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPost, fedURL, fedBody)
-		if fedErr != nil {
-			logger.Info("federated send message failed", "err", fedErr)
-		}
-	}
+	h.sendFedPost(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages", map[string]any{
+		"id":        msg.ID,
+		"fromId":    msg.FromID,
+		"fromNick":  msg.FromNick,
+		"text":      msg.Text,
+		"replyToId": req.ReplyToID,
+		"location":  req.Location,
+	})
 
 	for _, memberID := range chat.Members {
-		h.hub.Send(memberID, SSEEvent{Event: "new_message", Data: msg})
+		h.hub.Send(memberID, sse.Event{Event: "new_message", Data: msg})
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{"message": msg})
@@ -168,41 +147,35 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) { //nolint
 	chatID := r.PathValue("id")
 	messageID := r.PathValue("messageId")
 
-	chat, ok := h.store.GetChat(chatID)
+	chat, ok := h.store.GetChat(r.Context(), chatID)
 	if !ok {
 		writeError(w, http.StatusNotFound, errKeyChatNotFound)
-
 		return
 	}
 
 	if !isMember(chat, user.ID) {
 		writeError(w, http.StatusForbidden, errKeyNotMember)
-
 		return
 	}
 
-	msg, err := h.store.GetMessage(chatID, messageID)
+	msg, err := h.store.GetMessage(r.Context(), chatID, messageID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "message not found")
-
 		return
 	}
 
 	if msg.FromID != user.ID {
 		writeError(w, http.StatusForbidden, "not your message")
-
 		return
 	}
 
 	if h.cfg.MessageEditTTL < 0 {
 		writeError(w, http.StatusForbidden, "editing not allowed")
-
 		return
 	}
 
 	if h.cfg.MessageEditTTL > 0 && time.Since(msg.CreatedAt) > time.Duration(h.cfg.MessageEditTTL)*time.Second {
 		writeError(w, http.StatusForbidden, "edit window expired")
-
 		return
 	}
 
@@ -212,16 +185,14 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) { //nolint
 		Location json.RawMessage `json:"location"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := h.decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
-
 		return
 	}
 
 	location, clearLocation, locErr := parseLocationPatch(req.Location)
 	if locErr != nil {
 		writeError(w, http.StatusBadRequest, locErr.Error())
-
 		return
 	}
 
@@ -231,49 +202,32 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) { //nolint
 
 	if req.Text == "" && len(req.FileIDs) == 0 && !hasLocation && !clearLocation {
 		writeError(w, http.StatusBadRequest, errKeyEmptyMessage)
-
 		return
 	}
 
-	updated, err := h.store.EditMessage(chatID, messageID, user.ID, req.Text, location, clearLocation)
+	updated, err := h.store.EditMessage(r.Context(), chatID, messageID, user.ID, req.Text, location, clearLocation)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
-
 		return
 	}
 
 	if req.FileIDs != nil {
-		if err := h.store.SetMessageFiles(messageID, req.FileIDs); err != nil {
+		if err := h.store.SetMessageFiles(r.Context(), messageID, req.FileIDs); err != nil {
 			logger.Info("failed to set message files", "err", err)
 		}
 
-		files, _ := h.store.GetMessageFiles(messageID) //nolint:errcheck
+		files, _ := h.store.GetMessageFiles(r.Context(), messageID) //nolint:errcheck
 		updated.Files = files
 	}
 
-	if chat.RemoteServer != "" {
-		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
-
-		fedBody := map[string]any{
-			"text": req.Text,
-		}
-
-		if req.FileIDs != nil {
-			fedBody["fileIDs"] = req.FileIDs
-		}
-
-		if len(req.Location) > 0 {
-			fedBody["location"] = req.Location
-		}
-
-		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodPatch, fedURL, fedBody)
-		if fedErr != nil {
-			logger.Info("federated edit message failed", "err", fedErr)
-		}
-	}
+	h.sendFedPatch(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID, map[string]any{
+		"text":     req.Text,
+		"fileIDs":  req.FileIDs,
+		"location": req.Location,
+	})
 
 	for _, memberID := range chat.Members {
-		h.hub.Send(memberID, SSEEvent{Event: "message_updated", Data: &updated})
+		h.hub.Send(memberID, sse.Event{Event: "message_updated", Data: &updated})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"message": updated})
@@ -284,61 +238,47 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	chatID := r.PathValue("id")
 	messageID := r.PathValue("messageId")
 
-	chat, ok := h.store.GetChat(chatID)
+	chat, ok := h.store.GetChat(r.Context(), chatID)
 	if !ok {
 		writeError(w, http.StatusNotFound, errKeyChatNotFound)
-
 		return
 	}
 
 	if !isMember(chat, user.ID) {
 		writeError(w, http.StatusForbidden, errKeyNotMember)
-
 		return
 	}
 
-	msg, err := h.store.GetMessage(chatID, messageID)
+	msg, err := h.store.GetMessage(r.Context(), chatID, messageID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "message not found")
-
 		return
 	}
 
 	if msg.FromID != user.ID {
 		writeError(w, http.StatusForbidden, "not your message")
-
 		return
 	}
 
 	if h.cfg.MessageDeleteTTL < 0 {
 		writeError(w, http.StatusForbidden, "deleting not allowed")
-
 		return
 	}
 
 	if h.cfg.MessageDeleteTTL > 0 && time.Since(msg.CreatedAt) > time.Duration(h.cfg.MessageDeleteTTL)*time.Second {
 		writeError(w, http.StatusForbidden, "delete window expired")
-
 		return
 	}
 
-	if err := h.store.DeleteMessage(chatID, messageID, user.ID); err != nil {
+	if err := h.store.DeleteMessage(r.Context(), chatID, messageID, user.ID); err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
-
 		return
 	}
 
-	if chat.RemoteServer != "" {
-		fedURL := h.federatedURL(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
-
-		_, fedErr := h.doFederatedRequest(r.Context(), http.MethodDelete, fedURL, nil)
-		if fedErr != nil {
-			logger.Info("federated delete message failed", "err", fedErr)
-		}
-	}
+	h.sendFedDelete(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
 
 	for _, memberID := range chat.Members {
-		h.hub.Send(memberID, SSEEvent{Event: "message_deleted", Data: map[string]string{"chatId": chatID, "messageId": messageID}})
+		h.hub.Send(memberID, sse.Event{Event: "message_deleted", Data: map[string]string{"chatId": chatID, "messageId": messageID}})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})

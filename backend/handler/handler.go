@@ -1,8 +1,7 @@
 package handler
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -14,6 +13,7 @@ import (
 	"fast_chat/email"
 	"fast_chat/federation"
 	"fast_chat/model"
+	"fast_chat/sse"
 	"fast_chat/store"
 )
 
@@ -49,7 +49,7 @@ type chatResponse struct {
 
 type Handler struct {
 	store       *store.Store
-	hub         *SSEHub
+	hub         *sse.Hub
 	cfg         *config.Config
 	fedManager  *federation.Manager
 	fedClient   *http.Client
@@ -74,7 +74,7 @@ func New(s *store.Store, cfg *config.Config, fm *federation.Manager) *Handler {
 
 	return &Handler{
 		store:       s,
-		hub:         NewSSEHub(),
+		hub:         sse.NewHub(typingThrottleInterval * 5),
 		cfg:         cfg,
 		fedManager:  fm,
 		fedClient:   &http.Client{Timeout: time.Duration(cfg.Federation.Timeout) * time.Second},
@@ -86,11 +86,11 @@ func (h *Handler) Close() {
 	h.hub.Close()
 }
 
-func (h *Handler) enrichChat(c *model.Chat) chatResponse {
-	return h.enrichChatFromNicks(c, nil)
+func (h *Handler) enrichChat(ctx context.Context, c *model.Chat) chatResponse {
+	return h.enrichChatFromNicks(ctx, c, nil)
 }
 
-func (h *Handler) enrichChatFromNicks(c *model.Chat, nicks map[string]string) chatResponse {
+func (h *Handler) enrichChatFromNicks(ctx context.Context, c *model.Chat, nicks map[string]string) chatResponse {
 	cr := chatResponse{
 		ID:        c.ID,
 		Type:      c.Type,
@@ -100,7 +100,7 @@ func (h *Handler) enrichChatFromNicks(c *model.Chat, nicks map[string]string) ch
 	}
 
 	if c.AvatarFileID != "" {
-		if f, err := h.store.GetFile(c.AvatarFileID); err == nil {
+		if f, err := h.store.GetFile(ctx, c.AvatarFileID); err == nil {
 			cr.AvatarURL = f.ToFileInfo().URL
 		}
 	}
@@ -110,7 +110,7 @@ func (h *Handler) enrichChatFromNicks(c *model.Chat, nicks map[string]string) ch
 		if !ok {
 			if nicks != nil {
 				nick = member
-			} else if u, found := h.store.GetUserByID(member); found {
+			} else if u, found := h.store.GetUserByID(ctx, member); found {
 				nick = u.Nick
 			} else {
 				nick = member
@@ -162,12 +162,10 @@ func parseLocationPatch(raw json.RawMessage) (*model.Location, bool, error) {
 	return &loc, false, nil
 }
 
-func generateID() string {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		panic("crypto/rand.Read failed: " + err.Error())
-	}
-	return hex.EncodeToString(buf)
+func (h *Handler) decodeJSON(r *http.Request, v any) error {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

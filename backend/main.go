@@ -22,19 +22,21 @@ import (
 )
 
 type rateLimiter struct {
-	mu      sync.Mutex
-	entries map[string][]time.Time
-	limit   int
-	window  time.Duration
-	closeCh chan struct{}
+	mu         sync.Mutex
+	entries    map[string][]time.Time
+	limit      int
+	window     time.Duration
+	maxEntries int
+	closeCh    chan struct{}
 }
 
-func newRateLimiter(limit int, window time.Duration) *rateLimiter {
+func newRateLimiter(limit int, window time.Duration, maxEntries int) *rateLimiter {
 	rl := &rateLimiter{
-		entries: make(map[string][]time.Time),
-		limit:   limit,
-		window:  window,
-		closeCh: make(chan struct{}),
+		entries:    make(map[string][]time.Time),
+		limit:      limit,
+		window:     window,
+		maxEntries: maxEntries,
+		closeCh:    make(chan struct{}),
 	}
 
 	go rl.clean()
@@ -45,6 +47,24 @@ func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 func (rl *rateLimiter) allow(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+
+	if len(rl.entries) >= rl.maxEntries {
+		now := time.Now()
+		cutoff := now.Add(-rl.window)
+		for ip, timestamps := range rl.entries {
+			var valid []time.Time
+			for _, t := range timestamps {
+				if t.After(cutoff) {
+					valid = append(valid, t)
+				}
+			}
+			if len(valid) == 0 {
+				delete(rl.entries, ip)
+			} else {
+				rl.entries[ip] = valid
+			}
+		}
+	}
 
 	now := time.Now()
 	cutoff := now.Add(-rl.window)
@@ -138,6 +158,13 @@ func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
 	}
 }
 
+func maxBody(limit int64, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		next(w, r)
+	}
+}
+
 func main() {
 	configPath := flag.String("config", "", "path to config file (required)")
 	flag.Parse()
@@ -190,16 +217,16 @@ func main() {
 	mux.HandleFunc("GET /api/config", handlerInstance.GetConfig)
 
 	// Auth routes (no auth middleware, rate limited)
-	sendCodeRL := newRateLimiter(cfg.RateLimits.SendCode.Limit, cfg.RateLimits.SendCode.Window)
-	verifyCodeRL := newRateLimiter(cfg.RateLimits.VerifyCode.Limit, cfg.RateLimits.VerifyCode.Window)
-	registerRL := newRateLimiter(cfg.RateLimits.Register.Limit, cfg.RateLimits.Register.Window)
+	sendCodeRL := newRateLimiter(cfg.RateLimits.SendCode.Limit, cfg.RateLimits.SendCode.Window, 10000)
+	verifyCodeRL := newRateLimiter(cfg.RateLimits.VerifyCode.Limit, cfg.RateLimits.VerifyCode.Window, 10000)
+	registerRL := newRateLimiter(cfg.RateLimits.Register.Limit, cfg.RateLimits.Register.Window, 10000)
 
-	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL)(http.HandlerFunc(handlerInstance.SendCode)))
-	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL)(http.HandlerFunc(handlerInstance.VerifyCode)))
-	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL)(http.HandlerFunc(handlerInstance.CompleteRegistration)))
-	sseAuthRL := newRateLimiter(30, time.Minute)
-	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL)(http.HandlerFunc(handlerInstance.SSEAuth)))
-	mux.HandleFunc("POST /api/auth/refresh-token", handlerInstance.AuthMiddleware(handlerInstance.RefreshToken))
+	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL)(maxBody(1<<20, handlerInstance.SendCode)))
+	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL)(maxBody(1<<20, handlerInstance.VerifyCode)))
+	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL)(maxBody(1<<20, handlerInstance.CompleteRegistration)))
+	sseAuthRL := newRateLimiter(30, time.Minute, 10000)
+	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL)(maxBody(1<<20, handlerInstance.SSEAuth)))
+	mux.HandleFunc("POST /api/auth/refresh-token", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.RefreshToken)))
 
 	// SSE endpoint (no auth middleware — auth happens via SSEAuth)
 	mux.HandleFunc("GET /api/events", handlerInstance.SSE)
@@ -207,40 +234,41 @@ func main() {
 	mux.HandleFunc("GET /api/users/search", handlerInstance.AuthMiddleware(handlerInstance.SearchUsers))
 	mux.HandleFunc("GET /api/chats", handlerInstance.AuthMiddleware(handlerInstance.GetChats))
 	mux.HandleFunc("GET /api/sync", handlerInstance.AuthMiddleware(handlerInstance.Sync))
-	mux.HandleFunc("POST /api/chats", handlerInstance.AuthMiddleware(handlerInstance.CreateChat))
+	mux.HandleFunc("POST /api/chats", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.CreateChat)))
 	mux.HandleFunc("GET /api/chats/{id}", handlerInstance.AuthMiddleware(handlerInstance.GetChat))
-	mux.HandleFunc("PATCH /api/chats/{id}", handlerInstance.AuthMiddleware(handlerInstance.UpdateChat))
+	mux.HandleFunc("PATCH /api/chats/{id}", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.UpdateChat)))
 	mux.HandleFunc("DELETE /api/chats/{id}", handlerInstance.AuthMiddleware(handlerInstance.DeleteChat))
-	mux.HandleFunc("POST /api/chats/{id}/members", handlerInstance.AuthMiddleware(handlerInstance.AddChatMember))
+	mux.HandleFunc("POST /api/chats/{id}/members", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.AddChatMember)))
 	mux.HandleFunc("DELETE /api/chats/{id}/members/{userId}", handlerInstance.AuthMiddleware(handlerInstance.RemoveChatMember))
 	mux.HandleFunc("POST /api/chats/{id}/avatar", handlerInstance.AuthMiddleware(handlerInstance.UpdateChatAvatar))
 	mux.HandleFunc("GET /api/chats/{id}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetMessages))
-	mux.HandleFunc("POST /api/chats/{id}/messages", handlerInstance.AuthMiddleware(handlerInstance.SendMessage))
-	mux.HandleFunc("PATCH /api/chats/{id}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.EditMessage))
+	mux.HandleFunc("POST /api/chats/{id}/messages", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.SendMessage)))
+	mux.HandleFunc("PATCH /api/chats/{id}/messages/{messageId}", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.EditMessage)))
 	mux.HandleFunc("DELETE /api/chats/{id}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.DeleteMessage))
-	mux.HandleFunc("POST /api/chats/{id}/messages/{messageId}/thread", handlerInstance.AuthMiddleware(handlerInstance.CreateThread))
+	mux.HandleFunc("POST /api/chats/{id}/messages/{messageId}/thread", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.CreateThread)))
 	mux.HandleFunc("GET /api/chats/{id}/threads", handlerInstance.AuthMiddleware(handlerInstance.GetThreads))
 	mux.HandleFunc("GET /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetThreadMessages))
-	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.SendThreadMessage))
-	mux.HandleFunc("PATCH /api/chats/{id}/threads/{threadId}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.EditThreadMessage))
+	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.SendThreadMessage)))
+	mux.HandleFunc("PATCH /api/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.EditThreadMessage)))
 	mux.HandleFunc("POST /api/files/upload", handlerInstance.AuthMiddleware(handlerInstance.UploadFile))
 	mux.HandleFunc("GET /api/files/{fileId}", handlerInstance.AuthMiddleware(handlerInstance.ServeFile))
-	mux.HandleFunc("POST /api/chats/{id}/typing", handlerInstance.AuthMiddleware(handlerInstance.HandleTyping))
+	mux.HandleFunc("POST /api/chats/{id}/typing", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.HandleTyping)))
 
 	// Federated endpoints (server-to-server, with federated auth)
 	fedAuth := handlerInstance.FederatedAuthMiddleware
 	mux.HandleFunc("GET /api/federated/users/search", fedAuth(handlerInstance.FederatedSearchUsers))
-	mux.HandleFunc("POST /api/federated/chats", fedAuth(handlerInstance.FederatedCreateChat))
-	mux.HandleFunc("POST /api/federated/chats/{id}/messages", fedAuth(handlerInstance.FederatedSendMessage))
-	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", fedAuth(handlerInstance.FederatedEditMessage))
-	mux.HandleFunc("PATCH /api/federated/chats/{id}/threads/{threadId}/messages/{messageId}", fedAuth(handlerInstance.FederatedEditThreadMessage))
+	mux.HandleFunc("POST /api/federated/chats", maxBody(1<<20, fedAuth(handlerInstance.FederatedCreateChat)))
+	mux.HandleFunc("POST /api/federated/chats/{id}/messages", maxBody(1<<20, fedAuth(handlerInstance.FederatedSendMessage)))
+	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", maxBody(1<<20, fedAuth(handlerInstance.FederatedEditMessage)))
+	mux.HandleFunc("PATCH /api/federated/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(1<<20, fedAuth(handlerInstance.FederatedEditThreadMessage)))
 	mux.HandleFunc("DELETE /api/federated/chats/{id}/messages/{messageId}", fedAuth(handlerInstance.FederatedDeleteMessage))
-	mux.HandleFunc("POST /api/federated/chats/{id}/typing", fedAuth(handlerInstance.FederatedHandleTyping))
+	mux.HandleFunc("POST /api/federated/chats/{id}/typing", maxBody(1<<20, fedAuth(handlerInstance.FederatedHandleTyping)))
+	mux.HandleFunc("GET /api/federated/sync", fedAuth(handlerInstance.FederatedSync))
 
 	// Well-known endpoint (no auth, public key for federation)
 	mux.HandleFunc("GET /.well-known/fast-chat", fedManager.WellKnownHandler)
 
-	generalRL := newRateLimiter(cfg.RateLimits.General.Limit, cfg.RateLimits.General.Window)
+	generalRL := newRateLimiter(cfg.RateLimits.General.Limit, cfg.RateLimits.General.Window, 10000)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 

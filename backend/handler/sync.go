@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -48,22 +49,21 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	since, err := parseSince(r.URL.Query().Get("since"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid since timestamp")
-
 		return
 	}
 
-	chats := h.store.GetUserChats(user.ID)
+	chats := h.store.GetUserChats(r.Context(), user.ID)
 
 	chatIDs, memberIDs := collectChatAndMemberIDs(chats)
 
-	nicks := h.store.GetUsersByIDs(memberIDs)
+	nicks := h.store.GetUsersByIDs(r.Context(), memberIDs)
 
 	resp := syncResponse{
 		ServerNow:       time.Now().UTC(),
-		Chats:           h.buildChangedChats(user.ID, since, nicks),
-		Messages:        h.store.MessagesChangedSince(chatIDs, since),
-		DeletedMessages: h.buildDeletedMessages(chatIDs, since),
-		DeletedChats:    h.buildDeletedChats(user.ID, since),
+		Chats:           h.buildChangedChats(r.Context(), user.ID, since, nicks),
+		Messages:        h.store.MessagesChangedSince(r.Context(), chatIDs, since),
+		DeletedMessages: h.buildDeletedMessages(r.Context(), chatIDs, since),
+		DeletedChats:    h.buildDeletedChats(r.Context(), user.ID, since),
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -107,8 +107,8 @@ func collectChatAndMemberIDs(chats []*model.Chat) ([]string, []string) {
 	return chatIDs, memberIDs
 }
 
-func (h *Handler) buildChangedChats(userID string, since time.Time, nicks map[string]string) []syncChatDTO {
-	changed := h.store.ChatChangedSince(userID, since)
+func (h *Handler) buildChangedChats(ctx context.Context, userID string, since time.Time, nicks map[string]string) []syncChatDTO {
+	changed := h.store.ChatChangedSince(ctx, userID, since)
 	if len(changed) == 0 {
 		return nil
 	}
@@ -126,7 +126,7 @@ func (h *Handler) buildChangedChats(userID string, since time.Time, nicks map[st
 		}
 
 		if c.AvatarFileID != "" {
-			if f, err := h.store.GetFile(c.AvatarFileID); err == nil {
+			if f, err := h.store.GetFile(ctx, c.AvatarFileID); err == nil {
 				dto.AvatarURL = f.ToFileInfo().URL
 			}
 		}
@@ -137,8 +137,8 @@ func (h *Handler) buildChangedChats(userID string, since time.Time, nicks map[st
 	return out
 }
 
-func (h *Handler) buildDeletedMessages(chatIDs []string, since time.Time) []syncDeletedMessageDTO {
-	tombs := h.store.DeletedMessagesSince(chatIDs, since)
+func (h *Handler) buildDeletedMessages(ctx context.Context, chatIDs []string, since time.Time) []syncDeletedMessageDTO {
+	tombs := h.store.DeletedMessagesSince(ctx, chatIDs, since)
 	if len(tombs) == 0 {
 		return nil
 	}
@@ -156,8 +156,8 @@ func (h *Handler) buildDeletedMessages(chatIDs []string, since time.Time) []sync
 	return out
 }
 
-func (h *Handler) buildDeletedChats(userID string, since time.Time) []syncDeletedChatDTO {
-	tombs := h.store.DeletedChatsSince(userID, since)
+func (h *Handler) buildDeletedChats(ctx context.Context, userID string, since time.Time) []syncDeletedChatDTO {
+	tombs := h.store.DeletedChatsSince(ctx, userID, since)
 	if len(tombs) == 0 {
 		return nil
 	}

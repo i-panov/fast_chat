@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -70,7 +71,10 @@ func (s *CodeStore) CreateSetupToken(email string, ttl time.Duration) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	token := generateSetupToken()
+	token, err := generateSetupToken()
+	if err != nil {
+		return ""
+	}
 	s.setupTokens[token] = &SetupToken{
 		Email:     email,
 		Token:     token,
@@ -78,28 +82,6 @@ func (s *CodeStore) CreateSetupToken(email string, ttl time.Duration) string {
 	}
 
 	return token
-}
-
-func (s *CodeStore) PeekSetupToken(token string) (string, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	st, ok := s.setupTokens[token]
-	if !ok {
-		return "", false
-	}
-
-	if time.Now().After(st.ExpiresAt) {
-		return "", false
-	}
-
-	return st.Email, true
-}
-
-func (s *CodeStore) ConsumeSetupToken(token string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.setupTokens, token)
 }
 
 func (s *CodeStore) VerifySetupToken(token string) (string, bool) {
@@ -157,10 +139,10 @@ func (s *CodeStore) StartCleanup(ctx context.Context, interval time.Duration) {
 	}()
 }
 
-func generateSetupToken() string {
+func generateSetupToken() (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		panic("crypto/rand.Read failed: " + err.Error())
+		return "", fmt.Errorf("generate setup token: %w", err)
 	}
-	return hex.EncodeToString(buf)
+	return hex.EncodeToString(buf), nil
 }

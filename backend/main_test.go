@@ -7,7 +7,7 @@ import (
 )
 
 func newTestRateLimiter(limit int, window time.Duration) *rateLimiter {
-	rl := newRateLimiter(limit, window)
+	rl := newRateLimiter(limit, window, 10000)
 
 	// Stop the background cleanup loop in tests so its 1-second tick
 	// does not race with assertions.

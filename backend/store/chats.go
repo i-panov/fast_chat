@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -19,10 +20,10 @@ var (
 	ErrChatNotFound = errors.New("chat not found")
 )
 
-func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
+func (s *Store) CreateChat(ctx context.Context, member1, member2, remoteServer string) (*model.Chat, error) {
 	var chatIDs []string
 
-	s.db.Model(&ChatMember{}).
+	s.db.WithContext(ctx).Model(&ChatMember{}).
 		Select("chat_id").
 		Where("user_id IN ?", []string{member1, member2}).
 		Group("chat_id").
@@ -32,28 +33,34 @@ func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
 	if len(chatIDs) > 0 {
 		var chat model.Chat
 
-		chatIDQuery := s.db.Model(&model.Chat{}).
+		chatIDQuery := s.db.WithContext(ctx).Model(&model.Chat{}).
 			Select("id").
 			Where("id IN ? AND type = ?", chatIDs, chatTypePrivate)
 
 		var foundID string
 		if err := chatIDQuery.Limit(1).Row().Scan(&foundID); err == nil {
-			if err := s.db.First(&chat, "id = ?", foundID).Error; err == nil {
+			if err := s.db.WithContext(ctx).First(&chat, "id = ?", foundID).Error; err == nil {
 				chat.Members = []string{member1, member2}
+
+				if remoteServer != "" && chat.RemoteServer == "" {
+					s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chat.ID).Update("remote_server", remoteServer)
+					chat.RemoteServer = remoteServer
+				}
 
 				return &chat, nil
 			}
 		}
 	}
 
-	id := generateID()
+	id := GenerateID()
 	chat := &model.Chat{
-		ID:        id,
-		Type:      chatTypePrivate,
-		CreatedAt: time.Now(),
+		ID:           id,
+		Type:         chatTypePrivate,
+		RemoteServer: remoteServer,
+		CreatedAt:    time.Now(),
 	}
 
-	if err := s.db.Create(chat).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(chat).Error; err != nil {
 		return nil, err
 	}
 
@@ -62,7 +69,7 @@ func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
 		{ChatID: id, UserID: member2},
 	}
 
-	if err := s.db.Create(&members).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(&members).Error; err != nil {
 		return nil, err
 	}
 
@@ -71,7 +78,7 @@ func (s *Store) CreateChat(member1, member2 string) (*model.Chat, error) {
 	return chat, nil
 }
 
-func (s *Store) CreateGroupChat(name, ownerID string, memberIDs []string) (*model.Chat, error) {
+func (s *Store) CreateGroupChat(ctx context.Context, name, ownerID string, memberIDs []string, remoteServer string) (*model.Chat, error) {
 	seen := make(map[string]struct{}, len(memberIDs)+1)
 	dedup := make([]string, 0, len(memberIDs)+1)
 	add := func(id string) {
@@ -97,16 +104,17 @@ func (s *Store) CreateGroupChat(name, ownerID string, memberIDs []string) (*mode
 		return nil, errors.New("group chat must have at least one member (the owner)")
 	}
 
-	id := generateID()
+	id := GenerateID()
 	chat := &model.Chat{
-		ID:        id,
-		Type:      chatTypeGroup,
-		Name:      name,
-		OwnerID:   ownerID,
-		CreatedAt: time.Now(),
+		ID:           id,
+		Type:         chatTypeGroup,
+		Name:         name,
+		OwnerID:      ownerID,
+		RemoteServer: remoteServer,
+		CreatedAt:    time.Now(),
 	}
 
-	if err := s.db.Create(chat).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(chat).Error; err != nil {
 		return nil, err
 	}
 
@@ -115,7 +123,7 @@ func (s *Store) CreateGroupChat(name, ownerID string, memberIDs []string) (*mode
 		members = append(members, ChatMember{ChatID: id, UserID: m})
 	}
 
-	if err := s.db.Create(&members).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(&members).Error; err != nil {
 		return nil, err
 	}
 
@@ -124,8 +132,8 @@ func (s *Store) CreateGroupChat(name, ownerID string, memberIDs []string) (*mode
 	return chat, nil
 }
 
-func (s *Store) AddChatMember(chatID, userID string) error {
-	chat, ok := s.GetChat(chatID)
+func (s *Store) AddChatMember(ctx context.Context, chatID, userID string) error {
+	chat, ok := s.GetChat(ctx, chatID)
 	if !ok {
 		return ErrChatNotFound
 	}
@@ -140,11 +148,11 @@ func (s *Store) AddChatMember(chatID, userID string) error {
 		}
 	}
 
-	return s.db.Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
+	return s.db.WithContext(ctx).Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
 }
 
-func (s *Store) RemoveChatMember(chatID, userID string) error {
-	chat, ok := s.GetChat(chatID)
+func (s *Store) RemoveChatMember(ctx context.Context, chatID, userID string) error {
+	chat, ok := s.GetChat(ctx, chatID)
 	if !ok {
 		return ErrChatNotFound
 	}
@@ -157,11 +165,11 @@ func (s *Store) RemoveChatMember(chatID, userID string) error {
 		return errors.New("cannot remove the last member")
 	}
 
-	return s.db.Where("chat_id = ? AND user_id = ?", chatID, userID).Delete(&ChatMember{}).Error
+	return s.db.WithContext(ctx).Where("chat_id = ? AND user_id = ?", chatID, userID).Delete(&ChatMember{}).Error
 }
 
-func (s *Store) UpdateChatName(chatID, name string) (*model.Chat, error) {
-	chat, ok := s.GetChat(chatID)
+func (s *Store) UpdateChatName(ctx context.Context, chatID, name string) (*model.Chat, error) {
+	chat, ok := s.GetChat(ctx, chatID)
 	if !ok {
 		return nil, ErrChatNotFound
 	}
@@ -170,7 +178,7 @@ func (s *Store) UpdateChatName(chatID, name string) (*model.Chat, error) {
 		return nil, errors.New("cannot rename non-group chat")
 	}
 
-	if err := s.db.Model(&model.Chat{}).Where("id = ?", chatID).Update("name", name).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Update("name", name).Error; err != nil {
 		return nil, err
 	}
 
@@ -179,8 +187,8 @@ func (s *Store) UpdateChatName(chatID, name string) (*model.Chat, error) {
 	return chat, nil
 }
 
-func (s *Store) UpdateChatAvatar(chatID, fileID string) (*model.Chat, error) {
-	chat, ok := s.GetChat(chatID)
+func (s *Store) UpdateChatAvatar(ctx context.Context, chatID, fileID string) (*model.Chat, error) {
+	chat, ok := s.GetChat(ctx, chatID)
 	if !ok {
 		return nil, ErrChatNotFound
 	}
@@ -189,7 +197,7 @@ func (s *Store) UpdateChatAvatar(chatID, fileID string) (*model.Chat, error) {
 		return nil, errors.New("cannot set avatar on non-group chat")
 	}
 
-	if err := s.db.Model(&model.Chat{}).Where("id = ?", chatID).Update("avatar_file_id", fileID).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Update("avatar_file_id", fileID).Error; err != nil {
 		return nil, err
 	}
 
@@ -198,10 +206,10 @@ func (s *Store) UpdateChatAvatar(chatID, fileID string) (*model.Chat, error) {
 	return chat, nil
 }
 
-func (s *Store) GetChatsByAvatarFileID(fileID string) ([]string, error) {
+func (s *Store) GetChatsByAvatarFileID(ctx context.Context, fileID string) ([]string, error) {
 	var chatIDs []string
 
-	err := s.db.Model(&model.Chat{}).
+	err := s.db.WithContext(ctx).Model(&model.Chat{}).
 		Where("avatar_file_id = ?", fileID).
 		Pluck("id", &chatIDs).
 		Error
@@ -213,8 +221,8 @@ func (s *Store) GetChatsByAvatarFileID(fileID string) ([]string, error) {
 	return chatIDs, err
 }
 
-func (s *Store) DeleteChat(chatID string) error {
-	chat, ok := s.GetChat(chatID)
+func (s *Store) DeleteChat(ctx context.Context, chatID string) error {
+	chat, ok := s.GetChat(ctx, chatID)
 	if !ok {
 		return ErrChatNotFound
 	}
@@ -223,7 +231,7 @@ func (s *Store) DeleteChat(chatID string) error {
 		return errors.New("cannot delete non-group chat")
 	}
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 
 		if err := writeChatDeleteTombs(tx, chatID, chat.Members, now); err != nil {
@@ -293,10 +301,10 @@ func writeMessageDeleteTombs(tx *gorm.DB, chatID string, at time.Time) error {
 	return tx.Where("chat_id = ?", chatID).Delete(&model.Message{}).Error
 }
 
-func (s *Store) GetUserChats(userID string) []*model.Chat {
+func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
 	var chatIDs []string
 
-	s.db.Model(&ChatMember{}).Where("user_id = ?", userID).Pluck("chat_id", &chatIDs)
+	s.db.WithContext(ctx).Model(&ChatMember{}).Where("user_id = ?", userID).Pluck("chat_id", &chatIDs)
 
 	if len(chatIDs) == 0 {
 		return nil
@@ -304,7 +312,7 @@ func (s *Store) GetUserChats(userID string) []*model.Chat {
 
 	var chats []*model.Chat
 
-	s.db.Where("id IN ?", chatIDs).Order("created_at DESC").Find(&chats)
+	s.db.WithContext(ctx).Where("id IN ?", chatIDs).Order("created_at DESC").Find(&chats)
 
 	// One query for all memberships across all of the user's chats,
 	// instead of one query per chat. The lookup table is small enough
@@ -315,7 +323,7 @@ func (s *Store) GetUserChats(userID string) []*model.Chat {
 	}
 
 	var rows []memberRow
-	s.db.Model(&ChatMember{}).
+	s.db.WithContext(ctx).Model(&ChatMember{}).
 		Where("chat_id IN ?", chatIDs).
 		Select("chat_id, user_id").
 		Scan(&rows)
@@ -332,34 +340,47 @@ func (s *Store) GetUserChats(userID string) []*model.Chat {
 	return chats
 }
 
-func (s *Store) GetChat(chatID string) (*model.Chat, bool) {
+func (s *Store) GetChat(ctx context.Context, chatID string) (*model.Chat, bool) {
 	var chat model.Chat
 
-	if err := s.db.First(&chat, "id = ?", chatID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&chat, "id = ?", chatID).Error; err != nil {
 		return nil, false
 	}
 
 	var members []string
 
-	s.db.Model(&ChatMember{}).Where("chat_id = ?", chatID).Pluck("user_id", &members)
+	s.db.WithContext(ctx).Model(&ChatMember{}).Where("chat_id = ?", chatID).Pluck("user_id", &members)
 	chat.Members = members
 
 	return &chat, true
 }
 
-func (s *Store) CreateRemoteChat(chat *model.Chat) {
+func (s *Store) GetFederatedChatIDs(ctx context.Context, remoteServer string) []string {
+	var chatIDs []string
+	s.db.WithContext(ctx).Model(&model.Chat{}).Where("remote_server = ?", remoteServer).Pluck("id", &chatIDs)
+
+	if len(chatIDs) == 0 {
+		return []string{}
+	}
+
+	return chatIDs
+}
+
+func (s *Store) CreateRemoteChat(ctx context.Context, chat *model.Chat) error {
 	var count int64
-	s.db.Model(&model.Chat{}).Where("id = ?", chat.ID).Count(&count)
+	s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chat.ID).Count(&count)
 
 	if count > 0 {
-		return
+		return nil
 	}
 
 	if chat.Type == "" {
 		chat.Type = chatTypePrivate
 	}
 
-	s.db.Create(chat)
+	if err := s.db.WithContext(ctx).Create(chat).Error; err != nil {
+		return err
+	}
 
 	members := make([]ChatMember, len(chat.Members))
 
@@ -367,5 +388,9 @@ func (s *Store) CreateRemoteChat(chat *model.Chat) {
 		members[i] = ChatMember{ChatID: chat.ID, UserID: m}
 	}
 
-	s.db.Create(&members) //nolint:errcheck // best-effort member insert for remote chat
+	if err := s.db.WithContext(ctx).Create(&members).Error; err != nil {
+		return err
+	}
+
+	return nil
 }

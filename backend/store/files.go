@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"fast_chat/model"
@@ -11,14 +13,14 @@ var (
 	ErrFileNotFound = errors.New("file not found")
 )
 
-func (s *Store) SaveFile(hash, mimeType string, size int64, originalName, storagePath string) (*model.File, error) {
-	existing, ok := s.FindFileByHash(hash)
+func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64, originalName, storagePath string) (*model.File, error) {
+	existing, ok := s.FindFileByHash(ctx, hash)
 	if ok {
 		return existing, nil
 	}
 
 	file := &model.File{
-		ID:           generateID(),
+		ID:           GenerateID(),
 		Hash:         hash,
 		MimeType:     mimeType,
 		Size:         size,
@@ -27,32 +29,32 @@ func (s *Store) SaveFile(hash, mimeType string, size int64, originalName, storag
 		CreatedAt:    time.Now(),
 	}
 
-	if err := s.db.Create(file).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(file).Error; err != nil {
 		return nil, err
 	}
 
 	return file, nil
 }
 
-func (s *Store) FindFileByHash(hash string) (*model.File, bool) {
+func (s *Store) FindFileByHash(ctx context.Context, hash string) (*model.File, bool) {
 	var f model.File
-	if err := s.db.Where("hash = ?", hash).First(&f).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("hash = ?", hash).First(&f).Error; err != nil {
 		return nil, false
 	}
 
 	return &f, true
 }
 
-func (s *Store) GetFile(fileID string) (*model.File, error) {
+func (s *Store) GetFile(ctx context.Context, fileID string) (*model.File, error) {
 	var f model.File
-	if err := s.db.First(&f, "id = ?", fileID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&f, "id = ?", fileID).Error; err != nil {
 		return nil, ErrFileNotFound
 	}
 
 	return &f, nil
 }
 
-func (s *Store) AddMessageFiles(messageID string, fileIDs []string) error {
+func (s *Store) AddMessageFiles(ctx context.Context, messageID string, fileIDs []string) error {
 	if len(fileIDs) == 0 {
 		return nil
 	}
@@ -62,12 +64,12 @@ func (s *Store) AddMessageFiles(messageID string, fileIDs []string) error {
 		rows = append(rows, model.MessageFile{MessageID: messageID, FileID: fid})
 	}
 
-	return s.db.Create(&rows).Error
+	return s.db.WithContext(ctx).Create(&rows).Error
 }
 
-func (s *Store) GetMessageFiles(messageID string) ([]model.FileInfo, error) {
+func (s *Store) GetMessageFiles(ctx context.Context, messageID string) ([]model.FileInfo, error) {
 	var rows []model.MessageFile
-	if err := s.db.Where("message_id = ?", messageID).Find(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("message_id = ?", messageID).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 
@@ -81,7 +83,7 @@ func (s *Store) GetMessageFiles(messageID string) ([]model.FileInfo, error) {
 	}
 
 	var files []model.File
-	if err := s.db.Where("id IN ?", ids).Find(&files).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&files).Error; err != nil {
 		return nil, err
 	}
 
@@ -96,14 +98,14 @@ func (s *Store) GetMessageFiles(messageID string) ([]model.FileInfo, error) {
 // GetMessageFilesBatch returns file info for many message IDs in two
 // queries (link table + files), regardless of how many messages are
 // requested. Use this in handler paths that fan out a list of messages.
-func (s *Store) GetMessageFilesBatch(messageIDs []string) (map[string][]model.FileInfo, error) {
+func (s *Store) GetMessageFilesBatch(ctx context.Context, messageIDs []string) (map[string][]model.FileInfo, error) {
 	out := make(map[string][]model.FileInfo, len(messageIDs))
 	if len(messageIDs) == 0 {
 		return out, nil
 	}
 
 	var links []model.MessageFile
-	if err := s.db.Where("message_id IN ?", messageIDs).Find(&links).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("message_id IN ?", messageIDs).Find(&links).Error; err != nil {
 		return nil, err
 	}
 
@@ -117,7 +119,7 @@ func (s *Store) GetMessageFilesBatch(messageIDs []string) (map[string][]model.Fi
 	}
 
 	var files []model.File
-	if err := s.db.Where("id IN ?", fileIDs).Find(&files).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("id IN ?", fileIDs).Find(&files).Error; err != nil {
 		return nil, err
 	}
 
@@ -140,18 +142,19 @@ func (s *Store) GetMessageFilesBatch(messageIDs []string) (map[string][]model.Fi
 
 // GetMessageFilesForReply returns files for embedding into a ReplyToInfo.
 // It silently swallows errors and returns nil on failure to keep the caller paths simple.
-func (s *Store) GetMessageFilesForReply(messageID string) []model.FileInfo {
-	files, err := s.GetMessageFiles(messageID)
+func (s *Store) GetMessageFilesForReply(ctx context.Context, messageID string) []model.FileInfo {
+	files, err := s.GetMessageFiles(ctx, messageID)
 	if err != nil {
+		slog.Warn("GetMessageFilesForReply", "messageID", messageID, "err", err)
 		return nil
 	}
 
 	return files
 }
 
-func (s *Store) GetFileChats(fileID string) ([]string, error) {
+func (s *Store) GetFileChats(ctx context.Context, fileID string) ([]string, error) {
 	var rows []model.MessageFile
-	if err := s.db.Where("file_id = ?", fileID).Find(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("file_id = ?", fileID).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 
@@ -165,7 +168,7 @@ func (s *Store) GetFileChats(fileID string) ([]string, error) {
 	}
 
 	var msgs []model.Message
-	if err := s.db.Where("id IN ?", msgIDs).Find(&msgs).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("id IN ?", msgIDs).Find(&msgs).Error; err != nil {
 		return nil, err
 	}
 

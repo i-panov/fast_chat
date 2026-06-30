@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"fast_chat/store"
 )
 
 const (
@@ -25,14 +28,12 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil { //nolint:gosec // limited by MaxBytesReader above
 		writeError(w, http.StatusRequestEntityTooLarge, errKeyFileTooLarge)
-
 		return
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "missing file")
-
 		return
 	}
 
@@ -42,13 +43,12 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	// the on-disk filename (e.g. ".php" tricks behind a misconfigured reverse
 	// proxy).
 	dateDir := time.Now().Format("20060102")
-	storageName := generateID()
+	storageName := store.GenerateID()
 	relativePath := filepath.Join(dateDir, storageName)
 	fullPath := filepath.Join(h.cfg.Uploads.Dir, relativePath)
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), uploadDirPermissions); err != nil { //nolint:gosec // paths are controlled
 		writeError(w, http.StatusInternalServerError, "failed to process file")
-
 		return
 	}
 
@@ -57,7 +57,6 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	tempFile, err := os.CreateTemp(filepath.Dir(fullPath), ".upload-*"+filepath.Ext(storageName)+".tmp") //nolint:gosec
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process file")
-
 		return
 	}
 
@@ -74,7 +73,6 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	if peekErr != nil && peekErr != io.ErrUnexpectedEOF && peekErr != io.EOF {
 		tempFile.Close() //nolint:errcheck,gosec
 		writeError(w, http.StatusInternalServerError, "failed to read file")
-
 		return
 	}
 
@@ -86,7 +84,6 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	if _, err := peekAndHash.Write(peek[:peekN]); err != nil {
 		tempFile.Close() //nolint:errcheck,gosec
 		writeError(w, http.StatusInternalServerError, "failed to write file")
-
 		return
 	}
 
@@ -94,7 +91,6 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		tempFile.Close() //nolint:errcheck,gosec
 		writeError(w, http.StatusInternalServerError, "failed to read file")
-
 		return
 	}
 
@@ -103,22 +99,19 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	if err := tempFile.Sync(); err != nil {
 		tempFile.Close() //nolint:errcheck,gosec
 		writeError(w, http.StatusInternalServerError, "failed to persist file")
-
 		return
 	}
 
 	if err := tempFile.Close(); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to finalize file")
-
 		return
 	}
 
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
-	existing, ok := h.store.FindFileByHash(hash)
+	existing, ok := h.store.FindFileByHash(r.Context(), hash)
 	if ok {
 		writeJSON(w, http.StatusOK, map[string]any{"file": existing.ToFileInfo()})
-
 		return
 	}
 
@@ -127,14 +120,12 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	// never a partially written file.
 	if err := os.Rename(tempPath, fullPath); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save file")
-
 		return
 	}
 
-	saved, err := h.store.SaveFile(hash, mimeType, size, header.Filename, relativePath)
+	saved, err := h.store.SaveFile(r.Context(), hash, mimeType, size, header.Filename, relativePath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save file metadata")
-
 		return
 	}
 
@@ -145,18 +136,16 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	fileID := r.PathValue("fileId")
 
-	fileRecord, err := h.store.GetFile(fileID)
+	fileRecord, err := h.store.GetFile(r.Context(), fileID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "file not found")
-
 		return
 	}
 
-	hasAccess := h.userCanAccessFile(user.ID, fileID)
+	hasAccess := h.userCanAccessFile(r.Context(), user.ID, fileID)
 
 	if !hasAccess {
 		writeError(w, http.StatusForbidden, errKeyNotMember)
-
 		return
 	}
 
@@ -211,20 +200,20 @@ func sanitizeFilename(name string) string {
 
 // userCanAccessFile returns true if the user has access to the file via any
 // message attachment or as a group chat avatar.
-func (h *Handler) userCanAccessFile(userID, fileID string) bool {
-	chatIDs, err := h.store.GetFileChats(fileID)
+func (h *Handler) userCanAccessFile(ctx context.Context, userID, fileID string) bool {
+	chatIDs, err := h.store.GetFileChats(ctx, fileID)
 	if err == nil {
 		for _, cid := range chatIDs {
-			if chat, ok := h.store.GetChat(cid); ok && isMember(chat, userID) {
+			if chat, ok := h.store.GetChat(ctx, cid); ok && isMember(chat, userID) {
 				return true
 			}
 		}
 	}
 
-	avatarChatIDs, err := h.store.GetChatsByAvatarFileID(fileID)
+	avatarChatIDs, err := h.store.GetChatsByAvatarFileID(ctx, fileID)
 	if err == nil {
 		for _, cid := range avatarChatIDs {
-			if chat, ok := h.store.GetChat(cid); ok && isMember(chat, userID) {
+			if chat, ok := h.store.GetChat(ctx, cid); ok && isMember(chat, userID) {
 				return true
 			}
 		}

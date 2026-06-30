@@ -10,16 +10,16 @@ import (
 )
 
 type Config struct {
-	MessageEditTTL  int              `yaml:"message_edit_ttl"`
-	MessageDeleteTTL int             `yaml:"message_delete_ttl"`
-	Server          ServerConfig     `yaml:"server"`
-	Database        DatabaseConfig   `yaml:"database"`
-	Uploads         UploadsConfig    `yaml:"uploads"`
-	CORS            CORSConfig       `yaml:"cors"`
-	Federation      FederationConfig `yaml:"federation"`
-	Email           EmailConfig      `yaml:"email"`
-	Auth            AuthConfig       `yaml:"auth"`
-	RateLimits      RateLimitsConfig `yaml:"rate_limits"`
+	MessageEditTTL   int              `yaml:"message_edit_ttl"`
+	MessageDeleteTTL int              `yaml:"message_delete_ttl"`
+	Server           ServerConfig     `yaml:"server"`
+	Database         DatabaseConfig   `yaml:"database"`
+	Uploads          UploadsConfig    `yaml:"uploads"`
+	CORS             CORSConfig       `yaml:"cors"`
+	Federation       FederationConfig `yaml:"federation"`
+	Email            EmailConfig      `yaml:"email"`
+	Auth             AuthConfig       `yaml:"auth"`
+	RateLimits       RateLimitsConfig `yaml:"rate_limits"`
 }
 
 type ServerConfig struct {
@@ -41,9 +41,9 @@ type CORSConfig struct {
 }
 
 type FederationConfig struct {
-	Scheme   string `yaml:"scheme"`
-	Timeout  int    `yaml:"timeout"`
-	KeyPath  string `yaml:"key_path"`
+	Scheme  string `yaml:"scheme"`
+	Timeout int    `yaml:"timeout"`
+	KeyPath string `yaml:"key_path"`
 }
 
 type EmailConfig struct {
@@ -100,6 +100,10 @@ func Load(configPath string) (*Config, error) {
 	cfg.Server.Domain = net.JoinHostPort(cfg.Server.Host, fmt.Sprintf("%d", cfg.Server.Port))
 	if cfg.MessageEditTTL == 0 {
 		cfg.MessageEditTTL = 300
+	}
+
+	if cfg.MessageDeleteTTL == 0 {
+		cfg.MessageDeleteTTL = 300
 	}
 	if cfg.Email.SMTP.From == "" {
 		cfg.Email.SMTP.From = "noreply@fastchat.local"

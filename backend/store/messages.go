@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"time"
@@ -22,20 +23,20 @@ var (
 	ErrNotYourMessage  = errors.New("not your message")
 )
 
-func (s *Store) GetMessage(chatID, messageID string) (model.Message, error) {
+func (s *Store) GetMessage(ctx context.Context, chatID, messageID string) (model.Message, error) {
 	var msg model.Message
 
-	if err := s.db.Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
 		return model.Message{}, ErrMessageNotFound
 	}
 
 	return msg, nil
 }
 
-func (s *Store) EditMessage(chatID, messageID, userID, newText string, location *model.Location, clearLocation bool) (model.Message, error) {
+func (s *Store) EditMessage(ctx context.Context, chatID, messageID, userID, newText string, location *model.Location, clearLocation bool) (model.Message, error) {
 	var msg model.Message
 
-	if err := s.db.Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
 		return model.Message{}, ErrMessageNotFound
 	}
 
@@ -69,15 +70,15 @@ func (s *Store) EditMessage(chatID, messageID, userID, newText string, location 
 		msg.Location = location
 	}
 
-	if err := s.db.Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates).Error; err != nil {
 		return model.Message{}, err
 	}
 
 	return msg, nil
 }
 
-func (s *Store) SetMessageFiles(messageID string, fileIDs []string) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
+func (s *Store) SetMessageFiles(ctx context.Context, messageID string, fileIDs []string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
 			return err
 		}
@@ -95,9 +96,9 @@ func (s *Store) SetMessageFiles(messageID string, fileIDs []string) error {
 	})
 }
 
-func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID string, location *model.Location) (*model.Message, error) {
+func (s *Store) AddMessage(ctx context.Context, chatID, fromID, fromNick, text, messageID, replyToID string, location *model.Location) (*model.Message, error) {
 	var chatCount int64
-	s.db.Model(&model.Chat{}).Where("id = ?", chatID).Count(&chatCount)
+	s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Count(&chatCount)
 
 	if chatCount == 0 {
 		return nil, ErrChatNotFound
@@ -108,7 +109,7 @@ func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID 
 	if replyToID != "" {
 		var replyMsg model.Message
 
-		if err := s.db.Where("chat_id = ? AND id = ?", chatID, replyToID).First(&replyMsg).Error; err != nil {
+		if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, replyToID).First(&replyMsg).Error; err != nil {
 			return nil, ErrMessageNotFound
 		}
 
@@ -116,14 +117,14 @@ func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID 
 			MessageID: replyToID,
 			Text:      replyMsg.Text,
 			FromNick:  replyMsg.FromNick,
-			Files:     s.GetMessageFilesForReply(replyMsg.ID),
+			Files:     s.GetMessageFilesForReply(ctx, replyMsg.ID),
 			Location:  replyMsg.Location,
 		}
 	}
 
 	id := messageID
 	if id == "" {
-		id = generateID()
+		id = GenerateID()
 	}
 
 	now := time.Now()
@@ -142,16 +143,16 @@ func (s *Store) AddMessage(chatID, fromID, fromNick, text, messageID, replyToID 
 	// Idempotent insert: if a row with the same primary key already
 	// exists (e.g. a retried send from the offline outbox), silently
 	// succeed rather than failing the whole request.
-	if err := s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&msg).Error; err != nil {
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&msg).Error; err != nil {
 		return nil, err
 	}
 
 	return &msg, nil
 }
 
-func (s *Store) AddRawMessage(msg *model.Message) error {
+func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
 	var count int64
-	s.db.Model(&model.Chat{}).Where("id = ?", msg.ChatID).Count(&count)
+	s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", msg.ChatID).Count(&count)
 
 	if count == 0 {
 		return ErrChatNotFound
@@ -160,25 +161,25 @@ func (s *Store) AddRawMessage(msg *model.Message) error {
 	// Idempotent insert: if a row with the same primary key already
 	// exists (e.g. a federated message replayed by a retrying client),
 	// silently succeed rather than failing the whole request.
-	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(msg).Error
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(msg).Error
 }
 
-func (s *Store) GetMessages(chatID string) []model.Message {
+func (s *Store) GetMessages(ctx context.Context, chatID string) []model.Message {
 	var msgs []model.Message
 
-	s.db.Where("chat_id = ?", chatID).Order("created_at ASC, id ASC").Find(&msgs)
+	s.db.WithContext(ctx).Where("chat_id = ?", chatID).Order("created_at ASC, id ASC").Find(&msgs)
 
 	return msgs
 }
 
-func (s *Store) GetMessagesPaginated(chatID string, limit int, before string) ([]model.Message, string, bool) {
-	return s.paginateMessages(chatID, limit, before)
+func (s *Store) GetMessagesPaginated(ctx context.Context, chatID string, limit int, before string) ([]model.Message, string, bool) {
+	return s.paginateMessages(ctx, chatID, limit, before)
 }
 
-func (s *Store) DeleteMessage(chatID, messageID, userID string) error {
+func (s *Store) DeleteMessage(ctx context.Context, chatID, messageID, userID string) error {
 	var msg model.Message
 
-	if err := s.db.Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
 		return ErrMessageNotFound
 	}
 
@@ -186,7 +187,7 @@ func (s *Store) DeleteMessage(chatID, messageID, userID string) error {
 		return ErrNotYourMessage
 	}
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{}).Error; err != nil {
 			return err
 		}
@@ -202,7 +203,7 @@ func (s *Store) DeleteMessage(chatID, messageID, userID string) error {
 	})
 }
 
-func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Time, location *model.Location, clearLocation bool) error {
+func (s *Store) EditRawMessage(ctx context.Context, chatID, messageID, text string, editedAt time.Time, location *model.Location, clearLocation bool) error {
 	updates := map[string]any{
 		fieldText:      text,
 		fieldEditedAt:  &editedAt,
@@ -220,7 +221,7 @@ func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Tim
 		updates["location"] = string(raw)
 	}
 
-	result := s.db.Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates)
+	result := s.db.WithContext(ctx).Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates)
 
 	if result.RowsAffected == 0 {
 		return ErrMessageNotFound
@@ -229,10 +230,10 @@ func (s *Store) EditRawMessage(chatID, messageID, text string, editedAt time.Tim
 	return result.Error
 }
 
-func (s *Store) DeleteRawMessage(chatID, messageID string) error {
+func (s *Store) DeleteRawMessage(ctx context.Context, chatID, messageID string) error {
 	now := time.Now()
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
 		if result.RowsAffected == 0 {
 			return ErrMessageNotFound
@@ -250,15 +251,15 @@ func (s *Store) DeleteRawMessage(chatID, messageID string) error {
 	})
 }
 
-func (s *Store) paginateMessages(chatID string, limit int, before string) ([]model.Message, string, bool) {
-	query := s.db.Where("chat_id = ?", chatID)
+func (s *Store) paginateMessages(ctx context.Context, chatID string, limit int, before string) ([]model.Message, string, bool) {
+	query := s.db.WithContext(ctx).Where("chat_id = ?", chatID)
 
 	if before != "" {
 		var beforeMsg struct {
 			CreatedAt time.Time
 		}
 
-		if err := s.db.Model(&model.Message{}).
+		if err := s.db.WithContext(ctx).Model(&model.Message{}).
 			Select("created_at").
 			Where("id = ?", before).
 			First(&beforeMsg).Error; err != nil {

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func newTestStore(t *testing.T) *Store {
 
 func createTestUser(t *testing.T, s *Store, nick string) *model.User {
 	t.Helper()
-	user, err := s.CreateUser(nick+"@test.local", nick, "test", 24*time.Hour)
+	user, err := s.CreateUser(context.Background(), nick+"@test.local", nick, "test", 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +46,7 @@ func createTestUser(t *testing.T, s *Store, nick string) *model.User {
 func TestCreateUser(t *testing.T) {
 	s := newTestStore(t)
 
-	user, err := s.CreateUser("alice@test.local", "alice", "localhost:8080", 24*time.Hour)
+	user, err := s.CreateUser(context.Background(), "alice@test.local", "alice", "localhost:8080", 24*time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,7 +61,7 @@ func TestCreateUser(t *testing.T) {
 		t.Error("expected non-empty token")
 	}
 
-	_, err = s.CreateUser("alice@test.local", "alice", "localhost:8080", 24*time.Hour)
+	_, err = s.CreateUser(context.Background(), "alice@test.local", "alice", "localhost:8080", 24*time.Hour)
 	if err == nil {
 		t.Error("expected error for duplicate nick")
 	}
@@ -70,7 +71,7 @@ func TestGetUserByToken(t *testing.T) {
 	s := newTestStore(t)
 
 	user := createTestUser(t, s, "bob")
-	found, ok := s.GetUserByToken(user.Token)
+	found, ok := s.GetUserByToken(context.Background(), user.Token)
 	if !ok {
 		t.Fatal("expected to find user by token")
 	}
@@ -78,7 +79,7 @@ func TestGetUserByToken(t *testing.T) {
 		t.Errorf("expected %s, got %s", user.ID, found.ID)
 	}
 
-	_, ok = s.GetUserByToken("invalid-token")
+	_, ok = s.GetUserByToken(context.Background(), "invalid-token")
 	if ok {
 		t.Error("expected false for invalid token")
 	}
@@ -88,7 +89,7 @@ func TestGetUserByID(t *testing.T) {
 	s := newTestStore(t)
 
 	user := createTestUser(t, s, "carol")
-	found, ok := s.GetUserByID(user.ID)
+	found, ok := s.GetUserByID(context.Background(), user.ID)
 	if !ok {
 		t.Fatal("expected to find user by ID")
 	}
@@ -104,22 +105,22 @@ func TestSearchUsers(t *testing.T) {
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "dalia")
 
-	results := s.SearchUsers("ali", "")
+	results := s.SearchUsers(context.Background(), "ali", "")
 	if len(results) != 2 {
 		t.Errorf("expected 2 results (alice, dalia), got %d", len(results))
 	}
 
-	results = s.SearchUsers("bob", "")
+	results = s.SearchUsers(context.Background(), "bob", "")
 	if len(results) != 1 {
 		t.Errorf("expected 1 result, got %d", len(results))
 	}
 
-	results = s.SearchUsers("xyz", "")
+	results = s.SearchUsers(context.Background(), "xyz", "")
 	if len(results) != 0 {
 		t.Errorf("expected 0 results, got %d", len(results))
 	}
 
-	results = s.SearchUsers("ali", testAlice)
+	results = s.SearchUsers(context.Background(), "ali", testAlice)
 	if len(results) != 1 {
 		t.Errorf("expected 1 result (dalia excluding alice), got %d", len(results))
 	}
@@ -131,7 +132,7 @@ func TestCreateChat(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 
-	chat, err := s.CreateChat(testAlice, testBob)
+	chat, err := s.CreateChat(context.Background(), testAlice, testBob, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestCreateChat(t *testing.T) {
 		t.Errorf("expected 2 members, got %d", len(chat.Members))
 	}
 
-	same, err := s.CreateChat(testAlice, testBob)
+	same, err := s.CreateChat(context.Background(), testAlice, testBob, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -156,15 +157,15 @@ func TestGetUserChats(t *testing.T) {
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
 
-	s.CreateChat(testAlice, testBob)
-	s.CreateChat(testAlice, testCarol)
+	s.CreateChat(context.Background(), testAlice, testBob, "")
+	s.CreateChat(context.Background(), testAlice, testCarol, "")
 
-	chats := s.GetUserChats(testAlice)
+	chats := s.GetUserChats(context.Background(), testAlice)
 	if len(chats) != 2 {
 		t.Errorf("expected 2 chats, got %d", len(chats))
 	}
 
-	chats = s.GetUserChats(testBob)
+	chats = s.GetUserChats(context.Background(), testBob)
 	if len(chats) != 1 {
 		t.Errorf("expected 1 chat, got %d", len(chats))
 	}
@@ -175,9 +176,9 @@ func TestAddMessage(t *testing.T) {
 
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
-	msg, err := s.AddMessage(chat.ID, testAlice, "alice", "Hello!", "", "", nil)
+	msg, err := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello!", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestAddMessage(t *testing.T) {
 		t.Errorf("expected %s, got %s", chat.ID, msg.ChatID)
 	}
 
-	_, err = s.AddMessage("nonexistent", testAlice, "alice", "test", "", "", nil)
+	_, err = s.AddMessage(context.Background(), "nonexistent", testAlice, "alice", "test", "", "", nil)
 	if err == nil {
 		t.Error("expected error for nonexistent chat")
 	}
@@ -203,10 +204,10 @@ func TestEditMessage(t *testing.T) {
 
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "Hello", "", "", nil)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	msg, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "", "", nil)
 
-	updated, err := s.EditMessage(chat.ID, msg.ID, testAlice, testEdited, nil, false)
+	updated, err := s.EditMessage(context.Background(), chat.ID, msg.ID, testAlice, testEdited, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -217,7 +218,7 @@ func TestEditMessage(t *testing.T) {
 		t.Error("expected EditedAt to be set")
 	}
 
-	_, err = s.EditMessage(chat.ID, msg.ID, testBob, "Hacked!", nil, false)
+	_, err = s.EditMessage(context.Background(), chat.ID, msg.ID, testBob, "Hacked!", nil, false)
 	if err == nil {
 		t.Error("expected error when bob edits alice's message")
 	}
@@ -228,15 +229,15 @@ func TestDeleteMessage(t *testing.T) {
 
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "Hello", "", "", nil)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	msg, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "", "", nil)
 
-	err := s.DeleteMessage(chat.ID, msg.ID, testAlice)
+	err := s.DeleteMessage(context.Background(), chat.ID, msg.ID, testAlice)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	err = s.DeleteMessage(chat.ID, "nonexistent", testAlice)
+	err = s.DeleteMessage(context.Background(), chat.ID, "nonexistent", testAlice)
 	if err == nil {
 		t.Error("expected error for nonexistent message")
 	}
@@ -247,22 +248,22 @@ func TestSetMessageFiles(t *testing.T) {
 
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "Hello", "", "", nil)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	msg, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "", "", nil)
 
-	f1, _ := s.SaveFile("hash1", "image/png", 100, "a.png", "a.png")
-	f2, _ := s.SaveFile("hash2", "application/pdf", 200, "b.pdf", "b.pdf")
-	f3, _ := s.SaveFile("hash3", "text/plain", 50, "c.txt", "c.txt")
+	f1, _ := s.SaveFile(context.Background(), "hash1", "image/png", 100, "a.png", "a.png")
+	f2, _ := s.SaveFile(context.Background(), "hash2", "application/pdf", 200, "b.pdf", "b.pdf")
+	f3, _ := s.SaveFile(context.Background(), "hash3", "text/plain", 50, "c.txt", "c.txt")
 
-	if err := s.AddMessageFiles(msg.ID, []string{f1.ID, f2.ID}); err != nil {
+	if err := s.AddMessageFiles(context.Background(), msg.ID, []string{f1.ID, f2.ID}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := s.SetMessageFiles(msg.ID, []string{f2.ID, f3.ID}); err != nil {
+	if err := s.SetMessageFiles(context.Background(), msg.ID, []string{f2.ID, f3.ID}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	files, err := s.GetMessageFiles(msg.ID)
+	files, err := s.GetMessageFiles(context.Background(), msg.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -285,12 +286,12 @@ func TestEditThreadMessage(t *testing.T) {
 
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	parent, _ := s.AddMessage(chat.ID, testAlice, "alice", "parent", "", "", nil)
-	thread, _ := s.CreateThread(chat.ID, parent.ID, parent.Text, parent.FromNick)
-	msg, _ := s.AddThreadMessage(thread.ID, testAlice, "alice", "Hello", "", "", nil)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	parent, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "parent", "", "", nil)
+	thread, _ := s.CreateThread(context.Background(), chat.ID, parent.ID, parent.Text, parent.FromNick)
+	msg, _ := s.AddThreadMessage(context.Background(), thread.ID, testAlice, "alice", "Hello", "", "", nil)
 
-	updated, err := s.EditThreadMessage(thread.ID, msg.ID, testAlice, testEdited, nil, false)
+	updated, err := s.EditThreadMessage(context.Background(), thread.ID, msg.ID, testAlice, testEdited, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -301,12 +302,12 @@ func TestEditThreadMessage(t *testing.T) {
 		t.Error("expected EditedAt to be set")
 	}
 
-	_, err = s.EditThreadMessage(thread.ID, msg.ID, testBob, "Hacked!", nil, false)
+	_, err = s.EditThreadMessage(context.Background(), thread.ID, msg.ID, testBob, "Hacked!", nil, false)
 	if err == nil {
 		t.Error("expected error when bob edits alice's thread message")
 	}
 
-	_, err = s.EditThreadMessage("nonexistent", msg.ID, testAlice, "x", nil, false)
+	_, err = s.EditThreadMessage(context.Background(), "nonexistent", msg.ID, testAlice, "x", nil, false)
 	if err == nil {
 		t.Error("expected error for nonexistent thread")
 	}
@@ -317,10 +318,10 @@ func TestMessageLocation(t *testing.T) {
 
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
 	loc := &model.Location{Lat: 51.505, Lng: -0.09}
-	msg, err := s.AddMessage(chat.ID, testAlice, "alice", "Meet here", "", "", loc)
+	msg, err := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Meet here", "", "", loc)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -333,7 +334,7 @@ func TestMessageLocation(t *testing.T) {
 	}
 
 	// Reading from DB should preserve the location.
-	loaded, err := s.GetMessage(chat.ID, msg.ID)
+	loaded, err := s.GetMessage(context.Background(), chat.ID, msg.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -350,11 +351,11 @@ func TestEditMessageLocation(t *testing.T) {
 
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "x", "", "", nil)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	msg, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "x", "", "", nil)
 
 	// Set initial location.
-	updated, err := s.EditMessage(chat.ID, msg.ID, testAlice, "x", &model.Location{Lat: 1, Lng: 2}, false)
+	updated, err := s.EditMessage(context.Background(), chat.ID, msg.ID, testAlice, "x", &model.Location{Lat: 1, Lng: 2}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -363,7 +364,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Replace with a different location.
-	updated, err = s.EditMessage(chat.ID, msg.ID, testAlice, "x", &model.Location{Lat: 3, Lng: 4}, false)
+	updated, err = s.EditMessage(context.Background(), chat.ID, msg.ID, testAlice, "x", &model.Location{Lat: 3, Lng: 4}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -372,7 +373,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Clear the location.
-	updated, err = s.EditMessage(chat.ID, msg.ID, testAlice, "x", nil, true)
+	updated, err = s.EditMessage(context.Background(), chat.ID, msg.ID, testAlice, "x", nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -381,7 +382,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Leave unchanged (no location params).
-	updated, err = s.EditMessage(chat.ID, msg.ID, testAlice, "new text", nil, false)
+	updated, err = s.EditMessage(context.Background(), chat.ID, msg.ID, testAlice, "new text", nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -395,10 +396,10 @@ func TestReplyToLocation(t *testing.T) {
 
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	parent, _ := s.AddMessage(chat.ID, testAlice, "alice", "x", "", "", &model.Location{Lat: 10, Lng: 20})
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	parent, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "x", "", "", &model.Location{Lat: 10, Lng: 20})
 
-	reply, err := s.AddMessage(chat.ID, testBob, "bob", "reply", "", parent.ID, nil)
+	reply, err := s.AddMessage(context.Background(), chat.ID, testBob, "bob", "reply", "", parent.ID, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -416,13 +417,13 @@ func TestGetMessagesPaginated(t *testing.T) {
 
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
 	for i := 0; i < 10; i++ {
-		s.AddMessage(chat.ID, testAlice, "alice", fmt.Sprintf("msg-%d", i), "", "", nil)
+		s.AddMessage(context.Background(), chat.ID, testAlice, "alice", fmt.Sprintf("msg-%d", i), "", "", nil)
 	}
 
-	msgs, next, hasMore := s.GetMessagesPaginated(chat.ID, 4, "")
+	msgs, next, hasMore := s.GetMessagesPaginated(context.Background(), chat.ID, 4, "")
 	if len(msgs) != 4 {
 		t.Errorf("expected 4 messages, got %d", len(msgs))
 	}
@@ -433,7 +434,7 @@ func TestGetMessagesPaginated(t *testing.T) {
 		t.Error("expected hasMore=true for first page")
 	}
 
-	msgs, next, hasMore = s.GetMessagesPaginated(chat.ID, 10, next)
+	msgs, next, hasMore = s.GetMessagesPaginated(context.Background(), chat.ID, 10, next)
 	if len(msgs) != 6 {
 		t.Errorf("expected 6 messages (remaining), got %d", len(msgs))
 	}
@@ -441,7 +442,7 @@ func TestGetMessagesPaginated(t *testing.T) {
 		t.Error("expected hasMore=false after loading all")
 	}
 
-	msgs, _, _ = s.GetMessagesPaginated(chat.ID, 100, "")
+	msgs, _, _ = s.GetMessagesPaginated(context.Background(), chat.ID, 100, "")
 	if len(msgs) != 10 {
 		t.Errorf("expected all 10 messages, got %d", len(msgs))
 	}
@@ -460,9 +461,9 @@ func TestCreateRemoteChat(t *testing.T) {
 		RemoteServer: "remote.com",
 	}
 
-	s.CreateRemoteChat(chat)
+	s.CreateRemoteChat(context.Background(), chat)
 
-	got, ok := s.GetChat("remote-chat-id")
+	got, ok := s.GetChat(context.Background(), "remote-chat-id")
 	if !ok {
 		t.Fatal("expected to find remote chat")
 	}
@@ -475,7 +476,7 @@ func TestAddRawMessage(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
 	msg := &model.Message{
 		ID:     "raw-1",
@@ -484,12 +485,12 @@ func TestAddRawMessage(t *testing.T) {
 		Text:   "from remote",
 	}
 
-	err := s.AddRawMessage(msg)
+	err := s.AddRawMessage(context.Background(), msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := s.GetMessages(chat.ID)
+	msgs := s.GetMessages(context.Background(), chat.ID)
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
@@ -497,7 +498,7 @@ func TestAddRawMessage(t *testing.T) {
 		t.Errorf("expected raw-1, got %s", msgs[0].ID)
 	}
 
-	err = s.AddRawMessage(&model.Message{ChatID: "nonexistent"})
+	err = s.AddRawMessage(context.Background(), &model.Message{ChatID: "nonexistent"})
 	if err == nil {
 		t.Error("expected error for nonexistent chat")
 	}
@@ -507,16 +508,16 @@ func TestEditRawMessage(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	s.AddMessage(chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
 
 	now := time.Now()
-	err := s.EditRawMessage(chat.ID, "msg-1", testEdited, now, nil, false)
+	err := s.EditRawMessage(context.Background(), chat.ID, "msg-1", testEdited, now, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msg, err := s.GetMessage(chat.ID, "msg-1")
+	msg, err := s.GetMessage(context.Background(), chat.ID, "msg-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +528,7 @@ func TestEditRawMessage(t *testing.T) {
 		t.Error("expected EditedAt to be set")
 	}
 
-	err = s.EditRawMessage(chat.ID, "nonexistent", "", time.Now(), nil, false)
+	err = s.EditRawMessage(context.Background(), chat.ID, "nonexistent", "", time.Now(), nil, false)
 	if err == nil {
 		t.Error("expected error for nonexistent message")
 	}
@@ -537,20 +538,20 @@ func TestDeleteRawMessage(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	s.AddMessage(chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
 
-	err := s.DeleteRawMessage(chat.ID, "msg-1")
+	err := s.DeleteRawMessage(context.Background(), chat.ID, "msg-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := s.GetMessages(chat.ID)
+	msgs := s.GetMessages(context.Background(), chat.ID)
 	if len(msgs) != 0 {
 		t.Errorf("expected 0 messages, got %d", len(msgs))
 	}
 
-	err = s.DeleteRawMessage(chat.ID, "nonexistent")
+	err = s.DeleteRawMessage(context.Background(), chat.ID, "nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent message")
 	}
@@ -560,10 +561,10 @@ func TestCreateThreadAndGet(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	s.AddMessage(chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
 
-	thread, err := s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
+	thread, err := s.CreateThread(context.Background(), chat.ID, "parent-1", "Parent", "alice")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -571,7 +572,7 @@ func TestCreateThreadAndGet(t *testing.T) {
 		t.Errorf("expected parent-1, got %s", thread.ParentMessageID)
 	}
 
-	got, ok := s.GetThread(thread.ID)
+	got, ok := s.GetThread(context.Background(), thread.ID)
 	if !ok {
 		t.Fatal("expected to find thread")
 	}
@@ -579,7 +580,7 @@ func TestCreateThreadAndGet(t *testing.T) {
 		t.Errorf("expected %s, got %s", thread.ID, got.ID)
 	}
 
-	byParent, ok := s.GetThreadByParentMessage(chat.ID, "parent-1")
+	byParent, ok := s.GetThreadByParentMessage(context.Background(), chat.ID, "parent-1")
 	if !ok {
 		t.Fatal("expected to find thread by parent message")
 	}
@@ -587,12 +588,12 @@ func TestCreateThreadAndGet(t *testing.T) {
 		t.Errorf("expected %s, got %s", thread.ID, byParent.ID)
 	}
 
-	_, err = s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
+	_, err = s.CreateThread(context.Background(), chat.ID, "parent-1", "Parent", "alice")
 	if err == nil {
 		t.Error("expected error for duplicate thread")
 	}
 
-	_, err = s.CreateThread("nonexistent", "msg", "", "")
+	_, err = s.CreateThread(context.Background(), "nonexistent", "msg", "", "")
 	if err == nil {
 		t.Error("expected error for nonexistent chat")
 	}
@@ -603,19 +604,19 @@ func TestGetThreadsForChat(t *testing.T) {
 
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	s.AddMessage(chat.ID, testAlice, "alice", "Msg1", "m1", "", nil)
-	s.AddMessage(chat.ID, testAlice, "alice", "Msg2", "m2", "", nil)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Msg1", "m1", "", nil)
+	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Msg2", "m2", "", nil)
 
-	s.CreateThread(chat.ID, "m1", "Msg1", "alice")
-	s.CreateThread(chat.ID, "m2", "Msg2", "alice")
+	s.CreateThread(context.Background(), chat.ID, "m1", "Msg1", "alice")
+	s.CreateThread(context.Background(), chat.ID, "m2", "Msg2", "alice")
 
-	threads := s.GetThreadsForChat(chat.ID)
+	threads := s.GetThreadsForChat(context.Background(), chat.ID)
 	if len(threads) != 2 {
 		t.Errorf("expected 2 threads, got %d", len(threads))
 	}
 
-	noThreads := s.GetThreadsForChat("nonexistent")
+	noThreads := s.GetThreadsForChat(context.Background(), "nonexistent")
 	if len(noThreads) != 0 {
 		t.Errorf("expected 0 threads, got %d", len(noThreads))
 	}
@@ -626,7 +627,7 @@ func TestCreateChatIsPrivate(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 
-	chat, err := s.CreateChat(testAlice, testBob)
+	chat, err := s.CreateChat(context.Background(), testAlice, testBob, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -642,7 +643,7 @@ func TestCreateGroupChatBasic(t *testing.T) {
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
 
-	chat, err := s.CreateGroupChat("Team", testAlice, []string{testBob, testCarol})
+	chat, err := s.CreateGroupChat(context.Background(), "Team", testAlice, []string{testBob, testCarol}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -667,15 +668,15 @@ func TestCreateGroupChatUnlimitedDuplicates(t *testing.T) {
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
 
-	c1, _ := s.CreateGroupChat("G1", testAlice, []string{testBob, testCarol})
-	c2, _ := s.CreateGroupChat("G2", testAlice, []string{testBob, testCarol})
-	c3, _ := s.CreateGroupChat("G3", testAlice, []string{testBob, testCarol})
+	c1, _ := s.CreateGroupChat(context.Background(), "G1", testAlice, []string{testBob, testCarol}, "")
+	c2, _ := s.CreateGroupChat(context.Background(), "G2", testAlice, []string{testBob, testCarol}, "")
+	c3, _ := s.CreateGroupChat(context.Background(), "G3", testAlice, []string{testBob, testCarol}, "")
 
 	if c1.ID == c2.ID || c2.ID == c3.ID || c1.ID == c3.ID {
 		t.Errorf("expected 3 distinct IDs, got %s %s %s", c1.ID, c2.ID, c3.ID)
 	}
 
-	chats := s.GetUserChats(testAlice)
+	chats := s.GetUserChats(context.Background(), testAlice)
 	if len(chats) != 3 {
 		t.Errorf("expected 3 chats for alice, got %d", len(chats))
 	}
@@ -687,7 +688,7 @@ func TestCreateGroupChatDeduplicates(t *testing.T) {
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
 
-	chat, err := s.CreateGroupChat("G", testAlice, []string{testAlice, testBob, testCarol})
+	chat, err := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testAlice, testBob, testCarol}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -703,7 +704,7 @@ func TestCreateGroupChatValidation(t *testing.T) {
 	createTestUser(t, s, "bob")
 
 	// owner + bob = 2 members, valid
-	chat, err := s.CreateGroupChat("G", testAlice, []string{testAlice, testBob})
+	chat, err := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testAlice, testBob}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -716,7 +717,7 @@ func TestCreateGroupChatSolo(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 
-	chat, err := s.CreateGroupChat("Solo", testAlice, nil)
+	chat, err := s.CreateGroupChat(context.Background(), "Solo", testAlice, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -739,28 +740,28 @@ func TestAddChatMember(t *testing.T) {
 	createTestUser(t, s, "carol")
 	createTestUser(t, s, "dave")
 
-	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
+	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob, testCarol}, "")
 
-	if err := s.AddChatMember(chat.ID, "dave:test"); err != nil {
+	if err := s.AddChatMember(context.Background(), chat.ID, "dave:test"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, _ := s.GetChat(chat.ID)
+	got, _ := s.GetChat(context.Background(), chat.ID)
 	if len(got.Members) != 4 {
 		t.Errorf("expected 4 members, got %d", len(got.Members))
 	}
 
-	if err := s.AddChatMember(chat.ID, "dave:test"); err != nil {
+	if err := s.AddChatMember(context.Background(), chat.ID, "dave:test"); err != nil {
 		t.Errorf("idempotent add should not error: %v", err)
 	}
 
-	got, _ = s.GetChat(chat.ID)
+	got, _ = s.GetChat(context.Background(), chat.ID)
 	if len(got.Members) != 4 {
 		t.Errorf("expected still 4 members after duplicate add, got %d", len(got.Members))
 	}
 
-	privateChat, _ := s.CreateChat(testAlice, testBob)
-	if err := s.AddChatMember(privateChat.ID, testCarol); err == nil {
+	privateChat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	if err := s.AddChatMember(context.Background(), privateChat.ID, testCarol); err == nil {
 		t.Error("expected error adding member to private chat")
 	}
 }
@@ -771,31 +772,31 @@ func TestRemoveChatMember(t *testing.T) {
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
 
-	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
+	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob, testCarol}, "")
 
-	if err := s.RemoveChatMember(chat.ID, testBob); err != nil {
+	if err := s.RemoveChatMember(context.Background(), chat.ID, testBob); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, _ := s.GetChat(chat.ID)
+	got, _ := s.GetChat(context.Background(), chat.ID)
 	if len(got.Members) != 2 {
 		t.Errorf("expected 2 members, got %d", len(got.Members))
 	}
 
-	if err := s.RemoveChatMember(chat.ID, testCarol); err != nil {
+	if err := s.RemoveChatMember(context.Background(), chat.ID, testCarol); err != nil {
 		t.Fatalf("unexpected error removing carol: %v", err)
 	}
 
-	got, _ = s.GetChat(chat.ID)
+	got, _ = s.GetChat(context.Background(), chat.ID)
 	if len(got.Members) != 1 {
 		t.Errorf("expected 1 member remaining, got %d", len(got.Members))
 	}
 
-	if err := s.RemoveChatMember(chat.ID, testAlice); err == nil {
+	if err := s.RemoveChatMember(context.Background(), chat.ID, testAlice); err == nil {
 		t.Error("expected error: cannot remove the last member")
 	}
 
-	if err := s.RemoveChatMember(chat.ID, "nobody:test"); err == nil {
+	if err := s.RemoveChatMember(context.Background(), chat.ID, "nobody:test"); err == nil {
 		t.Error("expected error: removing nonexistent user should not error silently")
 	}
 }
@@ -806,9 +807,9 @@ func TestUpdateChatName(t *testing.T) {
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
 
-	chat, _ := s.CreateGroupChat("Old", testAlice, []string{testBob, testCarol})
+	chat, _ := s.CreateGroupChat(context.Background(), "Old", testAlice, []string{testBob, testCarol}, "")
 
-	updated, err := s.UpdateChatName(chat.ID, "New")
+	updated, err := s.UpdateChatName(context.Background(), chat.ID, "New")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -816,8 +817,8 @@ func TestUpdateChatName(t *testing.T) {
 		t.Errorf("expected New, got %q", updated.Name)
 	}
 
-	privateChat, _ := s.CreateChat(testAlice, testBob)
-	if _, err := s.UpdateChatName(privateChat.ID, "X"); err == nil {
+	privateChat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	if _, err := s.UpdateChatName(context.Background(), privateChat.ID, "X"); err == nil {
 		t.Error("expected error renaming private chat")
 	}
 }
@@ -827,11 +828,11 @@ func TestUpdateChatAvatar(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
-	f, _ := s.SaveFile("hash", "image/png", 100, "a.png", "a.png")
+	f, _ := s.SaveFile(context.Background(), "hash", "image/png", 100, "a.png", "a.png")
 
-	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
+	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob, testCarol}, "")
 
-	updated, err := s.UpdateChatAvatar(chat.ID, f.ID)
+	updated, err := s.UpdateChatAvatar(context.Background(), chat.ID, f.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -846,26 +847,26 @@ func TestDeleteChatCascade(t *testing.T) {
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
 
-	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
-	msg, _ := s.AddMessage(chat.ID, testAlice, "alice", "hi", "", "", nil)
-	thread, _ := s.CreateThread(chat.ID, msg.ID, "hi", "alice")
-	s.AddThreadMessage(thread.ID, testBob, "bob", "reply", "", "", nil)
-	f, _ := s.SaveFile("h", "image/png", 1, "a.png", "a.png")
-	s.AddMessageFiles(msg.ID, []string{f.ID})
+	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob, testCarol}, "")
+	msg, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "hi", "", "", nil)
+	thread, _ := s.CreateThread(context.Background(), chat.ID, msg.ID, "hi", "alice")
+	s.AddThreadMessage(context.Background(), thread.ID, testBob, "bob", "reply", "", "", nil)
+	f, _ := s.SaveFile(context.Background(), "h", "image/png", 1, "a.png", "a.png")
+	s.AddMessageFiles(context.Background(), msg.ID, []string{f.ID})
 
-	if err := s.DeleteChat(chat.ID); err != nil {
+	if err := s.DeleteChat(context.Background(), chat.ID); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, ok := s.GetChat(chat.ID); ok {
+	if _, ok := s.GetChat(context.Background(), chat.ID); ok {
 		t.Error("expected chat to be deleted")
 	}
 
-	if msgs := s.GetMessages(chat.ID); len(msgs) != 0 {
+	if msgs := s.GetMessages(context.Background(), chat.ID); len(msgs) != 0 {
 		t.Errorf("expected 0 messages, got %d", len(msgs))
 	}
 
-	if threads := s.GetThreadsForChat(chat.ID); len(threads) != 0 {
+	if threads := s.GetThreadsForChat(context.Background(), chat.ID); len(threads) != 0 {
 		t.Errorf("expected 0 threads, got %d", len(threads))
 	}
 
@@ -886,9 +887,9 @@ func TestDeleteChatRejectsPrivate(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
-	if err := s.DeleteChat(chat.ID); err == nil {
+	if err := s.DeleteChat(context.Background(), chat.ID); err == nil {
 		t.Error("expected error deleting private chat")
 	}
 }
@@ -898,14 +899,14 @@ func TestGetChatsByAvatarFileID(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
-	f, _ := s.SaveFile("avatar-hash", "image/png", 100, "a.png", "a.png")
+	f, _ := s.SaveFile(context.Background(), "avatar-hash", "image/png", 100, "a.png", "a.png")
 
-	chat, _ := s.CreateGroupChat("G", testAlice, []string{testBob, testCarol})
-	if _, err := s.UpdateChatAvatar(chat.ID, f.ID); err != nil {
+	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob, testCarol}, "")
+	if _, err := s.UpdateChatAvatar(context.Background(), chat.ID, f.ID); err != nil {
 		t.Fatalf("set avatar: %v", err)
 	}
 
-	ids, err := s.GetChatsByAvatarFileID(f.ID)
+	ids, err := s.GetChatsByAvatarFileID(context.Background(), f.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -913,7 +914,7 @@ func TestGetChatsByAvatarFileID(t *testing.T) {
 		t.Errorf("expected [%s], got %v", chat.ID, ids)
 	}
 
-	ids, err = s.GetChatsByAvatarFileID("nonexistent")
+	ids, err = s.GetChatsByAvatarFileID(context.Background(), "nonexistent")
 	if err != nil {
 		t.Fatalf("get nonexistent: %v", err)
 	}
@@ -926,11 +927,11 @@ func TestAddThreadMessage(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	s.AddMessage(chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
-	thread, _ := s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
+	thread, _ := s.CreateThread(context.Background(), chat.ID, "parent-1", "Parent", "alice")
 
-	msg, err := s.AddThreadMessage(thread.ID, testBob, "bob", "Reply", "", "", nil)
+	msg, err := s.AddThreadMessage(context.Background(), thread.ID, testBob, "bob", "Reply", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -938,7 +939,7 @@ func TestAddThreadMessage(t *testing.T) {
 		t.Errorf("expected 'Reply', got '%s'", msg.Text)
 	}
 
-	got, ok := s.GetThread(thread.ID)
+	got, ok := s.GetThread(context.Background(), thread.ID)
 	if !ok {
 		t.Fatal("expected to find thread")
 	}
@@ -946,12 +947,12 @@ func TestAddThreadMessage(t *testing.T) {
 		t.Errorf("expected MessageCount=1, got %d", got.MessageCount)
 	}
 
-	msgs, _, _ := s.GetThreadMessagesPaginated(thread.ID, 10, "")
+	msgs, _, _ := s.GetThreadMessagesPaginated(context.Background(), thread.ID, 10, "")
 	if len(msgs) != 1 {
 		t.Errorf("expected 1 thread message, got %d", len(msgs))
 	}
 
-	_, err = s.AddThreadMessage("nonexistent", testAlice, "alice", "test", "", "", nil)
+	_, err = s.AddThreadMessage(context.Background(), "nonexistent", testAlice, "alice", "test", "", "", nil)
 	if err == nil {
 		t.Error("expected error for nonexistent thread")
 	}
@@ -1001,15 +1002,15 @@ func TestGetMessageValue(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	s.AddMessage(chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
 
-	msg1, err := s.GetMessage(chat.ID, "msg-1")
+	msg1, err := s.GetMessage(context.Background(), chat.ID, "msg-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	msg2, err := s.GetMessage(chat.ID, "msg-1")
+	msg2, err := s.GetMessage(context.Background(), chat.ID, "msg-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1024,13 +1025,13 @@ func TestGetThreadValue(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
-	s.AddMessage(chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
-	s.CreateThread(chat.ID, "parent-1", "Parent", "alice")
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
+	s.CreateThread(context.Background(), chat.ID, "parent-1", "Parent", "alice")
 
-	threads := s.GetThreadsForChat(chat.ID)
-	thread1, _ := s.GetThread(threads[0].ID)
-	thread2, _ := s.GetThread(threads[0].ID)
+	threads := s.GetThreadsForChat(context.Background(), chat.ID)
+	thread1, _ := s.GetThread(context.Background(), threads[0].ID)
+	thread2, _ := s.GetThread(context.Background(), threads[0].ID)
 
 	thread1.ChatID = "modified"
 	if thread2.ChatID == "modified" {
@@ -1042,7 +1043,7 @@ func TestAddRawMessageIsIdempotent(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
 	msg := &model.Message{
 		ID:     "dup-1",
@@ -1051,17 +1052,17 @@ func TestAddRawMessageIsIdempotent(t *testing.T) {
 		Text:   "original",
 	}
 
-	if err := s.AddRawMessage(msg); err != nil {
+	if err := s.AddRawMessage(context.Background(), msg); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
 
 	// A federated retry with the same ID should not error.
 	msg.Text = "replay"
-	if err := s.AddRawMessage(msg); err != nil {
+	if err := s.AddRawMessage(context.Background(), msg); err != nil {
 		t.Fatalf("second insert (replay): %v", err)
 	}
 
-	msgs := s.GetMessages(chat.ID)
+	msgs := s.GetMessages(context.Background(), chat.ID)
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message after replay, got %d", len(msgs))
 	}
@@ -1081,7 +1082,7 @@ func TestSearchUsersOnlineState(t *testing.T) {
 
 	s.AddConnection(testAlice)
 
-	results := s.SearchUsers("ali", "")
+	results := s.SearchUsers(context.Background(), "ali", "")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -1089,7 +1090,7 @@ func TestSearchUsersOnlineState(t *testing.T) {
 		t.Error("expected alice to appear online in search results")
 	}
 
-	results = s.SearchUsers("bob", "")
+	results = s.SearchUsers(context.Background(), "bob", "")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 bob result, got %d", len(results))
 	}
@@ -1102,23 +1103,23 @@ func TestGetMessageFilesBatch(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
-	chat, _ := s.CreateChat(testAlice, testBob)
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
-	m1, _ := s.AddMessage(chat.ID, testAlice, "alice", "with file 1", "m-1", "", nil)
-	m2, _ := s.AddMessage(chat.ID, testAlice, "alice", "with two files", "m-2", "", nil)
-	m3, _ := s.AddMessage(chat.ID, testAlice, "alice", "no file", "m-3", "", nil)
+	m1, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "with file 1", "m-1", "", nil)
+	m2, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "with two files", "m-2", "", nil)
+	m3, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "no file", "m-3", "", nil)
 
-	f1, _ := s.SaveFile("h1", "text/plain", 10, "a.txt", "a.txt")
-	f2, _ := s.SaveFile("h2", "text/plain", 20, "b.txt", "b.txt")
+	f1, _ := s.SaveFile(context.Background(), "h1", "text/plain", 10, "a.txt", "a.txt")
+	f2, _ := s.SaveFile(context.Background(), "h2", "text/plain", 20, "b.txt", "b.txt")
 
-	if err := s.AddMessageFiles(m1.ID, []string{f1.ID}); err != nil {
+	if err := s.AddMessageFiles(context.Background(), m1.ID, []string{f1.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddMessageFiles(m2.ID, []string{f1.ID, f2.ID}); err != nil {
+	if err := s.AddMessageFiles(context.Background(), m2.ID, []string{f1.ID, f2.ID}); err != nil {
 		t.Fatal(err)
 	}
 
-	files, err := s.GetMessageFilesBatch([]string{m1.ID, m2.ID, m3.ID})
+	files, err := s.GetMessageFilesBatch(context.Background(), []string{m1.ID, m2.ID, m3.ID})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1137,7 +1138,7 @@ func TestGetMessageFilesBatch(t *testing.T) {
 func TestGetMessageFilesBatchEmpty(t *testing.T) {
 	s := newTestStore(t)
 
-	files, err := s.GetMessageFilesBatch(nil)
+	files, err := s.GetMessageFilesBatch(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1152,7 +1153,7 @@ func TestGetUsersByIDs(t *testing.T) {
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
 
-	got := s.GetUsersByIDs([]string{testAlice, testBob, "nonexistent"})
+	got := s.GetUsersByIDs(context.Background(), []string{testAlice, testBob, "nonexistent"})
 	if got[testAlice] != "alice" {
 		t.Errorf("alice: got %q, want %q", got[testAlice], "alice")
 	}
@@ -1167,7 +1168,7 @@ func TestGetUsersByIDs(t *testing.T) {
 func TestGetUsersByIDsEmpty(t *testing.T) {
 	s := newTestStore(t)
 
-	got := s.GetUsersByIDs(nil)
+	got := s.GetUsersByIDs(context.Background(), nil)
 	if got == nil {
 		t.Error("expected non-nil map")
 	}

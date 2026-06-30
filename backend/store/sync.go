@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"time"
 
 	"fast_chat/model"
@@ -10,17 +11,17 @@ import (
 // created on or after `since`. Private chats have stable IDs and rarely
 // disappear from a user's perspective, so this list is a best-effort
 // hint; the authoritative list of "current chats" is GetUserChats.
-func (s *Store) ChatChangedSince(userID string, since time.Time) []*model.Chat {
+func (s *Store) ChatChangedSince(ctx context.Context, userID string, since time.Time) []*model.Chat {
 	var chatIDs []string
 
-	s.db.Model(&ChatMember{}).Where("user_id = ?", userID).Pluck("chat_id", &chatIDs)
+	s.db.WithContext(ctx).Model(&ChatMember{}).Where("user_id = ?", userID).Pluck("chat_id", &chatIDs)
 
 	if len(chatIDs) == 0 {
 		return nil
 	}
 
 	var chats []*model.Chat
-	s.db.Where("id IN ? AND created_at >= ?", chatIDs, since).
+	s.db.WithContext(ctx).Where("id IN ? AND created_at >= ?", chatIDs, since).
 		Order("created_at ASC").
 		Find(&chats)
 
@@ -34,7 +35,7 @@ func (s *Store) ChatChangedSince(userID string, since time.Time) []*model.Chat {
 	}
 
 	var rows []memberRow
-	s.db.Model(&ChatMember{}).
+	s.db.WithContext(ctx).Model(&ChatMember{}).
 		Where("chat_id IN ?", chatIDs).
 		Select("chat_id, user_id").
 		Scan(&rows)
@@ -54,13 +55,13 @@ func (s *Store) ChatChangedSince(userID string, since time.Time) []*model.Chat {
 // MessagesChangedSince returns all messages in the given chats whose
 // `updated_at` is >= `since`, plus their attached files. This includes
 // newly created messages and edits.
-func (s *Store) MessagesChangedSince(chatIDs []string, since time.Time) []model.Message {
+func (s *Store) MessagesChangedSince(ctx context.Context, chatIDs []string, since time.Time) []model.Message {
 	if len(chatIDs) == 0 {
 		return nil
 	}
 
 	var msgs []model.Message
-	s.db.Where("chat_id IN ? AND updated_at >= ?", chatIDs, since).
+	s.db.WithContext(ctx).Where("chat_id IN ? AND updated_at >= ?", chatIDs, since).
 		Order("created_at ASC, id ASC").
 		Find(&msgs)
 
@@ -73,7 +74,7 @@ func (s *Store) MessagesChangedSince(chatIDs []string, since time.Time) []model.
 		ids[i] = msgs[i].ID
 	}
 
-	filesByMsg, err := s.GetMessageFilesBatch(ids)
+	filesByMsg, err := s.GetMessageFilesBatch(ctx, ids)
 	if err != nil {
 		return msgs
 	}
@@ -87,13 +88,13 @@ func (s *Store) MessagesChangedSince(chatIDs []string, since time.Time) []model.
 
 // DeletedMessagesSince returns tombstones for messages removed after
 // `since` in the given chats.
-func (s *Store) DeletedMessagesSince(chatIDs []string, since time.Time) []model.DeletedMessage {
+func (s *Store) DeletedMessagesSince(ctx context.Context, chatIDs []string, since time.Time) []model.DeletedMessage {
 	if len(chatIDs) == 0 {
 		return nil
 	}
 
 	var tombs []model.DeletedMessage
-	s.db.Where("chat_id IN ? AND deleted_at >= ?", chatIDs, since).
+	s.db.WithContext(ctx).Where("chat_id IN ? AND deleted_at >= ?", chatIDs, since).
 		Order("deleted_at ASC").
 		Find(&tombs)
 
@@ -103,9 +104,9 @@ func (s *Store) DeletedMessagesSince(chatIDs []string, since time.Time) []model.
 // DeletedChatsSince returns tombstones for chats (visible to a given
 // user) that were deleted after `since`. Used to tell an offline user
 // that a group chat they were in was removed.
-func (s *Store) DeletedChatsSince(userID string, since time.Time) []model.DeletedChat {
+func (s *Store) DeletedChatsSince(ctx context.Context, userID string, since time.Time) []model.DeletedChat {
 	var tombs []model.DeletedChat
-	s.db.Where("user_id = ? AND deleted_at >= ?", userID, since).
+	s.db.WithContext(ctx).Where("user_id = ? AND deleted_at >= ?", userID, since).
 		Order("deleted_at ASC").
 		Find(&tombs)
 

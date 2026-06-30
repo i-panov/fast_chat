@@ -77,7 +77,7 @@ func TestUploadFileDetectsPNGFromBody(t *testing.T) {
 	// Claim text/html in the multipart header but ship PNG bytes.
 	id := uploadAndGetFileID(t, h, alice.token, "evil.html", tinyPNG)
 
-	f, err := h.store.GetFile(id)
+	f, err := h.store.GetFile(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestUploadFileDetectsHTMLFromBody(t *testing.T) {
 	// Claim image/png but ship HTML — server should detect text/html.
 	id := uploadAndGetFileID(t, h, alice.token, "doc.html", htmlDoc)
 
-	f, err := h.store.GetFile(id)
+	f, err := h.store.GetFile(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,12 +141,12 @@ func TestServeFileForcesAttachmentForHTML(t *testing.T) {
 
 	htmlFileID := uploadAndGetFileID(t, h, alice.token, "doc.html", htmlDoc)
 
-	msg, err := h.store.AddMessage(chatID, alice.id, alice.id, "see attached", "msg-x", "", nil)
+	msg, err := h.store.AddMessage(context.Background(), chatID, alice.id, alice.id, "see attached", "msg-x", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := h.store.AddMessageFiles(msg.ID, []string{htmlFileID}); err != nil {
+	if err := h.store.AddMessageFiles(context.Background(), msg.ID, []string{htmlFileID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -196,12 +196,12 @@ func TestServeFileAllowsInlineForImage(t *testing.T) {
 
 	pngFileID := uploadAndGetFileID(t, h, alice.token, "image.png", tinyPNG)
 
-	msg, err := h.store.AddMessage(chatID, alice.id, alice.id, "img", "msg-img", "", nil)
+	msg, err := h.store.AddMessage(context.Background(), chatID, alice.id, alice.id, "img", "msg-img", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := h.store.AddMessageFiles(msg.ID, []string{pngFileID}); err != nil {
+	if err := h.store.AddMessageFiles(context.Background(), msg.ID, []string{pngFileID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -281,7 +281,7 @@ func TestUploadFileCreatesFileOnDisk(t *testing.T) {
 
 	id := uploadAndGetFileID(t, h, alice.token, "x.png", tinyPNG)
 
-	f, err := h.store.GetFile(id)
+	f, err := h.store.GetFile(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,12 +311,12 @@ func TestUploadFileDeduplicatesByHash(t *testing.T) {
 	// second call must return the same File without inserting a row.
 	hash := "dedup-hash-test"
 
-	first, err := h.store.SaveFile(hash, "image/png", int64(len(tinyPNG)), "first.png", "20060102/abc")
+	first, err := h.store.SaveFile(context.Background(), hash, "image/png", int64(len(tinyPNG)), "first.png", "20060102/abc")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	second, err := h.store.SaveFile(hash, "image/png", int64(len(tinyPNG)), "second.png", "20060102/def")
+	second, err := h.store.SaveFile(context.Background(), hash, "image/png", int64(len(tinyPNG)), "second.png", "20060102/def")
 	if err != nil {
 		t.Fatal(err)
 	}

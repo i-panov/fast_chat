@@ -3,13 +3,13 @@ package handler
 import (
 	"testing"
 	"time"
+
+	"fast_chat/sse"
 )
 
-func newTestSSEHub() *SSEHub {
-	hub := NewSSEHub()
+func newTestSSEHub() *sse.Hub {
+	hub := sse.NewHub(typingThrottleInterval * 5)
 
-	// The cleanup ticker runs every 2s; tests don't need it and
-	// we want a clean shutdown.
 	hub.Close()
 
 	return hub
@@ -23,7 +23,7 @@ func TestSSEHubRegisterSend(t *testing.T) {
 
 	conn := hub.Register("conn-1")
 	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-	hub.Send("user-1", SSEEvent{Event: "test", Data: "hello"})
+	hub.Send("user-1", sse.Event{Event: "test", Data: "hello"})
 
 	select {
 	case e := <-conn.Channel:
@@ -59,15 +59,13 @@ func TestSSEHubChannelFullDoesNotPanic(t *testing.T) {
 	conn := hub.Register("conn-1")
 	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
 
-	// Fill the buffer (sseChannelBuffer = 128). One extra Send must
-	// not block and must not panic.
-	for i := range sseChannelBuffer {
-		hub.Send("user-1", SSEEvent{Event: "flood", Data: i})
+	for range 128 {
+		hub.Send("user-1", sse.Event{Event: "flood", Data: 0})
 	}
 
 	done := make(chan struct{})
 	go func() {
-		hub.Send("user-1", SSEEvent{Event: "overflow", Data: "dropped"})
+		hub.Send("user-1", sse.Event{Event: "overflow", Data: "dropped"})
 		close(done)
 	}()
 
@@ -77,8 +75,7 @@ func TestSSEHubChannelFullDoesNotPanic(t *testing.T) {
 		t.Fatal("Send blocked on full channel — must drop, not block")
 	}
 
-	// Drain the buffer so we have a clean state for the next assertion.
-	for range sseChannelBuffer {
+	for range 128 {
 		<-conn.Channel
 	}
 }
@@ -89,7 +86,7 @@ func TestSSEHubSendToMissingUserIsNoop(t *testing.T) {
 	hub := newTestSSEHub()
 	defer hub.Close()
 
-	hub.Send("nobody", SSEEvent{Event: "noop", Data: "x"})
+	hub.Send("nobody", sse.Event{Event: "noop", Data: "x"})
 }
 
 func TestSSEHubMultipleConnections(t *testing.T) {
@@ -104,9 +101,9 @@ func TestSSEHubMultipleConnections(t *testing.T) {
 	conn2 := hub.Register("conn-2")
 	hub.Authenticate("conn-2", "user-1", "token-2", time.Now().Add(time.Hour))
 
-	hub.Send("user-1", SSEEvent{Event: "fanout", Data: "y"})
+	hub.Send("user-1", sse.Event{Event: "fanout", Data: "y"})
 
-	for i, ch := range []chan SSEEvent{conn1.Channel, conn2.Channel} {
+	for i, ch := range []chan sse.Event{conn1.Channel, conn2.Channel} {
 		select {
 		case e := <-ch:
 			if e.Event != "fanout" {
@@ -129,15 +126,12 @@ func TestSSEHubReRegisterReplacesChannel(t *testing.T) {
 
 	newConn := hub.Register("conn-1")
 
-	// Old channel must be closed.
 	if _, ok := <-oldConn.Channel; ok {
 		t.Fatal("old channel should be closed after re-register")
 	}
 
-	// New connection is not yet authorized; after re-register,
-	// Authenticate must be called again.
 	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-	hub.Send("user-1", SSEEvent{Event: "reconnect", Data: "ok"})
+	hub.Send("user-1", sse.Event{Event: "reconnect", Data: "ok"})
 
 	select {
 	case e := <-newConn.Channel:
@@ -158,7 +152,7 @@ func TestSSEHubExpiredToken(t *testing.T) {
 	conn := hub.Register("conn-1")
 	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(-time.Hour))
 
-	hub.Send("user-1", SSEEvent{Event: "should-not-arrive", Data: "x"})
+	hub.Send("user-1", sse.Event{Event: "should-not-arrive", Data: "x"})
 
 	select {
 	case <-conn.Channel:
@@ -174,9 +168,8 @@ func TestSSEHubUnauthenticatedUserIsNoop(t *testing.T) {
 	defer hub.Close()
 
 	conn := hub.Register("conn-1")
-	// Not authenticated.
 
-	hub.Send("user-1", SSEEvent{Event: "should-not-arrive", Data: "x"})
+	hub.Send("user-1", sse.Event{Event: "should-not-arrive", Data: "x"})
 
 	select {
 	case <-conn.Channel:
@@ -188,31 +181,21 @@ func TestSSEHubUnauthenticatedUserIsNoop(t *testing.T) {
 func TestSSEHubLastTypingCleanup(t *testing.T) {
 	t.Parallel()
 
-	hub := &SSEHub{
-		connections: make(map[string]*SSEConnection),
-		userConns:   make(map[string][]string),
-		closeCh:     make(chan struct{}),
-	}
+	shortInterval := 50 * time.Millisecond
+	hub := sse.NewHub(shortInterval)
+	defer hub.Close()
 
-	hub.lastTyping.Store("chat1:user1", time.Now().Add(-typingThrottleInterval*10))
-	hub.lastTyping.Store("chat2:user1", time.Now())
+	hub.StoreLastTyping("chat1:user1", time.Now().Add(-shortInterval*10))
 
-	cutoff := time.Now().Add(-typingThrottleInterval * 5)
+	time.Sleep(shortInterval * 3)
 
-	hub.lastTyping.Range(func(k, v any) bool {
-		ts, ok := v.(time.Time)
-		if !ok || ts.Before(cutoff) {
-			hub.lastTyping.Delete(k)
-		}
-
-		return true
-	})
-
-	if _, present := hub.lastTyping.Load("chat1:user1"); present {
+	if _, present := hub.LoadLastTyping("chat1:user1"); present {
 		t.Fatal("stale entry should be cleaned up")
 	}
 
-	if _, present := hub.lastTyping.Load("chat2:user1"); !present {
-		t.Fatal("fresh entry should be kept")
+	hub.StoreLastTyping("chat2:user1", time.Now())
+
+	if _, present := hub.LoadLastTyping("chat2:user1"); !present {
+		t.Fatal("fresh entry should be present")
 	}
 }

@@ -17,9 +17,9 @@ type Store struct {
 
 func New(db *gorm.DB) *Store {
 	return &Store{
-		db:    db,
-		codes: NewCodeStore(),
-		conns: make(map[string]int),
+		db:     db,
+		codes:  NewCodeStore(),
+		conns:  make(map[string]int),
 		online: make(map[string]struct{}),
 	}
 }

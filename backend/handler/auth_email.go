@@ -2,7 +2,6 @@ package handler
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -20,7 +19,7 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 		Email string `json:"email"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := h.decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 		return
 	}
@@ -45,7 +44,12 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	code := generateCode()
+	code, err := generateCode()
+	if err != nil {
+		logger.Error("failed to generate code", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	h.store.Codes().StoreCode(req.Email, code, 10*time.Minute)
 
 	if err := h.emailSender.SendCode(req.Email, code); err != nil {
@@ -71,7 +75,7 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		Code  string `json:"code"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := h.decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 		return
 	}
@@ -84,9 +88,9 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, exists := h.store.GetUserByEmail(req.Email)
+	user, exists := h.store.GetUserByEmail(r.Context(), req.Email)
 	if exists {
-		user, err := h.store.RefreshUserToken(user.ID, h.cfg.Auth.TokenExpiry)
+		user, err := h.store.RefreshUserToken(r.Context(), user.ID, h.cfg.Auth.TokenExpiry)
 		if err != nil {
 			logger.Error("failed to refresh token", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
@@ -118,7 +122,7 @@ func (h *Handler) CompleteRegistration(w http.ResponseWriter, r *http.Request) {
 		Nick       string `json:"nick"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := h.decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 		return
 	}
@@ -134,13 +138,13 @@ func (h *Handler) CompleteRegistration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email, ok := h.store.Codes().PeekSetupToken(req.SetupToken)
+	email, ok := h.store.Codes().VerifySetupToken(req.SetupToken)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "invalid setup token")
 		return
 	}
 
-	user, err := h.store.CreateUser(email, req.Nick, h.cfg.Server.Domain, h.cfg.Auth.TokenExpiry)
+	user, err := h.store.CreateUser(r.Context(), email, req.Nick, h.cfg.Server.Domain, h.cfg.Auth.TokenExpiry)
 	if err != nil {
 		if err == store.ErrNicknameTaken {
 			writeError(w, http.StatusConflict, "nickname already taken")
@@ -150,8 +154,6 @@ func (h *Handler) CompleteRegistration(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-
-	h.store.Codes().ConsumeSetupToken(req.SetupToken)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"user":      user.Public(),
@@ -163,7 +165,7 @@ func (h *Handler) CompleteRegistration(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 
-	user, err := h.store.RefreshUserToken(user.ID, h.cfg.Auth.TokenExpiry)
+	user, err := h.store.RefreshUserToken(r.Context(), user.ID, h.cfg.Auth.TokenExpiry)
 	if err != nil {
 		logger.Error("failed to refresh token", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -184,12 +186,12 @@ func (h *Handler) SSEAuth(w http.ResponseWriter, r *http.Request) {
 		Token        string `json:"token"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := h.decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
 		return
 	}
 
-	user, ok := h.store.GetUserByToken(req.Token)
+	user, ok := h.store.GetUserByToken(r.Context(), req.Token)
 	if !ok || time.Now().After(user.TokenExpiresAt) {
 		writeError(w, http.StatusUnauthorized, errKeyUnauthorized)
 		return
@@ -219,10 +221,10 @@ func isValidEmail(email string) bool {
 	return false
 }
 
-func generateCode() string {
+func generateCode() (string, error) {
 	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
 	if err != nil {
-		panic("crypto/rand.Int failed: " + err.Error())
+		return "", fmt.Errorf("generate code: %w", err)
 	}
-	return fmt.Sprintf("%06d", n.Int64())
+	return fmt.Sprintf("%06d", n.Int64()), nil
 }

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -15,7 +16,7 @@ var (
 	ErrEmailTaken    = errors.New("email already taken")
 )
 
-func generateID() string {
+func GenerateID() string {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		panic("crypto/rand.Read failed: " + err.Error())
@@ -23,7 +24,7 @@ func generateID() string {
 	return hex.EncodeToString(buf)
 }
 
-func (s *Store) CreateUser(email, nick, serverDomain string, tokenExpiry time.Duration) (*model.User, error) {
+func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string, tokenExpiry time.Duration) (*model.User, error) {
 	fullID := nick + ":" + serverDomain
 	now := time.Now()
 
@@ -31,11 +32,11 @@ func (s *Store) CreateUser(email, nick, serverDomain string, tokenExpiry time.Du
 		ID:             fullID,
 		Email:          email,
 		Nick:           nick,
-		Token:          generateID(),
+		Token:          GenerateID(),
 		TokenExpiresAt: now.Add(tokenExpiry),
 	}
 
-	if err := s.db.Create(user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(user).Error; err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			if strings.Contains(err.Error(), "email") {
 				return nil, ErrEmailTaken
@@ -48,47 +49,47 @@ func (s *Store) CreateUser(email, nick, serverDomain string, tokenExpiry time.Du
 	return user, nil
 }
 
-func (s *Store) GetUserByToken(token string) (*model.User, bool) {
+func (s *Store) GetUserByToken(ctx context.Context, token string) (*model.User, bool) {
 	var user model.User
-	if err := s.db.Where("token = ?", token).First(&user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("token = ?", token).First(&user).Error; err != nil {
 		return nil, false
 	}
 	return &user, true
 }
 
-func (s *Store) GetUserByID(id string) (*model.User, bool) {
+func (s *Store) GetUserByID(ctx context.Context, id string) (*model.User, bool) {
 	var user model.User
-	if err := s.db.First(&user, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&user, "id = ?", id).Error; err != nil {
 		return nil, false
 	}
 	return &user, true
 }
 
-func (s *Store) GetUserByEmail(email string) (*model.User, bool) {
+func (s *Store) GetUserByEmail(ctx context.Context, email string) (*model.User, bool) {
 	var user model.User
-	if err := s.db.Where("email = ?", email).First(&user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("email = ?", email).First(&user).Error; err != nil {
 		return nil, false
 	}
 	return &user, true
 }
 
-func (s *Store) RefreshUserToken(userID string, tokenExpiry time.Duration) (*model.User, error) {
-	user, ok := s.GetUserByID(userID)
+func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry time.Duration) (*model.User, error) {
+	user, ok := s.GetUserByID(ctx, userID)
 	if !ok {
 		return nil, errors.New("user not found")
 	}
 
-	user.Token = generateID()
+	user.Token = GenerateID()
 	user.TokenExpiresAt = time.Now().Add(tokenExpiry)
 
-	if err := s.db.Save(user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Save(user).Error; err != nil {
 		return nil, err
 	}
 
 	return user, nil
 }
 
-func (s *Store) GetUsersByIDs(ids []string) map[string]string {
+func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) map[string]string {
 	out := make(map[string]string, len(ids))
 	if len(ids) == 0 {
 		return out
@@ -99,7 +100,7 @@ func (s *Store) GetUsersByIDs(ids []string) map[string]string {
 		Nick string
 	}
 
-	s.db.Model(&model.User{}).Where("id IN ?", ids).Select("id, nick").Scan(&rows)
+	s.db.WithContext(ctx).Model(&model.User{}).Where("id IN ?", ids).Select("id, nick").Scan(&rows)
 
 	for _, r := range rows {
 		out[r.ID] = r.Nick
@@ -108,11 +109,11 @@ func (s *Store) GetUsersByIDs(ids []string) map[string]string {
 	return out
 }
 
-func (s *Store) SearchUsers(query, excludeID string) []model.PublicUser {
+func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []model.PublicUser {
 	q := strings.ToLower(query)
 
 	var users []model.User
-	s.db.Where("LOWER(nick) LIKE ? AND id != ?", "%"+q+"%", excludeID).Find(&users)
+	s.db.WithContext(ctx).Where("LOWER(nick) LIKE ? AND id != ?", "%"+q+"%", excludeID).Find(&users)
 
 	if len(users) == 0 {
 		return []model.PublicUser{}

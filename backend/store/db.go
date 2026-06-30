@@ -42,7 +42,15 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxOpenConns(4)
+
+	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		return nil, err
+	}
+
+	if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		return nil, err
+	}
 
 	return db, nil
 }
