@@ -1,10 +1,6 @@
 // Централизованный экспорт хуков
 
-export type { EditingMessage, ReplyTarget } from "../context/ChatPageContext";
-export {
-	ChatPageProvider,
-	useChatPageContext,
-} from "../context/ChatPageContext";
+export type { EditingMessage, ReplyTarget } from "../types/chat.ts";
 export type { ChatPageState } from "./useChatInteraction";
 export { useChatList } from "./useChatList";
 export { useGroupSettings } from "./useGroupSettings";

@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import type { FileInfo, Message } from "../api.ts";
-import type { EditingMessage, ReplyTarget } from "../context/ChatPageContext";
+import type { EditingMessage, ReplyTarget } from "../types/chat.ts";
 
 export interface UseMessageEditorReturn {
 	editingMessage: EditingMessage | null;

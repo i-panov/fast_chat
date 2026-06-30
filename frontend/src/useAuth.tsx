@@ -6,6 +6,7 @@ import {
 	useEffect,
 	useState,
 } from "react";
+import { getRouter } from "./router.tsx";
 import { onUnauthorized } from "./utils/authEvents.ts";
 
 export interface StoredUser {
@@ -137,7 +138,7 @@ function useAuthState() {
 				setActiveToken(next);
 				if (next === null) {
 					removeActiveToken();
-					window.location.href = "/login";
+					getRouter().navigate({ to: "/login" });
 				} else {
 					writeActiveToken(next);
 				}
@@ -177,7 +178,7 @@ function useAuthState() {
 				if (next === null) {
 					removeActiveToken();
 					removeLastActiveToken();
-					window.location.href = "/login";
+					getRouter().navigate({ to: "/login" });
 				} else {
 					writeActiveToken(next);
 				}

@@ -7,6 +7,7 @@ import { useSse } from "../useSse.ts";
 
 interface UseSseEventsParams {
 	token: string;
+	threadsMap: Record<string, Thread>;
 	setThreadsMap: React.Dispatch<React.SetStateAction<Record<string, Thread>>>;
 	setThreadMessagesMap: React.Dispatch<
 		React.SetStateAction<Record<string, Message[]>>
@@ -22,6 +23,7 @@ interface UseSseEventsParams {
 
 export function useSseEvents({
 	token,
+	threadsMap,
 	setThreadsMap,
 	setThreadMessagesMap,
 	setMessageToThreadMap,
@@ -32,6 +34,8 @@ export function useSseEvents({
 }: UseSseEventsParams) {
 	const tokenRef = useRef(token);
 	tokenRef.current = token;
+	const threadsMapRef = useRef(threadsMap);
+	threadsMapRef.current = threadsMap;
 
 	const handler = useCallback(
 		(event: string, data: unknown) => {
@@ -45,7 +49,26 @@ export function useSseEvents({
 					chatId: string;
 					messageId: string;
 				};
-				void messagesRepo.applyDelete(chatId, messageId);
+				if (threadsMapRef.current[chatId] !== undefined) {
+					setThreadMessagesMap((prev) => {
+						const list = prev[chatId];
+						if (list === undefined) return prev;
+						return {
+							...prev,
+							[chatId]: list.filter((m) => m.id !== messageId),
+						};
+					});
+					setThreadsMap((prev) => {
+						const t = prev[chatId];
+						if (t === undefined) return prev;
+						return {
+							...prev,
+							[chatId]: { ...t, messageCount: Math.max(0, t.messageCount - 1) },
+						};
+					});
+				} else {
+					void messagesRepo.applyDelete(chatId, messageId);
+				}
 				return;
 			}
 			if (

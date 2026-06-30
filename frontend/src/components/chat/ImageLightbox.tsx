@@ -1,6 +1,7 @@
 import { ActionIcon } from "@mantine/core";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { FileInfo } from "../../api.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { useAuth } from "../../useAuth.tsx";
@@ -13,6 +14,7 @@ interface Props {
 
 export function ImageLightbox({ images, startIndex, onClose }: Props) {
 	const [index, setIndex] = useState(startIndex);
+	const { t } = useTranslation();
 	const { activeAccount } = useAuth();
 
 	const current = images[index];
@@ -50,7 +52,7 @@ export function ImageLightbox({ images, startIndex, onClose }: Props) {
 		<div
 			role="dialog"
 			aria-modal="true"
-			aria-label="Image viewer"
+			aria-label={t("media.imageViewer")}
 			tabIndex={-1}
 			onClick={(e) => {
 				if (e.target === e.currentTarget) onClose();
@@ -108,7 +110,7 @@ export function ImageLightbox({ images, startIndex, onClose }: Props) {
 			{loading ? (
 				<ActionIcon variant="subtle" color="gray" size="xl" loading />
 			) : error || !blobUrl ? (
-				<p style={{ color: "white" }}>Failed to load image</p>
+				<p style={{ color: "white" }}>{t("media.loadImageFailed")}</p>
 			) : (
 				<img
 					src={blobUrl}

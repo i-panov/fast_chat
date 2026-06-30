@@ -179,7 +179,11 @@ export function ChatPage() {
 							inputText={s.inputText}
 							setInputText={s.setInputText}
 							onSend={s.handleSendThreadMessage}
-							onDelete={s.handleDeleteMessage}
+							onDelete={(_chatId, messageId) => {
+								if (s.activeThreadId !== null) {
+									s.handleDeleteThreadMessage(s.activeThreadId, messageId);
+								}
+							}}
 							onStartEdit={s.handleStartEdit}
 							onCancelEdit={s.handleCancelEdit}
 							onReply={s.handleReply}

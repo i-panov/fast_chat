@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
 	Chat,
 	FileInfo,
@@ -10,14 +10,13 @@ import type {
 } from "../api.ts";
 import {
 	createChat,
+	deleteMessage as deleteMessageApi,
 	editThreadMessage,
-	getConfig,
 	refreshToken,
 	sendThreadMessage,
 	sendTyping,
 	uploadFile,
 } from "../api.ts";
-import type { EditingMessage, ReplyTarget } from "../context/ChatPageContext";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import i18n from "../i18n.ts";
 import {
@@ -25,6 +24,7 @@ import {
 	scheduleSync,
 	setTokenProvider,
 } from "../sync/syncEngine.ts";
+import type { EditingMessage, ReplyTarget } from "../types/chat.ts";
 import { useAuth } from "../useAuth";
 import { emitNotification } from "../utils/notify.ts";
 import { useChatList } from "./useChatList";
@@ -36,6 +36,7 @@ import { useMessageSender } from "./useMessageSender";
 import { useMessages } from "./useMessages";
 import { useNetworkStatus, useOnlineNotifications } from "./useNetworkStatus";
 import { usePendingFiles } from "./usePendingFiles";
+import { useServerConfig } from "./useServerConfig";
 import { useSseEvents } from "./useSseEvents";
 import { useSyncStatus } from "./useSyncStatus";
 import { useThreads } from "./useThreads";
@@ -116,6 +117,7 @@ export interface ChatPageState {
 	cancelReply: () => void;
 
 	handleRetryMessage: (chatId: string, messageId: string) => Promise<void>;
+	handleDeleteThreadMessage: (threadId: string, messageId: string) => void;
 	handleRetryThreadMessage: (
 		threadId: string,
 		messageId: string,
@@ -155,11 +157,7 @@ interface PendingFileLite {
 	fileType: "photo" | "video" | "audio" | "file";
 }
 
-export type { EditingMessage, ReplyTarget } from "../context/ChatPageContext";
-export {
-	ChatPageProvider,
-	useChatPageContext,
-} from "../context/ChatPageContext";
+export type { EditingMessage, ReplyTarget } from "../types/chat.ts";
 
 export { useChatList } from "./useChatList";
 export { useGroupSettings } from "./useGroupSettings";
@@ -179,9 +177,9 @@ export function useChatPage(): ChatPageState {
 	const { activeAccount, logout, updateAccountToken } = useAuth();
 	const user = activeAccount?.user ?? null;
 	const token = activeAccount?.token;
+	const { config } = useServerConfig(token);
 
 	const [switcherOpen, setSwitcherOpen] = useState(false);
-	const [config, setConfig] = useState<ChatPageState["config"]>(null);
 	const [inputText, setInputText] = useState("");
 
 	const [threadsMap, setThreadsMap] = useState<Record<string, Thread>>({});
@@ -191,8 +189,6 @@ export function useChatPage(): ChatPageState {
 	const [threadMessagesMap, setThreadMessagesMap] = useState<
 		Record<string, Message[]>
 	>({});
-
-	const configAbortRef = useRef<AbortController | null>(null);
 
 	const { chats, activeChatId, activeChat, selectChat } = useChatList({
 		token,
@@ -305,24 +301,9 @@ export function useChatPage(): ChatPageState {
 	}, []);
 	useOnlineNotifications(handleBackOnline);
 
-	useEffect(() => {
-		if (!token) {
-			setConfig(null);
-			return;
-		}
-		configAbortRef.current?.abort();
-		const ctrl = new AbortController();
-		configAbortRef.current = ctrl;
-		getConfig()
-			.then((cfg) => {
-				if (!ctrl.signal.aborted) setConfig(cfg);
-			})
-			.catch(() => {});
-		return () => ctrl.abort();
-	}, [token]);
-
 	useSseEvents({
 		token: token ?? "",
+		threadsMap,
 		setThreadsMap,
 		setThreadMessagesMap,
 		setMessageToThreadMap,
@@ -349,43 +330,11 @@ export function useChatPage(): ChatPageState {
 		[token],
 	);
 
-	const handleAttachFilesWrapped = useCallback(
-		(files: File[]) => {
-			handleAttachFiles(files);
-		},
-		[handleAttachFiles],
-	);
-
 	const handleRemoveFile = useCallback(
 		(id: string) => {
 			removeFile(id);
 		},
 		[removeFile],
-	);
-
-	const handleOpenThread = useCallback(
-		(threadId: string) => {
-			openThread(threadId);
-		},
-		[openThread],
-	);
-
-	const handleCloseThread = useCallback(() => {
-		closeThread();
-	}, [closeThread]);
-
-	const handleCreateThread = useCallback(
-		async (chatId: string, messageId: string) => {
-			await createThread(chatId, messageId);
-		},
-		[createThread],
-	);
-
-	const loadMoreMessages = useCallback(
-		async (_chatId: string | null) => {
-			await loadMore();
-		},
-		[loadMore],
 	);
 
 	const handleSend = useCallback(
@@ -404,20 +353,30 @@ export function useChatPage(): ChatPageState {
 				const isThread = !!editingMessage.threadId;
 
 				if (isThread && editingMessage.threadId !== undefined) {
+					const threadId = editingMessage.threadId;
 					const fileIDs =
 						pendingFiles.length > 0
 							? pendingFiles.map((f) => f.id)
 							: editingMessage.files?.map((f) => f.id);
 					try {
-						await editThreadMessage(
+						const { message } = await editThreadMessage(
 							token,
 							editingMessage.chatId,
-							editingMessage.threadId,
+							threadId,
 							editingMessage.messageId,
 							text,
 							fileIDs,
 							{ location: nextLocation, clearLocation: nextLocation === null },
 						);
+						setThreadMessagesMap((prev) => {
+							const list = prev[threadId] ?? [];
+							return {
+								...prev,
+								[threadId]: list.map((m) =>
+									m.id === editingMessage.messageId ? message : m,
+								),
+							};
+						});
 					} catch {
 						emitNotification(i18n.t("error.send"));
 					}
@@ -493,6 +452,7 @@ export function useChatPage(): ChatPageState {
 			const msgId = crypto.randomUUID();
 
 			if (editingMessage?.threadId) {
+				const threadId = editingMessage.threadId;
 				const nextLocation =
 					editingMessage.location === undefined
 						? undefined
@@ -502,15 +462,24 @@ export function useChatPage(): ChatPageState {
 						? pendingFiles.map((f) => f.id)
 						: editingMessage.files?.map((f) => f.id);
 				try {
-					await editThreadMessage(
+					const { message } = await editThreadMessage(
 						token,
 						editingMessage.chatId,
-						editingMessage.threadId,
+						threadId,
 						editingMessage.messageId,
 						text,
 						fileIDs,
 						{ location: nextLocation, clearLocation: nextLocation === null },
 					);
+					setThreadMessagesMap((prev) => {
+						const list = prev[threadId] ?? [];
+						return {
+							...prev,
+							[threadId]: list.map((m) =>
+								m.id === editingMessage.messageId ? message : m,
+							),
+						};
+					});
 				} catch {
 					emitNotification(i18n.t("error.send"));
 				}
@@ -606,13 +575,6 @@ export function useChatPage(): ChatPageState {
 		],
 	);
 
-	const handleDeleteMessage = useCallback(
-		(chatId: string, messageId: string) => {
-			void deleteMessage(chatId, messageId);
-		},
-		[deleteMessage],
-	);
-
 	const handleCancelEdit = useCallback(() => {
 		clearEditing();
 		setInputText("");
@@ -621,11 +583,23 @@ export function useChatPage(): ChatPageState {
 		clearReply();
 	}, [clearEditing, clearAllPendingFiles, clearPendingLocation, clearReply]);
 
-	const handleRetryMessage = useCallback(
-		async (chatId: string, messageId: string) => {
-			await retryMessage(chatId, messageId);
+	const handleDeleteThreadMessage = useCallback(
+		(threadId: string, messageId: string) => {
+			setThreadMessagesMap((prev) => {
+				const list = prev[threadId];
+				if (list === undefined) return prev;
+				return {
+					...prev,
+					[threadId]: list.filter((m) => m.id !== messageId),
+				};
+			});
+			if (token) {
+				deleteMessageApi(token, threadId, messageId).catch(() =>
+					emitNotification(i18n.t("error.delete")),
+				);
+			}
 		},
-		[retryMessage],
+		[token],
 	);
 
 	const handleRetryThreadMessage = useCallback(
@@ -691,7 +665,7 @@ export function useChatPage(): ChatPageState {
 		activeMessages,
 		hasMore,
 		isLoadingMore,
-		loadMoreMessages,
+		loadMoreMessages: loadMore,
 		threads,
 		messageToThread,
 		activeThreadId,
@@ -699,14 +673,14 @@ export function useChatPage(): ChatPageState {
 		activeThreadMessages,
 		threadHasMore,
 		threadIsLoadingMore,
-		handleOpenThread,
-		handleCloseThread,
+		handleOpenThread: openThread,
+		handleCloseThread: closeThread,
 		loadMoreThreadMessages,
-		handleCreateThread,
+		handleCreateThread: createThread,
 		typingUsers,
 		handleTyping,
 		pendingFiles: pendingFiles as PendingFileLite[],
-		handleAttachFiles: handleAttachFilesWrapped,
+		handleAttachFiles,
 		handleRemoveFile,
 		config,
 		searchQuery,
@@ -720,7 +694,7 @@ export function useChatPage(): ChatPageState {
 		setInputText,
 		handleSend,
 		handleSendThreadMessage,
-		handleDeleteMessage,
+		handleDeleteMessage: deleteMessage,
 		editingMessage,
 		handleStartEdit,
 		handleCancelEdit,
@@ -729,7 +703,8 @@ export function useChatPage(): ChatPageState {
 		replyToMessage,
 		handleReply,
 		cancelReply,
-		handleRetryMessage,
+		handleRetryMessage: retryMessage,
+		handleDeleteThreadMessage,
 		handleRetryThreadMessage,
 		pendingLocation,
 		locationPickerOpen,

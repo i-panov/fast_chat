@@ -5,8 +5,7 @@ const cache = new Map<
 
 function getToken(): string | undefined {
 	try {
-		const raw = sessionStorage.getItem("activeToken");
-		return raw ?? localStorage.getItem("activeToken") ?? undefined;
+		return sessionStorage.getItem("activeToken") ?? undefined;
 	} catch {
 		return undefined;
 	}

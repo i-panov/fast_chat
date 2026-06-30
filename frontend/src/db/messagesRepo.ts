@@ -33,11 +33,17 @@ export const messagesRepo = {
 		return existing;
 	},
 
-	async upsert(message: Message, status: StoredStatus = "sent"): Promise<void> {
+	async upsert(message: Message, status?: StoredStatus): Promise<void> {
 		const db = await getDB();
 		const existing = await db.get("messages", message.id);
 		const createdAt = existing?.createdAt ?? message.createdAt;
-		await db.put("messages", { ...stamp(message, status), createdAt });
+		const resolvedStatus =
+			status ??
+			(existing !== undefined &&
+			(existing.status === "queued" || existing.status === "failed")
+				? existing.status
+				: "sent");
+		await db.put("messages", { ...stamp(message, resolvedStatus), createdAt });
 		notify();
 	},
 

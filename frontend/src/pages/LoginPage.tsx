@@ -3,6 +3,7 @@ import {
 	Center,
 	Divider,
 	Paper,
+	Stack,
 	Text,
 	TextInput,
 	Title,
@@ -95,8 +96,8 @@ export function LoginPage() {
 
 	return (
 		<Center className="h-full">
-			<Paper withBorder p="xl" className="w-80">
-				<div className="flex flex-col gap-4">
+			<Paper withBorder className="w-80">
+				<Stack p="xl" gap="md">
 					{activeAccount !== null && (
 						<>
 							<Text ta="center" size="sm" c="dimmed">
@@ -192,7 +193,7 @@ export function LoginPage() {
 							</Button>
 						</>
 					)}
-				</div>
+				</Stack>
 			</Paper>
 		</Center>
 	);

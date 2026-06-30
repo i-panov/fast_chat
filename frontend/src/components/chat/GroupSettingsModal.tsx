@@ -13,7 +13,7 @@ import {
 	TextInput,
 } from "@mantine/core";
 import { Crown, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Chat, User } from "../../api.ts";
 import { searchUsers } from "../../api.ts";
@@ -54,6 +54,13 @@ export function GroupSettingsModal({
 	const [results, setResults] = useState<User[]>([]);
 	const [confirming, setConfirming] = useState<"leave" | "delete" | null>(null);
 	const [busy, setBusy] = useState(false);
+	const searchTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+		undefined,
+	);
+
+	useEffect(() => {
+		return () => clearTimeout(searchTimerRef.current);
+	}, []);
 
 	function startRename() {
 		if (chat === null) return;
@@ -78,22 +85,25 @@ export function GroupSettingsModal({
 
 	function handleQueryChange(value: string) {
 		setQuery(value);
+		clearTimeout(searchTimerRef.current);
 		if (value.length === 0) {
 			setResults([]);
 			return;
 		}
 		if (activeAccount === null || chat === null) return;
-		searchUsers(activeAccount.token, value)
-			.then(({ users }) => {
-				setResults(
-					users.filter(
-						(u) =>
-							u.id !== activeAccount.user.id &&
-							!chat.members.some((m) => m.id === u.id),
-					),
-				);
-			})
-			.catch(() => setResults([]));
+		searchTimerRef.current = setTimeout(() => {
+			searchUsers(activeAccount.token, value)
+				.then(({ users }) => {
+					setResults(
+						users.filter(
+							(u) =>
+								u.id !== activeAccount.user.id &&
+								!chat.members.some((m) => m.id === u.id),
+						),
+					);
+				})
+				.catch(() => setResults([]));
+		}, 300);
 	}
 
 	async function handleConfirm() {

@@ -30,6 +30,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 	const [currentTrack, setCurrentTrack] = useState<AudioTrack | null>(null);
 	const [isPlaying, setIsPlaying] = useState(false);
 	const audioRef = useRef<HTMLAudioElement | null>(null);
+	const currentTrackRef = useRef(currentTrack);
+	currentTrackRef.current = currentTrack;
 
 	useEffect(() => {
 		audioRef.current = new Audio();
@@ -75,27 +77,23 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 	}, []);
 
 	const play = useCallback((track: AudioTrack) => {
-		setCurrentTrack((prev) => {
-			if (prev?.fileId === track.fileId) {
-				const audio = audioRef.current;
-				if (audio && !audio.paused) {
-					audio.pause();
-					setIsPlaying(false);
-
-					return prev;
-				}
+		const prev = currentTrackRef.current;
+		if (prev?.fileId === track.fileId) {
+			const audio = audioRef.current;
+			if (audio && !audio.paused) {
+				audio.pause();
+				setIsPlaying(false);
+			} else {
 				audio
 					?.play()
 					.then(() => setIsPlaying(true))
 					.catch(() => {
 						setIsPlaying(false);
 					});
-
-				return prev;
 			}
-
-			return track;
-		});
+			return;
+		}
+		setCurrentTrack(track);
 	}, []);
 
 	const pause = useCallback(() => {

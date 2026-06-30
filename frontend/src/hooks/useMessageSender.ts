@@ -63,13 +63,6 @@ function buildStoredFile(pf: PendingFile): FileInfo {
 	};
 }
 
-function getFileType(mimeType: string): "photo" | "video" | "audio" | "file" {
-	if (mimeType.startsWith("image/")) return "photo";
-	if (mimeType.startsWith("video/")) return "video";
-	if (mimeType.startsWith("audio/")) return "audio";
-	return "file";
-}
-
 export function useMessageSender({
 	token,
 }: UseMessageSenderParams): UseMessageSenderReturn {
@@ -306,6 +299,3 @@ export function useMessageSender({
 		retryMessage,
 	};
 }
-
-// Helpers re-exported for callers that need them.
-export { getFileType };

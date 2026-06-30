@@ -11,7 +11,6 @@ interface UseTypingReturn {
 	handleTyping: (chatId: string, active: boolean) => void;
 	clearTyping: (chatId: string, userId: string) => void;
 	addTypingUser: (payload: TypingPayload) => void;
-	setTypingTimeout: (chatId: string, userId: string) => void;
 }
 
 const TYPING_TIMEOUT = 3000;
@@ -106,6 +105,5 @@ export function useTyping({ token }: UseTypingParams): UseTypingReturn {
 		handleTyping,
 		clearTyping,
 		addTypingUser,
-		setTypingTimeout,
-	} as UseTypingReturn;
+	};
 }

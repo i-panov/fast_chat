@@ -108,6 +108,14 @@
 	"error.boundaryMessage": "The application encountered an unexpected error.",
 	"error.boundaryReset": "Try again",
 
+	"media.loadImageFailed": "Failed to load image",
+	"media.loadVideoFailed": "Failed to load video",
+	"media.loadAudioFailed": "Failed to load audio",
+	"media.imageViewer": "Image viewer",
+	"media.closeMenu": "Close menu",
+	"media.messageActions": "Message actions",
+	"media.removeLocation": "Remove location",
+
 	"lang.en": "English",
 	"lang.ru": "Русский"
 }

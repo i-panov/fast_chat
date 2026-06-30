@@ -9,7 +9,7 @@ import {
 	TextInput,
 } from "@mantine/core";
 import { Plus, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { User } from "../../api.ts";
 import { searchUsers } from "../../api.ts";
@@ -29,27 +29,37 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 	const [results, setResults] = useState<User[]>([]);
 	const [picked, setPicked] = useState<User[]>([]);
 	const [submitting, setSubmitting] = useState(false);
+	const searchTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+		undefined,
+	);
+
+	useEffect(() => {
+		return () => clearTimeout(searchTimerRef.current);
+	}, []);
 
 	function handleQueryChange(value: string) {
 		setQuery(value);
+		clearTimeout(searchTimerRef.current);
 		if (value.length === 0) {
 			setResults([]);
 			return;
 		}
 		if (activeAccount === null) return;
-		searchUsers(activeAccount.token, value)
-			.then(({ users }) => {
-				setResults(
-					users.filter(
-						(u) =>
-							u.id !== activeAccount.user.id &&
-							!picked.some((p) => p.id === u.id),
-					),
-				);
-			})
-			.catch(() => {
-				setResults([]);
-			});
+		searchTimerRef.current = setTimeout(() => {
+			searchUsers(activeAccount.token, value)
+				.then(({ users }) => {
+					setResults(
+						users.filter(
+							(u) =>
+								u.id !== activeAccount.user.id &&
+								!picked.some((p) => p.id === u.id),
+						),
+					);
+				})
+				.catch(() => {
+					setResults([]);
+				});
+		}, 300);
 	}
 
 	function pick(user: User) {

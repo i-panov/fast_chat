@@ -15,6 +15,7 @@ import type { FileInfo, Location, PendingFile } from "../../api.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { formatCoords } from "../../utils/chat.ts";
+import { formatSize } from "../../utils/files.ts";
 
 // Константы для стилей
 const PENDING_FILE_MAX_WIDTH = 200;
@@ -44,12 +45,6 @@ interface Props {
 	onRemovePendingLocation?: () => void;
 	existingLocation?: Location | null;
 	onRemoveExistingLocation?: () => void;
-}
-
-function formatSize(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function useVideoThumbnail(blobUrl: string | undefined): string | null {
@@ -319,6 +314,7 @@ function LocationPreview({
 	onRemove: () => void;
 	dimmed: boolean;
 }) {
+	const { t } = useTranslation();
 	return (
 		<Paper
 			style={{
@@ -347,7 +343,7 @@ function LocationPreview({
 				size="sm"
 				onClick={onRemove}
 				style={{ flexShrink: 0 }}
-				aria-label="Remove location"
+				aria-label={t("media.removeLocation")}
 			>
 				<X size={14} />
 			</ActionIcon>

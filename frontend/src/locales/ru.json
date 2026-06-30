@@ -110,6 +110,14 @@
 	"error.boundaryMessage": "В приложении произошла непредвиденная ошибка.",
 	"error.boundaryReset": "Попробовать снова",
 
+	"media.loadImageFailed": "Не удалось загрузить изображение",
+	"media.loadVideoFailed": "Не удалось загрузить видео",
+	"media.loadAudioFailed": "Не удалось загрузить аудио",
+	"media.imageViewer": "Просмотр изображения",
+	"media.closeMenu": "Закрыть меню",
+	"media.messageActions": "Действия с сообщением",
+	"media.removeLocation": "Убрать местоположение",
+
 	"lang.en": "English",
 	"lang.ru": "Русский"
 }
