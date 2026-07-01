@@ -66,7 +66,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo
+func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close() //nolint:errcheck
 
 	user := getUser(r)
@@ -140,7 +140,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) { //nolint
 	writeJSON(w, http.StatusCreated, map[string]any{"message": msg})
 }
 
-func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) { //nolint:gocognit,gocyclo
+func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close() //nolint:errcheck
 
 	user := getUser(r)

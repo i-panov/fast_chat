@@ -1,9 +1,13 @@
+// Package config provides configuration loading from YAML files.
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -23,9 +27,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host   string `yaml:"host"`
-	Port   int    `yaml:"port"`
-	Domain string // computed from Host + Port
+	Host      string `yaml:"host"`
+	Port      int    `yaml:"port"`
+	Domain    string `yaml:"-"` // computed from Host + Port
+	StaticDir string `yaml:"static_dir"`
 }
 
 type DatabaseConfig struct {
@@ -78,7 +83,7 @@ type RateLimitConfig struct {
 }
 
 func Load(configPath string) (*Config, error) {
-	data, err := os.ReadFile(configPath)
+	data, err := os.ReadFile(filepath.Clean(configPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %s: %w", configPath, err)
 	}
@@ -89,15 +94,18 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	if cfg.Database.Path == "" {
-		return nil, fmt.Errorf("database.path is required")
+		return nil, errors.New("database.path is required")
 	}
+
 	if cfg.Server.Host == "" {
-		return nil, fmt.Errorf("server.host is required")
+		return nil, errors.New("server.host is required")
 	}
+
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
-	cfg.Server.Domain = net.JoinHostPort(cfg.Server.Host, fmt.Sprintf("%d", cfg.Server.Port))
+
+	cfg.Server.Domain = net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
 	if cfg.MessageEditTTL == 0 {
 		cfg.MessageEditTTL = 300
 	}
@@ -105,42 +113,55 @@ func Load(configPath string) (*Config, error) {
 	if cfg.MessageDeleteTTL == 0 {
 		cfg.MessageDeleteTTL = 300
 	}
+
 	if cfg.Email.SMTP.From == "" {
 		cfg.Email.SMTP.From = "noreply@fastchat.local"
 	}
+
 	if cfg.Email.SMTP.Port == 0 {
 		cfg.Email.SMTP.Port = 587
 	}
+
 	if cfg.Uploads.Dir == "" {
 		cfg.Uploads.Dir = "uploads"
 	}
+
 	if cfg.Auth.TokenExpiry == 0 {
 		cfg.Auth.TokenExpiry = 24 * time.Hour
 	}
+
 	if cfg.Auth.TokenExpiryWarning == 0 {
 		cfg.Auth.TokenExpiryWarning = 5 * time.Minute
 	}
+
 	if cfg.RateLimits.General.Limit == 0 {
 		cfg.RateLimits.General.Limit = 100
 	}
+
 	if cfg.RateLimits.General.Window == 0 {
 		cfg.RateLimits.General.Window = time.Minute
 	}
+
 	if cfg.RateLimits.SendCode.Limit == 0 {
 		cfg.RateLimits.SendCode.Limit = 5
 	}
+
 	if cfg.RateLimits.SendCode.Window == 0 {
 		cfg.RateLimits.SendCode.Window = time.Minute
 	}
+
 	if cfg.RateLimits.VerifyCode.Limit == 0 {
 		cfg.RateLimits.VerifyCode.Limit = 10
 	}
+
 	if cfg.RateLimits.VerifyCode.Window == 0 {
 		cfg.RateLimits.VerifyCode.Window = time.Minute
 	}
+
 	if cfg.RateLimits.Register.Limit == 0 {
 		cfg.RateLimits.Register.Limit = 5
 	}
+
 	if cfg.RateLimits.Register.Window == 0 {
 		cfg.RateLimits.Register.Window = 10 * time.Minute
 	}

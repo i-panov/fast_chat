@@ -32,12 +32,14 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 
 	if len(h.cfg.Email.AllowedEmails) > 0 {
 		allowed := false
+
 		for _, ae := range h.cfg.Email.AllowedEmails {
 			if req.Email == ae {
 				allowed = true
 				break
 			}
 		}
+
 		if !allowed {
 			writeError(w, http.StatusForbidden, "email not allowed")
 			return
@@ -48,13 +50,16 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logger.Error("failed to generate code", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
+
 		return
 	}
+
 	h.store.Codes().StoreCode(req.Email, code, 10*time.Minute)
 
 	if err := h.emailSender.SendCode(req.Email, code); err != nil {
 		logger.Error("failed to send email", "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to send email")
+
 		return
 	}
 
@@ -94,6 +99,7 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			logger.Error("failed to refresh token", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
+
 			return
 		}
 
@@ -103,6 +109,7 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 			"expiresAt": user.TokenExpiresAt.Format(time.RFC3339),
 			"isNew":     false,
 		})
+
 		return
 	}
 
@@ -150,8 +157,10 @@ func (h *Handler) CompleteRegistration(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "nickname already taken")
 			return
 		}
+
 		logger.Error("failed to create user", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
+
 		return
 	}
 
@@ -169,6 +178,7 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logger.Error("failed to refresh token", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
+
 		return
 	}
 
@@ -218,6 +228,7 @@ func isValidEmail(email string) bool {
 		domain := email[idx+1:]
 		return strings.Contains(domain, ".")
 	}
+
 	return false
 }
 
@@ -226,5 +237,6 @@ func generateCode() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("generate code: %w", err)
 	}
+
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }

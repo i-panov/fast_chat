@@ -1,6 +1,7 @@
 server:
   host: localhost
   port: 8080
+  static_dir: ../frontend/dist
 
 database:
   path: /tmp/fastchat.db

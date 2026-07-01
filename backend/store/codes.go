@@ -64,6 +64,7 @@ func (s *CodeStore) VerifyCode(email, code string) bool {
 	}
 
 	delete(s.codes, email)
+
 	return true
 }
 
@@ -75,6 +76,7 @@ func (s *CodeStore) CreateSetupToken(email string, ttl time.Duration) string {
 	if err != nil {
 		return ""
 	}
+
 	s.setupTokens[token] = &SetupToken{
 		Email:     email,
 		Token:     token,
@@ -99,6 +101,7 @@ func (s *CodeStore) VerifySetupToken(token string) (string, bool) {
 	}
 
 	email := st.Email
+
 	delete(s.setupTokens, token)
 
 	return email, true
@@ -144,5 +147,6 @@ func generateSetupToken() (string, error) {
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("generate setup token: %w", err)
 	}
+
 	return hex.EncodeToString(buf), nil
 }

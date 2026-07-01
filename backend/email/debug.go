@@ -1,3 +1,4 @@
+// Package email provides email sending via SMTP and debug mode.
 package email
 
 import "log/slog"
@@ -13,5 +14,6 @@ func (s *DebugSender) SendCode(recipient, code string) error {
 		"recipient", recipient,
 		"code", code,
 	)
+
 	return nil
 }

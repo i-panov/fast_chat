@@ -21,6 +21,7 @@ func GenerateID() string {
 	if _, err := rand.Read(buf); err != nil {
 		panic("crypto/rand.Read failed: " + err.Error())
 	}
+
 	return hex.EncodeToString(buf)
 }
 
@@ -41,8 +42,10 @@ func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string
 			if strings.Contains(err.Error(), "email") {
 				return nil, ErrEmailTaken
 			}
+
 			return nil, ErrNicknameTaken
 		}
+
 		return nil, err
 	}
 
@@ -54,6 +57,7 @@ func (s *Store) GetUserByToken(ctx context.Context, token string) (*model.User, 
 	if err := s.db.WithContext(ctx).Where("token = ?", token).First(&user).Error; err != nil {
 		return nil, false
 	}
+
 	return &user, true
 }
 
@@ -62,6 +66,7 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (*model.User, bool) 
 	if err := s.db.WithContext(ctx).First(&user, "id = ?", id).Error; err != nil {
 		return nil, false
 	}
+
 	return &user, true
 }
 
@@ -70,6 +75,7 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*model.User, 
 	if err := s.db.WithContext(ctx).Where("email = ?", email).First(&user).Error; err != nil {
 		return nil, false
 	}
+
 	return &user, true
 }
 

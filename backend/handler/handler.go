@@ -129,6 +129,7 @@ func isMember(chat *model.Chat, userID string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -165,12 +166,14 @@ func parseLocationPatch(raw json.RawMessage) (*model.Location, bool, error) {
 func (h *Handler) decodeJSON(r *http.Request, v any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
+
 	return dec.Decode(v)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
+
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		logger.Error("writeJSON: failed to encode response", "err", err)
 	}

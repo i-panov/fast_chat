@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 
 	"fast_chat/model"
 	"fast_chat/sse"
+	"fast_chat/store"
 )
 
 // federatedURL builds a federation URL using the configured scheme.
@@ -29,9 +31,11 @@ func remoteServerFromID(id string) string {
 		if _, err := url.Parse("//" + domain); err != nil {
 			return ""
 		}
+
 		if strings.ContainsAny(domain, "/@?#") {
 			return ""
 		}
+
 		return domain
 	}
 
@@ -93,7 +97,10 @@ func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string,
 
 		if resp.StatusCode >= 400 {
 			respBody, readErr := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			if err := resp.Body.Close(); err != nil {
+				slog.Warn("failed to close response body", "err", err)
+			}
+
 			if readErr != nil {
 				return nil, fmt.Errorf("federated request returned %d", resp.StatusCode)
 			}
@@ -102,7 +109,10 @@ func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string,
 		}
 
 		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("failed to close response body", "err", err)
+		}
+
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -261,6 +271,7 @@ func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.CreateRemoteChat(r.Context(), chat); err != nil {
 		logger.Error("failed to create remote chat", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
+
 		return
 	}
 
@@ -347,7 +358,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // FederatedEditMessage handles incoming message edits from remote servers.
-func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo
+func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close() //nolint:errcheck
 
 	chatID := r.PathValue("id")
@@ -406,12 +417,7 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.FileIDs != nil {
-		validIDs := make([]string, 0, len(req.FileIDs))
-		for _, fid := range req.FileIDs {
-			if _, err := h.store.GetFile(r.Context(), fid); err == nil {
-				validIDs = append(validIDs, fid)
-			}
-		}
+		validIDs := getValidFileIDs(r.Context(), h.store, req.FileIDs)
 
 		if len(validIDs) > 0 {
 			if err := h.store.SetMessageFiles(r.Context(), messageID, validIDs); err != nil {
@@ -529,7 +535,7 @@ func (h *Handler) FederatedHandleTyping(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo
+func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close() //nolint:errcheck
 
 	chatID := r.PathValue("id")
@@ -589,12 +595,7 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 	}
 
 	if req.FileIDs != nil {
-		validIDs := make([]string, 0, len(req.FileIDs))
-		for _, fid := range req.FileIDs {
-			if _, err := h.store.GetFile(r.Context(), fid); err == nil {
-				validIDs = append(validIDs, fid)
-			}
-		}
+		validIDs := getValidFileIDs(r.Context(), h.store, req.FileIDs)
 
 		if len(validIDs) > 0 {
 			if err := h.store.SetMessageFiles(r.Context(), messageID, validIDs); err != nil {
@@ -628,4 +629,15 @@ func (h *Handler) FederatedEditThreadMessage(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"message": updated})
+}
+
+func getValidFileIDs(ctx context.Context, st *store.Store, fileIDs []string) []string {
+	valid := make([]string, 0, len(fileIDs))
+	for _, fid := range fileIDs {
+		if _, err := st.GetFile(ctx, fid); err == nil {
+			valid = append(valid, fid)
+		}
+	}
+
+	return valid
 }

@@ -1,7 +1,8 @@
+// Package sse provides a Server-Sent Events hub for real-time messaging.
 package sse
 
 import (
-	"fmt"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -46,6 +47,7 @@ func NewHub(cleanupInterval time.Duration) *Hub {
 		closeCh:     make(chan struct{}),
 	}
 	go hub.cleanupLastTyping(cleanupInterval)
+
 	return hub
 }
 
@@ -60,17 +62,21 @@ func (h *Hub) Close() {
 func (h *Hub) cleanupLastTyping(cleanupInterval time.Duration) {
 	ticker := time.NewTicker(cleanupInterval)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ticker.C:
 			cutoff := time.Now().Add(-cleanupInterval)
+
 			h.lastTyping.Range(func(k, v any) bool {
 				ts, ok := v.(time.Time)
 				if !ok || ts.Before(cutoff) {
 					h.lastTyping.Delete(k)
 				}
+
 				return true
 			})
+
 		case <-h.closeCh:
 			return
 		}
@@ -88,8 +94,10 @@ func (h *Hub) StoreLastTyping(key string, value time.Time) {
 func (h *Hub) Register(connectionID string) *Connection {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
 	if existing, ok := h.connections[connectionID]; ok {
 		close(existing.Channel)
+
 		if existing.UserID != "" {
 			conns := h.userConns[existing.UserID]
 			for i, c := range conns {
@@ -100,23 +108,28 @@ func (h *Hub) Register(connectionID string) *Connection {
 			}
 		}
 	}
+
 	conn := &Connection{
 		ID:      connectionID,
 		Channel: make(chan Event, channelBuffer),
 	}
 	h.connections[connectionID] = conn
+
 	return conn
 }
 
 func (h *Hub) Unregister(connectionID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
 	conn, ok := h.connections[connectionID]
 	if !ok {
 		return
 	}
+
 	close(conn.Channel)
 	delete(h.connections, connectionID)
+
 	if conn.UserID != "" {
 		conns := h.userConns[conn.UserID]
 		for i, c := range conns {
@@ -125,6 +138,7 @@ func (h *Hub) Unregister(connectionID string) {
 				break
 			}
 		}
+
 		if len(h.userConns[conn.UserID]) == 0 {
 			delete(h.userConns, conn.UserID)
 		}
@@ -134,16 +148,19 @@ func (h *Hub) Unregister(connectionID string) {
 func (h *Hub) GetConnection(connectionID string) *Connection {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+
 	return h.connections[connectionID]
 }
 
 func (h *Hub) Authenticate(connectionID, userID, token string, expiresAt time.Time) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
 	conn, ok := h.connections[connectionID]
 	if !ok {
-		return fmt.Errorf("connection not found")
+		return errors.New("connection not found")
 	}
+
 	conn.mu.Lock()
 	conn.UserID = userID
 	conn.Token = token
@@ -151,25 +168,31 @@ func (h *Hub) Authenticate(connectionID, userID, token string, expiresAt time.Ti
 	conn.Authorized = true
 	conn.Warned = false
 	conn.mu.Unlock()
+
 	h.userConns[userID] = append(h.userConns[userID], connectionID)
+
 	return nil
 }
 
 func (h *Hub) Send(userID string, event Event) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+
 	for _, connID := range h.userConns[userID] {
 		conn := h.connections[connID]
 		if conn == nil {
 			continue
 		}
+
 		conn.mu.Lock()
 		if !conn.Authorized || time.Now().After(conn.ExpiresAt) {
 			conn.Authorized = false
 			conn.mu.Unlock()
+
 			continue
 		}
 		conn.mu.Unlock()
+
 		select {
 		case conn.Channel <- event:
 		default:

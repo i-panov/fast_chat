@@ -1,14 +1,15 @@
+// Package model provides data types for the chat application.
 package model
 
 import "time"
 
 type User struct {
-	ID             string    `gorm:"primaryKey" json:"id"`
+	ID             string    `gorm:"primaryKey"           json:"id"`
 	Email          string    `gorm:"uniqueIndex;not null" json:"email"`
 	Nick           string    `gorm:"uniqueIndex;not null" json:"nick"`
 	Token          string    `gorm:"uniqueIndex;not null" json:"-"`
-	TokenExpiresAt time.Time `gorm:"not null" json:"-"`
-	Online         bool      `gorm:"default:false" json:"online"`
+	TokenExpiresAt time.Time `gorm:"not null"             json:"-"`
+	Online         bool      `gorm:"default:false"        json:"online"`
 }
 
 type PublicUser struct {
@@ -27,6 +28,7 @@ func PublicUsers(users []User) []PublicUser {
 	for i := range users {
 		out[i] = users[i].Public()
 	}
+
 	return out
 }
 
@@ -104,8 +106,8 @@ type Message struct {
 	FromID    string       `gorm:"not null"           json:"fromId"`
 	FromNick  string       `gorm:"not null"           json:"fromNick"`
 	Text      string       `gorm:"not null"           json:"text"`
-	CreatedAt time.Time    `gorm:"not null;default:0"          json:"createdAt"`
-	UpdatedAt time.Time    `gorm:"not null;default:0"          json:"-"`
+	CreatedAt time.Time    `gorm:"not null;default:0" json:"createdAt"`
+	UpdatedAt time.Time    `gorm:"not null;default:0" json:"-"`
 	EditedAt  *time.Time   `json:"editedAt,omitempty"`
 	ReplyTo   *ReplyToInfo `gorm:"serializer:json"    json:"replyTo,omitempty"`
 	Location  *Location    `gorm:"serializer:json"    json:"location,omitempty"`

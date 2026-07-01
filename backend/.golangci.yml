@@ -99,12 +99,13 @@ linters:
         use-field-name: true
         rules:
           json: camel
+          yaml: snake
 
     gocyclo:
-      min-complexity: 15
+      min-complexity: 25
 
     gocognit:
-      min-complexity: 20
+      min-complexity: 35
 
     nestif:
       min-complexity: 5

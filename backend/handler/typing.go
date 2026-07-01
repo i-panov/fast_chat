@@ -42,6 +42,7 @@ func (h *Handler) HandleTyping(w http.ResponseWriter, r *http.Request) {
 		h.sendTypingEvent(r, chat, chatID, user.ID, user.Nick, "typing_stop", nil)
 
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+
 		return
 	}
 

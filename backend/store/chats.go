@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -30,7 +31,7 @@ func (s *Store) CreateChat(ctx context.Context, member1, member2, remoteServer s
 		Having("COUNT(DISTINCT user_id) = 2").
 		Pluck("chat_id", &chatIDs)
 
-	if len(chatIDs) > 0 {
+	if len(chatIDs) > 0 { //nolint:nestif
 		var chat model.Chat
 
 		chatIDQuery := s.db.WithContext(ctx).Model(&model.Chat{}).
@@ -168,14 +169,23 @@ func (s *Store) RemoveChatMember(ctx context.Context, chatID, userID string) err
 	return s.db.WithContext(ctx).Where("chat_id = ? AND user_id = ?", chatID, userID).Delete(&ChatMember{}).Error
 }
 
-func (s *Store) UpdateChatName(ctx context.Context, chatID, name string) (*model.Chat, error) {
+func (s *Store) findGroupChat(ctx context.Context, chatID string) (*model.Chat, error) {
 	chat, ok := s.GetChat(ctx, chatID)
 	if !ok {
 		return nil, ErrChatNotFound
 	}
 
 	if chat.Type != chatTypeGroup {
-		return nil, errors.New("cannot rename non-group chat")
+		return nil, errors.New("not a group chat")
+	}
+
+	return chat, nil
+}
+
+func (s *Store) UpdateChatName(ctx context.Context, chatID, name string) (*model.Chat, error) {
+	chat, err := s.findGroupChat(ctx, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("cannot rename: %w", err)
 	}
 
 	if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Update("name", name).Error; err != nil {
@@ -188,13 +198,9 @@ func (s *Store) UpdateChatName(ctx context.Context, chatID, name string) (*model
 }
 
 func (s *Store) UpdateChatAvatar(ctx context.Context, chatID, fileID string) (*model.Chat, error) {
-	chat, ok := s.GetChat(ctx, chatID)
-	if !ok {
-		return nil, ErrChatNotFound
-	}
-
-	if chat.Type != chatTypeGroup {
-		return nil, errors.New("cannot set avatar on non-group chat")
+	chat, err := s.findGroupChat(ctx, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("cannot set avatar: %w", err)
 	}
 
 	if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Update("avatar_file_id", fileID).Error; err != nil {
@@ -388,9 +394,5 @@ func (s *Store) CreateRemoteChat(ctx context.Context, chat *model.Chat) error {
 		members[i] = ChatMember{ChatID: chat.ID, UserID: m}
 	}
 
-	if err := s.db.WithContext(ctx).Create(&members).Error; err != nil {
-		return err
-	}
-
-	return nil
+	return s.db.WithContext(ctx).Create(&members).Error
 }

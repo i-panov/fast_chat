@@ -25,13 +25,13 @@ func NewSMTPSender(host string, port int, username, password, from string) *SMTP
 }
 
 func (s *SMTPSender) SendCode(recipient, code string) error {
-	m := gomail.NewMessage()
-	m.SetHeader("From", s.from)
-	m.SetHeader("To", recipient)
-	m.SetHeader("Subject", "Fast Chat — verification code")
-	m.SetBody("text/plain", fmt.Sprintf("Your verification code: %s\n\nIt expires in 10 minutes.", code))
+	mail := gomail.NewMessage()
+	mail.SetHeader("From", s.from)
+	mail.SetHeader("To", recipient)
+	mail.SetHeader("Subject", "Fast Chat — verification code")
+	mail.SetBody("text/plain", fmt.Sprintf("Your verification code: %s\n\nIt expires in 10 minutes.", code))
 
 	d := gomail.NewDialer(s.host, s.port, s.username, s.password)
 
-	return d.DialAndSend(m)
+	return d.DialAndSend(mail)
 }

@@ -22,6 +22,7 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 		conn.Lock()
 		uid := conn.UserID
 		conn.Unlock()
+
 		if uid != "" {
 			h.store.RemoveConnection(uid)
 		}
@@ -39,9 +40,11 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", h.cfg.CORS.Origin)
 
 	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"ok\"}\n\n") //nolint:errcheck
+
 	flusher.Flush()
 
 	ctx := r.Context()
+
 	heartbeat := time.NewTicker(sse.HeartbeatInterval)
 	defer heartbeat.Stop()
 
@@ -64,6 +67,7 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 					warn = true
 				}
 			}
+
 			expiresAt := conn.ExpiresAt
 			conn.Unlock()
 
@@ -71,8 +75,10 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 				sendSSE(w, flusher, "token_expired", map[string]any{
 					"message": "token expired",
 				})
+
 				return
 			}
+
 			if warn {
 				sendSSE(w, flusher, "token_expiring", map[string]any{
 					"expiresAt": expiresAt.Format(time.RFC3339),
@@ -82,6 +88,7 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
 				return
 			}
+
 			flusher.Flush()
 
 		case evt, ok := <-conn.Channel:
@@ -92,6 +99,7 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 			conn.Lock()
 			authorized := conn.Authorized
 			conn.Unlock()
+
 			if !authorized {
 				continue
 			}
@@ -110,5 +118,6 @@ func sendSSE(w http.ResponseWriter, flusher http.Flusher, event string, data any
 	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData); err != nil {
 		return
 	}
+
 	flusher.Flush()
 }

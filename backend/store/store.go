@@ -1,6 +1,7 @@
 package store
 
 import (
+	"log/slog"
 	"sync"
 
 	"gorm.io/gorm"
@@ -68,6 +69,7 @@ func (s *Store) IsOnline(userID string) bool {
 	defer s.onlineMu.RUnlock()
 
 	_, ok := s.online[userID]
+
 	return ok
 }
 
@@ -78,6 +80,8 @@ func (s *Store) Close() {
 
 	sqlDB, err := s.db.DB()
 	if err == nil {
-		sqlDB.Close()
+		if closeErr := sqlDB.Close(); closeErr != nil {
+			slog.Warn("failed to close database connection", "err", closeErr)
+		}
 	}
 }

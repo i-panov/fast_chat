@@ -73,6 +73,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	if peekErr != nil && peekErr != io.ErrUnexpectedEOF && peekErr != io.EOF {
 		tempFile.Close() //nolint:errcheck,gosec
 		writeError(w, http.StatusInternalServerError, "failed to read file")
+
 		return
 	}
 
@@ -84,6 +85,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	if _, err := peekAndHash.Write(peek[:peekN]); err != nil {
 		tempFile.Close() //nolint:errcheck,gosec
 		writeError(w, http.StatusInternalServerError, "failed to write file")
+
 		return
 	}
 
@@ -91,6 +93,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		tempFile.Close() //nolint:errcheck,gosec
 		writeError(w, http.StatusInternalServerError, "failed to read file")
+
 		return
 	}
 
@@ -99,6 +102,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	if err := tempFile.Sync(); err != nil {
 		tempFile.Close() //nolint:errcheck,gosec
 		writeError(w, http.StatusInternalServerError, "failed to persist file")
+
 		return
 	}
 

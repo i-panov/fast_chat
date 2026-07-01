@@ -46,6 +46,7 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{"users": users})
+
 		return
 	}
 

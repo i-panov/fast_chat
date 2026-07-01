@@ -50,14 +50,17 @@ func (rl *rateLimiter) allow(ip string) bool {
 
 	if len(rl.entries) >= rl.maxEntries {
 		now := time.Now()
+
 		cutoff := now.Add(-rl.window)
 		for ip, timestamps := range rl.entries {
 			var valid []time.Time
+
 			for _, t := range timestamps {
 				if t.After(cutoff) {
 					valid = append(valid, t)
 				}
 			}
+
 			if len(valid) == 0 {
 				delete(rl.entries, ip)
 			} else {
@@ -167,6 +170,7 @@ func maxBody(limit int64, next http.HandlerFunc) http.HandlerFunc {
 
 func main() {
 	configPath := flag.String("config", "", "path to config file (required)")
+
 	flag.Parse()
 
 	if *configPath == "" {
@@ -224,6 +228,7 @@ func main() {
 	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL)(maxBody(1<<20, handlerInstance.SendCode)))
 	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL)(maxBody(1<<20, handlerInstance.VerifyCode)))
 	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL)(maxBody(1<<20, handlerInstance.CompleteRegistration)))
+
 	sseAuthRL := newRateLimiter(30, time.Minute, 10000)
 	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL)(maxBody(1<<20, handlerInstance.SSEAuth)))
 	mux.HandleFunc("POST /api/auth/refresh-token", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.RefreshToken)))
@@ -267,6 +272,9 @@ func main() {
 
 	// Well-known endpoint (no auth, public key for federation)
 	mux.HandleFunc("GET /.well-known/fast-chat", fedManager.WellKnownHandler)
+
+	// Static file serving for production frontend build
+	setupStaticFileServer(mux, cfg.Server.StaticDir)
 
 	generalRL := newRateLimiter(cfg.RateLimits.General.Limit, cfg.RateLimits.General.Window, 10000)
 
@@ -315,4 +323,42 @@ func main() {
 	}
 
 	slog.Info("server stopped")
+}
+
+func setupStaticFileServer(mux *http.ServeMux, staticDir string) {
+	if staticDir == "" {
+		return
+	}
+
+	absDir, err := filepath.Abs(staticDir)
+	if err != nil {
+		slog.Warn("invalid static_dir, skipping static file serving", "path", staticDir, "err", err)
+
+		return
+	}
+
+	if info, statErr := os.Stat(absDir); statErr != nil || !info.IsDir() {
+		slog.Warn("static_dir not found, skipping static file serving", "path", absDir)
+
+		return
+	}
+
+	slog.Info("serving static files", "dir", absDir)
+
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, filepath.Join(absDir, "index.html"))
+	})
+
+	mux.HandleFunc("GET /{path...}", func(w http.ResponseWriter, r *http.Request) {
+		path := r.PathValue("path")
+
+		fullPath := filepath.Join(absDir, filepath.Clean("/"+path))
+		if info, statErr := os.Stat(fullPath); statErr == nil && !info.IsDir() {
+			http.ServeFile(w, r, fullPath)
+
+			return
+		}
+
+		http.ServeFile(w, r, filepath.Join(absDir, "index.html"))
+	})
 }

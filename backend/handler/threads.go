@@ -186,7 +186,7 @@ func (h *Handler) SendThreadMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"message": msg})
 }
 
-func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) { //nolint:gocognit,gocyclo
+func (h *Handler) EditThreadMessage(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close() //nolint:errcheck
 
 	user := getUser(r)
