@@ -1,6 +1,7 @@
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
+import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { applyDelta, pullDelta } from "./deltaApplier.ts";
 import { processOutbox } from "./outboxProcessor.ts";
 
@@ -114,7 +115,11 @@ export async function retryFailedOps(): Promise<void> {
 
 		if (op.kind === "send" || op.kind === "edit") {
 			const messageId = op.kind === "send" ? op.msgId : op.messageId;
-			await messagesRepo.markStatus(op.chatId, messageId, "queued");
+			if (op.threadId !== undefined) {
+				await threadMessagesRepo.markStatus(op.threadId, messageId, "queued");
+			} else {
+				await messagesRepo.markStatus(op.chatId, messageId, "queued");
+			}
 		}
 	}
 }

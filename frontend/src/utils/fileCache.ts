@@ -1,4 +1,6 @@
-const cache = new Map<
+import { fileCacheRepo } from "../db/fileCacheRepo.ts";
+
+const inMemoryCache = new Map<
 	string,
 	{ blobUrl: string; refCount: number; promise: Promise<string> }
 >();
@@ -17,32 +19,43 @@ export async function acquireFileBlobUrl(
 ): Promise<string> {
 	if (fileUrl.startsWith("blob:")) return fileUrl;
 
-	const existing = cache.get(fileUrl);
+	const existing = inMemoryCache.get(fileUrl);
 	if (existing) {
 		existing.refCount++;
 		return existing.promise;
 	}
 
 	const promise = loadFile(fileUrl, token);
-	cache.set(fileUrl, { blobUrl: "", refCount: 1, promise });
+	inMemoryCache.set(fileUrl, { blobUrl: "", refCount: 1, promise });
 	return promise;
 }
 
 export function releaseFileBlobUrl(fileUrl: string): void {
 	if (fileUrl.startsWith("blob:")) return;
 
-	const entry = cache.get(fileUrl);
+	const entry = inMemoryCache.get(fileUrl);
 	if (!entry) return;
 	entry.refCount--;
 	if (entry.refCount <= 0) {
 		if (entry.blobUrl) {
 			URL.revokeObjectURL(entry.blobUrl);
 		}
-		cache.delete(fileUrl);
+		inMemoryCache.delete(fileUrl);
 	}
 }
 
 async function loadFile(fileUrl: string, token?: string): Promise<string> {
+	// Try IDB cache first
+	const cached = await fileCacheRepo.get(fileUrl);
+	if (cached !== undefined) {
+		const blobUrl = URL.createObjectURL(cached.blob);
+		const entry = inMemoryCache.get(fileUrl);
+		if (entry) {
+			entry.blobUrl = blobUrl;
+		}
+		return blobUrl;
+	}
+
 	const tok = token ?? getToken();
 	const headers: Record<string, string> = {};
 	if (tok) {
@@ -55,11 +68,15 @@ async function loadFile(fileUrl: string, token?: string): Promise<string> {
 	const blob = await resp.blob();
 	const blobUrl = URL.createObjectURL(blob);
 
-	const entry = cache.get(fileUrl);
+	const entry = inMemoryCache.get(fileUrl);
 	if (!entry) {
 		URL.revokeObjectURL(blobUrl);
 		throw new Error("File request cancelled");
 	}
 	entry.blobUrl = blobUrl;
+
+	// Persist to IDB cache in background
+	void fileCacheRepo.put(fileUrl, blob, blob.type);
+
 	return blobUrl;
 }

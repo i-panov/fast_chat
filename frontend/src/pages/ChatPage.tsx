@@ -194,6 +194,15 @@ export function ChatPage() {
 							isLoadingMore={s.threadIsLoadingMore}
 							onLoadMore={s.loadMoreThreadMessages}
 							onRetry={s.handleRetryThreadMessage}
+							onCancelSend={(_chatId, messageId) => {
+								if (s.activeThreadId !== null) {
+									s.handleCancelSendMessage(
+										s.activeChatId ?? "",
+										messageId,
+										s.activeThreadId,
+									);
+								}
+							}}
 							replyToNick={s.replyToMessage?.fromNick}
 							replyToText={s.replyToMessage?.text}
 							replyToFiles={s.replyToMessage?.files}
@@ -277,6 +286,7 @@ export function ChatPage() {
 										messageToThread={s.messageToThread}
 										threads={s.threads}
 										onRetry={s.handleRetryMessage}
+										onCancelSend={s.handleCancelSendMessage}
 										showAuthorForGroup={showAuthorForGroup}
 										isOffline={!s.isOnline}
 									/>

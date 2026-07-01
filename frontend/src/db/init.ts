@@ -6,7 +6,7 @@ let dbPromise: Promise<IDBPDatabase<FCSchema>> | null = null;
 export function getDB(): Promise<IDBPDatabase<FCSchema>> {
 	if (dbPromise === null) {
 		dbPromise = openDB<FCSchema>(DB_NAME, DB_VERSION, {
-			upgrade(db) {
+			upgrade(db, oldVersion) {
 				if (!db.objectStoreNames.contains("chats")) {
 					const chats = db.createObjectStore("chats", { keyPath: "id" });
 					chats.createIndex("_updatedAt", "_updatedAt");
@@ -32,6 +32,28 @@ export function getDB(): Promise<IDBPDatabase<FCSchema>> {
 
 				if (!db.objectStoreNames.contains("meta")) {
 					db.createObjectStore("meta", { keyPath: "key" });
+				}
+
+				if (oldVersion < 2) {
+					if (!db.objectStoreNames.contains("threads")) {
+						const threads = db.createObjectStore("threads", { keyPath: "id" });
+						threads.createIndex("chatId", "chatId");
+						threads.createIndex("_updatedAt", "_updatedAt");
+					}
+
+					if (!db.objectStoreNames.contains("threadMessages")) {
+						const tm = db.createObjectStore("threadMessages", {
+							keyPath: "id",
+						});
+						tm.createIndex("threadId", "threadId");
+						tm.createIndex("chatId", "chatId");
+						tm.createIndex("_updatedAt", "_updatedAt");
+					}
+
+					if (!db.objectStoreNames.contains("fileCache")) {
+						const fc = db.createObjectStore("fileCache", { keyPath: "url" });
+						fc.createIndex("cachedAt", "cachedAt");
+					}
 				}
 			},
 		});

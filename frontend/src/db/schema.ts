@@ -1,5 +1,5 @@
 import type { DBSchema } from "idb";
-import type { Chat, FileInfo, Location, ReplyToInfo } from "../api.ts";
+import type { Chat, FileInfo, Location, ReplyToInfo, Thread } from "../api.ts";
 
 export type MessageStatus = "sent" | "queued" | "failed";
 
@@ -9,6 +9,26 @@ export interface StoredChat extends Chat {
 
 export interface StoredMessage {
 	id: string;
+	chatId: string;
+	fromId: string;
+	fromNick: string;
+	text: string;
+	createdAt: string;
+	editedAt?: string;
+	replyTo?: ReplyToInfo;
+	files?: FileInfo[];
+	location?: Location;
+	status: MessageStatus | "deleted";
+	_updatedAt: string;
+}
+
+export interface StoredThread extends Thread {
+	_updatedAt: string;
+}
+
+export interface StoredThreadMessage {
+	id: string;
+	threadId: string;
 	chatId: string;
 	fromId: string;
 	fromNick: string;
@@ -34,6 +54,7 @@ export interface OutboxOpSend {
 	location?: { lat: number; lng: number };
 	createdAt: string;
 	attempts: number;
+	threadId?: string;
 }
 
 export interface OutboxOpEdit {
@@ -51,6 +72,7 @@ export interface OutboxOpEdit {
 	clientEditedAt: string;
 	createdAt: string;
 	attempts: number;
+	threadId?: string;
 }
 
 export interface OutboxOpDelete {
@@ -61,6 +83,7 @@ export interface OutboxOpDelete {
 	messageId: string;
 	createdAt: string;
 	attempts: number;
+	threadId?: string;
 }
 
 export type OutboxOp = OutboxOpSend | OutboxOpEdit | OutboxOpDelete;
@@ -73,13 +96,21 @@ export interface PendingBlob {
 	size: number;
 }
 
+export interface CachedFile {
+	url: string;
+	blob: Blob;
+	mimeType: string;
+	cachedAt: number;
+	size: number;
+}
+
 export interface MetaEntry {
 	key: string;
 	value: unknown;
 }
 
 export const DB_NAME = "fast_chat";
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 export interface FCSchema extends DBSchema {
 	chats: {
@@ -92,6 +123,16 @@ export interface FCSchema extends DBSchema {
 		value: StoredMessage;
 		indexes: { chatId: string; _updatedAt: string; status: string };
 	};
+	threads: {
+		key: string;
+		value: StoredThread;
+		indexes: { chatId: string; _updatedAt: string };
+	};
+	threadMessages: {
+		key: string;
+		value: StoredThreadMessage;
+		indexes: { threadId: string; chatId: string; _updatedAt: string };
+	};
 	outbox: {
 		key: string;
 		value: OutboxOp;
@@ -100,6 +141,11 @@ export interface FCSchema extends DBSchema {
 	pendingBlobs: {
 		key: string;
 		value: PendingBlob;
+	};
+	fileCache: {
+		key: string;
+		value: CachedFile;
+		indexes: { cachedAt: number };
 	};
 	meta: {
 		key: string;

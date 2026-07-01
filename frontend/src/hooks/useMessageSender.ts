@@ -6,15 +6,15 @@ import type {
 	MessageStatus,
 	PendingFile,
 } from "../api.ts";
-import { editThreadMessage } from "../api.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
+import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
 import { useAuth } from "../useAuth";
 
 interface UseMessageSenderParams {
-	token: string;
+	token?: string;
 }
 
 interface SendMessageParams {
@@ -23,6 +23,7 @@ interface SendMessageParams {
 	pendingFiles?: PendingFile[];
 	location?: Location;
 	replyToId?: string;
+	threadId?: string;
 }
 
 interface EditMessageParams {
@@ -33,15 +34,27 @@ interface EditMessageParams {
 	location?: Location | null;
 	clearLocation?: boolean;
 	filesToRemove?: string[];
-	isThread?: boolean;
 	threadId?: string;
 }
 
 interface UseMessageSenderReturn {
 	sendMessage: (params: SendMessageParams) => Promise<void>;
 	editMessage: (params: EditMessageParams) => Promise<void>;
-	deleteMessage: (chatId: string, messageId: string) => Promise<void>;
-	retryMessage: (chatId: string, messageId: string) => Promise<void>;
+	deleteMessage: (
+		chatId: string,
+		messageId: string,
+		threadId?: string,
+	) => Promise<void>;
+	retryMessage: (
+		chatId: string,
+		messageId: string,
+		threadId?: string,
+	) => Promise<void>;
+	cancelSendMessage: (
+		chatId: string,
+		messageId: string,
+		threadId?: string,
+	) => Promise<void>;
 }
 
 function genId(): string {
@@ -64,7 +77,7 @@ function buildStoredFile(pf: PendingFile): FileInfo {
 }
 
 export function useMessageSender({
-	token,
+	token: _token,
 }: UseMessageSenderParams): UseMessageSenderReturn {
 	const { activeAccount } = useAuth();
 	const user = activeAccount?.user ?? null;
@@ -95,6 +108,7 @@ export function useMessageSender({
 			pendingFiles,
 			location,
 			replyToId,
+			threadId: inThreadId,
 		}: SendMessageParams) => {
 			if (user === null) return;
 
@@ -115,7 +129,12 @@ export function useMessageSender({
 				files: fileInfos.length > 0 ? fileInfos : undefined,
 				location: location,
 			};
-			await messagesRepo.upsert(stored, "queued");
+
+			if (inThreadId !== undefined) {
+				await threadMessagesRepo.upsert(stored, inThreadId, "queued");
+			} else {
+				await messagesRepo.upsert(stored, "queued");
+			}
 
 			await outboxRepo.enqueue({
 				kind: "send",
@@ -128,6 +147,7 @@ export function useMessageSender({
 				location,
 				createdAt: now,
 				attempts: 0,
+				threadId: inThreadId,
 			});
 
 			scheduleSync();
@@ -144,27 +164,11 @@ export function useMessageSender({
 			location,
 			clearLocation,
 			filesToRemove,
-			isThread,
-			threadId,
+			threadId: inThreadId,
 		}: EditMessageParams) => {
-			if (isThread === true && threadId !== undefined) {
-				const fileIDs =
-					pendingFiles !== undefined
-						? pendingFiles.map((f) => f.id)
-						: undefined;
-				await editThreadMessage(
-					token,
-					chatId,
-					threadId,
-					messageId,
-					text,
-					fileIDs,
-					{ location, clearLocation },
-				);
-				return;
-			}
-
-			const current = await messagesRepo.getById(chatId, messageId);
+			const current = inThreadId
+				? await threadMessagesRepo.getById(inThreadId, messageId)
+				: await messagesRepo.getById(chatId, messageId);
 			if (current === undefined) return;
 
 			const blobIds = await enqueuePendingBlobs(pendingFiles ?? []);
@@ -203,7 +207,12 @@ export function useMessageSender({
 				location: nextLocation,
 				editedAt: now,
 			};
-			await messagesRepo.upsert(updated, nextStatus);
+
+			if (inThreadId !== undefined) {
+				await threadMessagesRepo.upsert(updated, inThreadId, nextStatus);
+			} else {
+				await messagesRepo.upsert(updated, nextStatus);
+			}
 
 			await outboxRepo.enqueue({
 				kind: "edit",
@@ -219,20 +228,21 @@ export function useMessageSender({
 				clientEditedAt: now,
 				createdAt: now,
 				attempts: 0,
+				threadId: inThreadId,
 			});
 
 			scheduleSync();
 		},
-		[token, enqueuePendingBlobs],
+		[enqueuePendingBlobs],
 	);
 
 	const deleteMessage = useCallback(
-		async (chatId: string, messageId: string) => {
-			const current = await messagesRepo.getById(chatId, messageId);
+		async (chatId: string, messageId: string, threadId?: string) => {
+			const current = threadId
+				? await threadMessagesRepo.getById(threadId, messageId)
+				: await messagesRepo.getById(chatId, messageId);
 
 			if (current?.status === "failed") {
-				// Message was never sent — clean up locally and drop
-				// any pending blobs so they don't leak.
 				const ops = await outboxRepo.list();
 				const op = ops.find(
 					(o) =>
@@ -246,10 +256,18 @@ export function useMessageSender({
 					}
 					await outboxRepo.remove(op.opId);
 				}
-				await messagesRepo.remove(chatId, messageId);
+				if (threadId !== undefined) {
+					await threadMessagesRepo.remove(threadId, messageId);
+				} else {
+					await messagesRepo.remove(chatId, messageId);
+				}
 			} else {
 				if (current !== undefined) {
-					await messagesRepo.applyDelete(chatId, messageId);
+					if (threadId !== undefined) {
+						await threadMessagesRepo.applyDelete(threadId, messageId);
+					} else {
+						await messagesRepo.applyDelete(chatId, messageId);
+					}
 				}
 				await outboxRepo.enqueue({
 					kind: "delete",
@@ -258,6 +276,7 @@ export function useMessageSender({
 					messageId,
 					createdAt: new Date().toISOString(),
 					attempts: 0,
+					threadId,
 				});
 			}
 
@@ -267,11 +286,12 @@ export function useMessageSender({
 	);
 
 	const retryMessage = useCallback(
-		async (chatId: string, messageId: string) => {
-			const current = await messagesRepo.getById(chatId, messageId);
+		async (chatId: string, messageId: string, threadId?: string) => {
+			const current = threadId
+				? await threadMessagesRepo.getById(threadId, messageId)
+				: await messagesRepo.getById(chatId, messageId);
 			if (current === undefined) return;
 
-			// Find and reset the failed outbox op
 			const ops = await outboxRepo.list();
 			const op = ops.find(
 				(o) =>
@@ -286,8 +306,43 @@ export function useMessageSender({
 				await outboxRepo.update(op);
 			}
 
-			await messagesRepo.markStatus(chatId, messageId, "queued");
+			if (threadId !== undefined) {
+				await threadMessagesRepo.markStatus(threadId, messageId, "queued");
+			} else {
+				await messagesRepo.markStatus(chatId, messageId, "queued");
+			}
 			scheduleSync();
+		},
+		[],
+	);
+
+	const cancelSendMessage = useCallback(
+		async (chatId: string, messageId: string, threadId?: string) => {
+			const current = threadId
+				? await threadMessagesRepo.getById(threadId, messageId)
+				: await messagesRepo.getById(chatId, messageId);
+			if (current === undefined) return;
+			if (current.status !== "queued" && current.status !== "failed") return;
+
+			const ops = await outboxRepo.list();
+			const op = ops.find(
+				(o) =>
+					o.chatId === chatId &&
+					((o.kind === "send" && o.msgId === messageId) ||
+						(o.kind === "edit" && o.messageId === messageId)),
+			);
+			if (op !== undefined && op.kind !== "delete") {
+				if (op.pendingFileClientIds.length > 0) {
+					await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
+				}
+				await outboxRepo.remove(op.opId);
+			}
+
+			if (threadId !== undefined) {
+				await threadMessagesRepo.remove(threadId, messageId);
+			} else {
+				await messagesRepo.remove(chatId, messageId);
+			}
 		},
 		[],
 	);
@@ -297,5 +352,6 @@ export function useMessageSender({
 		editMessage,
 		deleteMessage,
 		retryMessage,
+		cancelSendMessage,
 	};
 }

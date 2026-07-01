@@ -11,6 +11,7 @@ import {
 	MessageCircle,
 	Pencil,
 	RotateCcw,
+	SquareX,
 	Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -22,6 +23,7 @@ interface Props {
 	position: { x: number; y: number };
 	canEdit: boolean;
 	canDelete: boolean;
+	canCancelSend: boolean;
 	canReply: boolean;
 	canCreateThread: boolean;
 	hasText: boolean;
@@ -29,6 +31,7 @@ interface Props {
 	onCopy: () => void;
 	onEdit: () => void;
 	onRetry: () => void;
+	onCancelSend: () => void;
 	onReply: () => void;
 	onCreateThread: () => void;
 	onDelete: () => void;
@@ -42,6 +45,7 @@ export function MessageContextMenu({
 	position,
 	canEdit,
 	canDelete,
+	canCancelSend,
 	canReply,
 	canCreateThread,
 	hasText,
@@ -49,6 +53,7 @@ export function MessageContextMenu({
 	onCopy,
 	onEdit,
 	onRetry,
+	onCancelSend,
 	onReply,
 	onCreateThread,
 	onDelete,
@@ -116,6 +121,22 @@ export function MessageContextMenu({
 								<Pencil size={14} />
 							</ActionIcon>
 							{t("message.edit")}
+						</Button>
+					)}
+					{canCancelSend && (
+						<Button
+							variant="subtle"
+							color="orange"
+							fullWidth
+							justify="flex-start"
+							style={{ borderRadius: 0 }}
+							onClick={onCancelSend}
+							role="menuitem"
+						>
+							<ActionIcon variant="transparent" color="orange" size={18} mr={6}>
+								<SquareX size={14} />
+							</ActionIcon>
+							{t("message.cancelSend")}
 						</Button>
 					)}
 					{status === "failed" && (

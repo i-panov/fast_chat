@@ -45,6 +45,7 @@ interface Props {
 	isLoadingMore: boolean;
 	onLoadMore: () => void;
 	onRetry?: (threadId: string, messageId: string) => void;
+	onCancelSend?: (chatId: string, messageId: string) => void;
 	replyToNick?: string;
 	replyToText?: string;
 	replyToFiles?: FileInfo[];
@@ -80,6 +81,7 @@ export function ThreadView({
 	isLoadingMore,
 	onLoadMore,
 	onRetry,
+	onCancelSend,
 	replyToNick,
 	replyToText,
 	replyToFiles,
@@ -153,6 +155,7 @@ export function ThreadView({
 				onLoadMore={onLoadMore}
 				isInThread
 				onRetry={handleRetry}
+				onCancelSend={onCancelSend}
 			/>
 			<InputBar
 				text={inputText}

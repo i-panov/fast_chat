@@ -75,6 +75,7 @@
 	"message.reply": "Ответить",
 	"message.delete": "Удалить",
 	"message.createThread": "Создать обсуждение",
+	"message.cancelSend": "Отменить отправку",
 	"message.thread": "Ответить",
 	"message.edited": "ред.",
 	"message.retry": "Повторить",

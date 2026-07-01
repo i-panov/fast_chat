@@ -67,6 +67,7 @@ interface Props {
 	threads?: Record<string, Thread>;
 	isInThread?: boolean;
 	onRetry?: (chatId: string, messageId: string) => Promise<void>;
+	onCancelSend?: (chatId: string, messageId: string) => void;
 	scrollToMessageId?: string | null;
 	showAuthorForGroup?: boolean;
 	isOffline?: boolean;
@@ -89,6 +90,7 @@ export function MessageList({
 	threads,
 	isInThread,
 	onRetry,
+	onCancelSend,
 	scrollToMessageId,
 	showAuthorForGroup,
 	isOffline,
@@ -212,6 +214,7 @@ export function MessageList({
 						isInThread={isInThread}
 						status={msg.status}
 						onRetry={onRetry}
+						onCancelSend={onCancelSend}
 						showAuthorNick={entry.showAuthor}
 					/>
 				</div>
@@ -232,6 +235,7 @@ export function MessageList({
 			threads,
 			isInThread,
 			onRetry,
+			onCancelSend,
 		],
 	);
 

@@ -52,6 +52,7 @@ interface Props {
 	isInThread?: boolean;
 	status?: "sent" | "queued" | "failed";
 	onRetry?: (chatId: string, messageId: string) => void;
+	onCancelSend?: (chatId: string, messageId: string) => void;
 	showAuthorNick?: boolean;
 }
 
@@ -109,6 +110,7 @@ export const MessageBubble = memo(function MessageBubble({
 	isInThread,
 	status,
 	onRetry,
+	onCancelSend,
 	showAuthorNick,
 }: Props) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
@@ -138,6 +140,7 @@ export const MessageBubble = memo(function MessageBubble({
 		(status === "queued" ||
 			status === "failed" ||
 			isWithinTTL(createdAt, deleteTTL));
+	const canCancelSend = onCancelSend !== undefined && status === "queued";
 	const canReply =
 		onReply !== undefined && status !== "queued" && status !== "failed";
 	const canCreateThread =
@@ -255,6 +258,7 @@ export const MessageBubble = memo(function MessageBubble({
 				position={menuPos ?? { x: 0, y: 0 }}
 				canEdit={canEdit}
 				canDelete={canDelete}
+				canCancelSend={canCancelSend}
 				canReply={canReply}
 				canCreateThread={canCreateThread}
 				hasText={text.length > 0}
@@ -269,6 +273,10 @@ export const MessageBubble = memo(function MessageBubble({
 				}}
 				onRetry={() => {
 					onRetry?.(chatId, msgId);
+					closeMenu();
+				}}
+				onCancelSend={() => {
+					onCancelSend?.(chatId, msgId);
 					closeMenu();
 				}}
 				onReply={() => {

@@ -74,6 +74,7 @@
 	"message.reply": "Reply",
 	"message.delete": "Delete",
 	"message.createThread": "Create thread",
+	"message.cancelSend": "Cancel send",
 	"message.thread": "Reply",
 	"message.edited": "edited",
 	"message.retry": "Retry",

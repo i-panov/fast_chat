@@ -1,26 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Message, Thread } from "../api.ts";
 import {
 	createThread as apiCreateThread,
 	getThreadMessages,
 	getThreads,
 } from "../api.ts";
+import type { StoredThread, StoredThreadMessage } from "../db/schema.ts";
+import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
+import { threadsRepo } from "../db/threadsRepo.ts";
+import { useLiveQuery } from "../db/useLiveQuery.ts";
 import i18n from "../i18n.ts";
 import { emitNotification } from "../utils/notify.ts";
 
 interface UseThreadsParams {
 	token: string | undefined;
 	chatId: string | null;
-	threadsMap: Record<string, Thread>;
-	setThreadsMap: React.Dispatch<React.SetStateAction<Record<string, Thread>>>;
-	messageToThreadMap: Record<string, string>;
-	setMessageToThreadMap: React.Dispatch<
-		React.SetStateAction<Record<string, string>>
-	>;
-	threadMessagesMap: Record<string, Message[]>;
-	setThreadMessagesMap: React.Dispatch<
-		React.SetStateAction<Record<string, Message[]>>
-	>;
 }
 
 interface UseThreadsReturn {
@@ -35,19 +29,28 @@ interface UseThreadsReturn {
 	openThread: (threadId: string) => void;
 	closeThread: () => void;
 	loadMoreThreadMessages: () => Promise<void>;
+	knownThreadIdsRef: React.MutableRefObject<Set<string>>;
 }
 
 const PAGE_SIZE = 30;
 
+function stripMeta(t: StoredThread): Thread {
+	const { _updatedAt: _u, ...rest } = t;
+	void _u;
+	return rest;
+}
+
+function stripMetaMsg(m: StoredThreadMessage): Message {
+	const { _updatedAt: _u, threadId: _tid, status: _s, ...rest } = m;
+	void _u;
+	void _tid;
+	void _s;
+	return rest;
+}
+
 export function useThreads({
 	token,
 	chatId,
-	threadsMap,
-	setThreadsMap,
-	messageToThreadMap,
-	setMessageToThreadMap,
-	threadMessagesMap,
-	setThreadMessagesMap,
 }: UseThreadsParams): UseThreadsReturn {
 	const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
 	const [threadHasMore, setThreadHasMore] = useState(false);
@@ -55,35 +58,66 @@ export function useThreads({
 
 	const threadNextCursorsRef = useRef<Record<string, string | null>>({});
 	const threadLoadingMoreRef = useRef(false);
+	const knownThreadIdsRef = useRef<Set<string>>(new Set());
 
-	// Загрузка веток при смене чата
+	const allStored = useLiveQuery<StoredThread[]>(
+		useCallback(() => {
+			if (chatId === null) return Promise.resolve([]);
+			return threadsRepo.getByChat(chatId);
+		}, [chatId]),
+	);
+
+	const activeThreadMessagesStored = useLiveQuery<StoredThreadMessage[]>(
+		useCallback(() => {
+			if (activeThreadId === null) return Promise.resolve([]);
+			return threadMessagesRepo.getByThread(activeThreadId);
+		}, [activeThreadId]),
+	);
+
+	const { threadsMap, messageToThread } = useMemo(() => {
+		const tm: Record<string, Thread> = {};
+		const mt: Record<string, string> = {};
+		if (allStored) {
+			for (const t of allStored) {
+				const thread = stripMeta(t);
+				tm[thread.id] = thread;
+				mt[thread.parentMessageId] = thread.id;
+			}
+		}
+		return { threadsMap: tm, messageToThread: mt };
+	}, [allStored]);
+
+	const activeThreadMessages = (activeThreadMessagesStored ?? []).map(
+		stripMetaMsg,
+	);
+
+	useEffect(() => {
+		if (allStored) {
+			knownThreadIdsRef.current = new Set(allStored.map((t) => t.id));
+		}
+	}, [allStored]);
+
+	// Fetch threads from server on chat change
 	useEffect(() => {
 		if (!token || !chatId) return;
 
 		getThreads(token, chatId)
 			.then(({ threads: ts }) => {
-				const threadMap: Record<string, Thread> = {};
-				const msgToThread: Record<string, string> = {};
-				for (const t of ts) {
-					threadMap[t.id] = t;
-					msgToThread[t.parentMessageId] = t.id;
+				if (ts.length > 0) {
+					void threadsRepo.upsertMany(ts);
 				}
-				setThreadsMap((prev) => ({ ...prev, ...threadMap }));
-				setMessageToThreadMap((prev) => ({ ...prev, ...msgToThread }));
 			})
-			.catch(() => {
-				/* ignore */
-			});
-	}, [token, chatId, setThreadsMap, setMessageToThreadMap]);
+			.catch(() => {});
+	}, [token, chatId]);
 
-	// Загрузка сообщений активной ветки
+	// Load thread messages from server when opening a thread
 	useEffect(() => {
 		if (!token || !activeThreadId) {
 			setThreadHasMore(false);
 			return;
 		}
 
-		if (threadMessagesMap[activeThreadId] !== undefined) {
+		if (activeThreadMessagesStored && activeThreadMessagesStored.length > 0) {
 			setThreadHasMore(threadNextCursorsRef.current[activeThreadId] !== null);
 			return;
 		}
@@ -93,10 +127,7 @@ export function useThreads({
 
 		getThreadMessages(token, thread.chatId, activeThreadId, PAGE_SIZE)
 			.then(({ messages: msgs, nextCursor }) => {
-				setThreadMessagesMap((prev) => ({
-					...prev,
-					[activeThreadId]: msgs,
-				}));
+				void threadMessagesRepo.upsertMany(msgs, activeThreadId);
 				const nxt = nextCursor != null && nextCursor !== "" ? nextCursor : null;
 				threadNextCursorsRef.current[activeThreadId] = nxt;
 				setThreadHasMore(nxt !== null);
@@ -104,36 +135,22 @@ export function useThreads({
 			.catch(() => {
 				emitNotification(i18n.t("error.loadMessages"));
 			});
-	}, [
-		activeThreadId,
-		token,
-		threadsMap,
-		threadMessagesMap,
-		setThreadMessagesMap,
-	]);
+	}, [activeThreadId, token, activeThreadMessagesStored, threadsMap]);
 
 	const createThread = useCallback(
-		async (chatId: string, messageId: string) => {
+		async (cId: string, messageId: string) => {
 			if (!token) return;
 
 			try {
-				const { thread } = await apiCreateThread(token, chatId, messageId);
-				setThreadsMap((prev) => ({ ...prev, [thread.id]: thread }));
-				setMessageToThreadMap((prev) => ({
-					...prev,
-					[thread.parentMessageId]: thread.id,
-				}));
+				const { thread } = await apiCreateThread(token, cId, messageId);
+				await threadsRepo.upsert(thread);
 				setActiveThreadId(thread.id);
 			} catch {
 				try {
-					const { threads: ts } = await getThreads(token, chatId);
+					const { threads: ts } = await getThreads(token, cId);
 					const existing = ts.find((t) => t.parentMessageId === messageId);
 					if (existing) {
-						setThreadsMap((prev) => ({ ...prev, [existing.id]: existing }));
-						setMessageToThreadMap((prev) => ({
-							...prev,
-							[messageId]: existing.id,
-						}));
+						await threadsRepo.upsert(existing);
 						setActiveThreadId(existing.id);
 						return;
 					}
@@ -143,7 +160,7 @@ export function useThreads({
 				emitNotification(i18n.t("error.createThread"));
 			}
 		},
-		[token, setThreadsMap, setMessageToThreadMap],
+		[token],
 	);
 
 	const openThread = useCallback((threadId: string) => {
@@ -161,6 +178,11 @@ export function useThreads({
 		const cursor = threadNextCursorsRef.current[activeThreadId];
 		if (!cursor) return;
 
+		if (typeof navigator !== "undefined" && !navigator.onLine) {
+			setThreadHasMore(false);
+			return;
+		}
+
 		threadLoadingMoreRef.current = true;
 		setThreadIsLoadingMore(true);
 
@@ -175,10 +197,7 @@ export function useThreads({
 				PAGE_SIZE,
 				cursor,
 			);
-			setThreadMessagesMap((prev) => ({
-				...prev,
-				[activeThreadId]: [...res.messages, ...(prev[activeThreadId] ?? [])],
-			}));
+			await threadMessagesRepo.upsertMany(res.messages, activeThreadId);
 			const nxt =
 				res.nextCursor != null && res.nextCursor !== "" ? res.nextCursor : null;
 			threadNextCursorsRef.current[activeThreadId] = nxt;
@@ -189,17 +208,15 @@ export function useThreads({
 			setThreadIsLoadingMore(false);
 			threadLoadingMoreRef.current = false;
 		}
-	}, [activeThreadId, token, threadsMap, setThreadMessagesMap]);
+	}, [activeThreadId, token, threadsMap]);
 
 	const activeThread = activeThreadId
 		? (threadsMap[activeThreadId] ?? null)
 		: null;
-	const activeThreadMessages =
-		activeThreadId !== null ? (threadMessagesMap[activeThreadId] ?? []) : [];
 
 	return {
 		threads: threadsMap,
-		messageToThread: messageToThreadMap,
+		messageToThread,
 		activeThreadId,
 		activeThread,
 		activeThreadMessages,
@@ -209,5 +226,6 @@ export function useThreads({
 		openThread,
 		closeThread,
 		loadMoreThreadMessages,
+		knownThreadIdsRef,
 	};
 }

@@ -1,13 +1,17 @@
-import { deleteMessage, editMessage, sendMessage, uploadFile } from "../api.ts";
+import {
+	deleteMessage,
+	editMessage,
+	editThreadMessage,
+	sendMessage,
+	sendThreadMessage,
+	uploadFile,
+} from "../api.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import type { OutboxOp, OutboxOpEdit, OutboxOpSend } from "../db/schema.ts";
+import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 
-// processOutbox drains the outbox in chronological order. Each op
-// either succeeds, fails transiently (left in outbox for retry), or
-// fails terminally (dropped from outbox + UI). Network errors stop
-// the loop so the next sync tick can resume from the same position.
 export async function processOutbox(token: string): Promise<void> {
 	const ops = await outboxRepo.list();
 
@@ -18,13 +22,8 @@ export async function processOutbox(token: string): Promise<void> {
 			await runOp(op, token);
 		} catch (err) {
 			if (isTransient(err)) {
-				// Network/server hiccup: leave the op in the outbox
-				// and abort the rest. The next tick will retry.
 				return;
 			}
-			// Terminal error (4xx, validation, etc.): mark the op
-			// as failed so the user can retry it manually and we
-			// don't loop on it.
 			await failOp(op, err);
 		}
 	}
@@ -47,20 +46,34 @@ async function runOp(op: OutboxOp, token: string): Promise<void> {
 async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 	const fileIDs = await uploadPendingFiles(op.pendingFileClientIds, token);
 
-	await sendMessage(
-		token,
-		op.chatId,
-		op.text,
-		op.msgId,
-		op.replyToId,
-		fileIDs.length > 0 ? fileIDs : undefined,
-		op.location,
-	);
+	if (op.threadId !== undefined) {
+		await sendThreadMessage(
+			token,
+			op.chatId,
+			op.threadId,
+			op.text,
+			op.msgId,
+			op.replyToId,
+			fileIDs.length > 0 ? fileIDs : undefined,
+			op.location,
+		);
+		await threadMessagesRepo.markStatus(op.threadId, op.msgId, "sent");
+	} else {
+		await sendMessage(
+			token,
+			op.chatId,
+			op.text,
+			op.msgId,
+			op.replyToId,
+			fileIDs.length > 0 ? fileIDs : undefined,
+			op.location,
+		);
+		await messagesRepo.markStatus(op.chatId, op.msgId, "sent");
+	}
 
 	if (op.pendingFileClientIds.length > 0) {
 		await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
 	}
-	await messagesRepo.markStatus(op.chatId, op.msgId, "sent");
 	await outboxRepo.remove(op.opId);
 }
 
@@ -76,15 +89,37 @@ async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
 		fileIDs = undefined;
 	}
 
-	await editMessage(token, op.chatId, op.messageId, op.text, fileIDs, {
+	const editOpts = {
 		location: op.location ?? undefined,
 		clearLocation: op.clearLocation,
-	});
+	};
+
+	if (op.threadId !== undefined) {
+		await editThreadMessage(
+			token,
+			op.chatId,
+			op.threadId,
+			op.messageId,
+			op.text,
+			fileIDs,
+			editOpts,
+		);
+		await threadMessagesRepo.markStatus(op.threadId, op.messageId, "sent");
+	} else {
+		await editMessage(
+			token,
+			op.chatId,
+			op.messageId,
+			op.text,
+			fileIDs,
+			editOpts,
+		);
+		await messagesRepo.markStatus(op.chatId, op.messageId, "sent");
+	}
 
 	if (op.pendingFileClientIds.length > 0) {
 		await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
 	}
-	await messagesRepo.markStatus(op.chatId, op.messageId, "sent");
 	await outboxRepo.remove(op.opId);
 }
 
@@ -93,20 +128,27 @@ async function runDelete(
 	token: string,
 ): Promise<void> {
 	try {
-		await deleteMessage(token, op.chatId, op.messageId);
+		// For thread messages, the server expects threadId as chatId
+		// in the DELETE /api/chats/{chatId}/messages/{messageId} endpoint.
+		const deleteChatId = op.threadId ?? op.chatId;
+		await deleteMessage(token, deleteChatId, op.messageId);
 	} catch (err) {
-		// The server may have already dropped the message (out-of-band
-		// delete from another tab/device, or an older sync tick). The
-		// desired end state — message gone — is achieved either way,
-		// so swallow 404-shaped errors and remove the op.
 		if (isNotFound(err)) {
-			await messagesRepo.remove(op.chatId, op.messageId);
+			if (op.threadId !== undefined) {
+				await threadMessagesRepo.remove(op.threadId, op.messageId);
+			} else {
+				await messagesRepo.remove(op.chatId, op.messageId);
+			}
 			await outboxRepo.remove(op.opId);
 			return;
 		}
 		throw err;
 	}
-	await messagesRepo.remove(op.chatId, op.messageId);
+	if (op.threadId !== undefined) {
+		await threadMessagesRepo.remove(op.threadId, op.messageId);
+	} else {
+		await messagesRepo.remove(op.chatId, op.messageId);
+	}
 	await outboxRepo.remove(op.opId);
 }
 
@@ -114,10 +156,18 @@ async function failOp(op: OutboxOp, _err: unknown): Promise<void> {
 	if (op.kind === "send" || op.kind === "edit") {
 		const chatId = op.chatId;
 		const messageId = op.kind === "send" ? op.msgId : op.messageId;
-		await messagesRepo.markStatus(chatId, messageId, "failed");
+		if (op.threadId !== undefined) {
+			await threadMessagesRepo.markStatus(op.threadId, messageId, "failed");
+		} else {
+			await messagesRepo.markStatus(chatId, messageId, "failed");
+		}
 	}
 	if (op.kind === "delete") {
-		await messagesRepo.remove(op.chatId, op.messageId);
+		if (op.threadId !== undefined) {
+			await threadMessagesRepo.remove(op.threadId, op.messageId);
+		} else {
+			await messagesRepo.remove(op.chatId, op.messageId);
+		}
 	}
 	await outboxRepo.update({ ...op, status: "failed" as const });
 }
