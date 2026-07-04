@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { MapContainer, Marker, TileLayer, useMap } from "react-leaflet";
-import type { Location } from "../../api.ts";
+import type { Location } from "../../types/api.ts";
 import "../../utils/leafletIconFix.ts";
 
 function MapAutoSize() {

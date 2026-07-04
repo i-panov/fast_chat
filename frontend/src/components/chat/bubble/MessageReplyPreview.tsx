@@ -1,66 +1,9 @@
-import { Loader, Text, UnstyledButton } from "@mantine/core";
-import { FileIcon, MapPin } from "lucide-react";
-import type { FileInfo, Location, ReplyToInfo } from "../../../api.ts";
+import { Text, UnstyledButton } from "@mantine/core";
+import { MapPin } from "lucide-react";
+import type { Location, ReplyToInfo } from "../../../types/api.ts";
 import { formatCoords } from "../../../utils/chat.ts";
-
-const BORDER_RADIUS_XS = 4;
-
-function ReplyFilePreview({
-	files,
-	photoBlobUrl,
-}: {
-	files: FileInfo[];
-	photoBlobUrl: string | null;
-}) {
-	if (files.length === 0) return null;
-	const first = files[0];
-	const extra = files.length - 1;
-
-	return (
-		<div
-			style={{
-				display: "flex",
-				alignItems: "center",
-				gap: 6,
-				marginTop: 2,
-			}}
-		>
-			{first.fileType === "photo" && photoBlobUrl ? (
-				<img
-					src={photoBlobUrl}
-					alt=""
-					style={{
-						width: 24,
-						height: 24,
-						objectFit: "cover",
-						borderRadius: BORDER_RADIUS_XS,
-						flexShrink: 0,
-					}}
-				/>
-			) : first.fileType === "photo" ? (
-				<Loader size="xs" />
-			) : (
-				<FileIcon
-					size={20}
-					style={{ flexShrink: 0, color: "var(--mantine-color-gray-5)" }}
-				/>
-			)}
-			<Text
-				size="xs"
-				c="dimmed"
-				truncate="end"
-				style={{ flex: 1, minWidth: 0 }}
-			>
-				{first.originalName}
-			</Text>
-			{extra > 0 && (
-				<Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
-					+{extra}
-				</Text>
-			)}
-		</div>
-	);
-}
+import { BORDER_RADIUS_XS } from "../../../utils/constants.ts";
+import { ReplyFilePreviewInline } from "../input/ReplyFilePreviewInline.tsx";
 
 function ReplyLocationChip({ location }: { location: Location }) {
 	return (
@@ -124,9 +67,12 @@ export function MessageReplyPreview({
 					{replyTo.text}
 				</Text>
 			) : (
-				<ReplyFilePreview
+				<ReplyFilePreviewInline
 					files={replyTo.files ?? []}
 					photoBlobUrl={photoBlobUrl}
+					imgSize={24}
+					iconSize={20}
+					borderRadius={BORDER_RADIUS_XS}
 				/>
 			)}
 			{replyTo.location !== undefined && (

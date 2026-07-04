@@ -69,9 +69,10 @@ func (h *Handler) FederatedAuthMiddleware(next http.HandlerFunc) http.HandlerFun
 			return
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read body")
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
 

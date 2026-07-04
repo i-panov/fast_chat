@@ -178,7 +178,7 @@ func TestAddMessage(t *testing.T) {
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
-	msg, err := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello!", "", "", nil)
+	msg, err := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello!", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestAddMessage(t *testing.T) {
 		t.Errorf("expected %s, got %s", chat.ID, msg.ChatID)
 	}
 
-	_, err = s.AddMessage(context.Background(), "nonexistent", testAlice, "alice", "test", "", "", nil)
+	_, err = s.AddMessage(context.Background(), "nonexistent", "", testAlice, "alice", "test", "", "", nil)
 	if err == nil {
 		t.Error("expected error for nonexistent chat")
 	}
@@ -205,9 +205,9 @@ func TestEditMessage(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	msg, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "", "", nil)
+	msg, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello", "", "", nil)
 
-	updated, err := s.EditMessage(context.Background(), chat.ID, msg.ID, testAlice, testEdited, nil, false)
+	updated, err := s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, testEdited, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestEditMessage(t *testing.T) {
 		t.Error("expected EditedAt to be set")
 	}
 
-	_, err = s.EditMessage(context.Background(), chat.ID, msg.ID, testBob, "Hacked!", nil, false)
+	_, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testBob, "Hacked!", nil, false)
 	if err == nil {
 		t.Error("expected error when bob edits alice's message")
 	}
@@ -230,7 +230,7 @@ func TestDeleteMessage(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	msg, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "", "", nil)
+	msg, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello", "", "", nil)
 
 	err := s.DeleteMessage(context.Background(), chat.ID, msg.ID, testAlice)
 	if err != nil {
@@ -249,7 +249,7 @@ func TestSetMessageFiles(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	msg, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "", "", nil)
+	msg, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello", "", "", nil)
 
 	f1, _ := s.SaveFile(context.Background(), "hash1", "image/png", 100, "a.png", "a.png")
 	f2, _ := s.SaveFile(context.Background(), "hash2", "application/pdf", 200, "b.pdf", "b.pdf")
@@ -287,11 +287,11 @@ func TestEditThreadMessage(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	parent, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "parent", "", "", nil)
+	parent, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "parent", "", "", nil)
 	thread, _ := s.CreateThread(context.Background(), chat.ID, parent.ID, parent.Text, parent.FromNick)
-	msg, _ := s.AddThreadMessage(context.Background(), thread.ID, testAlice, "alice", "Hello", "", "", nil)
+	msg, _ := s.AddMessage(context.Background(), "", thread.ID, testAlice, "alice", "Hello", "", "", nil)
 
-	updated, err := s.EditThreadMessage(context.Background(), thread.ID, msg.ID, testAlice, testEdited, nil, false)
+	updated, err := s.EditMessage(context.Background(), "", thread.ID, msg.ID, testAlice, testEdited, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -302,12 +302,12 @@ func TestEditThreadMessage(t *testing.T) {
 		t.Error("expected EditedAt to be set")
 	}
 
-	_, err = s.EditThreadMessage(context.Background(), thread.ID, msg.ID, testBob, "Hacked!", nil, false)
+	_, err = s.EditMessage(context.Background(), "", thread.ID, msg.ID, testBob, "Hacked!", nil, false)
 	if err == nil {
 		t.Error("expected error when bob edits alice's thread message")
 	}
 
-	_, err = s.EditThreadMessage(context.Background(), "nonexistent", msg.ID, testAlice, "x", nil, false)
+	_, err = s.EditMessage(context.Background(), "", "nonexistent", msg.ID, testAlice, "x", nil, false)
 	if err == nil {
 		t.Error("expected error for nonexistent thread")
 	}
@@ -321,7 +321,7 @@ func TestMessageLocation(t *testing.T) {
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
 	loc := &model.Location{Lat: 51.505, Lng: -0.09}
-	msg, err := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Meet here", "", "", loc)
+	msg, err := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Meet here", "", "", loc)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -352,10 +352,10 @@ func TestEditMessageLocation(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	msg, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "x", "", "", nil)
+	msg, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "x", "", "", nil)
 
 	// Set initial location.
-	updated, err := s.EditMessage(context.Background(), chat.ID, msg.ID, testAlice, "x", &model.Location{Lat: 1, Lng: 2}, false)
+	updated, err := s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "x", &model.Location{Lat: 1, Lng: 2}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Replace with a different location.
-	updated, err = s.EditMessage(context.Background(), chat.ID, msg.ID, testAlice, "x", &model.Location{Lat: 3, Lng: 4}, false)
+	updated, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "x", &model.Location{Lat: 3, Lng: 4}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Clear the location.
-	updated, err = s.EditMessage(context.Background(), chat.ID, msg.ID, testAlice, "x", nil, true)
+	updated, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "x", nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Leave unchanged (no location params).
-	updated, err = s.EditMessage(context.Background(), chat.ID, msg.ID, testAlice, "new text", nil, false)
+	updated, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "new text", nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -397,9 +397,9 @@ func TestReplyToLocation(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	parent, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "x", "", "", &model.Location{Lat: 10, Lng: 20})
+	parent, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "x", "", "", &model.Location{Lat: 10, Lng: 20})
 
-	reply, err := s.AddMessage(context.Background(), chat.ID, testBob, "bob", "reply", "", parent.ID, nil)
+	reply, err := s.AddMessage(context.Background(), chat.ID, "", testBob, "bob", "reply", "", parent.ID, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestGetMessagesPaginated(t *testing.T) {
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
 	for i := 0; i < 10; i++ {
-		s.AddMessage(context.Background(), chat.ID, testAlice, "alice", fmt.Sprintf("msg-%d", i), "", "", nil)
+		s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", fmt.Sprintf("msg-%d", i), "", "", nil)
 	}
 
 	msgs, next, hasMore := s.GetMessagesPaginated(context.Background(), chat.ID, 4, "")
@@ -490,7 +490,7 @@ func TestAddRawMessage(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := s.GetMessages(context.Background(), chat.ID)
+	msgs, _, _ := s.GetMessagesPaginated(context.Background(), chat.ID, 100, "")
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
@@ -509,7 +509,7 @@ func TestEditRawMessage(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
+	s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello", "msg-1", "", nil)
 
 	now := time.Now()
 	err := s.EditRawMessage(context.Background(), chat.ID, "msg-1", testEdited, now, nil, false)
@@ -539,14 +539,14 @@ func TestDeleteRawMessage(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
+	s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello", "msg-1", "", nil)
 
 	err := s.DeleteRawMessage(context.Background(), chat.ID, "msg-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	msgs := s.GetMessages(context.Background(), chat.ID)
+	msgs, _, _ := s.GetMessagesPaginated(context.Background(), chat.ID, 100, "")
 	if len(msgs) != 0 {
 		t.Errorf("expected 0 messages, got %d", len(msgs))
 	}
@@ -562,7 +562,7 @@ func TestCreateThreadAndGet(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
+	s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Parent", "parent-1", "", nil)
 
 	thread, err := s.CreateThread(context.Background(), chat.ID, "parent-1", "Parent", "alice")
 	if err != nil {
@@ -605,8 +605,8 @@ func TestGetThreadsForChat(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Msg1", "m1", "", nil)
-	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Msg2", "m2", "", nil)
+	s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Msg1", "m1", "", nil)
+	s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Msg2", "m2", "", nil)
 
 	s.CreateThread(context.Background(), chat.ID, "m1", "Msg1", "alice")
 	s.CreateThread(context.Background(), chat.ID, "m2", "Msg2", "alice")
@@ -848,9 +848,9 @@ func TestDeleteChatCascade(t *testing.T) {
 	createTestUser(t, s, "carol")
 
 	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob, testCarol}, "")
-	msg, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "hi", "", "", nil)
+	msg, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "hi", "", "", nil)
 	thread, _ := s.CreateThread(context.Background(), chat.ID, msg.ID, "hi", "alice")
-	s.AddThreadMessage(context.Background(), thread.ID, testBob, "bob", "reply", "", "", nil)
+	s.AddMessage(context.Background(), "", thread.ID, testBob, "bob", "reply", "", "", nil)
 	f, _ := s.SaveFile(context.Background(), "h", "image/png", 1, "a.png", "a.png")
 	s.AddMessageFiles(context.Background(), msg.ID, []string{f.ID})
 
@@ -862,7 +862,7 @@ func TestDeleteChatCascade(t *testing.T) {
 		t.Error("expected chat to be deleted")
 	}
 
-	if msgs := s.GetMessages(context.Background(), chat.ID); len(msgs) != 0 {
+	if msgs, _, _ := s.GetMessagesPaginated(context.Background(), chat.ID, 100, ""); len(msgs) != 0 {
 		t.Errorf("expected 0 messages, got %d", len(msgs))
 	}
 
@@ -928,10 +928,10 @@ func TestAddThreadMessage(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
+	s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Parent", "parent-1", "", nil)
 	thread, _ := s.CreateThread(context.Background(), chat.ID, "parent-1", "Parent", "alice")
 
-	msg, err := s.AddThreadMessage(context.Background(), thread.ID, testBob, "bob", "Reply", "", "", nil)
+	msg, err := s.AddMessage(context.Background(), "", thread.ID, testBob, "bob", "Reply", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -952,7 +952,7 @@ func TestAddThreadMessage(t *testing.T) {
 		t.Errorf("expected 1 thread message, got %d", len(msgs))
 	}
 
-	_, err = s.AddThreadMessage(context.Background(), "nonexistent", testAlice, "alice", "test", "", "", nil)
+	_, err = s.AddMessage(context.Background(), "", "nonexistent", testAlice, "alice", "test", "", "", nil)
 	if err == nil {
 		t.Error("expected error for nonexistent thread")
 	}
@@ -1003,7 +1003,7 @@ func TestGetMessageValue(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Hello", "msg-1", "", nil)
+	s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello", "msg-1", "", nil)
 
 	msg1, err := s.GetMessage(context.Background(), chat.ID, "msg-1")
 	if err != nil {
@@ -1026,7 +1026,7 @@ func TestGetThreadValue(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "Parent", "parent-1", "", nil)
+	s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Parent", "parent-1", "", nil)
 	s.CreateThread(context.Background(), chat.ID, "parent-1", "Parent", "alice")
 
 	threads := s.GetThreadsForChat(context.Background(), chat.ID)
@@ -1062,7 +1062,7 @@ func TestAddRawMessageIsIdempotent(t *testing.T) {
 		t.Fatalf("second insert (replay): %v", err)
 	}
 
-	msgs := s.GetMessages(context.Background(), chat.ID)
+	msgs, _, _ := s.GetMessagesPaginated(context.Background(), chat.ID, 100, "")
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message after replay, got %d", len(msgs))
 	}
@@ -1105,9 +1105,9 @@ func TestGetMessageFilesBatch(t *testing.T) {
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
-	m1, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "with file 1", "m-1", "", nil)
-	m2, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "with two files", "m-2", "", nil)
-	m3, _ := s.AddMessage(context.Background(), chat.ID, testAlice, "alice", "no file", "m-3", "", nil)
+	m1, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "with file 1", "m-1", "", nil)
+	m2, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "with two files", "m-2", "", nil)
+	m3, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "no file", "m-3", "", nil)
 
 	f1, _ := s.SaveFile(context.Background(), "h1", "text/plain", 10, "a.txt", "a.txt")
 	f2, _ := s.SaveFile(context.Background(), "h2", "text/plain", 20, "b.txt", "b.txt")

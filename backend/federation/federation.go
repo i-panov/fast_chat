@@ -14,7 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"fast_chat/internal/httputil"
 )
 
 const (
@@ -87,7 +89,7 @@ func (m *Manager) Close() {
 
 // LoadOrGenerateKeys loads an existing RSA key pair or generates a new one.
 func LoadOrGenerateKeys(keyDir string) (*rsa.PrivateKey, error) {
-	if err := os.MkdirAll(keyDir, 0o750); err != nil {
+	if err := os.MkdirAll(keyDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create key directory: %w", err)
 	}
 
@@ -97,7 +99,7 @@ func LoadOrGenerateKeys(keyDir string) (*rsa.PrivateKey, error) {
 		return loadPrivateKey(privPath)
 	}
 
-	log.Printf("Generating new federation RSA key pair in %s", keyDir)
+	slog.Info("generating new federation RSA key pair", "dir", keyDir)
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -239,7 +241,7 @@ func (m *Manager) WellKnownHandler(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{
 		"serverDomain": m.serverDomain,
 		"publicKeyPem": pemStr,
 	})
@@ -279,7 +281,7 @@ func (m *Manager) getPublicKey(ctx context.Context, serverDomain string) *rsa.Pu
 
 	key, err := m.fetchWellKnown(ctx, serverDomain)
 	if err != nil {
-		log.Printf("Failed to fetch .well-known from %s: %v", serverDomain, err) //nolint:gosec // serverDomain from X-Federation-Server header
+		slog.Warn("failed to fetch .well-known", "server", serverDomain, "err", err)
 		return nil
 	}
 
@@ -391,13 +393,4 @@ func savePublicKey(path string, key *rsa.PublicKey) error {
 	})
 
 	return os.WriteFile(path, pemData, 0o644) //nolint:gosec // public key is public
-}
-
-func writeJSON(w http.ResponseWriter, status int, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("federation writeJSON: %v", err)
-	}
 }

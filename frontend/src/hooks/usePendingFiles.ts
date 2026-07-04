@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import type { PendingFile } from "../api.ts";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { PendingFile } from "../types/api.ts";
+import { getFileType } from "../utils/files.ts";
 
 interface UsePendingFilesReturn {
 	pendingFiles: PendingFile[];
@@ -7,13 +8,6 @@ interface UsePendingFilesReturn {
 	handleAttachFiles: (files: File[]) => void;
 	handleRemoveFile: (fileId: string) => void;
 	clearAllPendingFiles: () => void;
-}
-
-function getFileType(mimeType: string): "photo" | "video" | "audio" | "file" {
-	if (mimeType.startsWith("image/")) return "photo";
-	if (mimeType.startsWith("video/")) return "video";
-	if (mimeType.startsWith("audio/")) return "audio";
-	return "file";
 }
 
 function revokeIfTracked(
@@ -46,7 +40,7 @@ export function usePendingFiles(): UsePendingFilesReturn {
 		};
 	}, []);
 
-	const handleAttachFiles = (files: File[]) => {
+	const handleAttachFiles = useCallback((files: File[]) => {
 		const newEntries: PendingFile[] = files.map((file) => {
 			const blobUrl = URL.createObjectURL(file);
 			cleanupRef.current.add(blobUrl);
@@ -61,9 +55,9 @@ export function usePendingFiles(): UsePendingFilesReturn {
 			};
 		});
 		setPendingFiles((prev) => [...prev, ...newEntries]);
-	};
+	}, []);
 
-	const handleRemoveFile = (fileId: string) => {
+	const handleRemoveFile = useCallback((fileId: string) => {
 		setPendingFiles((prev) => {
 			const removed = prev.find((f) => f.id === fileId);
 			if (removed) {
@@ -71,11 +65,11 @@ export function usePendingFiles(): UsePendingFilesReturn {
 			}
 			return prev.filter((f) => f.id !== fileId);
 		});
-	};
+	}, []);
 
-	const clearAllPendingFiles = () => {
+	const clearAllPendingFiles = useCallback(() => {
 		setPendingFiles([]);
-	};
+	}, []);
 
 	return {
 		pendingFiles,

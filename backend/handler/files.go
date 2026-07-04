@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	uploadDirPermissions  = 0o750
+	uploadDirPermissions  = 0o700
 	sniffBytes            = 512
 	mimeCacheMaxAge       = 86400
 	dispositionInline     = "inline"
@@ -115,7 +115,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	existing, ok := h.store.FindFileByHash(r.Context(), hash)
 	if ok {
-		writeJSON(w, http.StatusOK, map[string]any{"file": existing.ToFileInfo()})
+		WriteJSON(w, http.StatusOK, map[string]any{"file": existing.ToFileInfo()})
 		return
 	}
 
@@ -133,7 +133,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{"file": saved.ToFileInfo()})
+	WriteJSON(w, http.StatusCreated, map[string]any{"file": saved.ToFileInfo()})
 }
 
 func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
@@ -206,19 +206,25 @@ func sanitizeFilename(name string) string {
 // message attachment or as a group chat avatar.
 func (h *Handler) userCanAccessFile(ctx context.Context, userID, fileID string) bool {
 	chatIDs, err := h.store.GetFileChats(ctx, fileID)
-	if err == nil {
-		for _, cid := range chatIDs {
-			if chat, ok := h.store.GetChat(ctx, cid); ok && isMember(chat, userID) {
-				return true
+	if err == nil && len(chatIDs) > 0 {
+		chats, err := h.store.GetChatsByIDs(ctx, chatIDs)
+		if err == nil {
+			for _, chat := range chats {
+				if isMember(&chat, userID) {
+					return true
+				}
 			}
 		}
 	}
 
 	avatarChatIDs, err := h.store.GetChatsByAvatarFileID(ctx, fileID)
-	if err == nil {
-		for _, cid := range avatarChatIDs {
-			if chat, ok := h.store.GetChat(ctx, cid); ok && isMember(chat, userID) {
-				return true
+	if err == nil && len(avatarChatIDs) > 0 {
+		chats, err := h.store.GetChatsByIDs(ctx, avatarChatIDs)
+		if err == nil {
+			for _, chat := range chats {
+				if isMember(&chat, userID) {
+					return true
+				}
 			}
 		}
 	}

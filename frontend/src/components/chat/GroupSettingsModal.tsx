@@ -1,24 +1,19 @@
 import {
-	ActionIcon,
-	Avatar,
 	Button,
-	FileButton,
 	Group,
-	Image,
-	Loader,
 	Modal,
 	ScrollArea,
 	Stack,
 	Text,
 	TextInput,
 } from "@mantine/core";
-import { Crown, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { Chat, User } from "../../api.ts";
 import { searchUsers } from "../../api.ts";
-import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import type { Chat, User } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
+import { GroupAvatarSection } from "./GroupAvatarSection.tsx";
+import { GroupMembersList } from "./GroupMembersList.tsx";
 
 interface Props {
 	open: boolean;
@@ -45,8 +40,6 @@ export function GroupSettingsModal({
 	const { activeAccount } = useAuth();
 	const myId = activeAccount?.user.id ?? "";
 	const isOwner = chat !== null && chat.ownerId === myId;
-
-	const avatarBlobUrlResult = useFileUrl(chat?.avatarUrl, activeAccount?.token);
 
 	const [editingName, setEditingName] = useState(false);
 	const [nameDraft, setNameDraft] = useState("");
@@ -135,44 +128,12 @@ export function GroupSettingsModal({
 			centered
 		>
 			<Stack gap="md">
-				<Group gap="md" align="center">
-					{chat.avatarUrl !== undefined &&
-					chat.avatarUrl !== "" &&
-					avatarBlobUrlResult.blobUrl ? (
-						<Image
-							src={avatarBlobUrlResult.blobUrl}
-							alt={t("chat.avatarAlt")}
-							w={64}
-							h={64}
-							radius="xl"
-							fit="cover"
-						/>
-					) : chat.avatarUrl !== undefined &&
-						chat.avatarUrl !== "" &&
-						avatarBlobUrlResult.loading ? (
-						<Loader size="lg" />
-					) : (
-						<Avatar size={64} radius="xl" color="blue">
-							{chat.name.charAt(0).toUpperCase() || "#"}
-						</Avatar>
-					)}
-					{isOwner && (
-						<FileButton
-							onChange={(file) => {
-								if (file !== null) {
-									onUploadAvatar(file);
-								}
-							}}
-							accept="image/png,image/jpeg,image/gif,image/webp"
-						>
-							{(props) => (
-								<Button {...props} variant="default" size="xs">
-									{t("chat.uploadAvatar")}
-								</Button>
-							)}
-						</FileButton>
-					)}
-				</Group>
+				<GroupAvatarSection
+					chat={chat}
+					token={activeAccount?.token}
+					isOwner={isOwner}
+					onUploadAvatar={onUploadAvatar}
+				/>
 
 				{editingName ? (
 					<Group gap="xs">
@@ -205,65 +166,16 @@ export function GroupSettingsModal({
 					</Group>
 				)}
 
-				<div>
-					<Text size="sm" fw={500} mb={4}>
-						{t("chat.members")} ({chat.members.length})
-					</Text>
-					<ScrollArea
-						style={{
-							maxHeight: 200,
-							border: "1px solid var(--mantine-color-dark-4)",
-							borderRadius: 4,
-						}}
-					>
-						<Stack gap={0}>
-							{chat.members.map((m) => {
-								const isMe = m.id === myId;
-								const isThisOwner = m.id === chat.ownerId;
-								return (
-									<Group
-										key={m.id}
-										justify="space-between"
-										style={{
-											padding: "6px 8px",
-											borderBottom: "1px solid var(--mantine-color-dark-4)",
-										}}
-									>
-										<Group gap={6}>
-											{isThisOwner && (
-												<Crown
-													size={14}
-													color="var(--mantine-color-yellow-5)"
-												/>
-											)}
-											<Text size="sm">
-												@{m.nick}
-												{isMe && (
-													<Text component="span" size="xs" c="dimmed" ml={4}>
-														({t("chat.you")})
-													</Text>
-												)}
-											</Text>
-										</Group>
-										{isOwner && !isThisOwner && (
-											<ActionIcon
-												variant="subtle"
-												color="red"
-												size="sm"
-												onClick={() => {
-													setConfirming(null);
-													onRemoveMember(m.id);
-												}}
-											>
-												<X size={14} />
-											</ActionIcon>
-										)}
-									</Group>
-								);
-							})}
-						</Stack>
-					</ScrollArea>
-				</div>
+				<GroupMembersList
+					members={chat.members}
+					ownerId={chat.ownerId}
+					myId={myId}
+					isOwner={isOwner}
+					onRemoveMember={(id) => {
+						setConfirming(null);
+						onRemoveMember(id);
+					}}
+				/>
 
 				{isOwner && (
 					<div>

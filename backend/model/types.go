@@ -15,12 +15,11 @@ type User struct {
 type PublicUser struct {
 	ID     string `json:"id"`
 	Nick   string `json:"nick"`
-	Email  string `json:"email"`
 	Online bool   `json:"online"`
 }
 
 func (u *User) Public() PublicUser {
-	return PublicUser{ID: u.ID, Nick: u.Nick, Email: u.Email, Online: u.Online}
+	return PublicUser{ID: u.ID, Nick: u.Nick, Online: u.Online}
 }
 
 func PublicUsers(users []User) []PublicUser {

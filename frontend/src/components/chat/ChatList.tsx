@@ -1,8 +1,8 @@
 import { Avatar, Button, Group, Loader, ScrollArea, Text } from "@mantine/core";
 import { Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { Chat } from "../../api.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import type { Chat } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { chatTitle } from "../../utils/chat.ts";
 

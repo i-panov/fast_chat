@@ -1,7 +1,7 @@
-import type { Message } from "../api.ts";
+import type { Message, MessageStatus } from "../types/api.ts";
 import { getDB } from "./init.ts";
 import { notify } from "./notify.ts";
-import type { MessageStatus, StoredMessage } from "./schema.ts";
+import type { StoredMessage } from "./schema.ts";
 
 export type StoredStatus = MessageStatus | "deleted";
 

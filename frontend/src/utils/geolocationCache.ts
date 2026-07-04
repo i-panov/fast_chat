@@ -1,4 +1,4 @@
-import type { Location } from "../api.ts";
+import type { Location } from "../types/api.ts";
 
 const CACHED_LOCATION_KEY = "lastGeolocation";
 

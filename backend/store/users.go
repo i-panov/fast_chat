@@ -115,6 +115,9 @@ func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) map[string]stri
 	return out
 }
 
+// NOTE: LIKE '%...%' prevents index usage in SQLite. Acceptable for
+// the expected user base (<10K users). If performance becomes an issue,
+// add a FTS5 virtual table and migrate SearchUsers to MATCH.
 func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []model.PublicUser {
 	q := strings.ToLower(query)
 
@@ -131,7 +134,7 @@ func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []mode
 	out := make([]model.PublicUser, 0, len(users))
 	for _, u := range users {
 		_, online := s.online[u.ID]
-		out = append(out, model.PublicUser{ID: u.ID, Nick: u.Nick, Email: u.Email, Online: online})
+		out = append(out, model.PublicUser{ID: u.ID, Nick: u.Nick, Online: online})
 	}
 
 	return out

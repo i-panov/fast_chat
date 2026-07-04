@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Chat } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import type { StoredChat } from "../db/schema.ts";
 import { useLiveQuery } from "../db/useLiveQuery.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
+import type { Chat } from "../types/api.ts";
+import { stripMeta } from "../utils/helpers.ts";
 
 interface UseChatListParams {
 	token: string | undefined;
@@ -16,12 +17,6 @@ interface UseChatListReturn {
 	selectChat: (chatId: string | null) => void;
 }
 
-function stripMetadata(sc: StoredChat): Chat {
-	const { _updatedAt: _u, ...rest } = sc;
-	void _u;
-	return rest;
-}
-
 export function useChatList({ token }: UseChatListParams): UseChatListReturn {
 	const [activeChatId, setActiveChatId] = useState<string | null>(null);
 	const query = useCallback(() => chatsRepo.getAll(), []);
@@ -32,7 +27,7 @@ export function useChatList({ token }: UseChatListParams): UseChatListReturn {
 		scheduleSync();
 	}, [token]);
 
-	const chats = storedChats?.map(stripMetadata) ?? [];
+	const chats = storedChats?.map(stripMeta) ?? [];
 	const activeChat = chats.find((c) => c.id === activeChatId);
 
 	const selectChat = useCallback((chatId: string | null) => {

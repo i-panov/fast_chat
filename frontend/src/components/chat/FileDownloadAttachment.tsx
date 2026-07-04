@@ -1,12 +1,11 @@
 import { Loader, Text, UnstyledButton } from "@mantine/core";
 import { Download } from "lucide-react";
 import { useState } from "react";
-import type { FileInfo } from "../../api.ts";
+import type { FileInfo } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
+import { BORDER_RADIUS_SM } from "../../utils/constants.ts";
 import { downloadFile } from "../../utils/downloadFile.ts";
 import { formatSize } from "../../utils/files.ts";
-
-const BORDER_RADIUS_SM = 6;
 
 interface Props {
 	file: FileInfo;

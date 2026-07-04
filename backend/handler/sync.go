@@ -66,7 +66,7 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		DeletedChats:    h.buildDeletedChats(r.Context(), user.ID, since),
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	WriteJSON(w, http.StatusOK, resp)
 }
 
 func parseSince(sinceStr string) (time.Time, error) {

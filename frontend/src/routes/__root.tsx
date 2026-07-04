@@ -1,4 +1,5 @@
 import { MantineProvider } from "@mantine/core";
+import { Notifications } from "@mantine/notifications";
 import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
@@ -21,6 +22,7 @@ function RootDocument() {
 
 	return (
 		<MantineProvider defaultColorScheme="dark">
+			<Notifications />
 			<AudioProvider>
 				<AuthProvider>
 					<ErrorBoundary>

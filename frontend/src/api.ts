@@ -1,3 +1,16 @@
+import type {
+	AppConfig,
+	Chat,
+	CreateChatOptions,
+	EditMessageOptions,
+	FileInfo,
+	Location,
+	Message,
+	SyncResponse,
+	Thread,
+	User,
+	VerifyCodeResult,
+} from "./types/api.ts";
 import { emitUnauthorized } from "./utils/authEvents.ts";
 
 const HTTP_UNAUTHORIZED = 401;
@@ -27,105 +40,6 @@ async function request<T>(
 	}
 	return res.json() as Promise<T>;
 }
-
-export interface User {
-	id: string;
-	nick: string;
-	email?: string;
-	online: boolean;
-}
-
-export interface MemberInfo {
-	id: string;
-	nick: string;
-}
-
-export interface Chat {
-	id: string;
-	type: "private" | "group";
-	name: string;
-	ownerId: string;
-	avatarUrl?: string;
-	members: MemberInfo[];
-	createdAt: string;
-}
-
-export interface ReplyToInfo {
-	messageId: string;
-	text: string;
-	fromNick: string;
-	files?: FileInfo[];
-	location?: Location;
-}
-
-export interface Location {
-	lat: number;
-	lng: number;
-}
-
-export interface FileInfo {
-	id: string;
-	mimeType: string;
-	size: number;
-	originalName: string;
-	fileType: "photo" | "video" | "audio" | "file";
-	url: string;
-}
-
-export interface PendingFile {
-	id: string;
-	file: File;
-	blobUrl: string;
-	originalName: string;
-	size: number;
-	mimeType: string;
-	fileType: "photo" | "video" | "audio" | "file";
-}
-
-export type MessageStatus = "sent" | "queued" | "failed";
-
-export interface Message {
-	id: string;
-	chatId: string;
-	fromId: string;
-	fromNick: string;
-	text: string;
-	createdAt: string;
-	editedAt?: string;
-	replyTo?: ReplyToInfo;
-	files?: FileInfo[];
-	location?: Location;
-	status?: MessageStatus;
-}
-
-export interface Thread {
-	id: string;
-	chatId: string;
-	parentMessageId: string;
-	parentMessageText: string;
-	parentMessageFrom: string;
-	createdAt: string;
-	messageCount: number;
-}
-
-export interface AppConfig {
-	messageEditTTL: number;
-	messageDeleteTTL: number;
-}
-
-export interface VerifyCodeExisting {
-	isNew: false;
-	user: User;
-	token: string;
-	expiresAt: string;
-}
-
-export interface VerifyCodeNew {
-	isNew: true;
-	setupToken: string;
-}
-
-export type VerifyCodeResult = VerifyCodeExisting | VerifyCodeNew;
 
 export function sendCode(email: string) {
 	return request<{ status: string; debugCode?: string }>(
@@ -175,10 +89,6 @@ export function searchUsers(token: string, q: string) {
 export function getChats(token: string) {
 	return request<{ chats: Chat[] }>("/api/chats", token);
 }
-
-export type CreateChatOptions =
-	| { type: "private"; withUserId: string }
-	| { type: "group"; name: string; memberIds: string[] };
 
 export function createChat(token: string, opts: CreateChatOptions) {
 	return request<{ chat: Chat }>("/api/chats", token, {
@@ -257,18 +167,30 @@ export function getMessages(
 	);
 }
 
-export function sendMessage(
-	token: string,
-	chatId: string,
-	text: string,
-	id: string,
-	replyToId?: string,
-	fileIDs?: string[],
-	location?: Location,
-) {
-	return request<{ message: Message }>(`/api/chats/${chatId}/messages`, token, {
+export interface SendMessageParams {
+	chatId: string;
+	text: string;
+	id: string;
+	replyToId?: string;
+	fileIDs?: string[];
+	location?: Location;
+	threadId?: string;
+}
+
+export function sendMessage(token: string, params: SendMessageParams) {
+	const path =
+		params.threadId !== undefined
+			? `/api/chats/${params.chatId}/threads/${params.threadId}/messages`
+			: `/api/chats/${params.chatId}/messages`;
+	return request<{ message: Message }>(path, token, {
 		method: "POST",
-		body: JSON.stringify({ id, text, replyToId, fileIDs, location }),
+		body: JSON.stringify({
+			id: params.id,
+			text: params.text,
+			replyToId: params.replyToId,
+			fileIDs: params.fileIDs,
+			location: params.location,
+		}),
 	});
 }
 
@@ -294,66 +216,35 @@ export function deleteMessage(
 	);
 }
 
-export interface EditMessageOptions {
-	location?: Location | null;
-	clearLocation?: boolean;
+export interface EditMessageParams {
+	chatId: string;
+	messageId: string;
+	text: string;
+	fileIDs?: string[];
+	opts?: EditMessageOptions;
+	threadId?: string;
 }
 
-export function editMessage(
-	token: string,
-	chatId: string,
-	messageId: string,
-	text: string,
-	fileIDs?: string[],
-	opts?: EditMessageOptions,
-) {
-	const body: {
-		text: string;
-		fileIDs?: string[];
-		location?: Location | null;
-	} = { text };
-
-	if (fileIDs !== undefined) body.fileIDs = fileIDs;
-	if (opts?.clearLocation) {
+function buildEditBody(params: EditMessageParams): Record<string, unknown> {
+	const body: Record<string, unknown> = { text: params.text };
+	if (params.fileIDs !== undefined) body.fileIDs = params.fileIDs;
+	if (params.opts?.clearLocation) {
 		body.location = null;
-	} else if (opts?.location !== undefined) {
-		body.location = opts.location;
+	} else if (params.opts?.location !== undefined) {
+		body.location = params.opts.location;
 	}
-
-	return request<{ message: Message }>(
-		`/api/chats/${chatId}/messages/${messageId}`,
-		token,
-		{ method: "PATCH", body: JSON.stringify(body) },
-	);
+	return body;
 }
 
-export function editThreadMessage(
-	token: string,
-	chatId: string,
-	threadId: string,
-	messageId: string,
-	text: string,
-	fileIDs?: string[],
-	opts?: EditMessageOptions,
-) {
-	const body: {
-		text: string;
-		fileIDs?: string[];
-		location?: Location | null;
-	} = { text };
-
-	if (fileIDs !== undefined) body.fileIDs = fileIDs;
-	if (opts?.clearLocation) {
-		body.location = null;
-	} else if (opts?.location !== undefined) {
-		body.location = opts.location;
-	}
-
-	return request<{ message: Message }>(
-		`/api/chats/${chatId}/threads/${threadId}/messages/${messageId}`,
-		token,
-		{ method: "PATCH", body: JSON.stringify(body) },
-	);
+export function editMessage(token: string, params: EditMessageParams) {
+	const path =
+		params.threadId !== undefined
+			? `/api/chats/${params.chatId}/threads/${params.threadId}/messages/${params.messageId}`
+			: `/api/chats/${params.chatId}/messages/${params.messageId}`;
+	return request<{ message: Message }>(path, token, {
+		method: "PATCH",
+		body: JSON.stringify(buildEditBody(params)),
+	});
 }
 
 export function createThread(token: string, chatId: string, messageId: string) {
@@ -386,33 +277,6 @@ export function getThreads(token: string, chatId: string) {
 	return request<{ threads: Thread[] }>(`/api/chats/${chatId}/threads`, token);
 }
 
-// biome-ignore lint/complexity/useMaxParams: all params are required for the thread-send payload
-export function sendThreadMessage(
-	token: string,
-	chatId: string,
-	threadId: string,
-	text: string,
-	id: string,
-	replyToId?: string,
-	fileIDs?: string[],
-	location?: Location,
-) {
-	return request<{ message: Message }>(
-		`/api/chats/${chatId}/threads/${threadId}/messages`,
-		token,
-		{
-			method: "POST",
-			body: JSON.stringify({ id, text, replyToId, fileIDs, location }),
-		},
-	);
-}
-
-export interface TypingPayload {
-	chatId: string;
-	userId: string;
-	nick: string;
-}
-
 export function sendTyping(token: string, chatId: string, active: boolean) {
 	return request<{ status: string }>(`/api/chats/${chatId}/typing`, token, {
 		method: "POST",
@@ -422,25 +286,6 @@ export function sendTyping(token: string, chatId: string, active: boolean) {
 
 export function getConfig() {
 	return request<AppConfig>("/api/config", undefined);
-}
-
-export interface SyncDeletedMessage {
-	chatId: string;
-	messageId: string;
-	deletedAt: string;
-}
-
-export interface SyncDeletedChat {
-	chatId: string;
-	deletedAt: string;
-}
-
-export interface SyncResponse {
-	serverNow: string;
-	chats: Chat[];
-	deletedChats: SyncDeletedChat[];
-	messages: Message[];
-	deletedMessages: SyncDeletedMessage[];
 }
 
 export function getSync(token: string, since: string): Promise<SyncResponse> {

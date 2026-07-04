@@ -1,21 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import type {
-	Chat,
-	FileInfo,
-	Location,
-	Message,
-	Thread,
-	TypingPayload,
-	User,
-} from "../api.ts";
-import { createChat, refreshToken, sendTyping } from "../api.ts";
+import { createChat, refreshToken } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import {
 	retryFailedOps,
 	scheduleSync,
 	setTokenProvider,
 } from "../sync/syncEngine.ts";
-import type { EditingMessage, ReplyTarget } from "../types/chat.ts";
+import type { ChatPageState } from "../types/chat.ts";
 import { useAuth } from "../useAuth";
 import { useChatList } from "./useChatList";
 import { useGroupSettings } from "./useGroupSettings";
@@ -31,142 +22,6 @@ import { useSseEvents } from "./useSseEvents";
 import { useSyncStatus } from "./useSyncStatus";
 import { useThreads } from "./useThreads";
 import { useTyping } from "./useTyping";
-
-export interface ChatPageState {
-	activeAccount: { token: string; user: { id: string; nick: string } } | null;
-	user: { id: string; nick: string } | null;
-	logout: () => void;
-
-	switcherOpen: boolean;
-	setSwitcherOpen: (open: boolean) => void;
-
-	chats: Chat[];
-	activeChatId: string | null;
-	activeChat: Chat | undefined;
-	selectChat: (chatId: string | null) => void;
-
-	activeMessages: Array<Message & { status: "sent" | "queued" | "failed" }>;
-	hasMore: boolean;
-	isLoadingMore: boolean;
-	loadMoreMessages: (chatId: string | null) => Promise<void>;
-
-	threads: Record<string, Thread>;
-	messageToThread: Record<string, string>;
-	activeThreadId: string | null;
-	activeThread: Thread | null;
-	activeThreadMessages: Message[];
-	threadHasMore: boolean;
-	threadIsLoadingMore: boolean;
-	handleOpenThread: (threadId: string) => void;
-	handleCloseThread: () => void;
-	loadMoreThreadMessages: () => Promise<void>;
-	handleCreateThread: (chatId: string, messageId: string) => Promise<void>;
-
-	typingUsers: Record<string, TypingPayload[]>;
-	handleTyping: (chatId: string, active: boolean) => void;
-
-	pendingFiles: PendingFileLite[];
-	handleAttachFiles: (files: File[]) => void;
-	handleRemoveFile: (id: string) => void;
-
-	config: { messageEditTTL: number; messageDeleteTTL: number } | null;
-
-	searchQuery: string;
-	searchResults: User[];
-	showSearchResults: boolean;
-	handleSearchChange: (value: string) => void;
-
-	pendingChatWith: string | null;
-	pendingChatNick: string | null;
-	selectPendingChat: (withUserId: string, withUserNick: string) => void;
-
-	inputText: string;
-	setInputText: (v: string) => void;
-
-	handleSend: (e: React.FormEvent<HTMLFormElement>) => Promise<void>;
-	handleSendThreadMessage: (
-		e: React.FormEvent<HTMLFormElement>,
-	) => Promise<void>;
-
-	handleDeleteMessage: (chatId: string, messageId: string) => void;
-
-	editingMessage: EditingMessage | null;
-	handleStartEdit: (
-		chatId: string,
-		messageId: string,
-		text: string,
-		files?: FileInfo[],
-		threadId?: string,
-	) => void;
-	handleCancelEdit: () => void;
-	handleRemoveExistingFile: (fileId: string) => void;
-	handleRemoveExistingLocation: () => void;
-
-	replyToMessage: ReplyTarget | null;
-	handleReply: (chatId: string, messageId: string) => void;
-	cancelReply: () => void;
-
-	handleRetryMessage: (chatId: string, messageId: string) => Promise<void>;
-	handleCancelSendMessage: (
-		chatId: string,
-		messageId: string,
-		threadId?: string,
-	) => Promise<void>;
-	handleDeleteThreadMessage: (threadId: string, messageId: string) => void;
-	handleRetryThreadMessage: (
-		threadId: string,
-		messageId: string,
-	) => Promise<void>;
-
-	pendingLocation: Location | null;
-	locationPickerOpen: boolean;
-	setLocationPickerOpen: (v: boolean) => void;
-	openLocationPicker: () => void;
-	handleLocationConfirm: (loc: Location) => void;
-	handleRemovePendingLocation: () => void;
-
-	createGroupOpen: boolean;
-	setCreateGroupOpen: (v: boolean) => void;
-	handleCreateGroup: (name: string, memberIds: string[]) => Promise<void>;
-	groupSettingsChatId: string | null;
-	groupSettings: Chat | null;
-	openGroupSettings: (chatId: string) => Promise<void>;
-	closeGroupSettings: () => void;
-	handleRenameGroup: (name: string) => Promise<void>;
-	handleAddGroupMember: (userId: string) => Promise<void>;
-	handleRemoveGroupMember: (userId: string) => Promise<void>;
-	handleDeleteGroup: () => Promise<void>;
-	handleUploadGroupAvatar: (file: File) => Promise<void>;
-
-	isOnline: boolean;
-	syncState: "idle" | "syncing" | "error";
-}
-
-interface PendingFileLite {
-	id: string;
-	file: File;
-	blobUrl: string;
-	originalName: string;
-	size: number;
-	mimeType: string;
-	fileType: "photo" | "video" | "audio" | "file";
-}
-
-export type { EditingMessage, ReplyTarget } from "../types/chat.ts";
-
-export { useChatList } from "./useChatList";
-export { useGroupSettings } from "./useGroupSettings";
-export { useLocationPicker } from "./useLocationPicker";
-export { useMessageEditor } from "./useMessageEditor";
-export { useMessageSearch } from "./useMessageSearch";
-export { useMessageSender } from "./useMessageSender";
-export { useMessages } from "./useMessages";
-export { useNetworkStatus } from "./useNetworkStatus";
-export { usePendingFiles } from "./usePendingFiles";
-export { useSseEvents } from "./useSseEvents";
-export { useSyncStatus } from "./useSyncStatus";
-export { useThreads } from "./useThreads";
-export { useTyping } from "./useTyping";
 
 export function useChatPage(): ChatPageState {
 	const { activeAccount, logout, updateAccountToken } = useAuth();
@@ -206,7 +61,9 @@ export function useChatPage(): ChatPageState {
 		token,
 		chatId: activeChatId,
 	});
-	const { typingUsers, addTypingUser, clearTyping } = useTyping({ token });
+	const { typingUsers, handleTyping, addTypingUser, clearTyping } = useTyping({
+		token,
+	});
 	const {
 		pendingFiles,
 		handleAttachFiles,
@@ -229,7 +86,6 @@ export function useChatPage(): ChatPageState {
 		setLocationPickerOpen,
 		openLocationPicker,
 		handleLocationConfirm,
-		handleRemovePendingLocation,
 		clearPendingLocation,
 	} = useLocationPicker();
 
@@ -306,14 +162,6 @@ export function useChatPage(): ChatPageState {
 		},
 	});
 
-	const handleTyping = useCallback(
-		(chatId: string, active: boolean) => {
-			if (!token) return;
-			sendTyping(token, chatId, active).catch(() => {});
-		},
-		[token],
-	);
-
 	const handleRemoveFile = useCallback(
 		(id: string) => {
 			removeFile(id);
@@ -321,7 +169,7 @@ export function useChatPage(): ChatPageState {
 		[removeFile],
 	);
 
-	const handleSend = useCallback(
+	const handleSubmit = useCallback(
 		async (e: React.FormEvent<HTMLFormElement>) => {
 			e.preventDefault();
 			if (!token || !user) return;
@@ -359,6 +207,8 @@ export function useChatPage(): ChatPageState {
 					location: pendingLocation ?? undefined,
 				});
 				clearPendingChat();
+			} else if (activeThreadId !== null && activeChatId === null) {
+				return;
 			} else if (activeChatId !== null) {
 				await sendMessage({
 					chatId: activeChatId,
@@ -366,6 +216,7 @@ export function useChatPage(): ChatPageState {
 					pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
 					location: pendingLocation ?? undefined,
 					replyToId: replyToMessage?.messageId,
+					threadId: activeThreadId ?? undefined,
 				});
 			}
 
@@ -383,6 +234,7 @@ export function useChatPage(): ChatPageState {
 			editingMessage,
 			pendingChatWith,
 			activeChatId,
+			activeThreadId,
 			replyToMessage,
 			sendMessage,
 			editMessage,
@@ -395,58 +247,8 @@ export function useChatPage(): ChatPageState {
 		],
 	);
 
-	const handleSendThreadMessage = useCallback(
-		async (e: React.FormEvent<HTMLFormElement>) => {
-			e.preventDefault();
-			if (!token || !activeThreadId || !activeChatId) return;
-
-			const text = inputText.trim();
-			if (!text && pendingFiles.length === 0 && !pendingLocation) return;
-
-			if (editingMessage?.threadId) {
-				await editMessage({
-					chatId: editingMessage.chatId,
-					messageId: editingMessage.messageId,
-					text,
-					pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
-					location: editingMessage.location,
-					clearLocation: editingMessage.location === null,
-					threadId: editingMessage.threadId,
-				});
-				clearEditing();
-			} else {
-				await sendMessage({
-					chatId: activeChatId,
-					text,
-					pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
-					location: pendingLocation ?? undefined,
-					replyToId: replyToMessage?.messageId,
-					threadId: activeThreadId,
-				});
-			}
-
-			setInputText("");
-			clearAllPendingFiles();
-			clearReply();
-			clearPendingLocation();
-		},
-		[
-			token,
-			activeThreadId,
-			activeChatId,
-			inputText,
-			pendingFiles,
-			pendingLocation,
-			editingMessage,
-			replyToMessage,
-			sendMessage,
-			editMessage,
-			clearAllPendingFiles,
-			clearEditing,
-			clearReply,
-			clearPendingLocation,
-		],
-	);
+	const handleSend = handleSubmit;
+	const handleSendThreadMessage = handleSubmit;
 
 	const handleCancelEdit = useCallback(() => {
 		clearEditing();
@@ -497,7 +299,7 @@ export function useChatPage(): ChatPageState {
 		handleCreateThread: createThread,
 		typingUsers,
 		handleTyping,
-		pendingFiles: pendingFiles as PendingFileLite[],
+		pendingFiles,
 		handleAttachFiles,
 		handleRemoveFile,
 		config,
@@ -530,7 +332,7 @@ export function useChatPage(): ChatPageState {
 		setLocationPickerOpen,
 		openLocationPicker,
 		handleLocationConfirm,
-		handleRemovePendingLocation,
+		clearPendingLocation,
 		createGroupOpen,
 		setCreateGroupOpen,
 		handleCreateGroup,

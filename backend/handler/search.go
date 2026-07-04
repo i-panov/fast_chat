@@ -21,7 +21,7 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if utf8.RuneCountInString(strings.TrimSpace(query)) < nickMinSearchRunes {
-		writeJSON(w, http.StatusOK, map[string]any{"users": []model.PublicUser{}})
+		WriteJSON(w, http.StatusOK, map[string]any{"users": []model.PublicUser{}})
 		return
 	}
 
@@ -30,11 +30,16 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 		users = []model.PublicUser{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"users": users})
+	WriteJSON(w, http.StatusOK, map[string]any{"users": users})
 }
 
 func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remoteNick, remoteDomain string) {
 	if remoteNick == "" || remoteDomain == "" || utf8.RuneCountInString(remoteNick) < nickMinSearchRunes {
+		writeError(w, http.StatusBadRequest, "invalid search query")
+		return
+	}
+
+	if !isValidRemoteDomain(remoteDomain) {
 		writeError(w, http.StatusBadRequest, "invalid search query")
 		return
 	}
@@ -45,7 +50,7 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 			users = []model.PublicUser{}
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{"users": users})
+		WriteJSON(w, http.StatusOK, map[string]any{"users": users})
 
 		return
 	}
@@ -54,7 +59,8 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 
 	data, err := h.doFederatedRequest(r.Context(), http.MethodGet, remoteURL, nil)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		logger.Warn("remote search failed", "err", err)
+		writeError(w, http.StatusBadGateway, "remote search failed")
 		return
 	}
 
@@ -75,5 +81,5 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"users": result.Users})
+	WriteJSON(w, http.StatusOK, map[string]any{"users": result.Users})
 }

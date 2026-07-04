@@ -2,45 +2,21 @@ import { Button, Group, Modal, NumberInput, Stack, Text } from "@mantine/core";
 import { Crosshair, Loader, MapPin } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-	MapContainer,
-	Marker,
-	TileLayer,
-	useMap,
-	useMapEvents,
-} from "react-leaflet";
-import type { Location } from "../../api.ts";
+import { MapContainer, Marker, TileLayer, useMap } from "react-leaflet";
+import type { Location } from "../../types/api.ts";
 import { formatCoords } from "../../utils/chat.ts";
 import {
 	getLastCachedLocation,
 	requestGeolocation,
 } from "../../utils/geolocationCache.ts";
 import "../../utils/leafletIconFix.ts";
-
-function MapAutoSize({ open }: { open: boolean }) {
-	const map = useMap();
-	useEffect(() => {
-		if (!open) return;
-		const timer = setTimeout(() => map.invalidateSize(), 200);
-		return () => clearTimeout(timer);
-	}, [map, open]);
-	return null;
-}
+import { MapAutoSize, MapClickHandler } from "./MapHelpers.tsx";
 
 interface Props {
 	open: boolean;
 	initial: Location | null;
 	onClose: () => void;
 	onConfirm: (loc: Location) => void;
-}
-
-function MapClickHandler({ onClick }: { onClick: (loc: Location) => void }) {
-	useMapEvents({
-		click: (e) => {
-			onClick({ lat: e.latlng.lat, lng: e.latlng.lng });
-		},
-	});
-	return null;
 }
 
 function MapRecenter({ center }: { center: [number, number] }) {
@@ -53,7 +29,7 @@ function MapRecenter({ center }: { center: [number, number] }) {
 	return null;
 }
 
-const DEFAULT_CENTER: [number, number] = [52.52, 13.405]; // Berlin
+const DEFAULT_CENTER: [number, number] = [55.7558, 37.6173]; // Moscow
 const DEFAULT_ZOOM = 13;
 
 export function LocationPickerModal({

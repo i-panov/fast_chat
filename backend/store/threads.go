@@ -2,12 +2,8 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
-
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"fast_chat/model"
 )
@@ -81,107 +77,4 @@ func (s *Store) GetThreadsForChat(ctx context.Context, chatID string) []model.Th
 
 func (s *Store) GetThreadMessagesPaginated(ctx context.Context, threadID string, limit int, before string) ([]model.Message, string, bool) {
 	return s.paginateMessages(ctx, threadID, limit, before)
-}
-
-func (s *Store) AddThreadMessage(ctx context.Context, threadID, fromID, fromNick, text, messageID, replyToID string, location *model.Location) (*model.Message, error) {
-	var thread model.Thread
-
-	if err := s.db.WithContext(ctx).First(&thread, "id = ?", threadID).Error; err != nil {
-		return nil, ErrThreadNotFound
-	}
-
-	var replyTo *model.ReplyToInfo
-
-	if replyToID != "" {
-		var replyMsg model.Message
-
-		if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", threadID, replyToID).First(&replyMsg).Error; err != nil {
-			return nil, ErrMessageNotFound
-		}
-
-		replyTo = &model.ReplyToInfo{
-			MessageID: replyToID,
-			Text:      replyMsg.Text,
-			FromNick:  replyMsg.FromNick,
-			Files:     s.GetMessageFilesForReply(ctx, replyMsg.ID),
-			Location:  replyMsg.Location,
-		}
-	}
-
-	id := messageID
-	if id == "" {
-		id = GenerateID()
-	}
-
-	now := time.Now()
-	msg := model.Message{
-		ID:        id,
-		ChatID:    threadID,
-		FromID:    fromID,
-		FromNick:  fromNick,
-		Text:      text,
-		CreatedAt: now,
-		UpdatedAt: now,
-		ReplyTo:   replyTo,
-		Location:  location,
-	}
-
-	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&msg).Error; err != nil {
-		return nil, err
-	}
-
-	s.db.WithContext(ctx).Model(&model.Thread{}).Where("id = ?", threadID).
-		UpdateColumn("message_count", gorm.Expr("message_count + 1"))
-
-	return &msg, nil
-}
-
-func (s *Store) EditThreadMessage(ctx context.Context, threadID, messageID, userID, newText string, location *model.Location, clearLocation bool) (model.Message, error) {
-	var thread model.Thread
-
-	if err := s.db.WithContext(ctx).First(&thread, "id = ?", threadID).Error; err != nil {
-		return model.Message{}, ErrThreadNotFound
-	}
-
-	var msg model.Message
-
-	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", threadID, messageID).First(&msg).Error; err != nil {
-		return model.Message{}, ErrMessageNotFound
-	}
-
-	if msg.FromID != userID {
-		return model.Message{}, ErrNotYourMessage
-	}
-
-	now := time.Now()
-	msg.Text = newText
-	msg.EditedAt = &now
-	msg.UpdatedAt = now
-
-	updates := map[string]any{
-		fieldText:      newText,
-		fieldEditedAt:  &now,
-		fieldUpdatedAt: now,
-	}
-
-	switch {
-	case clearLocation:
-		updates["location"] = nil
-		msg.Location = nil
-
-	case location != nil:
-		raw, err := json.Marshal(location)
-		if err != nil {
-			return model.Message{}, err
-		}
-
-		updates["location"] = string(raw)
-		msg.Location = location
-	}
-
-	if err := s.db.WithContext(ctx).Model(&model.Message{}).Where("chat_id = ? AND id = ?", threadID, messageID).Updates(updates).Error; err != nil {
-		return model.Message{}, err
-	}
-
-	return msg, nil
 }

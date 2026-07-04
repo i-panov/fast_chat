@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getMessages, type Message, type MessageStatus } from "../api.ts";
+import { getMessages } from "../api.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import type { StoredMessage } from "../db/schema.ts";
 import { useLiveQuery } from "../db/useLiveQuery.ts";
 import i18n from "../i18n.ts";
+import type { Message, MessageStatus } from "../types/api.ts";
+import { stripMeta } from "../utils/helpers.ts";
 import { emitNotification } from "../utils/notify.ts";
 
 export interface MessageWithStatus extends Message {
@@ -25,13 +27,9 @@ interface UseMessagesReturn {
 const PAGE_SIZE = 30;
 
 function toClientMessage(sm: StoredMessage): MessageWithStatus {
-	const { _updatedAt: _u, ...rest } = sm;
-	void _u;
-	// "deleted" is a local tombstone — if a row slips through the
-	// filter, surface it as a normal sent bubble so the user can
-	// still see what was there if a future edit revives it.
+	const base = stripMeta(sm);
 	const status: MessageStatus = sm.status === "deleted" ? "sent" : sm.status;
-	return { ...rest, status };
+	return { ...base, status };
 }
 
 export function useMessages({

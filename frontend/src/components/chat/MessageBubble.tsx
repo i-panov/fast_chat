@@ -7,9 +7,9 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { FileInfo, Location, ReplyToInfo } from "../../api.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { getCurrentLocale } from "../../i18n.ts";
+import type { FileInfo, Location, ReplyToInfo } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { MessageAttachments } from "./bubble/MessageAttachments.tsx";
 import { MessageAuthor } from "./bubble/MessageAuthor.tsx";
@@ -62,6 +62,27 @@ function isWithinTTL(createdAt: string, ttl: number): boolean {
 	return (Date.now() - new Date(createdAt).getTime()) / 1000 <= ttl;
 }
 
+function deepEq(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (a == null || b == null) return false;
+	if (Array.isArray(a) && Array.isArray(b)) {
+		if (a.length !== b.length) return false;
+		return a.every((v, i) => deepEq(v, b[i]));
+	}
+	if (typeof a === "object" && typeof b === "object") {
+		const ka = Object.keys(a as Record<string, unknown>);
+		const kb = Object.keys(b as Record<string, unknown>);
+		if (ka.length !== kb.length) return false;
+		return ka.every((k) =>
+			deepEq(
+				(a as Record<string, unknown>)[k],
+				(b as Record<string, unknown>)[k],
+			),
+		);
+	}
+	return false;
+}
+
 function areEqual(prev: Props, next: Props): boolean {
 	return (
 		prev.text === next.text &&
@@ -71,9 +92,9 @@ function areEqual(prev: Props, next: Props): boolean {
 		prev.chatId === next.chatId &&
 		prev.msgId === next.msgId &&
 		prev.editedAt === next.editedAt &&
-		prev.replyTo === next.replyTo &&
-		prev.files === next.files &&
-		prev.location === next.location &&
+		deepEq(prev.replyTo, next.replyTo) &&
+		deepEq(prev.files, next.files) &&
+		deepEq(prev.location, next.location) &&
 		prev.editTTL === next.editTTL &&
 		prev.deleteTTL === next.deleteTTL &&
 		prev.createdAt === next.createdAt &&

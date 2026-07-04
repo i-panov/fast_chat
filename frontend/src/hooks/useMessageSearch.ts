@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { User } from "../api.ts";
 import { searchUsers } from "../api.ts";
+import type { User } from "../types/api.ts";
 
 export interface UseMessageSearchReturn {
 	searchQuery: string;

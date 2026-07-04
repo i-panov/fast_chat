@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Message, Thread } from "../api.ts";
 import {
 	createThread as apiCreateThread,
 	getThreadMessages,
@@ -10,6 +9,8 @@ import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
 import { useLiveQuery } from "../db/useLiveQuery.ts";
 import i18n from "../i18n.ts";
+import type { Message, Thread } from "../types/api.ts";
+import { stripMeta } from "../utils/helpers.ts";
 import { emitNotification } from "../utils/notify.ts";
 
 interface UseThreadsParams {
@@ -33,20 +34,6 @@ interface UseThreadsReturn {
 }
 
 const PAGE_SIZE = 30;
-
-function stripMeta(t: StoredThread): Thread {
-	const { _updatedAt: _u, ...rest } = t;
-	void _u;
-	return rest;
-}
-
-function stripMetaMsg(m: StoredThreadMessage): Message {
-	const { _updatedAt: _u, threadId: _tid, status: _s, ...rest } = m;
-	void _u;
-	void _tid;
-	void _s;
-	return rest;
-}
 
 export function useThreads({
 	token,
@@ -87,9 +74,13 @@ export function useThreads({
 		return { threadsMap: tm, messageToThread: mt };
 	}, [allStored]);
 
-	const activeThreadMessages = (activeThreadMessagesStored ?? []).map(
-		stripMetaMsg,
-	);
+	const activeThreadMessages = (activeThreadMessagesStored ?? []).map((m) => {
+		const { _updatedAt: _u, threadId: _tid, status: _s, ...rest } = m;
+		void _u;
+		void _tid;
+		void _s;
+		return rest;
+	});
 
 	useEffect(() => {
 		if (allStored) {

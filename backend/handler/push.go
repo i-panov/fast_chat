@@ -58,7 +58,7 @@ func (h *Handler) VapidPublicKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"publicKey": h.pushService.PublicKey()})
+	WriteJSON(w, http.StatusOK, map[string]string{"publicKey": h.pushService.PublicKey()})
 }
 
 func (h *Handler) SubscribePush(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +97,7 @@ func (h *Handler) SubscribePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{"subscription": sub})
+	WriteJSON(w, http.StatusCreated, map[string]any{"subscription": sub})
 }
 
 func isValidPushEndpoint(endpoint string) bool {
@@ -143,5 +143,5 @@ func (h *Handler) UnsubscribePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

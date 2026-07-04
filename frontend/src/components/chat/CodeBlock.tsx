@@ -1,9 +1,9 @@
 import { ActionIcon, Text } from "@mantine/core";
 import { Check, Copy } from "lucide-react";
 import { useState } from "react";
+import { BORDER_RADIUS_XS } from "../../utils/constants.ts";
 
 const CODE_BLOCK_MAX_HEIGHT = 300;
-const BORDER_RADIUS_XS = 4;
 
 interface Props {
 	className?: string;

@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { Location } from "../api.ts";
+import type { Location } from "../types/api.ts";
 
 export interface UseLocationPickerReturn {
 	pendingLocation: Location | null;
@@ -7,7 +7,6 @@ export interface UseLocationPickerReturn {
 	setLocationPickerOpen: (v: boolean) => void;
 	openLocationPicker: () => void;
 	handleLocationConfirm: (loc: Location) => void;
-	handleRemovePendingLocation: () => void;
 	clearPendingLocation: () => void;
 }
 
@@ -24,10 +23,6 @@ export function useLocationPicker(): UseLocationPickerReturn {
 		setLocationPickerOpen(false);
 	}, []);
 
-	const handleRemovePendingLocation = useCallback(() => {
-		setPendingLocation(null);
-	}, []);
-
 	const clearPendingLocation = useCallback(() => {
 		setPendingLocation(null);
 	}, []);
@@ -38,7 +33,6 @@ export function useLocationPicker(): UseLocationPickerReturn {
 		setLocationPickerOpen,
 		openLocationPicker,
 		handleLocationConfirm,
-		handleRemovePendingLocation,
 		clearPendingLocation,
 	};
 }

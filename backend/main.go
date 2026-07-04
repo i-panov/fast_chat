@@ -5,14 +5,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -20,115 +18,9 @@ import (
 	"fast_chat/federation"
 	"fast_chat/handler"
 	"fast_chat/push"
+	"fast_chat/ratelimit"
 	"fast_chat/store"
 )
-
-type rateLimiter struct {
-	mu         sync.Mutex
-	entries    map[string][]time.Time
-	limit      int
-	window     time.Duration
-	maxEntries int
-	closeCh    chan struct{}
-}
-
-func newRateLimiter(limit int, window time.Duration, maxEntries int) *rateLimiter {
-	rl := &rateLimiter{
-		entries:    make(map[string][]time.Time),
-		limit:      limit,
-		window:     window,
-		maxEntries: maxEntries,
-		closeCh:    make(chan struct{}),
-	}
-
-	go rl.clean()
-
-	return rl
-}
-
-func (rl *rateLimiter) allow(ip string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	if len(rl.entries) >= rl.maxEntries {
-		now := time.Now()
-
-		cutoff := now.Add(-rl.window)
-		for ip, timestamps := range rl.entries {
-			var valid []time.Time
-
-			for _, t := range timestamps {
-				if t.After(cutoff) {
-					valid = append(valid, t)
-				}
-			}
-
-			if len(valid) == 0 {
-				delete(rl.entries, ip)
-			} else {
-				rl.entries[ip] = valid
-			}
-		}
-	}
-
-	now := time.Now()
-	cutoff := now.Add(-rl.window)
-
-	timestamps := rl.entries[ip]
-
-	var valid []time.Time
-
-	for _, t := range timestamps {
-		if t.After(cutoff) {
-			valid = append(valid, t)
-		}
-	}
-
-	if len(valid) >= rl.limit {
-		rl.entries[ip] = valid
-
-		return false
-	}
-
-	rl.entries[ip] = append(valid, now)
-
-	return true
-}
-
-func (rl *rateLimiter) clean() {
-	ticker := time.NewTicker(rl.window)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			rl.mu.Lock()
-			now := time.Now()
-			cutoff := now.Add(-rl.window)
-
-			for ip, timestamps := range rl.entries {
-				var valid []time.Time
-
-				for _, t := range timestamps {
-					if t.After(cutoff) {
-						valid = append(valid, t)
-					}
-				}
-
-				if len(valid) == 0 {
-					delete(rl.entries, ip)
-				} else {
-					rl.entries[ip] = valid
-				}
-			}
-
-			rl.mu.Unlock()
-
-		case <-rl.closeCh:
-			return
-		}
-	}
-}
 
 func corsMiddleware(origin string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -148,11 +40,21 @@ func corsMiddleware(origin string) func(http.Handler) http.Handler {
 	}
 }
 
-func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("X-XSS-Protection", "0")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func rateLimitMiddleware(rl *ratelimit.RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := r.RemoteAddr
-			if !rl.allow(ip) {
+			ip := ratelimit.ClientIP(r)
+			if !rl.Allow(ip) {
 				http.Error(w, "too many requests", http.StatusTooManyRequests)
 
 				return
@@ -191,29 +93,29 @@ func main() {
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o750); err != nil {
-		log.Printf("FATAL: Failed to create data directory: %v", err)
+		slog.Error("failed to create data directory", "err", err)
 		os.Exit(1)
 	}
 
 	if err := os.MkdirAll(cfg.Uploads.Dir, 0o750); err != nil {
-		log.Printf("FATAL: Failed to create upload directory: %v", err)
+		slog.Error("failed to create upload directory", "err", err)
 		os.Exit(1)
 	}
 
 	if err := os.MkdirAll(cfg.Push.KeyPath, 0o700); err != nil {
-		log.Printf("FATAL: Failed to create push keys directory: %v", err)
+		slog.Error("failed to create push keys directory", "err", err)
 		os.Exit(1)
 	}
 
 	db, err := store.InitDB(cfg.Database.Path)
 	if err != nil {
-		log.Printf("FATAL: Failed to initialize database: %v", err)
+		slog.Error("failed to initialize database", "err", err)
 		os.Exit(1)
 	}
 
 	fedKey, err := federation.LoadOrGenerateKeys(cfg.Federation.KeyPath)
 	if err != nil {
-		log.Printf("FATAL: Failed to load federation keys: %v", err)
+		slog.Error("failed to load federation keys", "err", err)
 		os.Exit(1)
 	}
 
@@ -223,7 +125,7 @@ func main() {
 	st.Codes().StartCleanup(context.Background(), time.Minute)
 
 	if err := st.AutoMigratePush(); err != nil {
-		log.Printf("FATAL: Failed to auto-migrate push subscriptions: %v", err)
+		slog.Error("failed to auto-migrate push subscriptions", "err", err)
 		os.Exit(1)
 	}
 
@@ -237,7 +139,7 @@ func main() {
 
 	pushService, err := push.NewService(cfg.Push.VAPIDSubject, cfg.Push.KeyPath, onPushExpired)
 	if err != nil {
-		log.Printf("FATAL: Failed to initialize push service: %v", err)
+		slog.Error("failed to initialize push service", "err", err)
 		os.Exit(1)
 	}
 
@@ -248,15 +150,15 @@ func main() {
 	mux.HandleFunc("GET /api/config", handlerInstance.GetConfig)
 
 	// Auth routes (no auth middleware, rate limited)
-	sendCodeRL := newRateLimiter(cfg.RateLimits.SendCode.Limit, cfg.RateLimits.SendCode.Window, 10000)
-	verifyCodeRL := newRateLimiter(cfg.RateLimits.VerifyCode.Limit, cfg.RateLimits.VerifyCode.Window, 10000)
-	registerRL := newRateLimiter(cfg.RateLimits.Register.Limit, cfg.RateLimits.Register.Window, 10000)
+	sendCodeRL := ratelimit.New(cfg.RateLimits.SendCode.Limit, cfg.RateLimits.SendCode.Window, 10000)
+	verifyCodeRL := ratelimit.New(cfg.RateLimits.VerifyCode.Limit, cfg.RateLimits.VerifyCode.Window, 10000)
+	registerRL := ratelimit.New(cfg.RateLimits.Register.Limit, cfg.RateLimits.Register.Window, 10000)
 
 	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL)(maxBody(1<<20, handlerInstance.SendCode)))
 	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL)(maxBody(1<<20, handlerInstance.VerifyCode)))
 	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL)(maxBody(1<<20, handlerInstance.CompleteRegistration)))
 
-	sseAuthRL := newRateLimiter(30, time.Minute, 10000)
+	sseAuthRL := ratelimit.New(30, time.Minute, 10000)
 	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL)(maxBody(1<<20, handlerInstance.SSEAuth)))
 	mux.HandleFunc("POST /api/auth/refresh-token", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.RefreshToken)))
 
@@ -277,7 +179,7 @@ func main() {
 	mux.HandleFunc("DELETE /api/chats/{id}", handlerInstance.AuthMiddleware(handlerInstance.DeleteChat))
 	mux.HandleFunc("POST /api/chats/{id}/members", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.AddChatMember)))
 	mux.HandleFunc("DELETE /api/chats/{id}/members/{userId}", handlerInstance.AuthMiddleware(handlerInstance.RemoveChatMember))
-	mux.HandleFunc("POST /api/chats/{id}/avatar", handlerInstance.AuthMiddleware(handlerInstance.UpdateChatAvatar))
+	mux.HandleFunc("POST /api/chats/{id}/avatar", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.UpdateChatAvatar)))
 	mux.HandleFunc("GET /api/chats/{id}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetMessages))
 	mux.HandleFunc("POST /api/chats/{id}/messages", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.SendMessage)))
 	mux.HandleFunc("PATCH /api/chats/{id}/messages/{messageId}", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.EditMessage)))
@@ -285,8 +187,8 @@ func main() {
 	mux.HandleFunc("POST /api/chats/{id}/messages/{messageId}/thread", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.CreateThread)))
 	mux.HandleFunc("GET /api/chats/{id}/threads", handlerInstance.AuthMiddleware(handlerInstance.GetThreads))
 	mux.HandleFunc("GET /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetThreadMessages))
-	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.SendThreadMessage)))
-	mux.HandleFunc("PATCH /api/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.EditThreadMessage)))
+	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.SendMessage)))
+	mux.HandleFunc("PATCH /api/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.EditMessage)))
 	mux.HandleFunc("POST /api/files/upload", handlerInstance.AuthMiddleware(handlerInstance.UploadFile))
 	mux.HandleFunc("GET /api/files/{fileId}", handlerInstance.AuthMiddleware(handlerInstance.ServeFile))
 	mux.HandleFunc("POST /api/chats/{id}/typing", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.HandleTyping)))
@@ -297,7 +199,7 @@ func main() {
 	mux.HandleFunc("POST /api/federated/chats", maxBody(1<<20, fedAuth(handlerInstance.FederatedCreateChat)))
 	mux.HandleFunc("POST /api/federated/chats/{id}/messages", maxBody(1<<20, fedAuth(handlerInstance.FederatedSendMessage)))
 	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", maxBody(1<<20, fedAuth(handlerInstance.FederatedEditMessage)))
-	mux.HandleFunc("PATCH /api/federated/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(1<<20, fedAuth(handlerInstance.FederatedEditThreadMessage)))
+	mux.HandleFunc("PATCH /api/federated/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(1<<20, fedAuth(handlerInstance.FederatedEditMessage)))
 	mux.HandleFunc("DELETE /api/federated/chats/{id}/messages/{messageId}", fedAuth(handlerInstance.FederatedDeleteMessage))
 	mux.HandleFunc("POST /api/federated/chats/{id}/typing", maxBody(1<<20, fedAuth(handlerInstance.FederatedHandleTyping)))
 	mux.HandleFunc("GET /api/federated/sync", fedAuth(handlerInstance.FederatedSync))
@@ -308,13 +210,13 @@ func main() {
 	// Static file serving for production frontend build
 	absStaticDir := resolveStaticDir(cfg.Server.StaticDir)
 
-	generalRL := newRateLimiter(cfg.RateLimits.General.Limit, cfg.RateLimits.General.Window, 10000)
+	generalRL := ratelimit.New(cfg.RateLimits.General.Limit, cfg.RateLimits.General.Window, 10000)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           corsMiddleware(cfg.CORS.Origin)(rateLimitMiddleware(generalRL)(spaFallbackMiddleware(absStaticDir)(mux))),
+		Handler:           securityHeadersMiddleware(corsMiddleware(cfg.CORS.Origin)(rateLimitMiddleware(generalRL)(spaFallbackMiddleware(absStaticDir)(mux)))),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      0,
@@ -335,11 +237,11 @@ func main() {
 	<-quit
 	slog.Info("shutting down server")
 
-	close(generalRL.closeCh)
-	close(sendCodeRL.closeCh)
-	close(verifyCodeRL.closeCh)
-	close(registerRL.closeCh)
-	close(sseAuthRL.closeCh)
+	generalRL.Close()
+	sendCodeRL.Close()
+	verifyCodeRL.Close()
+	registerRL.Close()
+	sseAuthRL.Close()
 
 	fedManager.Close()
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"net/mail"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -69,7 +70,7 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 		resp["debugCode"] = code
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	WriteJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +104,7 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{
+		WriteJSON(w, http.StatusOK, map[string]any{
 			"user":      user.Public(),
 			"token":     user.Token,
 			"expiresAt": user.TokenExpiresAt.Format(time.RFC3339),
@@ -115,7 +116,7 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 
 	setupToken := h.store.Codes().CreateSetupToken(req.Email, 10*time.Minute)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	WriteJSON(w, http.StatusOK, map[string]any{
 		"isNew":      true,
 		"setupToken": setupToken,
 	})
@@ -164,7 +165,7 @@ func (h *Handler) CompleteRegistration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	WriteJSON(w, http.StatusCreated, map[string]any{
 		"user":      user.Public(),
 		"token":     user.Token,
 		"expiresAt": user.TokenExpiresAt.Format(time.RFC3339),
@@ -182,7 +183,7 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	WriteJSON(w, http.StatusOK, map[string]any{
 		"token":     user.Token,
 		"expiresAt": user.TokenExpiresAt.Format(time.RFC3339),
 	})
@@ -220,16 +221,13 @@ func (h *Handler) SSEAuth(w http.ResponseWriter, r *http.Request) {
 
 	h.store.AddConnection(user.ID)
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func isValidEmail(email string) bool {
-	if idx := strings.LastIndex(email, "@"); idx > 0 && idx < len(email)-1 {
-		domain := email[idx+1:]
-		return strings.Contains(domain, ".")
-	}
+	_, err := mail.ParseAddress(email)
 
-	return false
+	return err == nil
 }
 
 func generateCode() (string, error) {

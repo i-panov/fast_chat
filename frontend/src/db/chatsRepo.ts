@@ -1,4 +1,4 @@
-import type { Chat } from "../api.ts";
+import type { Chat } from "../types/api.ts";
 import { getDB } from "./init.ts";
 import { notify } from "./notify.ts";
 import type { StoredChat } from "./schema.ts";

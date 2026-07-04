@@ -1,5 +1,5 @@
-import { useCallback, useState } from "react";
-import type { FileInfo, Message } from "../api.ts";
+import { useCallback, useRef, useState } from "react";
+import type { FileInfo, Message } from "../types/api.ts";
 import type { EditingMessage, ReplyTarget } from "../types/chat.ts";
 
 export interface UseMessageEditorReturn {
@@ -33,6 +33,8 @@ export function useMessageEditor(
 	const [replyToMessage, setReplyToMessage] = useState<ReplyTarget | null>(
 		null,
 	);
+	const activeMessagesRef = useRef(activeMessages);
+	activeMessagesRef.current = activeMessages;
 
 	const handleStartEdit = useCallback(
 		(
@@ -42,7 +44,7 @@ export function useMessageEditor(
 			files?: FileInfo[],
 			threadId?: string,
 		) => {
-			const msg = activeMessages.find((m) => m.id === messageId);
+			const msg = activeMessagesRef.current.find((m) => m.id === messageId);
 			setEditingMessage({
 				chatId,
 				messageId,
@@ -52,7 +54,7 @@ export function useMessageEditor(
 				location: msg?.location ?? null,
 			});
 		},
-		[activeMessages],
+		[],
 	);
 
 	const handleRemoveExistingFile = useCallback((fileId: string) => {
@@ -72,20 +74,17 @@ export function useMessageEditor(
 		});
 	}, []);
 
-	const handleReply = useCallback(
-		(chatId: string, messageId: string) => {
-			const msg = activeMessages.find((m) => m.id === messageId);
-			if (!msg) return;
-			setReplyToMessage({
-				chatId,
-				messageId,
-				fromNick: msg.fromNick,
-				text: msg.text,
-				files: msg.files,
-			});
-		},
-		[activeMessages],
-	);
+	const handleReply = useCallback((chatId: string, messageId: string) => {
+		const msg = activeMessagesRef.current.find((m) => m.id === messageId);
+		if (!msg) return;
+		setReplyToMessage({
+			chatId,
+			messageId,
+			fromNick: msg.fromNick,
+			text: msg.text,
+			files: msg.files,
+		});
+	}, []);
 
 	const cancelReply = useCallback(() => {
 		setReplyToMessage(null);

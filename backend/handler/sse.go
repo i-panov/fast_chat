@@ -12,7 +12,12 @@ import (
 func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 	connectionID := r.URL.Query().Get("connectionId")
 	if connectionID == "" {
-		http.Error(w, "connectionId required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "connectionId required")
+		return
+	}
+
+	if len(connectionID) > 128 {
+		writeError(w, http.StatusBadRequest, "connectionId too long")
 		return
 	}
 
@@ -30,7 +35,7 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
 

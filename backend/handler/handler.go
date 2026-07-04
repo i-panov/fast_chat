@@ -12,6 +12,7 @@ import (
 	"fast_chat/config"
 	"fast_chat/email"
 	"fast_chat/federation"
+	"fast_chat/internal/httputil"
 	"fast_chat/model"
 	"fast_chat/push"
 	"fast_chat/sse"
@@ -21,13 +22,16 @@ import (
 var logger = slog.Default()
 
 const (
-	mapKeyError        = "error"
-	errKeyUnauthorized = "unauthorized"
-	errKeyInvalidBody  = "invalid body"
-	errKeyChatNotFound = "chat not found"
-	errKeyNotMember    = "not a member"
-	errKeyEmptyMessage = "empty message"
-	errKeyFileTooLarge = "file too large"
+	mapKeyError          = "error"
+	errKeyUnauthorized   = "unauthorized"
+	errKeyInvalidBody    = "invalid body"
+	errKeyChatNotFound   = "chat not found"
+	errKeyNotMember      = "not a member"
+	errKeyEmptyMessage   = "empty message"
+	errKeyFileTooLarge   = "file too large"
+	errKeyUserNotFound   = "user not found"
+	errKeyMsgNotFound    = "message not found"
+	errKeyThreadNotFound = "thread not found"
 )
 
 var maxUploadSize int64 = 50 << 20
@@ -140,6 +144,40 @@ func isOwner(chat *model.Chat, userID string) bool {
 	return chat.OwnerID != "" && chat.OwnerID == userID
 }
 
+func (h *Handler) requireChatMember(w http.ResponseWriter, r *http.Request, chatID, userID string) *model.Chat {
+	chat, ok := h.store.GetChat(r.Context(), chatID)
+	if !ok {
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
+		return nil
+	}
+
+	if !isMember(chat, userID) {
+		writeError(w, http.StatusForbidden, errKeyNotMember)
+		return nil
+	}
+
+	return chat
+}
+
+func (h *Handler) requireGroupOwner(w http.ResponseWriter, r *http.Request, chatID, userID string) *model.Chat {
+	chat := h.requireChatMember(w, r, chatID, userID)
+	if chat == nil {
+		return nil
+	}
+
+	if chat.Type != "group" {
+		writeError(w, http.StatusBadRequest, "only group chats can be updated")
+		return nil
+	}
+
+	if !isOwner(chat, userID) {
+		writeError(w, http.StatusForbidden, "only owner can perform this action")
+		return nil
+	}
+
+	return chat
+}
+
 func validCoords(lat, lng float64) bool {
 	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
 }
@@ -173,13 +211,8 @@ func (h *Handler) decodeJSON(r *http.Request, v any) error {
 	return dec.Decode(v)
 }
 
-func writeJSON(w http.ResponseWriter, status int, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		logger.Error("writeJSON: failed to encode response", "err", err)
-	}
+func WriteJSON(w http.ResponseWriter, status int, data any) {
+	httputil.WriteJSON(w, status, data)
 }
 
 type errResp struct {
@@ -187,5 +220,5 @@ type errResp struct {
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, errResp{Error: message})
+	WriteJSON(w, status, errResp{Error: message})
 }

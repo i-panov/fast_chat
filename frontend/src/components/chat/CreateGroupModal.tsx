@@ -11,8 +11,8 @@ import {
 import { Plus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { User } from "../../api.ts";
 import { searchUsers } from "../../api.ts";
+import type { User } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 
 interface Props {

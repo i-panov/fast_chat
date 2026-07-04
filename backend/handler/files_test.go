@@ -141,7 +141,7 @@ func TestServeFileForcesAttachmentForHTML(t *testing.T) {
 
 	htmlFileID := uploadAndGetFileID(t, h, alice.token, "doc.html", htmlDoc)
 
-	msg, err := h.store.AddMessage(context.Background(), chatID, alice.id, alice.id, "see attached", "msg-x", "", nil)
+	msg, err := h.store.AddMessage(context.Background(), chatID, "", alice.id, alice.id, "see attached", "msg-x", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestServeFileAllowsInlineForImage(t *testing.T) {
 
 	pngFileID := uploadAndGetFileID(t, h, alice.token, "image.png", tinyPNG)
 
-	msg, err := h.store.AddMessage(context.Background(), chatID, alice.id, alice.id, "img", "msg-img", "", nil)
+	msg, err := h.store.AddMessage(context.Background(), chatID, "", alice.id, alice.id, "img", "msg-img", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

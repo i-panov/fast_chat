@@ -1,5 +1,5 @@
-import type { Chat, Location, MemberInfo } from "../api.ts";
 import { getCurrentLocale, default as i18n } from "../i18n.ts";
+import type { Chat, Location, MemberInfo } from "../types/api.ts";
 
 export function otherNick(members: MemberInfo[], myId: string): string {
 	return members.find((m) => m.id !== myId)?.nick ?? i18n.t("chat.unknownUser");

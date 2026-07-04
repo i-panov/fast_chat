@@ -1,10 +1,10 @@
 import { useCallback, useRef } from "react";
-import type { Chat, Message, Thread, TypingPayload } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
+import type { Chat, Message, Thread, TypingPayload } from "../types/api.ts";
 import { useSse } from "../useSse.ts";
 
 interface UseSseEventsParams {
@@ -31,7 +31,7 @@ export function useSseEvents({
 		(event: string, data: unknown) => {
 			if (event === "new_message" || event === "message_updated") {
 				const msg = data as Message;
-				void messagesRepo.upsert(msg);
+				void messagesRepo.upsert(msg, "sent");
 				return;
 			}
 			if (event === "message_deleted") {
@@ -71,7 +71,7 @@ export function useSseEvents({
 					threadId: string;
 					message: Message;
 				};
-				void threadMessagesRepo.upsert(message, threadId);
+				void threadMessagesRepo.upsert(message, threadId, "sent");
 				return;
 			}
 			if (event === "typing") {

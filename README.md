@@ -9,11 +9,11 @@ make backend:run    # Go сервер на :8080
 make frontend:run   # Vite dev-сервер на :5173
 ```
 
-Открыть `http://localhost:5173`, ввести ник — готово.
+Открыть `http://localhost:5173`, зарегистрироваться по email с кодом подтверждения — готово.
 
 ## Стек
 
-**Бэкенд:** Go 1.26, `net/http` (без сторонних роутеров), in-memory store, SSE для реалтайма.
+**Бэкенд:** Go 1.26, `net/http` (без сторонних роутеров), GORM + SQLite, SSE для реалтайма.
 
 **Фронтенд:** React 19 + Mantine v9 + TanStack Router (file-based) + Tailwind v4 + react-i18next.
 
@@ -47,10 +47,13 @@ make frontend:run   # Vite dev-сервер на :5173
 ### API
 
 | Метод | Путь | Auth | Описание |
-|---|---|---|---|
+|---|---|---|---|---|
 | `GET` | `/api/config` | нет | TTL редактирования/удаления |
-| `POST` | `/api/register` | нет | Регистрация (`{ nick }`) |
-| `GET` | `/api/events` | token | SSE-поток |
+| `POST` | `/api/auth/send-code` | нет | Отправить код на email |
+| `POST` | `/api/auth/verify-code` | нет | Подтвердить код, получить временный токен |
+| `POST` | `/api/auth/complete-registration` | Bearer | Завершить регистрацию (`{ nick }`) |
+| `POST` | `/api/auth/sse-auth` | Bearer | Аутентифицировать SSE-соединение |
+| `GET` | `/api/events` | sse-auth | SSE-поток |
 | `GET` | `/api/users/search` | Bearer | Поиск пользователей (локальный или федеративный) |
 | `GET` | `/api/chats` | Bearer | Список чатов |
 | `POST` | `/api/chats` | Bearer | Создать чат (`{withUserId}` приватный, `{type:"group",name,memberIds}` групповой) |
@@ -64,6 +67,14 @@ make frontend:run   # Vite dev-сервер на :5173
 | `POST` | `/api/chats/{id}/messages` | Bearer | Отправить сообщение |
 | `PATCH` | `/api/chats/{id}/messages/{mid}` | Bearer | Редактировать |
 | `DELETE` | `/api/chats/{id}/messages/{mid}` | Bearer | Удалить |
+| `POST` | `/api/chats/{id}/messages/{mid}/thread` | Bearer | Создать/отправить в тред |
+| `GET` | `/api/chats/{id}/threads/{tid}/messages` | Bearer | Сообщения треда (с пагинацией) |
+| `PATCH` | `/api/chats/{id}/messages/{mid}` | Bearer | Редактировать сообщение (включая тред с `?threadId=`) |
+| `DELETE` | `/api/chats/{id}/messages/{mid}` | Bearer | Удалить сообщение (включая тред с `?threadId=`) |
+| `GET` | `/api/sync` | Bearer | Инкрементальная синхронизация (`?since=`) |
+| `GET` | `/api/push/vapid-public-key` | нет | VAPID публичный ключ для WebPush |
+| `POST` | `/api/push/subscribe` | Bearer | Подписаться на push-уведомления |
+| `DELETE` | `/api/push/subscribe` | Bearer | Отписаться от push-уведомлений |
 
 **Федеративные (сервер-сервер):**
 
@@ -93,6 +104,33 @@ make frontend:run FRONTEND_PORT=5174 API_PROXY=http://localhost:8081
 2. На `:5173` найти `bob:localhost:8081`.
 3. Создать чат — сообщения синхронизируются между серверами.
 
+## PWA / Offline-first
+
+Приложение работает как PWA: Service Worker (injectManifest) с workbox кэширует API-запросы
+(NetworkFirst) и файлы (CacheFirst). В production-сборке SW регистрируется автоматически;
+в dev-режиме (`npm run dev`) включён через `devOptions.enabled: true`.
+
+**Offline-first:**
+- Сообщения, файлы и треды сохраняются в IndexedDB
+- Отправка через outbox: при офлайне сообщение ставится в очередь и отправляется при восстановлении соединения
+- Можно отменить отправку (cancel-send) для сообщений в очереди
+- Авто-повтор неудачных отправок при реконнекте
+
+## WebPush
+
+Push-уведомления для офлайн-пользователей. VAPID-ключи генерируются автоматически
+при первом запуске (хранятся в `push.key_path`, по умолчанию `./keys`).
+
+**Сценарий:**
+1. Пользователь логинится → браузер запрашивает разрешение на уведомления
+2. Браузер подписывается → endpoint сохраняется на сервере (`POST /api/push/subscribe`)
+3. При отправке сообщения сервер проверяет, онлайн ли получатель
+4. Если получатель офлайн — отправляет push через его браузерный push-сервис
+5. При клике на уведомление открывается чат (или фокусируется существующее окно)
+
+**Триггеры:** `new_message` и `thread_message_new`. Push отправляется только не-отправителю,
+только если получатель офлайн.
+
 ## Конфигурация
 
 Переменные окружения (backend):
@@ -103,6 +141,7 @@ make frontend:run FRONTEND_PORT=5174 API_PROXY=http://localhost:8081
 | `SERVER_DOMAIN` | `localhost:8080` | Домен для federation ID |
 | `MESSAGE_EDIT_TTL` | `300` | Секунд для редактирования (0=всегда, <0=никогда) |
 | `MESSAGE_DELETE_TTL` | `0` | Секунд для удаления |
+| `PUSH_KEY_PATH` | `./keys` | Путь к директории с VAPID-ключами |
 
 Переменные для фронта (dev):
 

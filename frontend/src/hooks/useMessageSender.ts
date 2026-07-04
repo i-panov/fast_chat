@@ -1,16 +1,16 @@
 import { useCallback } from "react";
+import { messagesRepo } from "../db/messagesRepo.ts";
+import { outboxRepo } from "../db/outboxRepo.ts";
+import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
+import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
+import { scheduleSync } from "../sync/syncEngine.ts";
 import type {
 	FileInfo,
 	Location,
 	Message,
 	MessageStatus,
 	PendingFile,
-} from "../api.ts";
-import { messagesRepo } from "../db/messagesRepo.ts";
-import { outboxRepo } from "../db/outboxRepo.ts";
-import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
-import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
-import { scheduleSync } from "../sync/syncEngine.ts";
+} from "../types/api.ts";
 import { useAuth } from "../useAuth";
 
 interface UseMessageSenderParams {

@@ -16,7 +16,6 @@ linters:
     - nakedret
     - tagalign
     - tagliatelle
-    - wsl_v5
     - bodyclose
     - noctx
     - contextcheck
@@ -130,14 +129,6 @@ linters:
     nakedret:
       max-func-lines: 30
 
-    wsl_v5:
-      allow-first-in-block: true
-      allow-whole-block: false
-      branch-max-lines: 2
-      case-max-lines: 2
-      enable:
-        - err
-
     whitespace:
       multi-if: true
       multi-func: true
@@ -214,7 +205,6 @@ linters:
           - varnamelen
           - paralleltest
           - intrange
-          - wsl_v5
           - gosec
           - staticcheck
           - usetesting

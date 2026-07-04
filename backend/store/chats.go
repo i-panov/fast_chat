@@ -212,6 +212,29 @@ func (s *Store) UpdateChatAvatar(ctx context.Context, chatID, fileID string) (*m
 	return chat, nil
 }
 
+func (s *Store) GetChatsByIDs(ctx context.Context, ids []string) ([]model.Chat, error) {
+	var chats []model.Chat
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&chats).Error; err != nil {
+		return nil, err
+	}
+
+	var members []ChatMember
+	if err := s.db.WithContext(ctx).Where("chat_id IN ?", ids).Find(&members).Error; err != nil {
+		return nil, err
+	}
+
+	memberMap := make(map[string][]string, len(chats))
+	for _, m := range members {
+		memberMap[m.ChatID] = append(memberMap[m.ChatID], m.UserID)
+	}
+
+	for i := range chats {
+		chats[i].Members = memberMap[chats[i].ID]
+	}
+
+	return chats, nil
+}
+
 func (s *Store) GetChatsByAvatarFileID(ctx context.Context, fileID string) ([]string, error) {
 	var chatIDs []string
 

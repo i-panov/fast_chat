@@ -1,9 +1,9 @@
-import { ActionIcon } from "@mantine/core";
+import { ActionIcon, Modal } from "@mantine/core";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { FileInfo } from "../../api.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import type { FileInfo } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 
 interface Props {
@@ -48,27 +48,22 @@ export function ImageLightbox({ images, startIndex, onClose }: Props) {
 	if (images.length === 0) return null;
 
 	return (
-		// biome-ignore lint/a11y/noNoninteractiveElementInteractions: backdrop click closes dialog
-		<div
-			role="dialog"
-			aria-modal="true"
-			aria-label={t("media.imageViewer")}
-			tabIndex={-1}
-			onClick={(e) => {
-				if (e.target === e.currentTarget) onClose();
-			}}
-			onKeyDown={(e) => {
-				if (e.key === "Escape") onClose();
-			}}
-			style={{
-				position: "fixed",
-				inset: 0,
-				zIndex: 2000,
-				background: "rgba(0, 0, 0, 0.9)",
-				display: "flex",
-				alignItems: "center",
-				justifyContent: "center",
-				cursor: "pointer",
+		<Modal
+			opened={images.length > 0}
+			onClose={onClose}
+			fullScreen
+			withCloseButton={false}
+			styles={{
+				content: {
+					background: "rgba(0, 0, 0, 0.9)",
+				},
+				body: {
+					display: "flex",
+					alignItems: "center",
+					justifyContent: "center",
+					height: "100vh",
+					padding: 0,
+				},
 			}}
 		>
 			<ActionIcon
@@ -81,6 +76,7 @@ export function ImageLightbox({ images, startIndex, onClose }: Props) {
 					top: 16,
 					right: 16,
 					color: "white",
+					zIndex: 1,
 				}}
 			>
 				<X size={24} />
@@ -101,6 +97,7 @@ export function ImageLightbox({ images, startIndex, onClose }: Props) {
 						top: "50%",
 						transform: "translateY(-50%)",
 						color: "white",
+						zIndex: 1,
 					}}
 				>
 					<ChevronLeft size={32} />
@@ -138,6 +135,7 @@ export function ImageLightbox({ images, startIndex, onClose }: Props) {
 						top: "50%",
 						transform: "translateY(-50%)",
 						color: "white",
+						zIndex: 1,
 					}}
 				>
 					<ChevronRight size={32} />
@@ -157,11 +155,12 @@ export function ImageLightbox({ images, startIndex, onClose }: Props) {
 						padding: "4px 12px",
 						borderRadius: 4,
 						pointerEvents: "none",
+						zIndex: 1,
 					}}
 				>
 					{index + 1} / {images.length}
 				</div>
 			)}
-		</div>
+		</Modal>
 	);
 }

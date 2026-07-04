@@ -41,5 +41,5 @@ func (h *Handler) FederatedSync(w http.ResponseWriter, r *http.Request) {
 		resp.DeletedMessages = []model.DeletedMessage{}
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	WriteJSON(w, http.StatusOK, resp)
 }

@@ -3,35 +3,11 @@ import type L from "leaflet";
 import { MapPin } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-	MapContainer,
-	Marker,
-	TileLayer,
-	useMap,
-	useMapEvents,
-} from "react-leaflet";
-import type { Location } from "../../api.ts";
+import { MapContainer, Marker, TileLayer } from "react-leaflet";
+import type { Location } from "../../types/api.ts";
 import { formatCoords, openStreetMapURL } from "../../utils/chat.ts";
 import "../../utils/leafletIconFix.ts";
-
-function MapClickHandler({ onClick }: { onClick: (loc: Location) => void }) {
-	useMapEvents({
-		click: (e) => {
-			onClick({ lat: e.latlng.lat, lng: e.latlng.lng });
-		},
-	});
-	return null;
-}
-
-function MapAutoSize({ open }: { open: boolean }) {
-	const map = useMap();
-	useEffect(() => {
-		if (!open) return;
-		const timer = setTimeout(() => map.invalidateSize(), 200);
-		return () => clearTimeout(timer);
-	}, [map, open]);
-	return null;
-}
+import { MapAutoSize, MapClickHandler } from "./MapHelpers.tsx";
 
 interface Props {
 	open: boolean;

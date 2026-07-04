@@ -2,7 +2,7 @@ import { Anchor, Group, Skeleton, Stack, Text } from "@mantine/core";
 import { MapPin } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { Location } from "../../api.ts";
+import type { Location } from "../../types/api.ts";
 import { formatCoords, openStreetMapURL } from "../../utils/chat.ts";
 
 const LeafletMiniMap = lazy(() =>

@@ -1,12 +1,11 @@
 import { Loader, Text, UnstyledButton } from "@mantine/core";
 import { FileAudio } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { FileInfo } from "../../api.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import type { FileInfo } from "../../types/api.ts";
 import { useAudioPlayer } from "../../useAudioPlayer.tsx";
 import { useAuth } from "../../useAuth.tsx";
-
-const BORDER_RADIUS_SM = 6;
+import { BORDER_RADIUS_SM } from "../../utils/constants.ts";
 
 interface Props {
 	file: FileInfo;

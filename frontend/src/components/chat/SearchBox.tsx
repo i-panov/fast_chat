@@ -8,7 +8,7 @@ import {
 } from "@mantine/core";
 import { Plus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { User } from "../../api.ts";
+import type { User } from "../../types/api.ts";
 
 interface Props {
 	query: string;

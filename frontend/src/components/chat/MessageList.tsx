@@ -2,8 +2,8 @@ import { Loader, Text } from "@mantine/core";
 import { useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import type { FileInfo, Message, Thread } from "../../api.ts";
 import { getCurrentLocale } from "../../i18n.ts";
+import type { FileInfo, Message, Thread } from "../../types/api.ts";
 import { formatDateLabel, formatTime } from "../../utils/chat.ts";
 import { MessageBubble } from "./MessageBubble.tsx";
 

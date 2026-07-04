@@ -1,11 +1,11 @@
 import { Loader, Text, UnstyledButton } from "@mantine/core";
 import { useTranslation } from "react-i18next";
-import type { FileInfo } from "../../api.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import type { FileInfo } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
+import { BORDER_RADIUS_SM } from "../../utils/constants.ts";
 
 const FILE_ATTACHMENT_MAX_SIZE = 300;
-const BORDER_RADIUS_SM = 6;
 
 interface Props {
 	file: FileInfo;

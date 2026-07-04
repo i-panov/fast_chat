@@ -14,6 +14,8 @@ import { LocationPickerModal } from "../components/chat/LocationPickerModal.tsx"
 import { MessageList } from "../components/chat/MessageList.tsx";
 import { SearchBox } from "../components/chat/SearchBox.tsx";
 import { ThreadView } from "../components/chat/ThreadView.tsx";
+import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
+import ChatContext from "../context/ChatContext.tsx";
 import { useChatPage } from "../hooks/useChatInteraction.ts";
 import { usePushNotifications } from "../hooks/usePushNotifications.ts";
 import { chatTitle } from "../utils/chat.ts";
@@ -170,227 +172,185 @@ export function ChatPage() {
 	}
 
 	return (
-		<Stack h="100%" gap={0}>
-			<AccountSwitcher
-				open={s.switcherOpen}
-				onClose={() => s.setSwitcherOpen(false)}
-				onLogout={s.logout}
-			/>
-			<AppHeader onSwitcherToggle={() => s.setSwitcherOpen(true)} />
-			<AudioPlayerBar />
-			<div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-				<Paper
-					component="aside"
-					style={{
-						width: "300px",
-						minWidth: "300px",
-						borderRadius: 0,
-						borderRight: "1px solid var(--mantine-color-dark-4)",
-						background: "var(--mantine-color-dark-8)",
-					}}
-				>
-					<Stack h="100%" gap={0}>
-						<SearchBox
-							query={s.searchQuery}
-							results={s.searchResults}
-							showResults={s.showSearchResults}
-							onQueryChange={s.handleSearchChange}
-							onSelectUser={s.selectPendingChat}
-							onCreateGroup={() => s.setCreateGroupOpen(true)}
-						/>
-						<ChatList
-							chats={s.chats}
-							activeChatId={s.activeChatId}
-							userId={s.user.id}
-							onSelectChat={s.selectChat}
-						/>
-					</Stack>
-				</Paper>
-				<Paper
-					component="main"
-					style={{
-						flex: 1,
-						minHeight: 0,
-						borderRadius: 0,
-						background: "var(--mantine-color-dark-9)",
-					}}
-				>
-					{s.activeThread !== null ? (
-						<ThreadView
-							thread={s.activeThread}
-							messages={s.activeThreadMessages}
-							userId={s.user.id}
-							onBack={s.handleCloseThread}
-							inputText={s.inputText}
-							setInputText={s.setInputText}
-							onSend={s.handleSendThreadMessage}
-							onDelete={(_chatId, messageId) => {
-								if (s.activeThreadId !== null) {
-									s.handleDeleteThreadMessage(s.activeThreadId, messageId);
-								}
+		<ChatContext.Provider value={s}>
+			<Stack h="100%" gap={0}>
+				<AccountSwitcher
+					open={s.switcherOpen}
+					onClose={() => s.setSwitcherOpen(false)}
+					onLogout={s.logout}
+				/>
+				<AppHeader onSwitcherToggle={() => s.setSwitcherOpen(true)} />
+				<AudioPlayerBar />
+				<div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+					<ErrorBoundary>
+						<Paper
+							component="aside"
+							style={{
+								width: "300px",
+								minWidth: "300px",
+								borderRadius: 0,
+								borderRight: "1px solid var(--mantine-color-dark-4)",
+								background: "var(--mantine-color-dark-8)",
 							}}
-							onStartEdit={s.handleStartEdit}
-							onCancelEdit={s.handleCancelEdit}
-							onReply={s.handleReply}
-							editTTL={s.config?.messageEditTTL ?? 0}
-							deleteTTL={s.config?.messageDeleteTTL ?? 0}
-							editingMessage={s.editingMessage}
-							hasMore={s.threadHasMore}
-							isLoadingMore={s.threadIsLoadingMore}
-							onLoadMore={s.loadMoreThreadMessages}
-							onRetry={s.handleRetryThreadMessage}
-							onCancelSend={(_chatId, messageId) => {
-								if (s.activeThreadId !== null) {
-									s.handleCancelSendMessage(
-										s.activeChatId ?? "",
-										messageId,
-										s.activeThreadId,
-									);
-								}
-							}}
-							replyToNick={s.replyToMessage?.fromNick}
-							replyToText={s.replyToMessage?.text}
-							replyToFiles={s.replyToMessage?.files}
-							onCancelReply={s.cancelReply}
-							pendingFiles={s.pendingFiles}
-							onAttachFiles={s.handleAttachFiles}
-							onRemoveFile={s.handleRemoveFile}
-							existingFiles={s.editingMessage?.files}
-							onRemoveExistingFile={s.handleRemoveExistingFile}
-							pendingLocation={s.pendingLocation}
-							onOpenLocationPicker={s.openLocationPicker}
-							onRemovePendingLocation={s.handleRemovePendingLocation}
-							existingLocation={s.editingMessage?.location ?? null}
-							onRemoveExistingLocation={s.handleRemoveExistingLocation}
-						/>
-					) : (
-						<Stack h="100%" gap={0}>
-							{s.pendingChatWith !== null ? (
-								<>
-									{header}
-									<div
-										style={{
-											flex: 1,
-											display: "flex",
-											alignItems: "center",
-											justifyContent: "center",
-										}}
-									>
+						>
+							<Stack h="100%" gap={0}>
+								<SearchBox
+									query={s.searchQuery}
+									results={s.searchResults}
+									showResults={s.showSearchResults}
+									onQueryChange={s.handleSearchChange}
+									onSelectUser={s.selectPendingChat}
+									onCreateGroup={() => s.setCreateGroupOpen(true)}
+								/>
+								<ChatList
+									chats={s.chats}
+									activeChatId={s.activeChatId}
+									userId={s.user.id}
+									onSelectChat={s.selectChat}
+								/>
+							</Stack>
+						</Paper>
+					</ErrorBoundary>
+					<Paper
+						component="main"
+						style={{
+							flex: 1,
+							minHeight: 0,
+							borderRadius: 0,
+							background: "var(--mantine-color-dark-9)",
+						}}
+					>
+						{s.activeThread !== null ? (
+							<ThreadView />
+						) : (
+							<Stack h="100%" gap={0}>
+								{s.pendingChatWith !== null ? (
+									<>
+										{header}
+										<div
+											style={{
+												flex: 1,
+												display: "flex",
+												alignItems: "center",
+												justifyContent: "center",
+											}}
+										>
+											<Text ta="center" c="dimmed" size="sm">
+												{t("chat.sendTo", { nick: s.pendingChatNick ?? "" })}
+											</Text>
+										</div>
+										<InputBar
+											text={s.inputText}
+											onTextChange={s.setInputText}
+											onSubmit={s.handleSend}
+											editing={s.editingMessage !== null}
+											onCancelEdit={s.handleCancelEdit}
+											replyToNick={s.replyToMessage?.fromNick}
+											replyToText={s.replyToMessage?.text}
+											replyToFiles={s.replyToMessage?.files}
+											onCancelReply={s.cancelReply}
+											pendingFiles={s.pendingFiles}
+											onAttachFiles={s.handleAttachFiles}
+											onRemoveFile={s.handleRemoveFile}
+											existingFiles={s.editingMessage?.files}
+											onRemoveExistingFile={s.handleRemoveExistingFile}
+											pendingLocation={s.pendingLocation}
+											onOpenLocationPicker={s.openLocationPicker}
+											onRemovePendingLocation={s.clearPendingLocation}
+											existingLocation={s.editingMessage?.location ?? null}
+											onRemoveExistingLocation={s.handleRemoveExistingLocation}
+										/>
+									</>
+								) : s.activeChat === undefined ? (
+									<Center style={{ flex: 1 }}>
 										<Text ta="center" c="dimmed" size="sm">
-											{t("chat.sendTo", { nick: s.pendingChatNick ?? "" })}
+											{t("chat.selectPrompt")}
 										</Text>
-									</div>
-									<InputBar
-										text={s.inputText}
-										onTextChange={s.setInputText}
-										onSubmit={s.handleSend}
-										editing={s.editingMessage !== null}
-										onCancelEdit={s.handleCancelEdit}
-										replyToNick={s.replyToMessage?.fromNick}
-										replyToText={s.replyToMessage?.text}
-										replyToFiles={s.replyToMessage?.files}
-										onCancelReply={s.cancelReply}
-										pendingFiles={s.pendingFiles}
-										onAttachFiles={s.handleAttachFiles}
-										onRemoveFile={s.handleRemoveFile}
-										existingFiles={s.editingMessage?.files}
-										onRemoveExistingFile={s.handleRemoveExistingFile}
-										pendingLocation={s.pendingLocation}
-										onOpenLocationPicker={s.openLocationPicker}
-										onRemovePendingLocation={s.handleRemovePendingLocation}
-										existingLocation={s.editingMessage?.location ?? null}
-										onRemoveExistingLocation={s.handleRemoveExistingLocation}
-									/>
-								</>
-							) : s.activeChat === undefined ? (
-								<Center style={{ flex: 1 }}>
-									<Text ta="center" c="dimmed" size="sm">
-										{t("chat.selectPrompt")}
-									</Text>
-								</Center>
-							) : (
-								<>
-									{header}
-									<MessageList
-										messages={s.activeMessages}
-										userId={s.user.id}
-										onDelete={s.handleDeleteMessage}
-										onStartEdit={s.handleStartEdit}
-										onReply={s.handleReply}
-										editTTL={s.config?.messageEditTTL ?? 0}
-										deleteTTL={s.config?.messageDeleteTTL ?? 0}
-										hasMore={s.hasMore}
-										isLoadingMore={s.isLoadingMore}
-										onLoadMore={
-											s.activeChatId !== null
-												? () => s.loadMoreMessages(s.activeChatId)
-												: undefined
-										}
-										onCreateThread={s.handleCreateThread}
-										onOpenThread={s.handleOpenThread}
-										messageToThread={s.messageToThread}
-										threads={s.threads}
-										onRetry={s.handleRetryMessage}
-										onCancelSend={s.handleCancelSendMessage}
-										showAuthorForGroup={showAuthorForGroup}
-										isOffline={!s.isOnline}
-									/>
-									<InputBar
-										text={s.inputText}
-										onTextChange={s.setInputText}
-										onSubmit={s.handleSend}
-										editing={s.editingMessage !== null}
-										onCancelEdit={s.handleCancelEdit}
-										replyToNick={s.replyToMessage?.fromNick}
-										replyToText={s.replyToMessage?.text}
-										replyToFiles={s.replyToMessage?.files}
-										onCancelReply={s.cancelReply}
-										onTypingStart={() => {
-											if (s.activeChatId !== null)
-												s.handleTyping(s.activeChatId, true);
-										}}
-										onTypingStop={() => {
-											if (s.activeChatId !== null)
-												s.handleTyping(s.activeChatId, false);
-										}}
-										pendingFiles={s.pendingFiles}
-										onAttachFiles={s.handleAttachFiles}
-										onRemoveFile={s.handleRemoveFile}
-										existingFiles={s.editingMessage?.files}
-										onRemoveExistingFile={s.handleRemoveExistingFile}
-										pendingLocation={s.pendingLocation}
-										onOpenLocationPicker={s.openLocationPicker}
-										onRemovePendingLocation={s.handleRemovePendingLocation}
-										existingLocation={s.editingMessage?.location ?? null}
-										onRemoveExistingLocation={s.handleRemoveExistingLocation}
-									/>
-								</>
-							)}
-						</Stack>
-					)}
-				</Paper>
-			</div>
-			<CreateGroupModal
-				open={s.createGroupOpen}
-				onClose={() => s.setCreateGroupOpen(false)}
-				onCreate={s.handleCreateGroup}
-			/>
-			<GroupSettingsModal
-				open={s.groupSettingsChatId !== null}
-				chat={s.groupSettings}
-				onClose={s.closeGroupSettings}
-				onRename={s.handleRenameGroup}
-				onAddMember={s.handleAddGroupMember}
-				onRemoveMember={s.handleRemoveGroupMember}
-				onDelete={s.handleDeleteGroup}
-				onUploadAvatar={s.handleUploadGroupAvatar}
-			/>
-			<LocationPickerModal
-				open={s.locationPickerOpen}
-				initial={s.pendingLocation}
-				onClose={() => s.setLocationPickerOpen(false)}
-				onConfirm={s.handleLocationConfirm}
-			/>
-		</Stack>
+									</Center>
+								) : (
+									<>
+										{header}
+										<MessageList
+											messages={s.activeMessages}
+											userId={s.user.id}
+											onDelete={s.handleDeleteMessage}
+											onStartEdit={s.handleStartEdit}
+											onReply={s.handleReply}
+											editTTL={s.config?.messageEditTTL ?? 0}
+											deleteTTL={s.config?.messageDeleteTTL ?? 0}
+											hasMore={s.hasMore}
+											isLoadingMore={s.isLoadingMore}
+											onLoadMore={
+												s.activeChatId !== null
+													? () => s.loadMoreMessages(s.activeChatId)
+													: undefined
+											}
+											onCreateThread={s.handleCreateThread}
+											onOpenThread={s.handleOpenThread}
+											messageToThread={s.messageToThread}
+											threads={s.threads}
+											onRetry={s.handleRetryMessage}
+											onCancelSend={s.handleCancelSendMessage}
+											showAuthorForGroup={showAuthorForGroup}
+											isOffline={!s.isOnline}
+										/>
+										<InputBar
+											text={s.inputText}
+											onTextChange={s.setInputText}
+											onSubmit={s.handleSend}
+											editing={s.editingMessage !== null}
+											onCancelEdit={s.handleCancelEdit}
+											replyToNick={s.replyToMessage?.fromNick}
+											replyToText={s.replyToMessage?.text}
+											replyToFiles={s.replyToMessage?.files}
+											onCancelReply={s.cancelReply}
+											onTypingStart={() => {
+												if (s.activeChatId !== null)
+													s.handleTyping(s.activeChatId, true);
+											}}
+											onTypingStop={() => {
+												if (s.activeChatId !== null)
+													s.handleTyping(s.activeChatId, false);
+											}}
+											pendingFiles={s.pendingFiles}
+											onAttachFiles={s.handleAttachFiles}
+											onRemoveFile={s.handleRemoveFile}
+											existingFiles={s.editingMessage?.files}
+											onRemoveExistingFile={s.handleRemoveExistingFile}
+											pendingLocation={s.pendingLocation}
+											onOpenLocationPicker={s.openLocationPicker}
+											onRemovePendingLocation={s.clearPendingLocation}
+											existingLocation={s.editingMessage?.location ?? null}
+											onRemoveExistingLocation={s.handleRemoveExistingLocation}
+										/>
+									</>
+								)}
+							</Stack>
+						)}
+					</Paper>
+				</div>
+				<CreateGroupModal
+					open={s.createGroupOpen}
+					onClose={() => s.setCreateGroupOpen(false)}
+					onCreate={s.handleCreateGroup}
+				/>
+				<GroupSettingsModal
+					open={s.groupSettingsChatId !== null}
+					chat={s.groupSettings}
+					onClose={s.closeGroupSettings}
+					onRename={s.handleRenameGroup}
+					onAddMember={s.handleAddGroupMember}
+					onRemoveMember={s.handleRemoveGroupMember}
+					onDelete={s.handleDeleteGroup}
+					onUploadAvatar={s.handleUploadGroupAvatar}
+				/>
+				<LocationPickerModal
+					open={s.locationPickerOpen}
+					initial={s.pendingLocation}
+					onClose={() => s.setLocationPickerOpen(false)}
+					onConfirm={s.handleLocationConfirm}
+				/>
+			</Stack>
+		</ChatContext.Provider>
 	);
 }

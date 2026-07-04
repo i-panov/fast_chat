@@ -144,6 +144,14 @@ func Load(configPath string) (*Config, error) {
 		cfg.Push.KeyPath = "./keys"
 	}
 
+	if cfg.Federation.Scheme == "" {
+		cfg.Federation.Scheme = "https"
+	}
+
+	if cfg.Federation.Timeout == 0 {
+		cfg.Federation.Timeout = 10
+	}
+
 	if cfg.RateLimits.General.Limit == 0 {
 		cfg.RateLimits.General.Limit = 100
 	}

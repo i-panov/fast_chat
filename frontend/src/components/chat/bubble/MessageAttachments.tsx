@@ -1,5 +1,5 @@
 import { Loader } from "@mantine/core";
-import type { FileInfo } from "../../../api.ts";
+import type { FileInfo } from "../../../types/api.ts";
 import { AudioAttachment } from "../AudioAttachment.tsx";
 import { FileDownloadAttachment } from "../FileDownloadAttachment.tsx";
 import { PhotoAttachment } from "../PhotoAttachment.tsx";

@@ -1,10 +1,4 @@
-import {
-	ActionIcon,
-	Button,
-	Paper,
-	Stack,
-	UnstyledButton,
-} from "@mantine/core";
+import { Menu } from "@mantine/core";
 import {
 	Copy,
 	CornerUpLeft,
@@ -15,8 +9,6 @@ import {
 	Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-
-const MENU_MIN_WIDTH = 140;
 
 interface Props {
 	opened: boolean;
@@ -63,148 +55,69 @@ export function MessageContextMenu({
 }: Props) {
 	const { t } = useTranslation();
 
-	if (!opened) return null;
-
 	return (
-		<>
-			<UnstyledButton
-				style={{
-					position: "fixed",
-					inset: 0,
-					zIndex: 999,
-					cursor: "default",
-				}}
-				onClick={onClose}
-				aria-label={t("media.closeMenu")}
-			/>
-			<Paper
-				ref={menuRef}
-				style={{
-					position: "fixed",
-					left: position.x,
-					top: position.y,
-					zIndex: 1000,
-					minWidth: MENU_MIN_WIDTH,
-				}}
-				role="menu"
-				aria-label={t("media.messageActions")}
-			>
-				<Stack gap={0}>
-					{hasText && (
-						<Button
-							ref={firstMenuItemRef}
-							variant="subtle"
-							color="gray"
-							fullWidth
-							justify="flex-start"
-							style={{ borderRadius: 0 }}
-							onClick={onCopy}
-							role="menuitem"
-						>
-							<ActionIcon variant="transparent" color="gray" size={18} mr={6}>
-								<Copy size={14} />
-							</ActionIcon>
-							{t("message.copy")}
-						</Button>
-					)}
-					{canEdit && (
-						<Button
-							variant="subtle"
-							color="gray"
-							fullWidth
-							justify="flex-start"
-							style={{ borderRadius: 0 }}
-							onClick={onEdit}
-							role="menuitem"
-						>
-							<ActionIcon variant="transparent" color="gray" size={18} mr={6}>
-								<Pencil size={14} />
-							</ActionIcon>
-							{t("message.edit")}
-						</Button>
-					)}
-					{canCancelSend && (
-						<Button
-							variant="subtle"
-							color="orange"
-							fullWidth
-							justify="flex-start"
-							style={{ borderRadius: 0 }}
-							onClick={onCancelSend}
-							role="menuitem"
-						>
-							<ActionIcon variant="transparent" color="orange" size={18} mr={6}>
-								<SquareX size={14} />
-							</ActionIcon>
-							{t("message.cancelSend")}
-						</Button>
-					)}
-					{status === "failed" && (
-						<Button
-							variant="subtle"
-							color="gray"
-							fullWidth
-							justify="flex-start"
-							style={{ borderRadius: 0 }}
-							onClick={onRetry}
-							role="menuitem"
-						>
-							<ActionIcon variant="transparent" color="gray" size={18} mr={6}>
-								<RotateCcw size={14} />
-							</ActionIcon>
-							{t("message.retry")}
-						</Button>
-					)}
-					{canReply && (
-						<Button
-							variant="subtle"
-							color="gray"
-							fullWidth
-							justify="flex-start"
-							style={{ borderRadius: 0 }}
-							onClick={onReply}
-							role="menuitem"
-						>
-							<ActionIcon variant="transparent" color="gray" size={18} mr={6}>
-								<CornerUpLeft size={14} />
-							</ActionIcon>
-							{t("message.reply")}
-						</Button>
-					)}
-					{canCreateThread && (
-						<Button
-							variant="subtle"
-							color="gray"
-							fullWidth
-							justify="flex-start"
-							style={{ borderRadius: 0 }}
-							onClick={onCreateThread}
-							role="menuitem"
-						>
-							<ActionIcon variant="transparent" color="gray" size={18} mr={6}>
-								<MessageCircle size={14} />
-							</ActionIcon>
-							{t("message.createThread")}
-						</Button>
-					)}
-					{canDelete && (
-						<Button
-							variant="subtle"
-							color="red"
-							fullWidth
-							justify="flex-start"
-							style={{ borderRadius: 0 }}
-							onClick={onDelete}
-							role="menuitem"
-						>
-							<ActionIcon variant="transparent" color="red" size={18} mr={6}>
-								<Trash2 size={14} />
-							</ActionIcon>
-							{t("message.delete")}
-						</Button>
-					)}
-				</Stack>
-			</Paper>
-		</>
+		<Menu
+			opened={opened}
+			onClose={onClose}
+			withinPortal
+			closeOnItemClick={false}
+		>
+			<Menu.Target>
+				<div
+					ref={menuRef as React.Ref<HTMLDivElement>}
+					style={{
+						position: "fixed",
+						left: position.x,
+						top: position.y,
+						width: 0,
+						height: 0,
+					}}
+				/>
+			</Menu.Target>
+			<Menu.Dropdown>
+				{hasText && (
+					<Menu.Item
+						ref={firstMenuItemRef}
+						leftSection={<Copy size={14} />}
+						onClick={onCopy}
+					>
+						{t("message.copy")}
+					</Menu.Item>
+				)}
+				{canEdit && (
+					<Menu.Item leftSection={<Pencil size={14} />} onClick={onEdit}>
+						{t("message.edit")}
+					</Menu.Item>
+				)}
+				{canCancelSend && (
+					<Menu.Item leftSection={<SquareX size={14} />} onClick={onCancelSend}>
+						{t("message.cancelSend")}
+					</Menu.Item>
+				)}
+				{status === "failed" && (
+					<Menu.Item leftSection={<RotateCcw size={14} />} onClick={onRetry}>
+						{t("message.retry")}
+					</Menu.Item>
+				)}
+				{canReply && (
+					<Menu.Item leftSection={<CornerUpLeft size={14} />} onClick={onReply}>
+						{t("message.reply")}
+					</Menu.Item>
+				)}
+				{canCreateThread && (
+					<Menu.Item
+						leftSection={<MessageCircle size={14} />}
+						onClick={onCreateThread}
+					>
+						{t("message.createThread")}
+					</Menu.Item>
+				)}
+				{canDelete && (
+					<Menu.Item leftSection={<Trash2 size={14} />} onClick={onDelete}>
+						{t("message.delete")}
+					</Menu.Item>
+				)}
+			</Menu.Dropdown>
+		</Menu>
 	);
 }

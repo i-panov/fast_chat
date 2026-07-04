@@ -18,14 +18,8 @@ func (h *Handler) HandleTyping(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	chatID := r.PathValue("id")
 
-	chat, ok := h.store.GetChat(r.Context(), chatID)
-	if !ok {
-		writeError(w, http.StatusNotFound, errKeyChatNotFound)
-		return
-	}
-
-	if !isMember(chat, user.ID) {
-		writeError(w, http.StatusForbidden, errKeyNotMember)
+	chat := h.requireChatMember(w, r, chatID, user.ID)
+	if chat == nil {
 		return
 	}
 
@@ -41,7 +35,7 @@ func (h *Handler) HandleTyping(w http.ResponseWriter, r *http.Request) {
 	if !req.Active {
 		h.sendTypingEvent(r, chat, chatID, user.ID, user.Nick, "typing_stop", nil)
 
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 
 		return
 	}
@@ -49,7 +43,7 @@ func (h *Handler) HandleTyping(w http.ResponseWriter, r *http.Request) {
 	key := chatID + ":" + user.ID
 	if last, ok := h.hub.LoadLastTyping(key); ok {
 		if time.Since(last.(time.Time)) < typingThrottleInterval { //nolint:errcheck
-			writeJSON(w, http.StatusOK, map[string]string{"status": "throttled"})
+			WriteJSON(w, http.StatusOK, map[string]string{"status": "throttled"})
 			return
 		}
 	}
@@ -62,7 +56,7 @@ func (h *Handler) HandleTyping(w http.ResponseWriter, r *http.Request) {
 		"nick":   user.Nick,
 	})
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // sendTypingEvent dispatches a typing indicator to all chat members (local and remote).

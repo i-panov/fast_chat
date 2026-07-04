@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"gorm.io/gorm"
@@ -33,10 +34,22 @@ func (s *Store) GetMessage(ctx context.Context, chatID, messageID string) (model
 	return msg, nil
 }
 
-func (s *Store) EditMessage(ctx context.Context, chatID, messageID, userID, newText string, location *model.Location, clearLocation bool) (model.Message, error) {
+func (s *Store) EditMessage(ctx context.Context, chatID, threadID, messageID, userID, newText string, location *model.Location, clearLocation bool) (model.Message, error) {
+	lookupID := chatID
+
+	if threadID != "" {
+		var thread model.Thread
+
+		if err := s.db.WithContext(ctx).First(&thread, "id = ?", threadID).Error; err != nil {
+			return model.Message{}, ErrThreadNotFound
+		}
+
+		lookupID = threadID
+	}
+
 	var msg model.Message
 
-	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", lookupID, messageID).First(&msg).Error; err != nil {
 		return model.Message{}, ErrMessageNotFound
 	}
 
@@ -70,7 +83,7 @@ func (s *Store) EditMessage(ctx context.Context, chatID, messageID, userID, newT
 		msg.Location = location
 	}
 
-	if err := s.db.WithContext(ctx).Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Message{}).Where("chat_id = ? AND id = ?", lookupID, messageID).Updates(updates).Error; err != nil {
 		return model.Message{}, err
 	}
 
@@ -96,12 +109,24 @@ func (s *Store) SetMessageFiles(ctx context.Context, messageID string, fileIDs [
 	})
 }
 
-func (s *Store) AddMessage(ctx context.Context, chatID, fromID, fromNick, text, messageID, replyToID string, location *model.Location) (*model.Message, error) {
-	var chatCount int64
-	s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Count(&chatCount)
+func (s *Store) AddMessage(ctx context.Context, chatID, threadID, fromID, fromNick, text, messageID, replyToID string, location *model.Location) (*model.Message, error) {
+	lookupID := chatID
 
-	if chatCount == 0 {
-		return nil, ErrChatNotFound
+	if threadID != "" {
+		var thread model.Thread
+
+		if err := s.db.WithContext(ctx).First(&thread, "id = ?", threadID).Error; err != nil {
+			return nil, ErrThreadNotFound
+		}
+
+		lookupID = threadID
+	} else {
+		var chatCount int64
+		s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Count(&chatCount)
+
+		if chatCount == 0 {
+			return nil, ErrChatNotFound
+		}
 	}
 
 	var replyTo *model.ReplyToInfo
@@ -109,7 +134,7 @@ func (s *Store) AddMessage(ctx context.Context, chatID, fromID, fromNick, text, 
 	if replyToID != "" {
 		var replyMsg model.Message
 
-		if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, replyToID).First(&replyMsg).Error; err != nil {
+		if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", lookupID, replyToID).First(&replyMsg).Error; err != nil {
 			return nil, ErrMessageNotFound
 		}
 
@@ -130,7 +155,7 @@ func (s *Store) AddMessage(ctx context.Context, chatID, fromID, fromNick, text, 
 	now := time.Now()
 	msg := model.Message{
 		ID:        id,
-		ChatID:    chatID,
+		ChatID:    lookupID,
 		FromID:    fromID,
 		FromNick:  fromNick,
 		Text:      text,
@@ -145,6 +170,13 @@ func (s *Store) AddMessage(ctx context.Context, chatID, fromID, fromNick, text, 
 	// succeed rather than failing the whole request.
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&msg).Error; err != nil {
 		return nil, err
+	}
+
+	if threadID != "" {
+		if err := s.db.WithContext(ctx).Model(&model.Thread{}).Where("id = ?", threadID).
+			UpdateColumn("message_count", gorm.Expr("message_count + 1")).Error; err != nil {
+			slog.Warn("failed to update thread message_count", "threadID", threadID, "err", err)
+		}
 	}
 
 	return &msg, nil
@@ -162,14 +194,6 @@ func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
 	// exists (e.g. a federated message replayed by a retrying client),
 	// silently succeed rather than failing the whole request.
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(msg).Error
-}
-
-func (s *Store) GetMessages(ctx context.Context, chatID string) []model.Message {
-	var msgs []model.Message
-
-	s.db.WithContext(ctx).Where("chat_id = ?", chatID).Order("created_at ASC, id ASC").Find(&msgs)
-
-	return msgs
 }
 
 func (s *Store) GetMessagesPaginated(ctx context.Context, chatID string, limit int, before string) ([]model.Message, string, bool) {

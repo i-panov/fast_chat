@@ -2,109 +2,73 @@ import { ActionIcon, Group, Paper, Stack, Text } from "@mantine/core";
 import { ArrowLeft } from "lucide-react";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import type {
-	FileInfo,
-	Location,
-	Message,
-	PendingFile,
-	Thread,
-} from "../../api.ts";
+import { useChatContext } from "../../context/ChatContext.tsx";
 import { InputBar } from "./InputBar.tsx";
 import { MessageList } from "./MessageList.tsx";
 
-interface Props {
-	thread: Thread;
-	messages: Message[];
-	userId: string;
-	onBack: () => void;
-	inputText: string;
-	setInputText: (v: string) => void;
-	onSend: (e: React.FormEvent<HTMLFormElement>) => Promise<void>;
-	onDelete: (chatId: string, messageId: string) => void;
-	onStartEdit: (
-		chatId: string,
-		messageId: string,
-		text: string,
-		files?: FileInfo[],
-		threadId?: string,
-		location?: Location | null,
-	) => void;
-	onCancelEdit: () => void;
-	onReply?: (chatId: string, messageId: string) => void;
-	editTTL: number;
-	deleteTTL: number;
-	editingMessage: {
-		chatId: string;
-		messageId: string;
-		text: string;
-		files?: FileInfo[];
-		threadId?: string;
-		location?: Location | null;
-	} | null;
-	hasMore: boolean;
-	isLoadingMore: boolean;
-	onLoadMore: () => void;
-	onRetry?: (threadId: string, messageId: string) => void;
-	onCancelSend?: (chatId: string, messageId: string) => void;
-	replyToNick?: string;
-	replyToText?: string;
-	replyToFiles?: FileInfo[];
-	onCancelReply?: () => void;
-	pendingFiles?: PendingFile[];
-	onAttachFiles?: (files: File[]) => void;
-	onRemoveFile?: (fileId: string) => void;
-	existingFiles?: FileInfo[];
-	onRemoveExistingFile?: (fileId: string) => void;
-	pendingLocation?: Location | null;
-	onOpenLocationPicker?: () => void;
-	onRemovePendingLocation?: () => void;
-	existingLocation?: Location | null;
-	onRemoveExistingLocation?: () => void;
-}
-
-export function ThreadView({
-	thread,
-	messages,
-	userId,
-	onBack,
-	inputText,
-	setInputText,
-	onSend,
-	onDelete,
-	onStartEdit,
-	onCancelEdit,
-	onReply,
-	editTTL,
-	deleteTTL,
-	editingMessage,
-	hasMore,
-	isLoadingMore,
-	onLoadMore,
-	onRetry,
-	onCancelSend,
-	replyToNick,
-	replyToText,
-	replyToFiles,
-	onCancelReply,
-	pendingFiles,
-	onAttachFiles,
-	onRemoveFile,
-	existingFiles,
-	onRemoveExistingFile,
-	pendingLocation,
-	onOpenLocationPicker,
-	onRemovePendingLocation,
-	existingLocation,
-	onRemoveExistingLocation,
-}: Props) {
+export function ThreadView() {
 	const { t } = useTranslation();
+	const {
+		activeThread,
+		activeThreadMessages,
+		user,
+		handleCloseThread,
+		inputText,
+		setInputText,
+		handleSendThreadMessage,
+		handleStartEdit,
+		handleCancelEdit,
+		handleReply,
+		config,
+		editingMessage,
+		threadHasMore,
+		threadIsLoadingMore,
+		loadMoreThreadMessages,
+		handleRetryThreadMessage,
+		activeThreadId,
+		activeChatId,
+		handleDeleteThreadMessage,
+		handleCancelSendMessage,
+		replyToMessage,
+		cancelReply,
+		pendingFiles,
+		handleAttachFiles,
+		handleRemoveFile,
+		pendingLocation,
+		openLocationPicker,
+		clearPendingLocation,
+		handleRemoveExistingFile,
+		handleRemoveExistingLocation,
+	} = useChatContext();
+
+	const handleDelete = useCallback(
+		(_chatId: string, messageId: string) => {
+			if (activeThreadId !== null) {
+				handleDeleteThreadMessage(activeThreadId, messageId);
+			}
+		},
+		[activeThreadId, handleDeleteThreadMessage],
+	);
+
+	const handleCancel = useCallback(
+		(_chatId: string, messageId: string) => {
+			if (activeThreadId !== null) {
+				handleCancelSendMessage(activeChatId ?? "", messageId, activeThreadId);
+			}
+		},
+		[activeThreadId, activeChatId, handleCancelSendMessage],
+	);
 
 	const handleRetry = useCallback(
 		async (_chatId: string, messageId: string) => {
-			await onRetry?.(thread.id, messageId);
+			if (activeThread !== null) {
+				await handleRetryThreadMessage(activeThread.id, messageId);
+			}
 		},
-		[onRetry, thread.id],
+		[handleRetryThreadMessage, activeThread],
 	);
+
+	if (activeThread === null) return null;
 
 	return (
 		<Stack h="100%" gap={0}>
@@ -118,7 +82,7 @@ export function ThreadView({
 				}}
 			>
 				<Group gap={8}>
-					<ActionIcon variant="subtle" color="gray" onClick={onBack}>
+					<ActionIcon variant="subtle" color="gray" onClick={handleCloseThread}>
 						<ArrowLeft size={18} />
 					</ActionIcon>
 					<Text fw={600}>{t("message.thread")}</Text>
@@ -133,50 +97,50 @@ export function ThreadView({
 				}}
 			>
 				<Text size="xs" c="dimmed">
-					{thread.parentMessageFrom}
+					{activeThread.parentMessageFrom}
 				</Text>
 				<Text
 					size="sm"
 					style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
 				>
-					{thread.parentMessageText}
+					{activeThread.parentMessageText}
 				</Text>
 			</Paper>
 			<MessageList
-				messages={messages}
-				userId={userId}
-				onDelete={onDelete}
-				onStartEdit={onStartEdit}
-				onReply={onReply}
-				editTTL={editTTL}
-				deleteTTL={deleteTTL}
-				hasMore={hasMore}
-				isLoadingMore={isLoadingMore}
-				onLoadMore={onLoadMore}
+				messages={activeThreadMessages}
+				userId={user?.id ?? ""}
+				onDelete={handleDelete}
+				onStartEdit={handleStartEdit}
+				onReply={handleReply}
+				editTTL={config?.messageEditTTL ?? 0}
+				deleteTTL={config?.messageDeleteTTL ?? 0}
+				hasMore={threadHasMore}
+				isLoadingMore={threadIsLoadingMore}
+				onLoadMore={loadMoreThreadMessages}
 				isInThread
 				onRetry={handleRetry}
-				onCancelSend={onCancelSend}
+				onCancelSend={handleCancel}
 			/>
 			<InputBar
 				text={inputText}
 				onTextChange={setInputText}
-				onSubmit={onSend}
+				onSubmit={handleSendThreadMessage}
 				editing={editingMessage !== null}
-				onCancelEdit={onCancelEdit}
-				replyToNick={replyToNick}
-				replyToText={replyToText}
-				replyToFiles={replyToFiles}
-				onCancelReply={onCancelReply}
+				onCancelEdit={handleCancelEdit}
+				replyToNick={replyToMessage?.fromNick}
+				replyToText={replyToMessage?.text}
+				replyToFiles={replyToMessage?.files}
+				onCancelReply={cancelReply}
 				pendingFiles={pendingFiles}
-				onAttachFiles={onAttachFiles}
-				onRemoveFile={onRemoveFile}
-				existingFiles={existingFiles}
-				onRemoveExistingFile={onRemoveExistingFile}
+				onAttachFiles={handleAttachFiles}
+				onRemoveFile={handleRemoveFile}
+				existingFiles={editingMessage?.files}
+				onRemoveExistingFile={handleRemoveExistingFile}
 				pendingLocation={pendingLocation}
-				onOpenLocationPicker={onOpenLocationPicker}
-				onRemovePendingLocation={onRemovePendingLocation}
-				existingLocation={existingLocation}
-				onRemoveExistingLocation={onRemoveExistingLocation}
+				onOpenLocationPicker={openLocationPicker}
+				onRemovePendingLocation={clearPendingLocation}
+				existingLocation={editingMessage?.location ?? null}
+				onRemoveExistingLocation={handleRemoveExistingLocation}
 			/>
 		</Stack>
 	);

@@ -1,11 +1,4 @@
-import {
-	deleteMessage,
-	editMessage,
-	editThreadMessage,
-	sendMessage,
-	sendThreadMessage,
-	uploadFile,
-} from "../api.ts";
+import { deleteMessage, editMessage, sendMessage, uploadFile } from "../api.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
@@ -47,27 +40,25 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 	const fileIDs = await uploadPendingFiles(op.pendingFileClientIds, token);
 
 	if (op.threadId !== undefined) {
-		await sendThreadMessage(
-			token,
-			op.chatId,
-			op.threadId,
-			op.text,
-			op.msgId,
-			op.replyToId,
-			fileIDs.length > 0 ? fileIDs : undefined,
-			op.location,
-		);
+		await sendMessage(token, {
+			chatId: op.chatId,
+			text: op.text,
+			id: op.msgId,
+			replyToId: op.replyToId,
+			fileIDs: fileIDs.length > 0 ? fileIDs : undefined,
+			location: op.location,
+			threadId: op.threadId,
+		});
 		await threadMessagesRepo.markStatus(op.threadId, op.msgId, "sent");
 	} else {
-		await sendMessage(
-			token,
-			op.chatId,
-			op.text,
-			op.msgId,
-			op.replyToId,
-			fileIDs.length > 0 ? fileIDs : undefined,
-			op.location,
-		);
+		await sendMessage(token, {
+			chatId: op.chatId,
+			text: op.text,
+			id: op.msgId,
+			replyToId: op.replyToId,
+			fileIDs: fileIDs.length > 0 ? fileIDs : undefined,
+			location: op.location,
+		});
 		await messagesRepo.markStatus(op.chatId, op.msgId, "sent");
 	}
 
@@ -95,25 +86,23 @@ async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
 	};
 
 	if (op.threadId !== undefined) {
-		await editThreadMessage(
-			token,
-			op.chatId,
-			op.threadId,
-			op.messageId,
-			op.text,
+		await editMessage(token, {
+			chatId: op.chatId,
+			messageId: op.messageId,
+			text: op.text,
 			fileIDs,
-			editOpts,
-		);
+			opts: editOpts,
+			threadId: op.threadId,
+		});
 		await threadMessagesRepo.markStatus(op.threadId, op.messageId, "sent");
 	} else {
-		await editMessage(
-			token,
-			op.chatId,
-			op.messageId,
-			op.text,
+		await editMessage(token, {
+			chatId: op.chatId,
+			messageId: op.messageId,
+			text: op.text,
 			fileIDs,
-			editOpts,
-		);
+			opts: editOpts,
+		});
 		await messagesRepo.markStatus(op.chatId, op.messageId, "sent");
 	}
 

@@ -1,4 +1,4 @@
-import type { Thread } from "../api.ts";
+import type { Thread } from "../types/api.ts";
 import { getDB } from "./init.ts";
 import { notify } from "./notify.ts";
 import type { StoredThread } from "./schema.ts";

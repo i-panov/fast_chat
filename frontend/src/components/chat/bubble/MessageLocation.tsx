@@ -1,5 +1,5 @@
 import { UnstyledButton } from "@mantine/core";
-import type { Location } from "../../../api.ts";
+import type { Location } from "../../../types/api.ts";
 import { LocationMiniMap } from "../LocationMiniMap.tsx";
 
 interface Props {

@@ -1,5 +1,4 @@
 import { useCallback, useState } from "react";
-import type { Chat } from "../api.ts";
 import {
 	addChatMember,
 	createChat,
@@ -12,6 +11,7 @@ import {
 } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
+import type { Chat } from "../types/api.ts";
 
 export interface UseGroupSettingsParams {
 	token: string | undefined;

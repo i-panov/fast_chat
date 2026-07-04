@@ -1,7 +1,12 @@
 import type { DBSchema } from "idb";
-import type { Chat, FileInfo, Location, ReplyToInfo, Thread } from "../api.ts";
-
-export type MessageStatus = "sent" | "queued" | "failed";
+import type {
+	Chat,
+	FileInfo,
+	Location,
+	MessageStatus,
+	ReplyToInfo,
+	Thread,
+} from "../types/api.ts";
 
 export interface StoredChat extends Chat {
 	_updatedAt: string;

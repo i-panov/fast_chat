@@ -1,10 +1,10 @@
-import { getSync, type Message, type SyncResponse } from "../api.ts";
+import { getSync } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
-import type { OutboxOp } from "../db/schema.ts";
+import type { Message, SyncResponse } from "../types/api.ts";
 
 const DEFAULT_SINCE = "1970-01-01T00:00:00.000Z";
 
@@ -96,22 +96,4 @@ export async function pullDelta(
 	since: string | null,
 ): Promise<SyncResponse> {
 	return getSync(token, since ?? DEFAULT_SINCE);
-}
-
-// Filter out ops that the server-side delta just resolved, so the
-// outbox doesn't try to replay them over fresh server state.
-export function pruneResolvedOps(
-	ops: OutboxOp[],
-	delta: SyncResponse,
-): OutboxOp[] {
-	const deletedIds = new Set(
-		(delta.deletedMessages ?? []).map((d) => d.messageId),
-	);
-
-	return ops.filter((op) => {
-		if (op.kind === "delete" && deletedIds.has(op.messageId)) {
-			return false;
-		}
-		return true;
-	});
 }

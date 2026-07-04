@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { TypingPayload } from "../api.ts";
 import { sendTyping } from "../api.ts";
+import type { TypingPayload } from "../types/api.ts";
 
 interface UseTypingParams {
 	token: string | undefined;
