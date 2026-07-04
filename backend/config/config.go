@@ -22,6 +22,7 @@ type Config struct {
 	CORS             CORSConfig       `yaml:"cors"`
 	Federation       FederationConfig `yaml:"federation"`
 	Email            EmailConfig      `yaml:"email"`
+	Push             PushConfig       `yaml:"push"`
 	Auth             AuthConfig       `yaml:"auth"`
 	RateLimits       RateLimitsConfig `yaml:"rate_limits"`
 }
@@ -63,6 +64,11 @@ type SMTPConfig struct {
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
 	From     string `yaml:"from"`
+}
+
+type PushConfig struct {
+	VAPIDSubject string `yaml:"vapid_subject"`
+	KeyPath      string `yaml:"key_path"`
 }
 
 type AuthConfig struct {
@@ -132,6 +138,10 @@ func Load(configPath string) (*Config, error) {
 
 	if cfg.Auth.TokenExpiryWarning == 0 {
 		cfg.Auth.TokenExpiryWarning = 5 * time.Minute
+	}
+
+	if cfg.Push.KeyPath == "" {
+		cfg.Push.KeyPath = "./keys"
 	}
 
 	if cfg.RateLimits.General.Limit == 0 {

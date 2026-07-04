@@ -13,6 +13,7 @@ import (
 	"fast_chat/email"
 	"fast_chat/federation"
 	"fast_chat/model"
+	"fast_chat/push"
 	"fast_chat/sse"
 	"fast_chat/store"
 )
@@ -54,9 +55,10 @@ type Handler struct {
 	fedManager  *federation.Manager
 	fedClient   *http.Client
 	emailSender email.Sender
+	pushService *push.Service
 }
 
-func New(s *store.Store, cfg *config.Config, fm *federation.Manager) *Handler {
+func New(s *store.Store, cfg *config.Config, fm *federation.Manager, ps *push.Service) *Handler {
 	var es email.Sender
 	if cfg.Email.DebugMode {
 		es = email.NewDebugSender()
@@ -79,6 +81,7 @@ func New(s *store.Store, cfg *config.Config, fm *federation.Manager) *Handler {
 		fedManager:  fm,
 		fedClient:   &http.Client{Timeout: time.Duration(cfg.Federation.Timeout) * time.Second},
 		emailSender: es,
+		pushService: ps,
 	}
 }
 

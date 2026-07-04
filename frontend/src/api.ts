@@ -447,3 +447,33 @@ export function getSync(token: string, since: string): Promise<SyncResponse> {
 	const params = new URLSearchParams({ since });
 	return request<SyncResponse>(`/api/sync?${params.toString()}`, token);
 }
+
+export function getVapidPublicKey() {
+	return request<{ publicKey: string }>(
+		"/api/push/vapid-public-key",
+		undefined,
+	);
+}
+
+export function subscribePush(
+	token: string,
+	endpoint: string,
+	p256dh: string,
+	auth: string,
+) {
+	return request<{ subscription: Record<string, unknown> }>(
+		"/api/push/subscribe",
+		token,
+		{
+			method: "POST",
+			body: JSON.stringify({ endpoint, p256dh, auth }),
+		},
+	);
+}
+
+export function unsubscribePush(token: string, endpoint: string) {
+	return request<{ status: string }>("/api/push/subscribe", token, {
+		method: "DELETE",
+		body: JSON.stringify({ endpoint }),
+	});
+}

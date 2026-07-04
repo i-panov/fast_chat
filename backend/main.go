@@ -19,6 +19,7 @@ import (
 	"fast_chat/config"
 	"fast_chat/federation"
 	"fast_chat/handler"
+	"fast_chat/push"
 	"fast_chat/store"
 )
 
@@ -199,6 +200,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := os.MkdirAll(cfg.Push.KeyPath, 0o700); err != nil {
+		log.Printf("FATAL: Failed to create push keys directory: %v", err)
+		os.Exit(1)
+	}
+
 	db, err := store.InitDB(cfg.Database.Path)
 	if err != nil {
 		log.Printf("FATAL: Failed to initialize database: %v", err)
@@ -215,7 +221,27 @@ func main() {
 
 	st := store.New(db)
 	st.Codes().StartCleanup(context.Background(), time.Minute)
-	handlerInstance := handler.New(st, cfg, fedManager)
+
+	if err := st.AutoMigratePush(); err != nil {
+		log.Printf("FATAL: Failed to auto-migrate push subscriptions: %v", err)
+		os.Exit(1)
+	}
+
+	onPushExpired := func(endpoint string) {
+		slog.Info("removing expired push subscription", "endpoint", endpoint)
+
+		if err := st.DeletePushSubscriptionByEndpoint(context.Background(), endpoint); err != nil {
+			slog.Warn("failed to remove expired push subscription", "err", err)
+		}
+	}
+
+	pushService, err := push.NewService(cfg.Push.VAPIDSubject, cfg.Push.KeyPath, onPushExpired)
+	if err != nil {
+		log.Printf("FATAL: Failed to initialize push service: %v", err)
+		os.Exit(1)
+	}
+
+	handlerInstance := handler.New(st, cfg, fedManager, pushService)
 
 	mux := http.NewServeMux()
 
@@ -236,6 +262,11 @@ func main() {
 
 	// SSE endpoint (no auth middleware — auth happens via SSEAuth)
 	mux.HandleFunc("GET /api/events", handlerInstance.SSE)
+
+	// Push endpoints
+	mux.HandleFunc("GET /api/push/vapid-public-key", handlerInstance.VapidPublicKey)
+	mux.HandleFunc("POST /api/push/subscribe", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.SubscribePush)))
+	mux.HandleFunc("DELETE /api/push/subscribe", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.UnsubscribePush)))
 
 	mux.HandleFunc("GET /api/users/search", handlerInstance.AuthMiddleware(handlerInstance.SearchUsers))
 	mux.HandleFunc("GET /api/chats", handlerInstance.AuthMiddleware(handlerInstance.GetChats))

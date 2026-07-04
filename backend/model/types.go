@@ -126,6 +126,15 @@ type DeletedChat struct {
 	DeletedAt time.Time `gorm:"index;not null" json:"deletedAt"`
 }
 
+type PushSubscription struct {
+	ID        string    `gorm:"primaryKey"           json:"id"`
+	UserID    string    `gorm:"index;not null"       json:"userId"`
+	Endpoint  string    `gorm:"uniqueIndex;not null" json:"endpoint"`
+	P256DH    string    `gorm:"not null"             json:"p256dh"` //nolint:tagliatelle
+	Auth      string    `gorm:"not null"             json:"auth"`
+	CreatedAt time.Time `gorm:"not null"             json:"createdAt"`
+}
+
 type Thread struct {
 	ID                string    `gorm:"primaryKey"     json:"id"`
 	ChatID            string    `gorm:"index;not null" json:"chatId"`

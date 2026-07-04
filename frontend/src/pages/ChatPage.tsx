@@ -1,6 +1,7 @@
 import { ActionIcon, Center, Group, Paper, Stack, Text } from "@mantine/core";
 import { Settings } from "lucide-react";
 import type * as React from "react";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
 import { AppHeader } from "../components/chat/AppHeader.tsx";
@@ -14,6 +15,7 @@ import { MessageList } from "../components/chat/MessageList.tsx";
 import { SearchBox } from "../components/chat/SearchBox.tsx";
 import { ThreadView } from "../components/chat/ThreadView.tsx";
 import { useChatPage } from "../hooks/useChatInteraction.ts";
+import { usePushNotifications } from "../hooks/usePushNotifications.ts";
 import { chatTitle } from "../utils/chat.ts";
 
 function ChatHeader({
@@ -81,6 +83,49 @@ function ChatHeader({
 export function ChatPage() {
 	const s = useChatPage();
 	const { t } = useTranslation();
+
+	usePushNotifications(s.activeAccount?.token ?? "");
+
+	useEffect(() => {
+		function handleMessage(event: MessageEvent) {
+			if (event.data?.type !== "NAVIGATE_TO_CHAT") return;
+
+			const { chatId, threadId } = event.data;
+			s.selectChat(chatId);
+
+			if (threadId) {
+				s.handleOpenThread(threadId);
+			}
+		}
+
+		navigator.serviceWorker.addEventListener("message", handleMessage);
+
+		return () => {
+			navigator.serviceWorker.removeEventListener("message", handleMessage);
+		};
+	}, [s.selectChat, s.handleOpenThread]);
+
+	useEffect(() => {
+		const params = new URLSearchParams(window.location.search);
+		const chatId = params.get("chatId");
+		if (!chatId) return;
+
+		const threadId = params.get("threadId");
+
+		params.delete("chatId");
+		params.delete("threadId");
+		const cleanSearch = params.toString();
+		window.history.replaceState(
+			{},
+			"",
+			cleanSearch ? `/chat?${cleanSearch}` : "/chat",
+		);
+
+		s.selectChat(chatId);
+		if (threadId) {
+			s.handleOpenThread(threadId);
+		}
+	}, [s.selectChat, s.handleOpenThread]);
 
 	if (s.activeAccount === null || s.user === null) {
 		return null;

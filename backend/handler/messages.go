@@ -135,6 +135,10 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	for _, memberID := range chat.Members {
 		h.hub.Send(memberID, sse.Event{Event: "new_message", Data: msg})
+
+		if memberID != user.ID {
+			h.sendPushForMessage(r.Context(), chatID, msg, "", memberID)
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{"message": msg})

@@ -62,7 +62,7 @@ func newTestHandler(t *testing.T) *Handler {
 	fm := federation.New(key, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout)
 	s := newTestStore(t)
 
-	return New(s, cfg, fm)
+	return New(s, cfg, fm, nil)
 }
 
 func TestSearchUsersDoesNotLeakToken(t *testing.T) {

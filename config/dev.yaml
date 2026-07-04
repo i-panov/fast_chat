@@ -20,6 +20,9 @@ federation:
   scheme: http
   key_path: ./federation_keys
 
+push:
+  vapid_subject: mailto:admin@fastchat.local
+
 auth:
   token_expiry: 24h
   token_expiry_warning: 5m
