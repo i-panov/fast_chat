@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -274,7 +275,7 @@ func main() {
 	mux.HandleFunc("GET /.well-known/fast-chat", fedManager.WellKnownHandler)
 
 	// Static file serving for production frontend build
-	setupStaticFileServer(mux, cfg.Server.StaticDir)
+	absStaticDir := resolveStaticDir(cfg.Server.StaticDir)
 
 	generalRL := newRateLimiter(cfg.RateLimits.General.Limit, cfg.RateLimits.General.Window, 10000)
 
@@ -282,7 +283,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           corsMiddleware(cfg.CORS.Origin)(rateLimitMiddleware(generalRL)(mux)),
+		Handler:           corsMiddleware(cfg.CORS.Origin)(rateLimitMiddleware(generalRL)(spaFallbackMiddleware(absStaticDir)(mux))),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      0,
@@ -325,40 +326,53 @@ func main() {
 	slog.Info("server stopped")
 }
 
-func setupStaticFileServer(mux *http.ServeMux, staticDir string) {
+func resolveStaticDir(staticDir string) string {
 	if staticDir == "" {
-		return
+		return ""
 	}
 
 	absDir, err := filepath.Abs(staticDir)
 	if err != nil {
 		slog.Warn("invalid static_dir, skipping static file serving", "path", staticDir, "err", err)
 
-		return
+		return ""
 	}
 
 	if info, statErr := os.Stat(absDir); statErr != nil || !info.IsDir() {
 		slog.Warn("static_dir not found, skipping static file serving", "path", absDir)
 
-		return
+		return ""
 	}
 
 	slog.Info("serving static files", "dir", absDir)
 
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, filepath.Join(absDir, "index.html"))
-	})
+	return absDir
+}
 
-	mux.HandleFunc("GET /{path...}", func(w http.ResponseWriter, r *http.Request) {
-		path := r.PathValue("path")
+func spaFallbackMiddleware(staticDir string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if staticDir == "" || r.Method != http.MethodGet {
+				next.ServeHTTP(w, r)
 
-		fullPath := filepath.Join(absDir, filepath.Clean("/"+path))
-		if info, statErr := os.Stat(fullPath); statErr == nil && !info.IsDir() {
-			http.ServeFile(w, r, fullPath)
+				return
+			}
 
-			return
-		}
+			path := r.URL.Path
+			if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/.well-known/") {
+				next.ServeHTTP(w, r)
 
-		http.ServeFile(w, r, filepath.Join(absDir, "index.html"))
-	})
+				return
+			}
+
+			fullPath := filepath.Join(staticDir, filepath.Clean("/"+path))
+			if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
+				http.ServeFile(w, r, fullPath)
+
+				return
+			}
+
+			http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
+		})
+	}
 }
