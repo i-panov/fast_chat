@@ -28,7 +28,7 @@ export function useSseEvents({
 	tokenRef.current = token;
 
 	const handler = useCallback(
-		(event: string, data: unknown) => {
+		async (event: string, data: unknown) => {
 			if (event === "new_message" || event === "message_updated") {
 				const msg = data as Message;
 				void messagesRepo.upsert(msg, "sent");
@@ -44,6 +44,38 @@ export function useSseEvents({
 				} else {
 					void messagesRepo.applyDelete(chatId, messageId);
 				}
+				return;
+			}
+			if (event === "message_delivered") {
+				const { messageId } = data as { messageId: string };
+				void messagesRepo.updateDeliveryStatus(messageId, "delivered");
+				void threadMessagesRepo.updateDeliveryStatus(messageId, "delivered");
+				return;
+			}
+			if (event === "message_read") {
+				const { messageId, readerId } = data as {
+					messageId: string;
+					readerId: string;
+				};
+				// Accumulate readBy list instead of overwriting
+				const existing = await messagesRepo.getById("", messageId);
+				const currentReadBy = existing?.readBy ?? [];
+				const newReadBy = currentReadBy.includes(readerId)
+					? currentReadBy
+					: [...currentReadBy, readerId];
+				void messagesRepo.updateDeliveryStatus(messageId, "read", newReadBy);
+
+				// Same for thread messages
+				const existingThread = await threadMessagesRepo.getById("", messageId);
+				const currentThreadReadBy = existingThread?.readBy ?? [];
+				const newThreadReadBy = currentThreadReadBy.includes(readerId)
+					? currentThreadReadBy
+					: [...currentThreadReadBy, readerId];
+				void threadMessagesRepo.updateDeliveryStatus(
+					messageId,
+					"read",
+					newThreadReadBy,
+				);
 				return;
 			}
 			if (

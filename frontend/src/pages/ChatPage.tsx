@@ -273,6 +273,8 @@ export function ChatPage() {
 										<MessageList
 											messages={s.activeMessages}
 											userId={s.user.id}
+											chatId={s.activeChatId}
+											token={s.activeAccount?.token}
 											onDelete={s.handleDeleteMessage}
 											onStartEdit={s.handleStartEdit}
 											onReply={s.handleReply}

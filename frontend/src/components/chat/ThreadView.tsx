@@ -12,6 +12,7 @@ export function ThreadView() {
 		activeThread,
 		activeThreadMessages,
 		user,
+		activeAccount,
 		handleCloseThread,
 		inputText,
 		setInputText,
@@ -109,6 +110,8 @@ export function ThreadView() {
 			<MessageList
 				messages={activeThreadMessages}
 				userId={user?.id ?? ""}
+				chatId={activeChatId}
+				token={activeAccount?.token}
 				onDelete={handleDelete}
 				onStartEdit={handleStartEdit}
 				onReply={handleReply}

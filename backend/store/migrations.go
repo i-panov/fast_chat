@@ -46,6 +46,11 @@ func createIndexes(db *gorm.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_messages_chat_updated ON messages(chat_id, updated_at)",
 		"CREATE INDEX IF NOT EXISTS idx_deleted_messages_chat_time ON deleted_messages(chat_id, deleted_at)",
 		"CREATE INDEX IF NOT EXISTS idx_deleted_chats_user_time ON deleted_chats(user_id, deleted_at)",
+
+		// MessageReadStatus: batch lookups by message_id for loading
+		// read statuses; user lookups for sync queries.
+		"CREATE INDEX IF NOT EXISTS idx_message_read_statuses_message ON message_read_statuses(message_id)",
+		"CREATE INDEX IF NOT EXISTS idx_message_read_statuses_user ON message_read_statuses(user_id)",
 	}
 
 	// One-shot backfill: rows inserted before the UpdatedAt column

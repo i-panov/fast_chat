@@ -1,4 +1,8 @@
-import type { Message, MessageStatus } from "../types/api.ts";
+import type {
+	Message,
+	MessageDeliveryStatus,
+	MessageStatus,
+} from "../types/api.ts";
 import { getDB } from "./init.ts";
 import { notify } from "./notify.ts";
 import type { StoredThreadMessage } from "./schema.ts";
@@ -107,6 +111,44 @@ export const threadMessagesRepo = {
 		const existing = await db.get("threadMessages", messageId);
 		if (existing === undefined || existing.threadId !== threadId) return;
 		await db.put("threadMessages", { ...existing, status });
+		notify();
+	},
+
+	async updateDeliveryStatus(
+		messageId: string,
+		deliveryStatus: MessageDeliveryStatus,
+		readBy?: string[],
+	): Promise<void> {
+		const db = await getDB();
+		const existing = await db.get("threadMessages", messageId);
+		if (existing === undefined) return;
+		const updated: StoredThreadMessage = {
+			...existing,
+			deliveryStatus,
+			_updatedAt: new Date().toISOString(),
+		};
+		if (readBy !== undefined) {
+			updated.readBy = readBy;
+		}
+		await db.put("threadMessages", updated);
+		notify();
+	},
+
+	async markAsRead(messageIds: string[]): Promise<void> {
+		if (messageIds.length === 0) return;
+		const db = await getDB();
+		const tx = db.transaction("threadMessages", "readwrite");
+		for (const id of messageIds) {
+			const existing = await tx.store.get(id);
+			if (existing !== undefined) {
+				await tx.store.put({
+					...existing,
+					deliveryStatus: "read",
+					_updatedAt: new Date().toISOString(),
+				});
+			}
+		}
+		await tx.done;
 		notify();
 	},
 };

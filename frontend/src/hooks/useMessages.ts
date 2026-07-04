@@ -29,7 +29,12 @@ const PAGE_SIZE = 30;
 function toClientMessage(sm: StoredMessage): MessageWithStatus {
 	const base = stripMeta(sm);
 	const status: MessageStatus = sm.status === "deleted" ? "sent" : sm.status;
-	return { ...base, status };
+	return {
+		...base,
+		status,
+		deliveryStatus: sm.deliveryStatus,
+		readBy: sm.readBy,
+	};
 }
 
 export function useMessages({
@@ -68,12 +73,17 @@ export function useMessages({
 		setIsLoadingMore(true);
 
 		try {
-			const res = await getMessages(
-				token,
-				chatId,
-				PAGE_SIZE,
-				cursor === null ? undefined : cursor,
-			);
+			// Get list of message IDs already in cache
+			const cachedMessages = await messagesRepo.getByChat(chatId);
+			const cachedIds = cachedMessages.map((m) => m.id);
+
+			// Fetch messages with status info for missing IDs
+			const res = await getMessages(token, chatId, {
+				limit: PAGE_SIZE,
+				before: cursor === null ? undefined : cursor,
+				missingIDs: cachedIds,
+			});
+
 			await messagesRepo.upsertMany(res.messages);
 
 			const nxt =

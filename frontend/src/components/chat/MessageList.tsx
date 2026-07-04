@@ -1,7 +1,8 @@
 import { Loader, Text } from "@mantine/core";
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { useMessageReadStatuses } from "../../hooks/useMessageReadStatuses.ts";
 import { getCurrentLocale } from "../../i18n.ts";
 import type { FileInfo, Message, Thread } from "../../types/api.ts";
 import { formatDateLabel, formatTime } from "../../utils/chat.ts";
@@ -47,6 +48,8 @@ function flashElement(el: HTMLElement) {
 interface Props {
 	messages: Message[];
 	userId: string;
+	chatId: string | null;
+	token: string | undefined;
 	onDelete: (chatId: string, messageId: string) => void;
 	onStartEdit: (
 		chatId: string,
@@ -76,6 +79,8 @@ interface Props {
 export function MessageList({
 	messages,
 	userId,
+	chatId,
+	token,
 	onDelete,
 	onStartEdit,
 	onReply,
@@ -100,6 +105,16 @@ export function MessageList({
 	const virtuosoRef = useRef<VirtuosoHandle>(null);
 	const onLoadMoreRef = useRef(onLoadMore);
 	const prevScrollToRef = useRef<string | null>(null);
+	const [visibleRange, setVisibleRange] = useState<{
+		startIndex: number;
+		endIndex: number;
+	}>({ startIndex: 0, endIndex: 0 });
+
+	const { markVisibleAsRead } = useMessageReadStatuses({
+		token,
+		chatId,
+		isInThread,
+	});
 
 	const handleStartEdit = useCallback(
 		(
@@ -125,7 +140,7 @@ export function MessageList({
 		}
 	}, []);
 
-	const datedMessages = (() => {
+	const datedMessages = useMemo(() => {
 		const fmt: Intl.DateTimeFormatOptions = {
 			day: "2-digit",
 			month: "2-digit",
@@ -163,7 +178,24 @@ export function MessageList({
 			});
 		}
 		return result;
-	})();
+	}, [messages, locale, showAuthorForGroup]);
+
+	// Track visible messages and mark them as read
+	useEffect(() => {
+		if (visibleRange.startIndex === 0 && visibleRange.endIndex === 0) return;
+
+		const visibleIds: string[] = [];
+		for (let i = visibleRange.startIndex; i <= visibleRange.endIndex; i++) {
+			const entry = datedMessages[i];
+			if (entry?.type === "message" && entry.msg.fromId !== userId) {
+				visibleIds.push(entry.msg.id);
+			}
+		}
+
+		if (visibleIds.length > 0) {
+			markVisibleAsRead(visibleIds);
+		}
+	}, [visibleRange, datedMessages, userId, markVisibleAsRead]);
 
 	const itemContent = useCallback(
 		(_index: number, entry: (typeof datedMessages)[number]) => {
@@ -213,6 +245,7 @@ export function MessageList({
 						}
 						isInThread={isInThread}
 						status={msg.status}
+						deliveryStatus={msg.deliveryStatus}
 						onRetry={onRetry}
 						onCancelSend={onCancelSend}
 						showAuthorNick={entry.showAuthor}
@@ -273,6 +306,11 @@ export function MessageList({
 				Header: isLoadingMore === true ? LoadingHeader : undefined,
 			}}
 			rangeChanged={(range) => {
+				setVisibleRange({
+					startIndex: range.startIndex,
+					endIndex: range.endIndex,
+				});
+
 				if (scrollToMessageId === undefined || scrollToMessageId === null)
 					return;
 				if (scrollToMessageId === prevScrollToRef.current) return;

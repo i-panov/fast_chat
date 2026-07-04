@@ -150,20 +150,24 @@ export function uploadChatAvatar(
 	});
 }
 
+export interface GetMessagesQuery {
+	limit?: number;
+	before?: string;
+	missingIDs?: string[];
+}
+
 export function getMessages(
 	token: string,
 	chatId: string,
-	limit?: number,
-	before?: string,
+	query: GetMessagesQuery = {},
 ) {
-	const params = new URLSearchParams();
-	if (limit !== undefined) params.set("limit", String(limit));
-	if (before !== undefined) params.set("before", before);
-	const qs = params.toString();
-
 	return request<{ messages: Message[]; nextCursor?: string }>(
-		`/api/chats/${chatId}/messages${qs ? `?${qs}` : ""}`,
+		`/api/chats/${chatId}/messages/query`,
 		token,
+		{
+			method: "POST",
+			body: JSON.stringify(query),
+		},
 	);
 }
 
@@ -214,6 +218,17 @@ export function deleteMessage(
 		token,
 		{ method: "DELETE" },
 	);
+}
+
+export function markMessagesRead(
+	token: string,
+	chatId: string,
+	messageIDs: string[],
+) {
+	return request<{ status: string }>("/api/messages/read", token, {
+		method: "POST",
+		body: JSON.stringify({ chatId, messageIDs }),
+	});
 }
 
 export interface EditMessageParams {

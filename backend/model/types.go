@@ -143,3 +143,10 @@ type Thread struct {
 	CreatedAt         time.Time `gorm:"not null"       json:"createdAt"`
 	MessageCount      int       `gorm:"default:0"      json:"messageCount"`
 }
+
+type MessageReadStatus struct {
+	MessageID string    `gorm:"primaryKey"          json:"messageId"`
+	UserID    string    `gorm:"primaryKey"          json:"userId"`
+	Status    string    `gorm:"default:'delivered'" json:"status"` // delivered | read
+	ReadAt    time.Time `gorm:"not null"            json:"readAt"`
+}

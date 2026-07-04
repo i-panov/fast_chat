@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -18,7 +19,91 @@ const (
 	maxMessagesLimit     = 100
 	maxMessageLen        = 10000
 	maxMessageFiles      = 10
+	maxReadByMembers     = 100
 )
+
+type messageWithStatus struct {
+	model.Message
+	DeliveryStatus string   `json:"deliveryStatus,omitempty"`
+	ReadBy         []string `json:"readBy,omitempty"`
+}
+
+func (h *Handler) enrichOwnMessage(
+	msg model.Message,
+	deliveryStatuses map[string]string,
+	readersByMsg map[string][]string,
+	showReadBy bool,
+) messageWithStatus {
+
+	result := messageWithStatus{Message: msg}
+	status := "sent"
+	if s, ok := deliveryStatuses[msg.ID]; ok {
+		status = s
+	}
+	result.DeliveryStatus = status
+	if showReadBy {
+		if readers, ok := readersByMsg[msg.ID]; ok {
+			result.ReadBy = readers
+		}
+	}
+	return result
+}
+
+func (h *Handler) enrichMessagesWithStatuses(ctx context.Context, messages []model.Message, chat *model.Chat, userID string, missingIDs []string) []messageWithStatus {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	ids := make([]string, len(messages))
+	for i, m := range messages {
+		ids[i] = m.ID
+	}
+
+	filesByMsg, err := h.store.GetMessageFilesBatch(ctx, ids)
+	if err == nil {
+		for i := range messages {
+			messages[i].Files = filesByMsg[messages[i].ID]
+		}
+	}
+
+	// Only fetch statuses for messages that are missing from client cache
+	statusIDs := ids
+	if len(missingIDs) > 0 {
+		missingSet := make(map[string]bool, len(missingIDs))
+		for _, id := range missingIDs {
+			missingSet[id] = true
+		}
+		statusIDs = make([]string, 0, len(missingIDs))
+		for _, id := range ids {
+			if missingSet[id] {
+				statusIDs = append(statusIDs, id)
+			}
+		}
+	}
+
+	readStatuses, _ := h.store.GetMessageReadStatusesBatch(ctx, statusIDs, userID)    //nolint:errcheck
+	deliveryStatuses, _ := h.store.GetMessageDeliveryStatuses(ctx, statusIDs, userID) //nolint:errcheck
+
+	showReadBy := len(chat.Members) <= maxReadByMembers
+	var readersByMsg map[string][]string
+	if showReadBy {
+		readersByMsg, _ = h.store.GetMessageReadStatusesForSender(ctx, statusIDs, userID) //nolint:errcheck
+	}
+
+	result := make([]messageWithStatus, len(messages))
+	for i, msg := range messages {
+		result[i] = messageWithStatus{Message: msg}
+
+		if msg.FromID == userID {
+			result[i] = h.enrichOwnMessage(msg, deliveryStatuses, readersByMsg, showReadBy)
+		} else if status, ok := readStatuses[msg.ID]; ok {
+			// Other's message: show read status for current user
+			result[i].DeliveryStatus = status
+		}
+	}
+
+	return result
+}
 
 func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
@@ -30,7 +115,6 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := defaultMessagesLimit
-
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= maxMessagesLimit {
 			limit = n
@@ -44,18 +128,60 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		messages = []model.Message{}
 	}
 
-	if len(messages) > 0 {
-		ids := make([]string, len(messages))
-		for i, m := range messages {
-			ids[i] = m.ID
-		}
+	result := h.enrichMessagesWithStatuses(r.Context(), messages, chat, user.ID, nil)
+	if result != nil {
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"messages":   result,
+			"nextCursor": nextCursor,
+		})
+		return
+	}
 
-		filesByMsg, err := h.store.GetMessageFilesBatch(r.Context(), ids)
-		if err == nil {
-			for i := range messages {
-				messages[i].Files = filesByMsg[messages[i].ID]
-			}
-		}
+	WriteJSON(w, http.StatusOK, map[string]any{
+		"messages":   messages,
+		"nextCursor": nextCursor,
+	})
+}
+
+func (h *Handler) GetMessagesWithStatuses(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+	chatID := r.PathValue("id")
+
+	chat := h.requireChatMember(w, r, chatID, user.ID)
+	if chat == nil {
+		return
+	}
+
+	var req struct {
+		Limit      int      `json:"limit"`
+		Before     string   `json:"before"`
+		MissingIDs []string `json:"missingIDs"`
+	}
+
+	if err := h.decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
+		return
+	}
+
+	limit := req.Limit
+	if limit <= 0 || limit > maxMessagesLimit {
+		limit = defaultMessagesLimit
+	}
+
+	messages, nextCursor, _ := h.store.GetMessagesPaginated(r.Context(), chatID, limit, req.Before)
+	if messages == nil {
+		messages = []model.Message{}
+	}
+
+	result := h.enrichMessagesWithStatuses(r.Context(), messages, chat, user.ID, req.MissingIDs)
+	if result != nil {
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"messages":   result,
+			"nextCursor": nextCursor,
+		})
+		return
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]any{
@@ -151,6 +277,16 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 			h.hub.Send(memberID, sse.Event{Event: "thread_message_new", Data: eventData})
 
 			if memberID != user.ID {
+				// Mark as delivered for other members (ignore errors - best effort)
+				_ = h.store.MarkMessagesDelivered(r.Context(), []string{msg.ID}, memberID) //nolint:errcheck
+				// Notify sender about delivery
+				h.hub.Send(user.ID, sse.Event{
+					Event: "message_delivered",
+					Data: map[string]any{
+						"messageId": msg.ID,
+						"chatId":    chatID,
+					},
+				})
 				h.sendPushForMessage(r.Context(), chatID, msg, threadID, memberID)
 			}
 		}
@@ -168,6 +304,16 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 			h.hub.Send(memberID, sse.Event{Event: "new_message", Data: msg})
 
 			if memberID != user.ID {
+				// Mark as delivered for other members (ignore errors - best effort)
+				_ = h.store.MarkMessagesDelivered(r.Context(), []string{msg.ID}, memberID) //nolint:errcheck
+				// Notify sender about delivery
+				h.hub.Send(user.ID, sse.Event{
+					Event: "message_delivered",
+					Data: map[string]any{
+						"messageId": msg.ID,
+						"chatId":    chatID,
+					},
+				})
 				h.sendPushForMessage(r.Context(), chatID, msg, "", memberID)
 			}
 		}
@@ -354,4 +500,89 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *Handler) MarkMessagesRead(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+
+	var req struct {
+		MessageIDs []string `json:"messageIDs"`
+		ChatID     string   `json:"chatId"`
+	}
+
+	if err := h.decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
+		return
+	}
+
+	if len(req.MessageIDs) == 0 || req.ChatID == "" {
+		writeError(w, http.StatusBadRequest, "messageIds and chatId are required")
+		return
+	}
+
+	if len(req.MessageIDs) > 100 {
+		writeError(w, http.StatusBadRequest, "too many message IDs")
+		return
+	}
+
+	chat := h.requireChatMember(w, r, req.ChatID, user.ID)
+	if chat == nil {
+		return
+	}
+
+	// Get messages filtered by chat ID to verify ownership
+	messages, err := h.store.GetMessagesByIDs(r.Context(), req.MessageIDs, req.ChatID)
+	if err != nil {
+		slog.Error("failed to get messages for read", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Extract valid message IDs
+	validIDs := make([]string, len(messages))
+	for i, msg := range messages {
+		validIDs[i] = msg.ID
+	}
+
+	// Mark messages as read
+	if err := h.store.MarkMessagesRead(r.Context(), validIDs, user.ID); err != nil {
+		slog.Error("failed to mark messages as read", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Collect unique authors (excluding self)
+	authors := make(map[string]bool)
+	for _, msg := range messages {
+		if msg.FromID != user.ID {
+			authors[msg.FromID] = true
+		}
+	}
+
+	// Notify each author about read messages
+	now := time.Now().UTC()
+	for authorID := range authors {
+		// Find messages from this author
+		var authorMsgIDs []string
+		for _, msg := range messages {
+			if msg.FromID == authorID {
+				authorMsgIDs = append(authorMsgIDs, msg.ID)
+			}
+		}
+
+		for _, msgID := range authorMsgIDs {
+			h.hub.Send(authorID, sse.Event{
+				Event: "message_read",
+				Data: map[string]any{
+					"messageId": msgID,
+					"readerId":  user.ID,
+					"readAt":    now,
+				},
+			})
+		}
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

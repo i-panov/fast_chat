@@ -9,7 +9,12 @@ import {
 } from "react";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { getCurrentLocale } from "../../i18n.ts";
-import type { FileInfo, Location, ReplyToInfo } from "../../types/api.ts";
+import type {
+	FileInfo,
+	Location,
+	MessageDeliveryStatus,
+	ReplyToInfo,
+} from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { MessageAttachments } from "./bubble/MessageAttachments.tsx";
 import { MessageAuthor } from "./bubble/MessageAuthor.tsx";
@@ -51,6 +56,7 @@ interface Props {
 	threadMessageCount?: number;
 	isInThread?: boolean;
 	status?: "sent" | "queued" | "failed";
+	deliveryStatus?: MessageDeliveryStatus;
 	onRetry?: (chatId: string, messageId: string) => void;
 	onCancelSend?: (chatId: string, messageId: string) => void;
 	showAuthorNick?: boolean;
@@ -102,6 +108,7 @@ function areEqual(prev: Props, next: Props): boolean {
 		prev.threadMessageCount === next.threadMessageCount &&
 		prev.isInThread === next.isInThread &&
 		prev.status === next.status &&
+		prev.deliveryStatus === next.deliveryStatus &&
 		prev.showAuthorNick === next.showAuthorNick
 	);
 }
@@ -130,6 +137,7 @@ export const MessageBubble = memo(function MessageBubble({
 	threadMessageCount,
 	isInThread,
 	status,
+	deliveryStatus,
 	onRetry,
 	onCancelSend,
 	showAuthorNick,
@@ -138,7 +146,6 @@ export const MessageBubble = memo(function MessageBubble({
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
 	const [locationLightboxOpen, setLocationLightboxOpen] = useState(false);
 	const menuRef = useRef<HTMLDivElement>(null);
-	const menuButtonRef = useRef<HTMLButtonElement>(null);
 	const firstMenuItemRef = useRef<HTMLButtonElement>(null);
 	const locale = getCurrentLocale();
 	const { activeAccount } = useAuth();
@@ -192,14 +199,6 @@ export const MessageBubble = memo(function MessageBubble({
 
 	const closeMenu = useCallback(() => {
 		setMenuPos(null);
-		menuButtonRef.current?.focus();
-	}, []);
-
-	const openMenu = useCallback(() => {
-		const btn = menuButtonRef.current;
-		if (btn === null) return;
-		const rect = btn.getBoundingClientRect();
-		setMenuPos({ x: rect.left, y: rect.bottom + 4 });
 	}, []);
 
 	useEffect(() => {
@@ -251,19 +250,11 @@ export const MessageBubble = memo(function MessageBubble({
 				<MessageBody
 					text={text}
 					status={status}
+					deliveryStatus={deliveryStatus}
+					isOwn={isOwn}
 					time={time}
 					editedAt={editedAt}
 					locale={locale}
-					menuOpen={menuPos !== null}
-					onMenuToggle={(e) => {
-						e.stopPropagation();
-						if (menuPos !== null) {
-							closeMenu();
-						} else {
-							openMenu();
-						}
-					}}
-					menuButtonRef={menuButtonRef}
 				/>
 			</Paper>
 			{threadId !== undefined && onOpenThread !== undefined && (

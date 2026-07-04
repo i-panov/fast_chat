@@ -50,6 +50,8 @@ export function useSse(token: string, onEvent: EventHandler) {
 			"chat_member_removed",
 			"message_updated",
 			"message_deleted",
+			"message_delivered",
+			"message_read",
 			"thread_created",
 			"thread_message_new",
 			"typing",

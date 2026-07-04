@@ -54,6 +54,8 @@ export interface PendingFile {
 
 export type MessageStatus = "sent" | "queued" | "failed";
 
+export type MessageDeliveryStatus = "sent" | "delivered" | "read";
+
 export interface Message {
 	id: string;
 	chatId: string;
@@ -66,6 +68,15 @@ export interface Message {
 	files?: FileInfo[];
 	location?: Location;
 	status?: MessageStatus;
+	deliveryStatus?: MessageDeliveryStatus;
+	readBy?: string[];
+}
+
+export interface MessageReadStatus {
+	messageId: string;
+	userId: string;
+	status: "delivered" | "read";
+	readAt: string;
 }
 
 export interface Thread {

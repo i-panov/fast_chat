@@ -1,34 +1,33 @@
-import { ActionIcon, Anchor, Group, Loader, Text } from "@mantine/core";
-import { MoreVertical } from "lucide-react";
+import { Anchor, Group, Loader, Text } from "@mantine/core";
 import { isValidElement } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { MessageDeliveryStatus } from "../../../types/api.ts";
 import { extractCodeText } from "../../../utils/chat.ts";
 import { CodeBlock } from "../CodeBlock.tsx";
+import { MessageStatus } from "./MessageStatus.tsx";
 
 const BORDER_RADIUS_CODE = 3;
 
 interface Props {
 	text: string;
 	status?: "sent" | "queued" | "failed";
+	deliveryStatus?: MessageDeliveryStatus;
+	isOwn?: boolean;
 	time: string;
 	editedAt?: string;
 	locale: string;
-	menuOpen: boolean;
-	onMenuToggle: (e: React.MouseEvent) => void;
-	menuButtonRef: React.RefObject<HTMLButtonElement | null>;
 }
 
 export function MessageBody({
 	text,
 	status,
+	deliveryStatus,
+	isOwn,
 	time,
 	editedAt,
 	locale,
-	menuOpen,
-	onMenuToggle,
-	menuButtonRef,
 }: Props) {
 	const { t } = useTranslation();
 
@@ -111,20 +110,10 @@ export function MessageBody({
 					</span>
 				)}
 				{editedLabel ?? time}
+				{isOwn === true && deliveryStatus !== undefined && (
+					<MessageStatus status={deliveryStatus} />
+				)}
 			</Text>
-			<ActionIcon
-				ref={menuButtonRef}
-				variant="subtle"
-				color="gray"
-				size="sm"
-				aria-label={t("message.menuActions")}
-				aria-haspopup="menu"
-				aria-expanded={menuOpen}
-				onClick={onMenuToggle}
-				style={{ flexShrink: 0, marginLeft: 4 }}
-			>
-				<MoreVertical size={16} />
-			</ActionIcon>
 		</Group>
 	);
 }

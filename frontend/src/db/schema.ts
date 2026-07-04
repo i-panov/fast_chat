@@ -3,6 +3,7 @@ import type {
 	Chat,
 	FileInfo,
 	Location,
+	MessageDeliveryStatus,
 	MessageStatus,
 	ReplyToInfo,
 	Thread,
@@ -24,6 +25,8 @@ export interface StoredMessage {
 	files?: FileInfo[];
 	location?: Location;
 	status: MessageStatus | "deleted";
+	deliveryStatus?: MessageDeliveryStatus;
+	readBy?: string[];
 	_updatedAt: string;
 }
 
@@ -44,6 +47,8 @@ export interface StoredThreadMessage {
 	files?: FileInfo[];
 	location?: Location;
 	status: MessageStatus | "deleted";
+	deliveryStatus?: MessageDeliveryStatus;
+	readBy?: string[];
 	_updatedAt: string;
 }
 
@@ -115,7 +120,7 @@ export interface MetaEntry {
 }
 
 export const DB_NAME = "fast_chat";
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 export interface FCSchema extends DBSchema {
 	chats: {

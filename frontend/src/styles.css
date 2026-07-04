@@ -56,3 +56,15 @@ body {
 	background: var(--mantine-color-dark-7);
 	filter: invert(0.9) hue-rotate(180deg) brightness(0.95) contrast(0.9);
 }
+
+.message-status-sent {
+	color: darkgray;
+}
+
+.message-status-delivered {
+	color: darkgray;
+}
+
+.message-status-read {
+	color: mediumblue;
+}
