@@ -18,7 +18,7 @@ email:
 
 federation:
     scheme: http
-    key_path: ./backend/data/federation
+    key_path: ./data/federation
 
 push:
     vapid_subject: mailto:admin@fastchat.local
