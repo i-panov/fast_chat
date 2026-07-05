@@ -31,8 +31,14 @@ lint:
 build\:frontend:
 	cd frontend && npm ci && npm run build
 
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+
 build\:backend:
-	cd backend && mkdir -p bin && CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/fastchat .
+	cd backend && mkdir -p bin && CGO_ENABLED=0 go build \
+		-trimpath \
+		-ldflags="-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)" \
+		-o bin/fastchat .
 
 build: build\:frontend build\:backend
 	@echo ""

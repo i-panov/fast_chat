@@ -72,10 +72,21 @@ func maxBody(limit int64, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+var (
+	version = "dev"
+	commit  = "none"
+)
+
 func main() {
 	configPath := flag.String("config", "", "path to config file (required)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("fastchat %s (commit %s)\n", version, commit)
+		os.Exit(0)
+	}
 
 	if *configPath == "" {
 		fmt.Fprintln(os.Stderr, "FATAL: --config flag is required")
