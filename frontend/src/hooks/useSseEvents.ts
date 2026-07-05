@@ -106,6 +106,14 @@ export function useSseEvents({
 				void threadMessagesRepo.upsert(message, threadId, "sent");
 				return;
 			}
+			if (event === "user_status_changed") {
+				const { userId, online } = data as {
+					userId: string;
+					online: boolean;
+				};
+				void chatsRepo.updateMemberStatus(userId, online);
+				return;
+			}
 			if (event === "typing") {
 				const payload = data as TypingPayload;
 				addTypingUser(payload);

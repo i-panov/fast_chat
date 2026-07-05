@@ -15,6 +15,7 @@ import { MessageList } from "../components/chat/MessageList.tsx";
 import { SearchBox } from "../components/chat/SearchBox.tsx";
 import { ThreadView } from "../components/chat/ThreadView.tsx";
 import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
+import { OnlineDot } from "../components/shared/OnlineDot.tsx";
 import ChatContext from "../context/ChatContext.tsx";
 import { useChatPage } from "../hooks/useChatInteraction.ts";
 import { usePushNotifications } from "../hooks/usePushNotifications.ts";
@@ -25,12 +26,14 @@ function ChatHeader({
 	subtitle,
 	badge,
 	typingNick,
+	online,
 	onOpenSettings,
 }: {
 	title: string;
 	subtitle?: string;
 	badge?: string;
 	typingNick?: string;
+	online?: boolean;
 	onOpenSettings?: () => void;
 }) {
 	const { t } = useTranslation();
@@ -47,14 +50,17 @@ function ChatHeader({
 		>
 			<Group justify="space-between" wrap="nowrap">
 				<div style={{ minWidth: 0, flex: 1 }}>
-					<Text fw={600} truncate>
-						{title}
-						{badge !== undefined && (
-							<Text component="span" size="xs" c="dimmed" ml={8}>
-								{t("chat.newChat")}
-							</Text>
-						)}
-					</Text>
+					<Group gap={6} wrap="nowrap">
+						<Text fw={600} truncate>
+							{title}
+							{badge !== undefined && (
+								<Text component="span" size="xs" c="dimmed" ml={8}>
+									{t("chat.newChat")}
+								</Text>
+							)}
+						</Text>
+						{online !== undefined && <OnlineDot online={online} />}
+					</Group>
 					{subtitle !== undefined && (
 						<Text size="xs" c="dimmed">
 							{subtitle}
@@ -152,11 +158,16 @@ export function ChatPage() {
 		const subtitle = isGroup
 			? t("chat.membersCount", { count: s.activeChat.members.length })
 			: undefined;
+		const userId = s.user.id;
+		const otherMember = isGroup
+			? undefined
+			: s.activeChat.members.find((m) => m.id !== userId);
 		header = (
 			<ChatHeader
 				title={title}
 				subtitle={subtitle}
 				typingNick={typingNick}
+				online={isGroup ? undefined : (otherMember?.online ?? false)}
 				onOpenSettings={
 					isGroup
 						? () => {

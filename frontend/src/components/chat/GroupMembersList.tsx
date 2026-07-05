@@ -1,9 +1,10 @@
 import { ActionIcon, Group, ScrollArea, Stack, Text } from "@mantine/core";
 import { Crown, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { OnlineDot } from "../shared/OnlineDot.tsx";
 
 interface Props {
-	members: Array<{ id: string; nick: string }>;
+	members: Array<{ id: string; nick: string; online?: boolean }>;
 	ownerId: string;
 	myId: string;
 	isOwner: boolean;
@@ -56,6 +57,7 @@ export function GroupMembersList({
 											</Text>
 										)}
 									</Text>
+									<OnlineDot online={m.online ?? false} />
 								</Group>
 								{isOwner && !isThisOwner && (
 									<ActionIcon

@@ -8,6 +8,7 @@ export interface User {
 export interface MemberInfo {
 	id: string;
 	nick: string;
+	online?: boolean;
 }
 
 export interface Chat {
@@ -140,4 +141,5 @@ export interface SyncResponse {
 	deletedChats: SyncDeletedChat[];
 	messages: Message[];
 	deletedMessages: SyncDeletedMessage[];
+	onlineStatus?: Record<string, boolean>;
 }

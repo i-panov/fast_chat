@@ -219,7 +219,9 @@ func (h *Handler) SSEAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.store.AddConnection(user.ID)
+	if h.store.AddConnection(user.ID) {
+		h.broadcastUserStatus(r.Context(), user.ID, true)
+	}
 
 	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

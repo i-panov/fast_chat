@@ -33,7 +33,7 @@ func (s *Store) Codes() *CodeStore {
 	return s.codes
 }
 
-func (s *Store) AddConnection(userID string) {
+func (s *Store) AddConnection(userID string) bool {
 	s.connMu.Lock()
 	s.conns[userID]++
 	prev := s.conns[userID] - 1
@@ -43,10 +43,12 @@ func (s *Store) AddConnection(userID string) {
 		s.onlineMu.Lock()
 		s.online[userID] = struct{}{}
 		s.onlineMu.Unlock()
+		return true
 	}
+	return false
 }
 
-func (s *Store) RemoveConnection(userID string) {
+func (s *Store) RemoveConnection(userID string) bool {
 	s.connMu.Lock()
 	s.conns[userID]--
 	remaining := s.conns[userID]
@@ -61,7 +63,9 @@ func (s *Store) RemoveConnection(userID string) {
 		s.onlineMu.Lock()
 		delete(s.online, userID)
 		s.onlineMu.Unlock()
+		return true
 	}
+	return false
 }
 
 func (s *Store) IsOnline(userID string) bool {

@@ -5,6 +5,7 @@ import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import type { Chat } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { chatTitle } from "../../utils/chat.ts";
+import { OnlineDot } from "../shared/OnlineDot.tsx";
 
 function ChatAvatar({
 	avatarUrl,
@@ -69,6 +70,10 @@ export function ChatList({ chats, activeChatId, userId, onSelectChat }: Props) {
 			{chats.map((chat) => {
 				const isGroup = chat.type === "group";
 				const title = chatTitle(chat, userId);
+				const otherMember = isGroup
+					? undefined
+					: chat.members.find((m) => m.id !== userId);
+				const isOnline = otherMember?.online ?? false;
 				return (
 					<Button
 						key={chat.id}
@@ -98,9 +103,12 @@ export function ChatList({ chats, activeChatId, userId, onSelectChat }: Props) {
 								isGroup={isGroup}
 							/>
 							<div style={{ minWidth: 0, flex: 1 }}>
-								<Text size="sm" truncate>
-									{isGroup ? title : `@${title}`}
-								</Text>
+								<Group gap={4} wrap="nowrap">
+									<Text size="sm" truncate>
+										{isGroup ? title : `@${title}`}
+									</Text>
+									{!isGroup && <OnlineDot online={isOnline} />}
+								</Group>
 								{isGroup && (
 									<Group gap={4} c="dimmed">
 										<Users size={11} />

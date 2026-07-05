@@ -57,6 +57,15 @@ func (h *Hub) Close() {
 	default:
 		close(h.closeCh)
 	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for id, conn := range h.connections {
+		close(conn.Channel)
+		delete(h.connections, id)
+	}
+	h.userConns = make(map[string][]string)
 }
 
 func (h *Hub) cleanupLastTyping(cleanupInterval time.Duration) {

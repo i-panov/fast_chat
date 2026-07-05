@@ -50,4 +50,23 @@ export const chatsRepo = {
 		await tx.done;
 		notify();
 	},
+
+	async updateMemberStatus(userId: string, online: boolean): Promise<void> {
+		const db = await getDB();
+		const chats = await db.getAll("chats");
+		const tx = db.transaction("chats", "readwrite");
+		for (const chat of chats) {
+			const memberIndex = chat.members.findIndex((m) => m.id === userId);
+			if (memberIndex !== -1) {
+				chat.members[memberIndex] = {
+					...chat.members[memberIndex],
+					online,
+				};
+				chat._updatedAt = new Date().toISOString();
+				await tx.store.put(chat);
+			}
+		}
+		await tx.done;
+		notify();
+	},
 };

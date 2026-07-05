@@ -93,6 +93,26 @@ func (h *Handler) Close() {
 	h.hub.Close()
 }
 
+func (h *Handler) broadcastUserStatus(ctx context.Context, userID string, online bool) {
+	chats := h.store.GetUserChats(ctx, userID)
+	notified := make(map[string]bool)
+
+	for _, chat := range chats {
+		for _, memberID := range chat.Members {
+			if memberID != userID && !notified[memberID] {
+				h.hub.Send(memberID, sse.Event{
+					Event: "user_status_changed",
+					Data: map[string]any{
+						"userId": userID,
+						"online": online,
+					},
+				})
+				notified[memberID] = true
+			}
+		}
+	}
+}
+
 func (h *Handler) enrichChat(ctx context.Context, c *model.Chat) chatResponse {
 	return h.enrichChatFromNicks(ctx, c, nil)
 }

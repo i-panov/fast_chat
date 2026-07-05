@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,14 +23,16 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn := h.hub.Register(connectionID)
-	defer func() {
+	defer func() { //nolint:contextcheck // request context is cancelled by now, need fresh context.Background()
 		h.hub.Unregister(connectionID)
 		conn.Lock()
 		uid := conn.UserID
 		conn.Unlock()
 
 		if uid != "" {
-			h.store.RemoveConnection(uid)
+			if h.store.RemoveConnection(uid) {
+				h.broadcastUserStatus(context.Background(), uid, false)
+			}
 		}
 	}()
 

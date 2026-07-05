@@ -37,6 +37,7 @@ type syncResponse struct {
 	DeletedChats    []syncDeletedChatDTO    `json:"deletedChats"`
 	Messages        []model.Message         `json:"messages"`
 	DeletedMessages []syncDeletedMessageDTO `json:"deletedMessages"`
+	OnlineStatus    map[string]bool         `json:"onlineStatus,omitempty"`
 }
 
 // Sync returns the delta of chats, messages, and tombstones that have
@@ -58,12 +59,18 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 
 	nicks := h.store.GetUsersByIDs(r.Context(), memberIDs)
 
+	onlineStatus := make(map[string]bool, len(memberIDs))
+	for _, id := range memberIDs {
+		onlineStatus[id] = h.store.IsOnline(id)
+	}
+
 	resp := syncResponse{
 		ServerNow:       time.Now().UTC(),
 		Chats:           h.buildChangedChats(r.Context(), user.ID, since, nicks),
 		Messages:        h.store.MessagesChangedSince(r.Context(), chatIDs, since),
 		DeletedMessages: h.buildDeletedMessages(r.Context(), chatIDs, since),
 		DeletedChats:    h.buildDeletedChats(r.Context(), user.ID, since),
+		OnlineStatus:    onlineStatus,
 	}
 
 	WriteJSON(w, http.StatusOK, resp)

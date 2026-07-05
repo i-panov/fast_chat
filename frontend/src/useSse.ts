@@ -52,6 +52,7 @@ export function useSse(token: string, onEvent: EventHandler) {
 			"message_deleted",
 			"message_delivered",
 			"message_read",
+			"user_status_changed",
 			"thread_created",
 			"thread_message_new",
 			"typing",

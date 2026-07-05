@@ -25,6 +25,12 @@ export async function applyDelta(delta: SyncResponse): Promise<void> {
 		await chatsRepo.upsertMany(chats);
 	}
 
+	if (delta.onlineStatus) {
+		for (const [userId, online] of Object.entries(delta.onlineStatus)) {
+			await chatsRepo.updateMemberStatus(userId, online);
+		}
+	}
+
 	if (deletedChats.length > 0) {
 		await chatsRepo.removeMany(deletedChats.map((d) => d.chatId));
 	}
