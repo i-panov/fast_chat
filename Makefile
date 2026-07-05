@@ -29,7 +29,7 @@ lint:
 	make frontend:lint
 
 build\:frontend:
-	cd frontend && npm run build
+	cd frontend && npm ci && npm run build
 
 build\:backend:
 	cd backend && mkdir -p bin && CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/fastchat .
