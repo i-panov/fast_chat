@@ -93,6 +93,8 @@ export interface Thread {
 export interface AppConfig {
 	messageEditTTL: number;
 	messageDeleteTTL: number;
+	version?: string;
+	commit?: string;
 }
 
 export interface VerifyCodeExisting {

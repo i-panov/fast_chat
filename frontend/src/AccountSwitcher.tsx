@@ -9,9 +9,11 @@ import {
 	UnstyledButton,
 } from "@mantine/core";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getConfig } from "./api.ts";
 import i18n, { getCurrentLocale, SUPPORTED_LANGS } from "./i18n.ts";
+import type { AppConfig } from "./types/api.ts";
 import { useAuth } from "./useAuth.tsx";
 
 interface Props {
@@ -119,6 +121,24 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const { accounts, activeAccount, switchAccount } = useAuth();
 	const navigate = useNavigate();
 	const [confirmLogout, setConfirmLogout] = useState(false);
+	const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+	const abortRef = useRef<AbortController | null>(null);
+
+	useEffect(() => {
+		if (!open) return;
+
+		abortRef.current?.abort();
+		const ctrl = new AbortController();
+		abortRef.current = ctrl;
+
+		getConfig()
+			.then((cfg) => {
+				if (!ctrl.signal.aborted) setAppConfig(cfg);
+			})
+			.catch(() => {});
+
+		return () => ctrl.abort();
+	}, [open]);
 
 	return (
 		<Drawer
@@ -200,6 +220,11 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 						}}
 						size="xs"
 					/>
+					{appConfig?.version && appConfig.version !== "dev" && (
+						<Text size="xs" c="dimmed" ta="center" style={{ marginTop: "8px" }}>
+							v-{appConfig.version}-{appConfig.commit}
+						</Text>
+					)}
 				</div>
 			</div>
 			<Modal

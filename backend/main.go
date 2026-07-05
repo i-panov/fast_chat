@@ -84,7 +84,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("fastchat %s (commit %s)\n", version, commit)
+		fmt.Fprintf(os.Stdout, "fastchat %s (commit %s)\n", version, commit) //nolint:errcheck
 		os.Exit(0)
 	}
 
