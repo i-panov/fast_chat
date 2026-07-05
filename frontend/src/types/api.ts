@@ -13,7 +13,7 @@ export interface MemberInfo {
 
 export interface Chat {
 	id: string;
-	type: "private" | "group";
+	type: "private" | "group" | "self";
 	name: string;
 	ownerId: string;
 	avatarUrl?: string;

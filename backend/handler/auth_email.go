@@ -165,6 +165,13 @@ func (h *Handler) CompleteRegistration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, err := h.store.EnsureSelfChat(r.Context(), user.ID); err != nil {
+		logger.Error("failed to ensure self-chat", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+
+		return
+	}
+
 	WriteJSON(w, http.StatusCreated, map[string]any{
 		"user":      user.Public(),
 		"token":     user.Token,

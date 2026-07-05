@@ -152,22 +152,26 @@ export function ChatPage() {
 		);
 	} else if (s.activeChat !== undefined) {
 		const isGroup = s.activeChat.type === "group";
-		const title = isGroup
-			? s.activeChat.name || t("chat.groupFallback")
-			: `@${chatTitle(s.activeChat, s.user.id)}`;
+		const isSelf = s.activeChat.type === "self";
+		const title = isSelf
+			? chatTitle(s.activeChat, s.user.id)
+			: isGroup
+				? s.activeChat.name || t("chat.groupFallback")
+				: `@${chatTitle(s.activeChat, s.user.id)}`;
 		const subtitle = isGroup
 			? t("chat.membersCount", { count: s.activeChat.members.length })
 			: undefined;
 		const userId = s.user.id;
-		const otherMember = isGroup
-			? undefined
-			: s.activeChat.members.find((m) => m.id !== userId);
+		const otherMember =
+			isGroup || isSelf
+				? undefined
+				: s.activeChat.members.find((m) => m.id !== userId);
 		header = (
 			<ChatHeader
 				title={title}
 				subtitle={subtitle}
 				typingNick={typingNick}
-				online={isGroup ? undefined : (otherMember?.online ?? false)}
+				online={isGroup || isSelf ? undefined : (otherMember?.online ?? false)}
 				onOpenSettings={
 					isGroup
 						? () => {

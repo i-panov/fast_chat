@@ -6,6 +6,9 @@ export function otherNick(members: MemberInfo[], myId: string): string {
 }
 
 export function chatTitle(chat: Chat, myId: string): string {
+	if (chat.type === "self") {
+		return i18n.t("chat.favorites");
+	}
 	if (chat.type === "group") {
 		return chat.name || i18n.t("chat.groupFallback");
 	}

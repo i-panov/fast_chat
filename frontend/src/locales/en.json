@@ -21,6 +21,7 @@
 	"chat.loading": "Loading...",
 	"chat.unknownUser": "Unknown",
 	"chat.typing": "{{nick}} is typing...",
+	"chat.favorites": "Favorites",
 	"chat.groupFallback": "Group",
 	"chat.createGroup": "Create group",
 	"chat.createGroupHint": "You'll be the owner. You can add members later in group settings.",

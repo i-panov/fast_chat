@@ -12,7 +12,11 @@ export const chatsRepo = {
 		const db = await getDB();
 		const all = await db.getAll("chats");
 
-		return all.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+		return all.sort((a, b) => {
+			if (a.type === "self") return -1;
+			if (b.type === "self") return 1;
+			return a.createdAt.localeCompare(b.createdAt);
+		});
 	},
 
 	async getById(id: string): Promise<StoredChat | undefined> {

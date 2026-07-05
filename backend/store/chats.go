@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -15,6 +17,7 @@ import (
 const (
 	chatTypePrivate = "private"
 	chatTypeGroup   = "group"
+	chatTypeSelf    = "self"
 )
 
 var (
@@ -131,6 +134,40 @@ func (s *Store) CreateGroupChat(ctx context.Context, name, ownerID string, membe
 	chat.Members = dedup
 
 	return chat, nil
+}
+
+func selfChatID(userID string) string {
+	h := sha256.Sum256([]byte("self-chat:" + userID))
+	return hex.EncodeToString(h[:16])
+}
+
+func (s *Store) EnsureSelfChat(ctx context.Context, userID string) (*model.Chat, error) {
+	chatID := selfChatID(userID)
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&model.Chat{ID: chatID, Type: chatTypeSelf, CreatedAt: time.Now()}).Error; err != nil {
+			return err
+		}
+
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	var chat model.Chat
+	if err := s.db.WithContext(ctx).First(&chat, "id = ?", chatID).Error; err != nil {
+		return nil, err
+	}
+
+	var members []string
+	s.db.WithContext(ctx).Model(&ChatMember{}).Where("chat_id = ?", chatID).Pluck("user_id", &members)
+	chat.Members = members
+
+	return &chat, nil
 }
 
 func (s *Store) AddChatMember(ctx context.Context, chatID, userID string) error {
@@ -341,7 +378,7 @@ func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
 
 	var chats []*model.Chat
 
-	s.db.WithContext(ctx).Where("id IN ?", chatIDs).Order("created_at DESC").Find(&chats)
+	s.db.WithContext(ctx).Where("id IN ?", chatIDs).Order("CASE WHEN type = 'self' THEN 0 ELSE 1 END, created_at DESC").Find(&chats)
 
 	// One query for all memberships across all of the user's chats,
 	// instead of one query per chat. The lookup table is small enough

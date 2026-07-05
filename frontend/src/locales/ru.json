@@ -21,6 +21,7 @@
 	"chat.loading": "Загрузка...",
 	"chat.unknownUser": "Неизвестный",
 	"chat.typing": "{{nick}} печатает...",
+	"chat.favorites": "Избранное",
 	"chat.groupFallback": "Группа",
 	"chat.createGroup": "Создать группу",
 	"chat.createGroupHint": "Вы будете владельцем. Добавить участников можно позже в настройках группы.",

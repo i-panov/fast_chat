@@ -47,6 +47,10 @@ type syncResponse struct {
 func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 
+	if _, err := h.store.EnsureSelfChat(r.Context(), user.ID); err != nil {
+		logger.Error("failed to ensure self-chat", "err", err)
+	}
+
 	since, err := parseSince(r.URL.Query().Get("since"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid since timestamp")
