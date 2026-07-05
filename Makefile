@@ -28,6 +28,17 @@ lint:
 	make backend:lint
 	make frontend:lint
 
+build\:frontend:
+	cd frontend && npm run build
+
+build\:backend:
+	cd backend && mkdir -p bin && CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/fastchat .
+
+build: build\:frontend build\:backend
+	@echo ""
+	@echo "Built: backend/bin/fastchat (single binary, no CGO)"
+	@echo "Run: cd backend && ./bin/fastchat --config=../config/prod.yaml"
+
 dev:
 	@echo "Run in separate terminals:"
 	@echo "  make backend:run"
