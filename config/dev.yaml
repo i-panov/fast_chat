@@ -1,28 +1,28 @@
 server:
-  host: localhost
-  port: 8080
-  static_dir: ../frontend/dist
+    host: localhost
+    port: 8080
+    static_dir: ../frontend/dist
 
 database:
-  path: /tmp/fastchat.db
+    path: /tmp/fastchat.db
 
 uploads:
-  dir: uploads
+    dir: uploads
 
 cors:
-  origin: http://localhost:5173
+    origin: http://localhost:5173
 
 email:
-  debug_mode: true
-  allowed_emails: []
+    debug_mode: true
+    allowed_emails: []
 
 federation:
-  scheme: http
-  key_path: ./federation_keys
+    scheme: http
+    key_path: ./backend/data/federation
 
 push:
-  vapid_subject: mailto:admin@fastchat.local
+    vapid_subject: mailto:admin@fastchat.local
 
 auth:
-  token_expiry: 24h
-  token_expiry_warning: 5m
+    token_expiry: 24h
+    token_expiry_warning: 5m
