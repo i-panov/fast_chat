@@ -8,6 +8,9 @@
 	"accounts.logout": "Выйти",
 	"accounts.logoutConfirm": "Вы уверены, что хотите выйти?",
 	"accounts.logoutTitle": "Выход",
+	"accounts.clearData": "Очистить кэш",
+	"accounts.clearDataConfirm": "Потребуется повторный вход в аккаунт.",
+	"accounts.clearDataTitle": "Очистить кэш",
 
 	"chat.newChat": "Новый чат",
 	"chat.sendTo": "Напишите сообщение, чтобы начать чат с @{{nick}}",

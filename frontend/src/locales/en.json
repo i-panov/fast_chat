@@ -8,6 +8,9 @@
 	"accounts.logout": "Logout",
 	"accounts.logoutConfirm": "Are you sure you want to logout?",
 	"accounts.logoutTitle": "Logout",
+	"accounts.clearData": "Clear cache",
+	"accounts.clearDataConfirm": "You'll need to log in again.",
+	"accounts.clearDataTitle": "Clear cache",
 
 	"chat.newChat": "New chat",
 	"chat.sendTo": "Send a message to start a chat with @{{nick}}",

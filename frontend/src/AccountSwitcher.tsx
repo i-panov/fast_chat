@@ -15,6 +15,7 @@ import { getConfig } from "./api.ts";
 import i18n, { getCurrentLocale, SUPPORTED_LANGS } from "./i18n.ts";
 import type { AppConfig } from "./types/api.ts";
 import { useAuth } from "./useAuth.tsx";
+import { clearAllData } from "./utils/clearAllData.ts";
 
 interface Props {
 	open: boolean;
@@ -121,6 +122,8 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const { accounts, activeAccount, switchAccount } = useAuth();
 	const navigate = useNavigate();
 	const [confirmLogout, setConfirmLogout] = useState(false);
+	const [confirmClearData, setConfirmClearData] = useState(false);
+	const [clearDataLoading, setClearDataLoading] = useState(false);
 	const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
 
@@ -202,6 +205,14 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 				>
 					{t("accounts.logout")}
 				</Button>
+				<Button
+					variant="outline"
+					color="red"
+					style={{ width: "100%", marginTop: "8px" }}
+					onClick={() => setConfirmClearData(true)}
+				>
+					{t("accounts.clearData")}
+				</Button>
 				<div
 					style={{
 						borderTop: "1px solid var(--mantine-color-dark-4)",
@@ -251,6 +262,43 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 						}}
 					>
 						{t("accounts.logout")}
+					</Button>
+				</div>
+			</Modal>
+			<Modal
+				opened={confirmClearData}
+				onClose={() => setConfirmClearData(false)}
+				title={t("accounts.clearDataTitle")}
+				size="sm"
+			>
+				<Text size="sm" mb="md">
+					{t("accounts.clearDataConfirm")}
+				</Text>
+				<div
+					style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}
+				>
+					<Button
+						variant="default"
+						disabled={clearDataLoading}
+						onClick={() => setConfirmClearData(false)}
+					>
+						{t("accounts.cancel")}
+					</Button>
+					<Button
+						color="red"
+						loading={clearDataLoading}
+						onClick={async () => {
+							setClearDataLoading(true);
+							try {
+								await clearAllData();
+							} catch (err) {
+								console.error("clearAllData failed", err);
+							}
+							onClose();
+							window.location.replace("/login");
+						}}
+					>
+						{t("accounts.clearData")}
 					</Button>
 				</div>
 			</Modal>
