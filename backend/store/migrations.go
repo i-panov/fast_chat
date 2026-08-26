@@ -39,6 +39,14 @@ func migrateLegacyTokens(db *gorm.DB) error {
 // CREATE INDEX IF NOT EXISTS is idempotent on SQLite, so this is safe
 // to call on every boot.
 func createIndexes(db *gorm.DB) error {
+	// Files can share a hash (same content uploaded under different
+	// names), so the hash index must not be unique. Older databases have
+	// a UNIQUE idx_files_hash created by the model's old uniqueIndex tag;
+	// drop it so the CREATE INDEX below rebuilds a plain index.
+	if err := db.Exec("DROP INDEX IF EXISTS idx_files_hash").Error; err != nil {
+		return err
+	}
+
 	statements := []string{
 		// Messages: GetMessages / GetMessage / pagination all filter by
 		// chat_id and order by (created_at, id). A composite index

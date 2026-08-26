@@ -13,12 +13,11 @@ var (
 	ErrFileNotFound = errors.New("file not found")
 )
 
+// SaveFile inserts a new file record. The same content can be uploaded
+// under different names: each upload gets its own record (and its own
+// original name), while all records sharing a hash point at the same
+// StoragePath on disk — the physical file is written only once.
 func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64, originalName, storagePath string) (*model.File, error) {
-	existing, ok := s.FindFileByHash(ctx, hash)
-	if ok {
-		return existing, nil
-	}
-
 	file := &model.File{
 		ID:           GenerateID(),
 		Hash:         hash,
@@ -39,6 +38,18 @@ func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64,
 func (s *Store) FindFileByHash(ctx context.Context, hash string) (*model.File, bool) {
 	var f model.File
 	if err := s.db.WithContext(ctx).Where("hash = ?", hash).First(&f).Error; err != nil {
+		return nil, false
+	}
+
+	return &f, true
+}
+
+// FindFileByHashAndName returns the record for an exact (hash, original
+// name) pair. Used to reuse the existing record when the same content is
+// uploaded again under the same name.
+func (s *Store) FindFileByHashAndName(ctx context.Context, hash, name string) (*model.File, bool) {
+	var f model.File
+	if err := s.db.WithContext(ctx).Where("hash = ? AND original_name = ?", hash, name).First(&f).Error; err != nil {
 		return nil, false
 	}
 

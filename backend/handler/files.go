@@ -113,9 +113,25 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
-	existing, ok := h.store.FindFileByHash(r.Context(), hash)
-	if ok {
-		WriteJSON(w, http.StatusOK, map[string]any{"file": existing.ToFileInfo()})
+	// Same content uploaded again under the same name: reuse the existing
+	// record — no new row, no bytes on disk.
+	if exact, ok := h.store.FindFileByHashAndName(r.Context(), hash, header.Filename); ok {
+		WriteJSON(w, http.StatusOK, map[string]any{"file": exact.ToFileInfo()})
+		return
+	}
+
+	// Same content, different name: keep a separate record so each
+	// upload preserves its own original name, but reuse the physical
+	// file — every record sharing a hash points at the same StoragePath.
+	// The staged temp file is removed by the deferred os.Remove above.
+	if existing, ok := h.store.FindFileByHash(r.Context(), hash); ok {
+		saved, err := h.store.SaveFile(r.Context(), hash, mimeType, size, header.Filename, existing.StoragePath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save file metadata")
+			return
+		}
+
+		WriteJSON(w, http.StatusCreated, map[string]any{"file": saved.ToFileInfo()})
 		return
 	}
 

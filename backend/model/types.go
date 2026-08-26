@@ -57,7 +57,7 @@ type Location struct {
 
 type File struct {
 	ID           string    `gorm:"primaryKey;not null"  json:"id"`
-	Hash         string    `gorm:"uniqueIndex;not null" json:"hash"`
+	Hash         string    `gorm:"not null"             json:"hash"`
 	MimeType     string    `gorm:"not null"             json:"mimeType"`
 	Size         int64     `gorm:"not null"             json:"size"`
 	OriginalName string    `gorm:"not null"             json:"originalName"`

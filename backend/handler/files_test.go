@@ -18,7 +18,7 @@ const (
 	htmlDoc = "<!doctype html><html><body><script>alert(1)</script></body></html>"
 )
 
-func uploadAndGetFileID(t *testing.T, h *Handler, token, filename, body string) string {
+func uploadFile(t *testing.T, h *Handler, token, filename, body string) (int, string) {
 	t.Helper()
 
 	var buf bytes.Buffer
@@ -44,27 +44,32 @@ func uploadAndGetFileID(t *testing.T, h *Handler, token, filename, body string) 
 	w := httptest.NewRecorder()
 	h.AuthMiddleware(h.UploadFile)(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
-	}
-
-	bodyBytes := w.Body.Bytes()
-
 	var resp struct {
 		File struct {
 			ID string `json:"id"`
 		} `json:"file"`
 	}
 
-	if err := json.Unmarshal(bodyBytes, &resp); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, string(bodyBytes))
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, string(w.Body.Bytes()))
 	}
 
-	if resp.File.ID == "" {
-		t.Fatalf("upload response missing id: %s", string(bodyBytes))
+	return w.Code, resp.File.ID
+}
+
+func uploadAndGetFileID(t *testing.T, h *Handler, token, filename, body string) string {
+	t.Helper()
+
+	code, id := uploadFile(t, h, token, filename, body)
+	if code != http.StatusCreated {
+		t.Fatalf("upload: %d", code)
 	}
 
-	return resp.File.ID
+	if id == "" {
+		t.Fatalf("upload response missing id")
+	}
+
+	return id
 }
 
 func TestUploadFileDetectsPNGFromBody(t *testing.T) {
@@ -301,14 +306,40 @@ func TestUploadFileCreatesFileOnDisk(t *testing.T) {
 	}
 }
 
-func TestUploadFileDeduplicatesByHash(t *testing.T) {
+func TestUploadFileSameContentSameNameReusesRecord(t *testing.T) {
 	tmp := t.TempDir()
 	h := newTestHandler(t)
 	h.cfg.Uploads.Dir = tmp
 
-	// Write a single byte sequence to disk as if it had been
-	// uploaded, then call SaveFile twice with the same hash. The
-	// second call must return the same File without inserting a row.
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+
+	firstID := uploadAndGetFileID(t, h, alice.token, "same.png", tinyPNG)
+
+	// Same content + same name: the existing record is returned as-is.
+	code, secondID := uploadFile(t, h, alice.token, "same.png", tinyPNG)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200 for an identical upload, got %d", code)
+	}
+	if secondID != firstID {
+		t.Fatalf("expected the existing record to be reused, got %q and %q", firstID, secondID)
+	}
+
+	// A different name creates a new record; repeating that exact
+	// (hash, name) pair then reuses it instead of creating a third.
+	thirdID := uploadAndGetFileID(t, h, alice.token, "other.png", tinyPNG)
+	if thirdID == firstID {
+		t.Fatal("expected a new record for a different name")
+	}
+
+	code, again := uploadFile(t, h, alice.token, "other.png", tinyPNG)
+	if code != http.StatusOK || again != thirdID {
+		t.Fatalf("expected the other.png record to be reused: code=%d got=%q want=%q", code, again, thirdID)
+	}
+}
+
+func TestSaveFileSameHashKeepsSeparateRecords(t *testing.T) {
+	h := newTestHandler(t)
+
 	hash := "dedup-hash-test"
 
 	first, err := h.store.SaveFile(context.Background(), hash, "image/png", int64(len(tinyPNG)), "first.png", "20060102/abc")
@@ -316,12 +347,112 @@ func TestUploadFileDeduplicatesByHash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second, err := h.store.SaveFile(context.Background(), hash, "image/png", int64(len(tinyPNG)), "second.png", "20060102/def")
+	second, err := h.store.SaveFile(context.Background(), hash, "image/png", int64(len(tinyPNG)), "second.png", "20060102/abc")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if first.ID != second.ID {
-		t.Fatalf("dedup failed: first.ID=%q second.ID=%q", first.ID, second.ID)
+	if first.ID == second.ID {
+		t.Fatalf("expected separate records for the same hash, got shared ID %q", first.ID)
+	}
+
+	if second.OriginalName != "second.png" {
+		t.Errorf("expected the second record to keep its own name, got %q", second.OriginalName)
+	}
+}
+
+func TestUploadFileSameContentDifferentNames(t *testing.T) {
+	tmp := t.TempDir()
+	h := newTestHandler(t)
+	h.cfg.Uploads.Dir = tmp
+
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
+
+	chatBody := `{"withUserId":"` + bob.id + `"}`
+	chatReq := authReq(http.MethodPost, "/api/chats", alice.token, chatBody)
+	chatW := httptest.NewRecorder()
+	h.AuthMiddleware(h.CreateChat)(chatW, chatReq)
+	if chatW.Code != http.StatusCreated {
+		t.Fatalf("chat create: %d %s", chatW.Code, chatW.Body.String())
+	}
+
+	var resp map[string]any
+
+	if err := json.Unmarshal(chatW.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	chatID := resp["chat"].(map[string]any)["id"].(string)
+
+	// Identical bytes, different names: the second upload must create a
+	// separate record that reuses the physical file of the first.
+	firstID := uploadAndGetFileID(t, h, alice.token, "first.png", tinyPNG)
+	secondID := uploadAndGetFileID(t, h, alice.token, "second.png", tinyPNG)
+
+	if firstID == secondID {
+		t.Fatalf("expected separate records for identical content, got shared ID %q", firstID)
+	}
+
+	first, err := h.store.GetFile(context.Background(), firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := h.store.GetFile(context.Background(), secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.StoragePath != second.StoragePath {
+		t.Fatalf("expected both records to share the physical file, got %q and %q", first.StoragePath, second.StoragePath)
+	}
+
+	if first.OriginalName != "first.png" || second.OriginalName != "second.png" {
+		t.Fatalf("expected per-record names, got %q and %q", first.OriginalName, second.OriginalName)
+	}
+
+	// Only one physical file on disk.
+	full := filepath.Join(tmp, first.StoragePath)
+
+	if _, err := os.Stat(full); err != nil {
+		t.Fatalf("expected physical file at %s: %v", full, err)
+	}
+
+	// Serve both records: same bytes, but each keeps its own filename.
+	msg, err := h.store.AddMessage(context.Background(), chatID, "", alice.id, alice.id, "attachments", "msg-files", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.store.AddMessageFiles(context.Background(), msg.ID, []string{firstID, secondID}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		id   string
+		name string
+	}{
+		{firstID, "first.png"},
+		{secondID, "second.png"},
+	} {
+		req := authReq(http.MethodGet, "/api/files/"+tc.id, alice.token, "")
+		req.SetPathValue("fileId", tc.id)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.ServeFile)(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("serve %s: %d %s", tc.id, w.Code, w.Body.String())
+		}
+
+		disp := w.Header().Get("Content-Disposition")
+
+		if !strings.Contains(disp, `filename="`+tc.name+`"`) {
+			t.Errorf("expected filename %q in Content-Disposition, got %q", tc.name, disp)
+		}
+
+		if !bytes.Equal(w.Body.Bytes(), []byte(tinyPNG)) {
+			t.Errorf("expected identical bytes for %s", tc.id)
+		}
 	}
 }
