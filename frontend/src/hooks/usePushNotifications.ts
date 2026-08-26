@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { getVapidPublicKey, subscribePush, unsubscribePush } from "../api.ts";
+import { useEffect, useRef } from "react";
+import { getVapidPublicKey, subscribePush } from "../api.ts";
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
 	const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -88,27 +88,33 @@ export function usePushNotifications(token: string) {
 
 		return () => {
 			cancelled = true;
-
-			if (token === "") return;
-
-			(async () => {
-				try {
-					const registration = await navigator.serviceWorker.ready;
-					const subscription = await registration.pushManager.getSubscription();
-
-					if (!subscription) return;
-
-					const subJSON = subscription.toJSON();
-
-					if (subJSON.endpoint) {
-						await unsubscribePush(token, subJSON.endpoint);
-					}
-
-					await subscription.unsubscribe();
-				} catch (err) {
-					console.warn("push unsubscribe failed on cleanup", err);
-				}
-			})();
 		};
+	}, [token]);
+
+	// Only unsubscribe when the session ends (token becomes empty), not on
+	// token refresh — otherwise an expiring token would tear down and
+	// re-create the subscription, creating a window where pushes are lost.
+	// The server-side record is left behind on purpose: it can't be
+	// removed without a valid Bearer token (the DELETE endpoint is behind
+	// AuthMiddleware), and the backend evicts stale subscriptions via
+	// push service's onPushExpired callback.
+	const didUnsubscribeRef = useRef(false);
+	useEffect(() => {
+		if (token !== "") {
+			didUnsubscribeRef.current = false;
+			return;
+		}
+		if (didUnsubscribeRef.current) return;
+		didUnsubscribeRef.current = true;
+
+		(async () => {
+			try {
+				const registration = await navigator.serviceWorker.ready;
+				const subscription = await registration.pushManager.getSubscription();
+				await subscription?.unsubscribe();
+			} catch (err) {
+				console.warn("push unsubscribe failed on cleanup", err);
+			}
+		})();
 	}, [token]);
 }

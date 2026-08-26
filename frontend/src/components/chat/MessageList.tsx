@@ -116,19 +116,6 @@ export function MessageList({
 		isInThread,
 	});
 
-	const handleStartEdit = useCallback(
-		(
-			chatId: string,
-			messageId: string,
-			text: string,
-			files?: FileInfo[],
-			threadId?: string,
-		) => {
-			onStartEdit(chatId, messageId, text, files, threadId);
-		},
-		[onStartEdit],
-	);
-
 	const handleReplyClick = useCallback((messageId: string) => {
 		prevScrollToRef.current = messageId;
 		const el = document.querySelector(
@@ -229,7 +216,7 @@ export function MessageList({
 						files={msg.files}
 						location={msg.location}
 						onReplyClick={handleReplyClick}
-						onStartEdit={handleStartEdit}
+						onStartEdit={onStartEdit}
 						onDelete={onDelete}
 						onReply={onReply}
 						editTTL={editTTL}
@@ -256,7 +243,7 @@ export function MessageList({
 		[
 			userId,
 			locale,
-			handleStartEdit,
+			onStartEdit,
 			handleReplyClick,
 			onDelete,
 			onReply,

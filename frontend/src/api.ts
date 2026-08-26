@@ -36,7 +36,9 @@ async function request<T>(
 	}
 	if (!res.ok) {
 		const body = (await res.json().catch(() => ({}))) as Record<string, string>;
-		throw new Error(`http ${res.status}: ${body.error ?? ""}`);
+		const retryAfter = res.headers.get("Retry-After");
+		const suffix = retryAfter !== null ? ` retry-after:${retryAfter}` : "";
+		throw new Error(`http ${res.status}: ${body.error ?? ""}${suffix}`);
 	}
 	return res.json() as Promise<T>;
 }

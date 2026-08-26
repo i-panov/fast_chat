@@ -200,6 +200,9 @@ export function useChatPage(): ChatPageState {
 				});
 				await chatsRepo.upsert(chat);
 				selectChat(chat.id);
+				// Opening a new chat should not leave a stale thread active;
+				// otherwise the reply would be sent to the previous thread.
+				closeThread();
 				await sendMessage({
 					chatId: chat.id,
 					text,
@@ -239,6 +242,7 @@ export function useChatPage(): ChatPageState {
 			sendMessage,
 			editMessage,
 			selectChat,
+			closeThread,
 			clearAllPendingFiles,
 			clearEditing,
 			clearPendingChat,

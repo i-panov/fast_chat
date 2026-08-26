@@ -68,7 +68,12 @@ export function usePendingFiles(): UsePendingFilesReturn {
 	}, []);
 
 	const clearAllPendingFiles = useCallback(() => {
-		setPendingFiles([]);
+		setPendingFiles((prev) => {
+			for (const f of prev) {
+				revokeIfTracked(cleanupRef, f.blobUrl);
+			}
+			return [];
+		});
 	}, []);
 
 	return {

@@ -44,6 +44,13 @@ export const threadMessagesRepo = {
 		return existing;
 	},
 
+	async getByIdAny(
+		messageId: string,
+	): Promise<StoredThreadMessage | undefined> {
+		const db = await getDB();
+		return db.get("threadMessages", messageId);
+	},
+
 	async upsert(
 		message: Message,
 		threadId: string,

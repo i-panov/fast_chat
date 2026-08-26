@@ -78,7 +78,12 @@ registerRoute(
 	({ url }) =>
 		url.pathname.startsWith("/api/") &&
 		!url.pathname.startsWith("/api/events") &&
-		!url.pathname.startsWith("/api/files/"),
+		!url.pathname.startsWith("/api/files/") &&
+		!url.pathname.startsWith("/api/chats/") &&
+		!url.pathname.startsWith("/api/messages/") &&
+		!url.pathname.startsWith("/api/sync") &&
+		!url.pathname.startsWith("/api/users/") &&
+		!url.pathname.startsWith("/api/push/"),
 	new NetworkFirst({
 		cacheName: "api-cache",
 		plugins: [

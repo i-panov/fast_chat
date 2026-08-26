@@ -1,11 +1,14 @@
 interface OnlineDotProps {
 	online: boolean;
+	label?: string;
 }
 
-export function OnlineDot({ online }: OnlineDotProps) {
+export function OnlineDot({ online, label }: OnlineDotProps) {
 	return (
-		<div
+		<output
+			aria-label={label ?? (online ? "online" : "offline")}
 			style={{
+				display: "inline-block",
 				width: 8,
 				height: 8,
 				borderRadius: "50%",

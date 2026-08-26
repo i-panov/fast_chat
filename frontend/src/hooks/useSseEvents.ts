@@ -58,7 +58,7 @@ export function useSseEvents({
 					readerId: string;
 				};
 				// Accumulate readBy list instead of overwriting
-				const existing = await messagesRepo.getById("", messageId);
+				const existing = await messagesRepo.getByIdAny(messageId);
 				const currentReadBy = existing?.readBy ?? [];
 				const newReadBy = currentReadBy.includes(readerId)
 					? currentReadBy
@@ -66,7 +66,7 @@ export function useSseEvents({
 				void messagesRepo.updateDeliveryStatus(messageId, "read", newReadBy);
 
 				// Same for thread messages
-				const existingThread = await threadMessagesRepo.getById("", messageId);
+				const existingThread = await threadMessagesRepo.getByIdAny(messageId);
 				const currentThreadReadBy = existingThread?.readBy ?? [];
 				const newThreadReadBy = currentThreadReadBy.includes(readerId)
 					? currentThreadReadBy
@@ -144,7 +144,7 @@ export function useSseEvents({
 			clearTyping,
 			onTokenExpiring,
 			onTokenExpired,
-			knownThreadIdsRef.current.has,
+			knownThreadIdsRef,
 		],
 	);
 

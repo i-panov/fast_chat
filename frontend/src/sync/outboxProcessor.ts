@@ -15,11 +15,47 @@ export async function processOutbox(token: string): Promise<void> {
 			await runOp(op, token);
 		} catch (err) {
 			if (isTransient(err)) {
+				// Respect Retry-After headers (e.g. 429 rate limiting) by
+				// backing off before the next sync tick. Default fallback
+				// is handled by syncEngine's own debounce.
+				const retryAfterMs = extractRetryAfterMs(err);
+				if (retryAfterMs !== null) {
+					await delay(retryAfterMs);
+				}
 				return;
 			}
 			await failOp(op, err);
 		}
 	}
+}
+
+function extractRetryAfterMs(err: unknown): number | null {
+	if (!(err instanceof Error)) return null;
+	const match = /retry-after:(.+)/.exec(err.message);
+	if (match === null) return null;
+
+	const raw = match[1].trim();
+
+	// Numeric form: seconds until retry.
+	const seconds = Number(raw);
+	if (Number.isFinite(seconds) && seconds > 0) {
+		return Math.min(seconds * 1000, 5 * 60 * 1000);
+	}
+
+	// HTTP-date form: absolute timestamp until retry.
+	const date = new Date(raw);
+	if (!Number.isNaN(date.getTime())) {
+		const delta = date.getTime() - Date.now();
+		if (delta > 0) {
+			return Math.min(delta, 5 * 60 * 1000);
+		}
+	}
+
+	return null;
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function runOp(op: OutboxOp, token: string): Promise<void> {
@@ -187,8 +223,12 @@ function isTransient(err: unknown): boolean {
 		if (msg === "unauthorized") return false;
 		if (msg.startsWith("http ")) {
 			const code = Number(msg.split(" ")[1]);
-			return code === 0 || code >= 500;
+			if (code === 0 || code >= 500) return true;
+			// 429 Too Many Requests is transient; other 4xx are terminal.
+			if (code === 429) return true;
+			return false;
 		}
+		// Network errors (fetch failed, DNS, etc.) are transient.
 		return true;
 	}
 	return true;

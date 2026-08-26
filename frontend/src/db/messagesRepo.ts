@@ -37,6 +37,11 @@ export const messagesRepo = {
 		return existing;
 	},
 
+	async getByIdAny(messageId: string): Promise<StoredMessage | undefined> {
+		const db = await getDB();
+		return db.get("messages", messageId);
+	},
+
 	async upsert(message: Message, status?: StoredStatus): Promise<void> {
 		const db = await getDB();
 		const existing = await db.get("messages", message.id);

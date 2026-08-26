@@ -46,7 +46,7 @@ export function MessageBody({
 					components={{
 						p: ({ children }) => <span>{children}</span>,
 						a: ({ href, children }) => (
-							<Anchor href={href} target="_blank" rel="noreferrer">
+							<Anchor href={href} target="_blank" rel="noopener noreferrer">
 								{children}
 							</Anchor>
 						),

@@ -54,11 +54,21 @@ export async function applyDelta(delta: SyncResponse): Promise<void> {
 			const editOp = outbox.find(
 				(o) => o.kind === "edit" && o.messageId === msg.id,
 			);
+			const serverEditedAt =
+				msg.editedAt !== undefined ? new Date(msg.editedAt).getTime() : NaN;
+			const localEditedAt =
+				editOp !== undefined && editOp.kind === "edit"
+					? new Date(editOp.clientEditedAt).getTime()
+					: NaN;
+			// NaN comparisons are always false, so a malformed/empty
+			// timestamp never wins the conflict — the server record is
+			// accepted as-is.
 			if (
 				editOp !== undefined &&
 				editOp.kind === "edit" &&
-				msg.editedAt !== undefined &&
-				msg.editedAt > editOp.clientEditedAt
+				!Number.isNaN(serverEditedAt) &&
+				!Number.isNaN(localEditedAt) &&
+				serverEditedAt > localEditedAt
 			) {
 				await outboxRepo.remove(editOp.opId);
 				if (editOp.pendingFileClientIds.length > 0) {

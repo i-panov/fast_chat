@@ -58,7 +58,8 @@ export function useMessageReadStatuses({
 		(messageIds: string[]) => {
 			if (userId === undefined || chatId === null) return;
 
-			// Filter out own messages
+			// Callers (MessageList) are expected to pass only other users'
+			// messages; the server would reject reads of own messages anyway.
 			for (const id of messageIds) {
 				pendingRef.current.add(id);
 			}
