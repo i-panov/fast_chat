@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { markMessagesRead } from "../api.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
+import { extractRetryAfterMs } from "../sync/outboxProcessor.ts";
 import { useAuth } from "../useAuth.tsx";
 
 const DEBOUNCE_MS = 300;
@@ -22,6 +23,7 @@ export function useMessageReadStatuses({
 	const userId = activeAccount?.user.id;
 	const pendingRef = useRef<Set<string>>(new Set());
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const nextAllowedFlushRef = useRef(0);
 
 	const flush = useCallback(async () => {
 		if (pendingRef.current.size === 0) return;
@@ -37,10 +39,18 @@ export function useMessageReadStatuses({
 			} else {
 				await messagesRepo.markAsRead(messageIds);
 			}
-		} catch {
+		} catch (err) {
 			// Re-add failed messages to pending for retry
 			for (const id of messageIds) {
 				pendingRef.current.add(id);
+			}
+
+			// Back off after 429 (rate limiting): don't retry before the
+			// server's Retry-After, otherwise every re-render would fire
+			// another request and keep the limiter saturated.
+			const retryAfterMs = extractRetryAfterMs(err);
+			if (retryAfterMs !== null) {
+				nextAllowedFlushRef.current = Date.now() + retryAfterMs;
 			}
 		}
 	}, [token, chatId, userId, isInThread]);
@@ -49,9 +59,13 @@ export function useMessageReadStatuses({
 		if (timerRef.current !== null) {
 			clearTimeout(timerRef.current);
 		}
+		const wait = Math.max(
+			DEBOUNCE_MS,
+			nextAllowedFlushRef.current - Date.now(),
+		);
 		timerRef.current = setTimeout(() => {
 			void flush();
-		}, DEBOUNCE_MS);
+		}, wait);
 	}, [flush]);
 
 	const markVisibleAsRead = useCallback(
@@ -80,6 +94,5 @@ export function useMessageReadStatuses({
 			}
 		};
 	}, []);
-
 	return { markVisibleAsRead };
 }

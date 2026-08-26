@@ -171,7 +171,7 @@ func main() {
 	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL, ipExtractor)(maxBody(1<<20, handlerInstance.VerifyCode)))
 	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL, ipExtractor)(maxBody(1<<20, handlerInstance.CompleteRegistration)))
 
-	sseAuthRL := ratelimit.New(30, time.Minute, 10000)
+	sseAuthRL := ratelimit.New(60, time.Minute, 10000)
 	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL, ipExtractor)(maxBody(1<<20, handlerInstance.SSEAuth)))
 	mux.HandleFunc("POST /api/auth/refresh-token", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.RefreshToken)))
 

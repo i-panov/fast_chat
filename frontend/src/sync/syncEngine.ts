@@ -3,7 +3,7 @@ import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { applyDelta, pullDelta } from "./deltaApplier.ts";
-import { processOutbox } from "./outboxProcessor.ts";
+import { extractRetryAfterMs, processOutbox } from "./outboxProcessor.ts";
 
 export type SyncState = "idle" | "syncing" | "error";
 
@@ -60,8 +60,21 @@ export async function runSync(): Promise<void> {
 		lastError = null;
 		setState("idle");
 	} catch (err) {
-		lastError = err;
-		setState("error");
+		if (isTransientSyncError(err)) {
+			// Transient failures (429 rate limiting, 5xx, network) must
+			// not flip the UI to a permanent "error" state. Back off
+			// (honouring Retry-After when present) and retry; the next
+			// successful tick clears the state.
+			lastError = null;
+			setState("idle");
+			const retryAfterMs = extractRetryAfterMs(err);
+			setTimeout(() => {
+				void runSync();
+			}, retryAfterMs ?? 5000);
+		} else {
+			lastError = err;
+			setState("error");
+		}
 	} finally {
 		running = false;
 		if (scheduled) {
@@ -69,6 +82,24 @@ export async function runSync(): Promise<void> {
 			void runSync();
 		}
 	}
+}
+
+function isTransientSyncError(err: unknown): boolean {
+	if (err instanceof Error) {
+		const msg = err.message.toLowerCase();
+		if (msg === "unauthorized") return false;
+		if (msg.startsWith("http ")) {
+			const code = Number(msg.split(" ")[1]);
+			// 429 Too Many Requests and 5xx are transient; other 4xx are
+			// definitive (bad request, forbidden, not found, ...).
+			if (code === 0 || code >= 500) return true;
+			if (code === 429) return true;
+			return false;
+		}
+		// Network errors (fetch failed, DNS, ...) are transient.
+		return true;
+	}
+	return true;
 }
 
 async function processOutboxAndPull(): Promise<void> {

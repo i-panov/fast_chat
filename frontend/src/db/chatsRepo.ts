@@ -1,4 +1,5 @@
 import type { Chat } from "../types/api.ts";
+import { compareByCreatedAt } from "../utils/ordering.ts";
 import { getDB } from "./init.ts";
 import { notify } from "./notify.ts";
 import type { StoredChat } from "./schema.ts";
@@ -13,9 +14,9 @@ export const chatsRepo = {
 		const all = await db.getAll("chats");
 
 		return all.sort((a, b) => {
-			if (a.type === "self") return -1;
-			if (b.type === "self") return 1;
-			return a.createdAt.localeCompare(b.createdAt);
+			if (a.type === "self" && b.type !== "self") return -1;
+			if (b.type === "self" && a.type !== "self") return 1;
+			return compareByCreatedAt(a.createdAt, b.createdAt, a.id, b.id);
 		});
 	},
 

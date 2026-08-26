@@ -3,6 +3,7 @@ import type {
 	MessageDeliveryStatus,
 	MessageStatus,
 } from "../types/api.ts";
+import { compareByCreatedAt } from "../utils/ordering.ts";
 import { getDB } from "./init.ts";
 import { notify } from "./notify.ts";
 import type { StoredMessage } from "./schema.ts";
@@ -18,12 +19,9 @@ export const messagesRepo = {
 		const db = await getDB();
 		const all = await db.getAllFromIndex("messages", "chatId", chatId);
 
-		return all.sort((a, b) => {
-			if (a.createdAt !== b.createdAt) {
-				return a.createdAt.localeCompare(b.createdAt);
-			}
-			return a.id.localeCompare(b.id);
-		});
+		return all.sort((a, b) =>
+			compareByCreatedAt(a.createdAt, b.createdAt, a.id, b.id),
+		);
 	},
 
 	async getById(

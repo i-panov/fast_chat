@@ -30,6 +30,14 @@ export function useChatList({ token }: UseChatListParams): UseChatListReturn {
 	const chats = storedChats?.map(stripMeta) ?? [];
 	const activeChat = chats.find((c) => c.id === activeChatId);
 
+	// A chat selected under another account must not stay selected after
+	// switching accounts; the new account's chat list may not contain it.
+	// Reset during render (instead of an effect) so the stale selection is
+	// cleared as soon as the new account's chats are visible.
+	if (activeChat === undefined && activeChatId !== null) {
+		setActiveChatId(null);
+	}
+
 	const selectChat = useCallback((chatId: string | null) => {
 		setActiveChatId(chatId);
 	}, []);

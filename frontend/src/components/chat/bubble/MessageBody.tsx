@@ -36,7 +36,46 @@ export function MessageBody({
 			? `${t("message.edited")} ${new Date(editedAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}`
 			: null;
 
-	if (text.length === 0) return null;
+	// Attachment-only messages (files/location) have no text, but the
+	// timestamp and delivery status must still be rendered.
+	const meta = (
+		<>
+			{status === "queued" && (
+				<Loader size={4} aria-label={t("message.queued")} />
+			)}
+			{status === "failed" && (
+				<span
+					style={{ color: "var(--mantine-color-red-5)" }}
+					title={t("message.failed")}
+				>
+					!
+				</span>
+			)}
+			{editedLabel ?? time}
+			{isOwn === true && deliveryStatus !== undefined && (
+				<MessageStatus status={deliveryStatus} />
+			)}
+		</>
+	);
+
+	if (text.length === 0) {
+		return (
+			<Group gap={6} wrap="nowrap" align="end">
+				<Text
+					size="xs"
+					c="gray.5"
+					style={{
+						flexShrink: 0,
+						display: "flex",
+						alignItems: "center",
+						gap: 4,
+					}}
+				>
+					{meta}
+				</Text>
+			</Group>
+		);
+	}
 
 	return (
 		<Group gap={6} wrap="nowrap" align="end">
@@ -98,21 +137,7 @@ export function MessageBody({
 					gap: 4,
 				}}
 			>
-				{status === "queued" && (
-					<Loader size={4} aria-label={t("message.queued")} />
-				)}
-				{status === "failed" && (
-					<span
-						style={{ color: "var(--mantine-color-red-5)" }}
-						title={t("message.failed")}
-					>
-						!
-					</span>
-				)}
-				{editedLabel ?? time}
-				{isOwn === true && deliveryStatus !== undefined && (
-					<MessageStatus status={deliveryStatus} />
-				)}
+				{meta}
 			</Text>
 		</Group>
 	);

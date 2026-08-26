@@ -1,4 +1,4 @@
-import { resetDB } from "../db/init.ts";
+import { resetAllDBs } from "../db/init.ts";
 
 const LANGUAGE_KEY = "i18nextLng";
 
@@ -59,7 +59,7 @@ export async function clearAllData(): Promise<void> {
 	await Promise.race([
 		Promise.allSettled([
 			browserUnsubscribePush(),
-			resetDB(),
+			resetAllDBs(),
 			clearAllCaches(),
 			unregisterServiceWorker(),
 		]),

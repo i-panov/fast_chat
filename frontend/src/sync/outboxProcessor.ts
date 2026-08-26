@@ -29,7 +29,7 @@ export async function processOutbox(token: string): Promise<void> {
 	}
 }
 
-function extractRetryAfterMs(err: unknown): number | null {
+export function extractRetryAfterMs(err: unknown): number | null {
 	if (!(err instanceof Error)) return null;
 	const match = /retry-after:(.+)/.exec(err.message);
 	if (match === null) return null;

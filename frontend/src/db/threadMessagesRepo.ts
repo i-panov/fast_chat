@@ -3,6 +3,7 @@ import type {
 	MessageDeliveryStatus,
 	MessageStatus,
 } from "../types/api.ts";
+import { compareByCreatedAt } from "../utils/ordering.ts";
 import { getDB } from "./init.ts";
 import { notify } from "./notify.ts";
 import type { StoredThreadMessage } from "./schema.ts";
@@ -30,7 +31,9 @@ export const threadMessagesRepo = {
 			"threadId",
 			threadId,
 		);
-		return all.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+		return all.sort((a, b) =>
+			compareByCreatedAt(a.createdAt, b.createdAt, a.id, b.id),
+		);
 	},
 
 	async getById(

@@ -154,7 +154,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	if cfg.RateLimits.General.Limit == 0 {
-		cfg.RateLimits.General.Limit = 100
+		cfg.RateLimits.General.Limit = 600
 	}
 
 	if cfg.RateLimits.General.Window == 0 {

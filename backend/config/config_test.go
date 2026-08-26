@@ -42,8 +42,8 @@ database:
 	if cfg.Auth.TokenExpiry != 24*time.Hour {
 		t.Errorf("expected TokenExpiry=24h, got %v", cfg.Auth.TokenExpiry)
 	}
-	if cfg.RateLimits.General.Limit != 100 {
-		t.Errorf("expected General.Limit=100, got %d", cfg.RateLimits.General.Limit)
+	if cfg.RateLimits.General.Limit != 600 {
+		t.Errorf("expected General.Limit=600, got %d", cfg.RateLimits.General.Limit)
 	}
 	if cfg.Uploads.Dir == "" {
 		t.Error("expected Uploads.Dir default")

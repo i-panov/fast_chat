@@ -6,6 +6,7 @@ import {
 	useEffect,
 	useState,
 } from "react";
+import { setActiveAccountKey } from "./db/init.ts";
 import { getRouter } from "./router.tsx";
 import { onUnauthorized } from "./utils/authEvents.ts";
 
@@ -215,6 +216,10 @@ function useAuthState() {
 		activeToken !== null
 			? (accounts.find((a) => a.token === activeToken) ?? null)
 			: null;
+
+	useEffect(() => {
+		setActiveAccountKey(activeAccount?.user.id ?? null);
+	}, [activeAccount]);
 
 	return {
 		accounts,
