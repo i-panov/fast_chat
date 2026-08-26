@@ -50,10 +50,10 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func rateLimitMiddleware(rl *ratelimit.RateLimiter) func(http.Handler) http.Handler {
+func rateLimitMiddleware(rl *ratelimit.RateLimiter, ipExtractor *ratelimit.ClientIPExtractor) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := ratelimit.ClientIP(r)
+			ip := ipExtractor.ClientIP(r)
 			if !rl.Allow(ip) {
 				http.Error(w, "too many requests", http.StatusTooManyRequests)
 
@@ -156,6 +156,8 @@ func main() {
 
 	handlerInstance := handler.New(st, cfg, fedManager, pushService)
 
+	ipExtractor := ratelimit.NewClientIPExtractor(cfg.Server.TrustedProxies)
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/config", handlerInstance.GetConfig)
@@ -165,12 +167,12 @@ func main() {
 	verifyCodeRL := ratelimit.New(cfg.RateLimits.VerifyCode.Limit, cfg.RateLimits.VerifyCode.Window, 10000)
 	registerRL := ratelimit.New(cfg.RateLimits.Register.Limit, cfg.RateLimits.Register.Window, 10000)
 
-	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL)(maxBody(1<<20, handlerInstance.SendCode)))
-	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL)(maxBody(1<<20, handlerInstance.VerifyCode)))
-	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL)(maxBody(1<<20, handlerInstance.CompleteRegistration)))
+	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL, ipExtractor)(maxBody(1<<20, handlerInstance.SendCode)))
+	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL, ipExtractor)(maxBody(1<<20, handlerInstance.VerifyCode)))
+	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL, ipExtractor)(maxBody(1<<20, handlerInstance.CompleteRegistration)))
 
 	sseAuthRL := ratelimit.New(30, time.Minute, 10000)
-	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL)(maxBody(1<<20, handlerInstance.SSEAuth)))
+	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL, ipExtractor)(maxBody(1<<20, handlerInstance.SSEAuth)))
 	mux.HandleFunc("POST /api/auth/refresh-token", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.RefreshToken)))
 
 	// SSE endpoint (no auth middleware — auth happens via SSEAuth)
@@ -229,7 +231,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           securityHeadersMiddleware(corsMiddleware(cfg.CORS.Origin)(rateLimitMiddleware(generalRL)(spaFallbackMiddleware(absStaticDir)(mux)))),
+		Handler:           securityHeadersMiddleware(corsMiddleware(cfg.CORS.Origin)(rateLimitMiddleware(generalRL, ipExtractor)(spaFallbackMiddleware(absStaticDir)(mux)))),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      0,
@@ -256,18 +258,21 @@ func main() {
 	registerRL.Close()
 	sseAuthRL.Close()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Stop accepting connections and drain in-flight handlers first so no
+	// new federated requests can be queued while we wait for the
+	// background federation requests to finish below.
+	if err := server.Shutdown(ctx); err != nil {
+		slog.Error("server forced to shutdown", "err", err)
+	}
+
 	fedManager.Close()
 
 	handlerInstance.Close()
 
 	st.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(ctx); err != nil {
-		slog.Error("server forced to shutdown", "err", err)
-	}
 
 	slog.Info("server stopped")
 }

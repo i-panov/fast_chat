@@ -147,39 +147,68 @@ func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string,
 
 // sendFedPost отправляет POST-запрос на удалённый сервер федерации.
 // Если remoteServer пустой, ничего не делает.
-func (h *Handler) sendFedPost(ctx context.Context, remoteServer, path string, body any) {
+//
+// Отправка выполняется в фоне: федеративные запросы имеют собственные
+// ретраи и таймауты, и синхронное ожидание заставило бы клиента ждать
+// ответа на каждое сообщение при недоступном удалённом сервере.
+func (h *Handler) sendFedPost(remoteServer, path string, body any) {
 	if remoteServer == "" {
 		return
 	}
 
-	_, err := h.doFederatedRequest(ctx, http.MethodPost, h.federatedURL(remoteServer, path), body)
-	if err != nil {
-		logger.Info("federated POST failed", "path", path, "err", err)
-	}
+	h.doFedRequestBackground(remoteServer, path, http.MethodPost, body)
 }
 
 // sendFedPatch отправляет PATCH-запрос на удалённый сервер федерации.
-func (h *Handler) sendFedPatch(ctx context.Context, remoteServer, path string, body any) {
+func (h *Handler) sendFedPatch(remoteServer, path string, body any) {
 	if remoteServer == "" {
 		return
 	}
 
-	_, err := h.doFederatedRequest(ctx, http.MethodPatch, h.federatedURL(remoteServer, path), body)
-	if err != nil {
-		logger.Info("federated PATCH failed", "path", path, "err", err)
-	}
+	h.doFedRequestBackground(remoteServer, path, http.MethodPatch, body)
 }
 
 // sendFedDelete отправляет DELETE-запрос на удалённый сервер федерации.
-func (h *Handler) sendFedDelete(ctx context.Context, remoteServer, path string) {
+func (h *Handler) sendFedDelete(remoteServer, path string) {
 	if remoteServer == "" {
 		return
 	}
 
-	_, err := h.doFederatedRequest(ctx, http.MethodDelete, h.federatedURL(remoteServer, path), nil)
-	if err != nil {
-		logger.Info("federated DELETE failed", "path", path, "err", err)
+	h.doFedRequestBackground(remoteServer, path, http.MethodDelete, nil)
+}
+
+// doFedRequestBackground выполняет федеративный запрос в фоне с
+// собственным контекстом и таймаутом, не привязанным к жизненному
+// циклу исходного HTTP-запроса. Семафор ограничивает число
+// одновременных фоновых запросов, а recover() не даёт панике в
+// горутине уронить процесс.
+func (h *Handler) doFedRequestBackground(remoteServer, path, method string, body any) {
+	select {
+	case h.fedSem <- struct{}{}:
+	default:
+		logger.Warn("federation worker pool saturated, dropping request", "method", method, "path", path)
+		return
 	}
+
+	h.fedWG.Add(1)
+
+	go func() {
+		defer func() {
+			<-h.fedSem
+			h.fedWG.Done()
+			if r := recover(); r != nil {
+				logger.Error("panic in federation background request", "method", method, "path", path, "panic", r)
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		_, err := h.doFederatedRequest(ctx, method, h.federatedURL(remoteServer, path), body)
+		if err != nil {
+			logger.Info("federated request failed", "method", method, "path", path, "err", err)
+		}
+	}()
 }
 
 // authorizeFederatedSource verifies that the request is from the server
@@ -340,6 +369,22 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" {
+		writeError(w, http.StatusBadRequest, errKeyEmptyMessage)
+		return
+	}
+
+	if utf8.RuneCountInString(req.Text) > maxMessageLen {
+		writeError(w, http.StatusBadRequest, "message too long")
+		return
+	}
+
 	if req.Location != nil && !validCoords(req.Location.Lat, req.Location.Lng) {
 		writeError(w, http.StatusBadRequest, "invalid coordinates")
 		return
@@ -415,6 +460,16 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.cfg.MessageEditTTL < 0 {
+		writeError(w, http.StatusForbidden, "editing not allowed")
+		return
+	}
+
+	if h.cfg.MessageEditTTL > 0 && time.Since(stored.CreatedAt) > time.Duration(h.cfg.MessageEditTTL)*time.Second {
+		writeError(w, http.StatusForbidden, "edit window expired")
+		return
+	}
+
 	var req struct {
 		Text     string          `json:"text"`
 		FileIDs  []string        `json:"fileIDs,omitempty"`
@@ -441,10 +496,13 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated := &model.Message{
-		ID:       messageID,
-		ChatID:   chatID,
-		Text:     req.Text,
-		EditedAt: &now,
+		ID:        messageID,
+		ChatID:    chatID,
+		FromID:    stored.FromID,
+		FromNick:  stored.FromNick,
+		Text:      req.Text,
+		CreatedAt: stored.CreatedAt,
+		EditedAt:  &now,
 	}
 
 	if req.FileIDs != nil {
@@ -511,6 +569,16 @@ func (h *Handler) FederatedDeleteMessage(w http.ResponseWriter, r *http.Request)
 
 	if !userIDBelongsToServer(stored.FromID, chat.RemoteServer) {
 		writeError(w, http.StatusForbidden, "message author does not belong to remote server")
+		return
+	}
+
+	if h.cfg.MessageDeleteTTL < 0 {
+		writeError(w, http.StatusForbidden, "deleting not allowed")
+		return
+	}
+
+	if h.cfg.MessageDeleteTTL > 0 && time.Since(stored.CreatedAt) > time.Duration(h.cfg.MessageDeleteTTL)*time.Second {
+		writeError(w, http.StatusForbidden, "delete window expired")
 		return
 	}
 

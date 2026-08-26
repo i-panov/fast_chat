@@ -127,29 +127,33 @@ func (h *Hub) Register(connectionID string) *Connection {
 	return conn
 }
 
-func (h *Hub) Unregister(connectionID string) {
+func (h *Hub) Unregister(connectionID string, conn *Connection) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	conn, ok := h.connections[connectionID]
-	if !ok {
+	// Only tear down if this connection is still the registered one.
+	// A reconnect reuses the same connectionID: Register() replaces the
+	// old entry, and the old handler's deferred Unregister must not
+	// close the new connection's channel.
+	current, ok := h.connections[connectionID]
+	if !ok || current != conn {
 		return
 	}
 
-	close(conn.Channel)
+	close(current.Channel)
 	delete(h.connections, connectionID)
 
-	if conn.UserID != "" {
-		conns := h.userConns[conn.UserID]
+	if current.UserID != "" {
+		conns := h.userConns[current.UserID]
 		for i, c := range conns {
 			if c == connectionID {
-				h.userConns[conn.UserID] = append(conns[:i], conns[i+1:]...)
+				h.userConns[current.UserID] = append(conns[:i], conns[i+1:]...)
 				break
 			}
 		}
 
-		if len(h.userConns[conn.UserID]) == 0 {
-			delete(h.userConns, conn.UserID)
+		if len(h.userConns[current.UserID]) == 0 {
+			delete(h.userConns, current.UserID)
 		}
 	}
 }
@@ -177,6 +181,14 @@ func (h *Hub) Authenticate(connectionID, userID, token string, expiresAt time.Ti
 	conn.Authorized = true
 	conn.Warned = false
 	conn.mu.Unlock()
+
+	// Avoid duplicate entries if sseAuth is replayed for the same
+	// connection (e.g. a retried auth request).
+	for _, existing := range h.userConns[userID] {
+		if existing == connectionID {
+			return nil
+		}
+	}
 
 	h.userConns[userID] = append(h.userConns[userID], connectionID)
 

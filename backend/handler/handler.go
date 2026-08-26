@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"fast_chat/config"
@@ -58,6 +59,8 @@ type Handler struct {
 	cfg         *config.Config
 	fedManager  *federation.Manager
 	fedClient   *http.Client
+	fedSem      chan struct{}
+	fedWG       sync.WaitGroup
 	emailSender email.Sender
 	pushService *push.Service
 }
@@ -83,7 +86,8 @@ func New(s *store.Store, cfg *config.Config, fm *federation.Manager, ps *push.Se
 		hub:         sse.NewHub(typingThrottleInterval * 5),
 		cfg:         cfg,
 		fedManager:  fm,
-		fedClient:   &http.Client{Timeout: time.Duration(cfg.Federation.Timeout) * time.Second},
+		fedClient:   federation.NewSafeHTTPClient(time.Duration(cfg.Federation.Timeout) * time.Second),
+		fedSem:      make(chan struct{}, 16),
 		emailSender: es,
 		pushService: ps,
 	}
@@ -91,6 +95,10 @@ func New(s *store.Store, cfg *config.Config, fm *federation.Manager, ps *push.Se
 
 func (h *Handler) Close() {
 	h.hub.Close()
+
+	// Wait for in-flight federation background requests to finish so
+	// they are not silently dropped on shutdown.
+	h.fedWG.Wait()
 }
 
 func (h *Handler) broadcastUserStatus(ctx context.Context, userID string, online bool) {

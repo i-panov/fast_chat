@@ -84,7 +84,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	enriched := h.enrichChat(r.Context(), chat)
 	h.hub.Send(user.ID, sse.Event{Event: "chat_created", Data: enriched})
 
-	h.sendFedPost(r.Context(), remoteServer, "/api/federated/chats", map[string]any{
+	h.sendFedPost(remoteServer, "/api/federated/chats", map[string]any{
 		"chatId":       chat.ID,
 		"members":      chat.Members,
 		"remoteServer": h.cfg.Server.Domain,
@@ -273,7 +273,7 @@ func (h *Handler) AddChatMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.AddChatMember(r.Context(), chatID, req.UserID); err != nil {
+	if err := h.store.AddChatMember(r.Context(), chatID, req.UserID, maxGroupMembers); err != nil {
 		writeError(w, http.StatusBadRequest, "failed to add member")
 		return
 	}

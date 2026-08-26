@@ -43,7 +43,7 @@ func TestSSEHubUnregisterClosesChannel(t *testing.T) {
 
 	conn := hub.Register("conn-1")
 	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-	hub.Unregister("conn-1")
+	hub.Unregister("conn-1", conn)
 
 	if _, ok := <-conn.Channel; ok {
 		t.Fatal("channel should be closed after Unregister")
@@ -140,6 +140,34 @@ func TestSSEHubReRegisterReplacesChannel(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("timeout waiting for event on new channel")
+	}
+}
+
+func TestSSEHubUnregisterStaleConnectionIsNoop(t *testing.T) {
+	t.Parallel()
+
+	hub := newTestSSEHub()
+	defer hub.Close()
+
+	oldConn := hub.Register("conn-1")
+	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
+
+	// Reconnect reuses the same connectionID and replaces the entry.
+	newConn := hub.Register("conn-1")
+	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
+
+	// The old handler's deferred Unregister must not close the new channel.
+	hub.Unregister("conn-1", oldConn)
+
+	hub.Send("user-1", sse.Event{Event: "still-alive", Data: "ok"})
+
+	select {
+	case e := <-newConn.Channel:
+		if e.Event != "still-alive" {
+			t.Fatalf("event = %q, want still-alive", e.Event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("new connection was closed by stale Unregister")
 	}
 }
 

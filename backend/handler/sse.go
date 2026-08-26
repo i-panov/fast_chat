@@ -24,7 +24,7 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 
 	conn := h.hub.Register(connectionID)
 	defer func() { //nolint:contextcheck // request context is cancelled by now, need fresh context.Background()
-		h.hub.Unregister(connectionID)
+		h.hub.Unregister(connectionID, conn)
 		conn.Lock()
 		uid := conn.UserID
 		conn.Unlock()

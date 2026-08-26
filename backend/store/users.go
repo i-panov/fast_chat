@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -25,15 +26,36 @@ func GenerateID() string {
 	return hex.EncodeToString(buf)
 }
 
+// hashToken returns the SHA-256 hex digest of a bearer token. Tokens are
+// stored hashed so that a leaked database does not expose live sessions.
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+
+	return hex.EncodeToString(sum[:])
+}
+
+// escapeLike escapes LIKE wildcards so user input cannot turn a search
+// into a wildcard match (e.g. "%" matching every user).
+func escapeLike(s string) string {
+	r := strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `\%`,
+		`_`, `\_`,
+	)
+
+	return r.Replace(s)
+}
+
 func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string, tokenExpiry time.Duration) (*model.User, error) {
 	fullID := nick + ":" + serverDomain
 	now := time.Now()
+	token := GenerateID()
 
 	user := &model.User{
 		ID:             fullID,
 		Email:          email,
 		Nick:           nick,
-		Token:          GenerateID(),
+		Token:          hashToken(token),
 		TokenExpiresAt: now.Add(tokenExpiry),
 	}
 
@@ -49,12 +71,16 @@ func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string
 		return nil, err
 	}
 
+	// Return the plaintext token to the caller (it is sent to the client
+	// exactly once); only the hash is persisted.
+	user.Token = token
+
 	return user, nil
 }
 
 func (s *Store) GetUserByToken(ctx context.Context, token string) (*model.User, bool) {
 	var user model.User
-	if err := s.db.WithContext(ctx).Where("token = ?", token).First(&user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("token = ?", hashToken(token)).First(&user).Error; err != nil {
 		return nil, false
 	}
 
@@ -85,12 +111,16 @@ func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry
 		return nil, errors.New("user not found")
 	}
 
-	user.Token = GenerateID()
+	token := GenerateID()
+	user.Token = hashToken(token)
 	user.TokenExpiresAt = time.Now().Add(tokenExpiry)
 
 	if err := s.db.WithContext(ctx).Save(user).Error; err != nil {
 		return nil, err
 	}
+
+	// Return the plaintext token to the caller; only the hash is persisted.
+	user.Token = token
 
 	return user, nil
 }
@@ -119,10 +149,10 @@ func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) map[string]stri
 // the expected user base (<10K users). If performance becomes an issue,
 // add a FTS5 virtual table and migrate SearchUsers to MATCH.
 func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []model.PublicUser {
-	q := strings.ToLower(query)
+	q := escapeLike(strings.ToLower(query))
 
 	var users []model.User
-	s.db.WithContext(ctx).Where("LOWER(nick) LIKE ? AND id != ?", "%"+q+"%", excludeID).Find(&users)
+	s.db.WithContext(ctx).Where("LOWER(nick) LIKE ? ESCAPE '\\' AND id != ?", "%"+q+"%", excludeID).Find(&users)
 
 	if len(users) == 0 {
 		return []model.PublicUser{}

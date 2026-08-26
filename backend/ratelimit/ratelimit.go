@@ -2,6 +2,7 @@
 package ratelimit
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,6 +16,105 @@ type RateLimiter struct {
 	window     time.Duration
 	maxEntries int
 	closeCh    chan struct{}
+}
+
+// ClientIPExtractor resolves the client IP for rate limiting. Proxy
+// headers are only trusted when the immediate peer is a configured
+// trusted proxy; otherwise a client could spoof X-Forwarded-For and
+// bypass the limiter.
+type ClientIPExtractor struct {
+	trustedIPs   map[string]struct{}
+	trustedCIDRs []*net.IPNet
+}
+
+// NewClientIPExtractor builds an extractor from a list of trusted proxy
+// IPs/CIDRs. An empty list means "trust no proxy headers". CIDRs are
+// parsed once here so the hot path does not re-parse them per request.
+func NewClientIPExtractor(trustedProxies []string) *ClientIPExtractor {
+	e := &ClientIPExtractor{
+		trustedIPs: make(map[string]struct{}, len(trustedProxies)),
+	}
+
+	for _, p := range trustedProxies {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+
+		if strings.Contains(p, "/") {
+			if _, network, err := net.ParseCIDR(p); err == nil {
+				e.trustedCIDRs = append(e.trustedCIDRs, network)
+			}
+
+			continue
+		}
+
+		e.trustedIPs[p] = struct{}{}
+	}
+
+	return e
+}
+
+func (e *ClientIPExtractor) isTrusted(ip string) bool {
+	if e == nil {
+		return false
+	}
+
+	if _, ok := e.trustedIPs[ip]; ok {
+		return true
+	}
+
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+
+	for _, network := range e.trustedCIDRs {
+		if network.Contains(parsed) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ClientIP returns the client IP, honouring X-Forwarded-For/X-Real-IP
+// only when the direct peer is a trusted proxy. Forwarded values that
+// are not valid IPs are ignored to avoid polluting the limiter map with
+// garbage keys.
+func (e *ClientIPExtractor) ClientIP(r *http.Request) string {
+	remoteIP := remoteHost(r.RemoteAddr)
+
+	if e.isTrusted(remoteIP) {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			first := fwd
+			if idx := strings.Index(fwd, ","); idx != -1 {
+				first = fwd[:idx]
+			}
+
+			first = strings.TrimSpace(first)
+			if net.ParseIP(first) != nil {
+				return first
+			}
+		}
+
+		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+			if net.ParseIP(realIP) != nil {
+				return realIP
+			}
+		}
+	}
+
+	return remoteIP
+}
+
+func remoteHost(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+
+	return host
 }
 
 func New(limit int, window time.Duration, maxEntries int) *RateLimiter {
@@ -117,20 +217,4 @@ func (rl *RateLimiter) clean() {
 			return
 		}
 	}
-}
-
-func ClientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		if idx := strings.Index(fwd, ","); idx != -1 {
-			return strings.TrimSpace(fwd[:idx])
-		}
-
-		return strings.TrimSpace(fwd)
-	}
-
-	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
-		return realIP
-	}
-
-	return r.RemoteAddr
 }

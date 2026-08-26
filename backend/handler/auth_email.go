@@ -159,6 +159,11 @@ func (h *Handler) CompleteRegistration(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if err == store.ErrEmailTaken {
+			writeError(w, http.StatusConflict, "email already registered")
+			return
+		}
+
 		logger.Error("failed to create user", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 
@@ -234,9 +239,14 @@ func (h *Handler) SSEAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func isValidEmail(email string) bool {
-	_, err := mail.ParseAddress(email)
+	addr, err := mail.ParseAddress(email)
+	if err != nil {
+		return false
+	}
 
-	return err == nil
+	// mail.ParseAddress accepts "Name <email>" forms; require a bare
+	// address so names/whitespace cannot slip into the stored email.
+	return addr.Address == email
 }
 
 func generateCode() (string, error) {

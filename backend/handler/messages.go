@@ -291,7 +291,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		h.sendFedPost(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages", map[string]any{
+		h.sendFedPost(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages", map[string]any{
 			"id":        msg.ID,
 			"fromId":    msg.FromID,
 			"fromNick":  msg.FromNick,
@@ -427,7 +427,7 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if threadID != "" {
-		h.sendFedPatch(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/threads/"+threadID+"/messages/"+messageID, map[string]any{
+		h.sendFedPatch(chat.RemoteServer, "/api/federated/chats/"+chatID+"/threads/"+threadID+"/messages/"+messageID, map[string]any{
 			"text":     req.Text,
 			"fileIDs":  req.FileIDs,
 			"location": req.Location,
@@ -442,7 +442,7 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 			h.hub.Send(memberID, sse.Event{Event: "thread_message_updated", Data: eventData})
 		}
 	} else {
-		h.sendFedPatch(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID, map[string]any{
+		h.sendFedPatch(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID, map[string]any{
 			"text":     req.Text,
 			"fileIDs":  req.FileIDs,
 			"location": req.Location,
@@ -493,7 +493,7 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendFedDelete(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
+	h.sendFedDelete(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
 
 	for _, memberID := range chat.Members {
 		h.hub.Send(memberID, sse.Event{Event: "message_deleted", Data: map[string]string{"chatId": chatID, "messageId": messageID}})

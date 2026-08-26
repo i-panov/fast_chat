@@ -170,7 +170,7 @@ func (s *Store) EnsureSelfChat(ctx context.Context, userID string) (*model.Chat,
 	return &chat, nil
 }
 
-func (s *Store) AddChatMember(ctx context.Context, chatID, userID string) error {
+func (s *Store) AddChatMember(ctx context.Context, chatID, userID string, maxMembers int) error {
 	chat, ok := s.GetChat(ctx, chatID)
 	if !ok {
 		return ErrChatNotFound
@@ -186,7 +186,21 @@ func (s *Store) AddChatMember(ctx context.Context, chatID, userID string) error 
 		}
 	}
 
-	return s.db.WithContext(ctx).Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
+	// The count check and insert run in a single write transaction so
+	// concurrent AddChatMember calls cannot exceed maxMembers. SQLite
+	// serializes write transactions, making this atomic.
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&ChatMember{}).Where("chat_id = ?", chatID).Count(&count).Error; err != nil {
+			return err
+		}
+
+		if count >= int64(maxMembers) {
+			return errors.New("too many members")
+		}
+
+		return tx.Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
+	})
 }
 
 func (s *Store) RemoveChatMember(ctx context.Context, chatID, userID string) error {

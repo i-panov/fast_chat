@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -71,7 +72,7 @@ func New(privateKey *rsa.PrivateKey, serverDomain, scheme string, timeoutSec int
 		publicKey:     &privateKey.PublicKey,
 		serverDomain:  serverDomain,
 		scheme:        scheme,
-		client:        &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+		client:        NewSafeHTTPClient(time.Duration(timeoutSec) * time.Second),
 		pubKeyCache:   make(map[string]*cacheEntry),
 		cacheDuration: cacheTTL,
 		closeCh:       make(chan struct{}),
@@ -80,6 +81,71 @@ func New(privateKey *rsa.PrivateKey, serverDomain, scheme string, timeoutSec int
 	go mgr.cleanupNonces()
 
 	return mgr
+}
+
+// NewSafeHTTPClient returns an http.Client whose dialer refuses to
+// connect to loopback, private, link-local, unspecified, or multicast
+// addresses. This closes the DNS-rebinding SSRF hole: the hostname is
+// resolved once, and the connection is dialed to the verified IP
+// directly, so a second DNS resolution cannot redirect it.
+func NewSafeHTTPClient(timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: 30 * time.Second,
+	}
+
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+
+			// IP literal: validate and dial directly.
+			if ip := net.ParseIP(host); ip != nil {
+				if isUnsafeIP(ip) {
+					return nil, fmt.Errorf("refusing to connect to unsafe address %s", ip)
+				}
+
+				return dialer.DialContext(ctx, network, addr)
+			}
+
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+
+			// Pick the first safe address and dial it directly. Dialing
+			// the verified IP (not the hostname) prevents a second DNS
+			// lookup from returning a different, unsafe address.
+			for _, ip := range ips {
+				if isUnsafeIP(ip.IP) {
+					continue
+				}
+
+				return dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+			}
+
+			return nil, fmt.Errorf("no safe address found for %s", host)
+		},
+	}
+
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+}
+
+// isUnsafeIP reports whether an IP must never be dialed for federation
+// (SSRF protection).
+func isUnsafeIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() ||
+		ip.IsMulticast()
 }
 
 // Close stops the manager's background goroutines.

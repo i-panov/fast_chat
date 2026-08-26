@@ -28,10 +28,11 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host      string `yaml:"host"`
-	Port      int    `yaml:"port"`
-	Domain    string `yaml:"-"` // computed from Host + Port
-	StaticDir string `yaml:"static_dir"`
+	Host           string   `yaml:"host"`
+	Port           int      `yaml:"port"`
+	Domain         string   `yaml:"-"` // computed from Host + Port
+	StaticDir      string   `yaml:"static_dir"`
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 type DatabaseConfig struct {

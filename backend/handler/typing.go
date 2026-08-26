@@ -79,7 +79,7 @@ func (h *Handler) sendTypingEvent(r *http.Request, chat *model.Chat, chatID, use
 		}
 	}
 
-	h.sendFedPost(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/typing", map[string]any{
+	h.sendFedPost(chat.RemoteServer, "/api/federated/chats/"+chatID+"/typing", map[string]any{
 		"userId": userID,
 		"active": eventName == "typing",
 		"nick":   nick,

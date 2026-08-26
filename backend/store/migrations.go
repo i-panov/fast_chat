@@ -4,7 +4,32 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+
+	"fast_chat/model"
 )
+
+// migrateLegacyTokens re-hashes plaintext bearer tokens left over from
+// before tokens were stored as SHA-256 digests. It is idempotent: only
+// rows whose token is not already a 64-char hex digest are touched.
+func migrateLegacyTokens(db *gorm.DB) error {
+	var users []model.User
+	if err := db.Select("id", "token").Find(&users).Error; err != nil {
+		return err
+	}
+
+	for _, u := range users {
+		if len(u.Token) == 64 {
+			continue
+		}
+
+		if err := db.Model(&model.User{}).Where("id = ?", u.ID).
+			Update("token", hashToken(u.Token)).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
 
 // createIndexes adds the secondary indexes that the hot read paths rely
 // on. AutoMigrate only creates the primary key index, so without these

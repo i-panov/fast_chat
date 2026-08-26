@@ -37,6 +37,14 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		slog.Warn("failed to migrate users without email", "err", err)
 	}
 
+	// Migration: hash legacy plaintext tokens. Tokens are 32 hex chars
+	// (16 random bytes); their SHA-256 digest is 64 hex chars. Anything
+	// shorter than 64 is a legacy plaintext token and must be re-hashed
+	// in place so existing sessions survive the switch to hashed storage.
+	if err := migrateLegacyTokens(db); err != nil {
+		slog.Warn("failed to migrate legacy tokens", "err", err)
+	}
+
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, err

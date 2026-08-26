@@ -742,7 +742,7 @@ func TestAddChatMember(t *testing.T) {
 
 	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob, testCarol}, "")
 
-	if err := s.AddChatMember(context.Background(), chat.ID, "dave:test"); err != nil {
+	if err := s.AddChatMember(context.Background(), chat.ID, "dave:test", 100); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -751,7 +751,7 @@ func TestAddChatMember(t *testing.T) {
 		t.Errorf("expected 4 members, got %d", len(got.Members))
 	}
 
-	if err := s.AddChatMember(context.Background(), chat.ID, "dave:test"); err != nil {
+	if err := s.AddChatMember(context.Background(), chat.ID, "dave:test", 100); err != nil {
 		t.Errorf("idempotent add should not error: %v", err)
 	}
 
@@ -761,8 +761,27 @@ func TestAddChatMember(t *testing.T) {
 	}
 
 	privateChat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
-	if err := s.AddChatMember(context.Background(), privateChat.ID, testCarol); err == nil {
+	if err := s.AddChatMember(context.Background(), privateChat.ID, testCarol, 100); err == nil {
 		t.Error("expected error adding member to private chat")
+	}
+}
+
+func TestAddChatMemberEnforcesLimit(t *testing.T) {
+	s := newTestStore(t)
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+
+	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob}, "")
+
+	// maxMembers=2: owner + bob already fill the group.
+	createTestUser(t, s, "carol")
+	if err := s.AddChatMember(context.Background(), chat.ID, testCarol, 2); err == nil {
+		t.Error("expected error when adding member beyond the limit")
+	}
+
+	got, _ := s.GetChat(context.Background(), chat.ID)
+	if len(got.Members) != 2 {
+		t.Errorf("expected 2 members after rejected add, got %d", len(got.Members))
 	}
 }
 
