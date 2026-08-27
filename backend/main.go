@@ -184,6 +184,8 @@ func main() {
 	mux.HandleFunc("DELETE /api/push/subscribe", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.UnsubscribePush)))
 
 	mux.HandleFunc("GET /api/users/search", handlerInstance.AuthMiddleware(handlerInstance.SearchUsers))
+	mux.HandleFunc("PUT /api/users/public-key", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.UpdatePublicKey)))
+	mux.HandleFunc("GET /api/users/{userId}/public-key", handlerInstance.AuthMiddleware(handlerInstance.GetUserPublicKey))
 	mux.HandleFunc("GET /api/chats", handlerInstance.AuthMiddleware(handlerInstance.GetChats))
 	mux.HandleFunc("GET /api/sync", handlerInstance.AuthMiddleware(handlerInstance.Sync))
 	mux.HandleFunc("POST /api/chats", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.CreateChat)))
@@ -211,6 +213,7 @@ func main() {
 	// Federated endpoints (server-to-server, with federated auth)
 	fedAuth := handlerInstance.FederatedAuthMiddleware
 	mux.HandleFunc("GET /api/federated/users/search", fedAuth(handlerInstance.FederatedSearchUsers))
+	mux.HandleFunc("GET /api/federated/users/{userId}/public-key", fedAuth(handlerInstance.FederatedGetUserPublicKey))
 	mux.HandleFunc("POST /api/federated/chats", maxBody(1<<20, fedAuth(handlerInstance.FederatedCreateChat)))
 	mux.HandleFunc("POST /api/federated/chats/{id}/messages", maxBody(1<<20, fedAuth(handlerInstance.FederatedSendMessage)))
 	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", maxBody(1<<20, fedAuth(handlerInstance.FederatedEditMessage)))

@@ -1,4 +1,5 @@
-import { Anchor, Group, Loader, Text } from "@mantine/core";
+import { Anchor, Group, Loader, Text, Tooltip } from "@mantine/core";
+import { Lock, LockOpen } from "lucide-react";
 import { isValidElement } from "react";
 import { useTranslation } from "react-i18next";
 import Markdown from "react-markdown";
@@ -18,6 +19,8 @@ interface Props {
 	time: string;
 	editedAt?: string;
 	locale: string;
+	encrypted?: boolean;
+	undecryptable?: boolean;
 }
 
 export function MessageBody({
@@ -28,6 +31,8 @@ export function MessageBody({
 	time,
 	editedAt,
 	locale,
+	encrypted,
+	undecryptable,
 }: Props) {
 	const { t } = useTranslation();
 
@@ -40,6 +45,19 @@ export function MessageBody({
 	// timestamp and delivery status must still be rendered.
 	const meta = (
 		<>
+			{encrypted !== true && (
+				<Tooltip
+					label={t("message.notEncrypted")}
+					withArrow
+					events={{ hover: true, focus: true, touch: true }}
+				>
+					<LockOpen
+						size={12}
+						style={{ color: "var(--mantine-color-red-5)" }}
+						aria-label={t("message.notEncrypted")}
+					/>
+				</Tooltip>
+			)}
 			{status === "queued" && (
 				<Loader size={4} aria-label={t("message.queued")} />
 			)}
@@ -80,52 +98,72 @@ export function MessageBody({
 	return (
 		<Group gap={6} wrap="nowrap" align="end">
 			<div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-				<Markdown
-					remarkPlugins={[remarkGfm]}
-					components={{
-						p: ({ children }) => <span>{children}</span>,
-						a: ({ href, children }) => (
-							<Anchor href={href} target="_blank" rel="noopener noreferrer">
-								{children}
-							</Anchor>
-						),
-						code: ({ className, children }) => {
-							const lang = className?.replace("language-", "");
-							if (lang) {
-								return <code className={className}>{children}</code>;
-							}
-							return (
-								<code
-									style={{
-										background: "var(--mantine-color-dark-7)",
-										padding: "1px 4px",
-										borderRadius: BORDER_RADIUS_CODE,
-										fontSize: "0.85em",
-									}}
-								>
+				{undecryptable === true ? (
+					<Text
+						span
+						fs="italic"
+						c="gray.6"
+						style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+					>
+						<Lock
+							size={14}
+							style={{ color: "var(--mantine-color-gray-6)" }}
+							aria-hidden
+						/>
+						{text}
+					</Text>
+				) : (
+					<Markdown
+						remarkPlugins={[remarkGfm]}
+						components={{
+							p: ({ children }) => <span>{children}</span>,
+							a: ({ href, children }) => (
+								<Anchor href={href} target="_blank" rel="noopener noreferrer">
 									{children}
-								</code>
-							);
-						},
-						pre: ({ children }) => {
-							if (!isValidElement(children)) {
-								return <pre>{children}</pre>;
-							}
-							const codeEl = children as React.ReactElement<{
-								className?: string;
-								children: unknown;
-							}>;
-							const className = codeEl.props.className ?? "";
-							const lang = className.replace("language-", "");
-							const codeText = extractCodeText(codeEl.props.children);
-							return (
-								<CodeBlock className={className} code={codeText} lang={lang} />
-							);
-						},
-					}}
-				>
-					{text}
-				</Markdown>
+								</Anchor>
+							),
+							code: ({ className, children }) => {
+								const lang = className?.replace("language-", "");
+								if (lang) {
+									return <code className={className}>{children}</code>;
+								}
+								return (
+									<code
+										style={{
+											background: "var(--mantine-color-dark-7)",
+											padding: "1px 4px",
+											borderRadius: BORDER_RADIUS_CODE,
+											fontSize: "0.85em",
+										}}
+									>
+										{children}
+									</code>
+								);
+							},
+							pre: ({ children }) => {
+								if (!isValidElement(children)) {
+									return <pre>{children}</pre>;
+								}
+								const codeEl = children as React.ReactElement<{
+									className?: string;
+									children: unknown;
+								}>;
+								const className = codeEl.props.className ?? "";
+								const lang = className.replace("language-", "");
+								const codeText = extractCodeText(codeEl.props.children);
+								return (
+									<CodeBlock
+										className={className}
+										code={codeText}
+										lang={lang}
+									/>
+								);
+							},
+						}}
+					>
+						{text}
+					</Markdown>
+				)}
 			</div>
 			<Text
 				size="xs"

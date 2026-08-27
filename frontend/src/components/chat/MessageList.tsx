@@ -6,6 +6,7 @@ import { useMessageReadStatuses } from "../../hooks/useMessageReadStatuses.ts";
 import { getCurrentLocale } from "../../i18n.ts";
 import type { FileInfo, Message, Thread } from "../../types/api.ts";
 import { formatDateLabel, formatTime } from "../../utils/chat.ts";
+import { collectVisibleUnreadIds } from "../../utils/messageRead.ts";
 import { MessageBubble } from "./MessageBubble.tsx";
 
 function DateSeparator({ dateStr }: { dateStr: string }) {
@@ -167,17 +168,18 @@ export function MessageList({
 		return result;
 	}, [messages, locale, showAuthorForGroup]);
 
-	// Track visible messages and mark them as read
+	// Track visible messages and mark them as read. Already-read
+	// messages are skipped so the POST → local markAsRead → re-render
+	// cycle cannot loop.
 	useEffect(() => {
 		if (visibleRange.startIndex === 0 && visibleRange.endIndex === 0) return;
 
-		const visibleIds: string[] = [];
-		for (let i = visibleRange.startIndex; i <= visibleRange.endIndex; i++) {
-			const entry = datedMessages[i];
-			if (entry?.type === "message" && entry.msg.fromId !== userId) {
-				visibleIds.push(entry.msg.id);
-			}
-		}
+		const visibleIds = collectVisibleUnreadIds(
+			datedMessages,
+			visibleRange.startIndex,
+			visibleRange.endIndex,
+			userId,
+		);
 
 		if (visibleIds.length > 0) {
 			markVisibleAsRead(visibleIds);
@@ -236,6 +238,8 @@ export function MessageList({
 						onRetry={onRetry}
 						onCancelSend={onCancelSend}
 						showAuthorNick={entry.showAuthor}
+						encrypted={msg.encrypted}
+						undecryptable={msg.undecryptable}
 					/>
 				</div>
 			);

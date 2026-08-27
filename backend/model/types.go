@@ -10,6 +10,7 @@ type User struct {
 	Token          string    `gorm:"uniqueIndex;not null" json:"-"`
 	TokenExpiresAt time.Time `gorm:"not null"             json:"-"`
 	Online         bool      `gorm:"default:false"        json:"online"`
+	PublicKey      string    `gorm:"not null;default:''"  json:"-"` // E2E X25519 public key (base64)
 }
 
 type PublicUser struct {
@@ -100,17 +101,19 @@ func (f *File) ToFileInfo() FileInfo {
 }
 
 type Message struct {
-	ID        string       `gorm:"primaryKey"         json:"id"`
-	ChatID    string       `gorm:"index;not null"     json:"chatId"`
-	FromID    string       `gorm:"not null"           json:"fromId"`
-	FromNick  string       `gorm:"not null"           json:"fromNick"`
-	Text      string       `gorm:"not null"           json:"text"`
-	CreatedAt time.Time    `gorm:"not null;default:0" json:"createdAt"`
-	UpdatedAt time.Time    `gorm:"not null;default:0" json:"-"`
-	EditedAt  *time.Time   `json:"editedAt,omitempty"`
-	ReplyTo   *ReplyToInfo `gorm:"serializer:json"    json:"replyTo,omitempty"`
-	Location  *Location    `gorm:"serializer:json"    json:"location,omitempty"`
-	Files     []FileInfo   `gorm:"-"                  json:"files,omitempty"`
+	ID               string       `gorm:"primaryKey"         json:"id"`
+	ChatID           string       `gorm:"index;not null"     json:"chatId"`
+	FromID           string       `gorm:"not null"           json:"fromId"`
+	FromNick         string       `gorm:"not null"           json:"fromNick"`
+	Text             string       `gorm:"not null"           json:"text"`
+	Encrypted        bool         `gorm:"not null;default:false" json:"encrypted"`
+	EncryptedPayload string       `gorm:"not null;default:''"    json:"encryptedPayload"`
+	CreatedAt        time.Time    `gorm:"not null;default:0" json:"createdAt"`
+	UpdatedAt        time.Time    `gorm:"not null;default:0" json:"-"`
+	EditedAt         *time.Time   `json:"editedAt,omitempty"`
+	ReplyTo          *ReplyToInfo `gorm:"serializer:json"    json:"replyTo,omitempty"`
+	Location         *Location    `gorm:"serializer:json"    json:"location,omitempty"`
+	Files            []FileInfo   `gorm:"-"                  json:"files,omitempty"`
 }
 
 type DeletedMessage struct {

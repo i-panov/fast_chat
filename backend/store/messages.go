@@ -34,7 +34,7 @@ func (s *Store) GetMessage(ctx context.Context, chatID, messageID string) (model
 	return msg, nil
 }
 
-func (s *Store) EditMessage(ctx context.Context, chatID, threadID, messageID, userID, newText string, location *model.Location, clearLocation bool) (model.Message, error) {
+func (s *Store) EditMessage(ctx context.Context, chatID, threadID, messageID, userID, newText string, location *model.Location, clearLocation bool, encrypted bool, encryptedPayload string) (model.Message, error) {
 	lookupID := chatID
 
 	if threadID != "" {
@@ -59,13 +59,17 @@ func (s *Store) EditMessage(ctx context.Context, chatID, threadID, messageID, us
 
 	now := time.Now()
 	msg.Text = newText
+	msg.Encrypted = encrypted
+	msg.EncryptedPayload = encryptedPayload
 	msg.EditedAt = &now
 	msg.UpdatedAt = now
 
 	updates := map[string]any{
-		fieldText:      newText,
-		fieldEditedAt:  &now,
-		fieldUpdatedAt: now,
+		fieldText:           newText,
+		fieldEditedAt:       &now,
+		fieldUpdatedAt:      now,
+		"encrypted":         encrypted,
+		"encrypted_payload": encryptedPayload,
 	}
 
 	switch {
@@ -109,7 +113,7 @@ func (s *Store) SetMessageFiles(ctx context.Context, messageID string, fileIDs [
 	})
 }
 
-func (s *Store) AddMessage(ctx context.Context, chatID, threadID, fromID, fromNick, text, messageID, replyToID string, location *model.Location) (*model.Message, error) {
+func (s *Store) AddMessage(ctx context.Context, chatID, threadID, fromID, fromNick, text, messageID, replyToID string, location *model.Location, encrypted bool, encryptedPayload string) (*model.Message, error) {
 	lookupID := chatID
 
 	if threadID != "" {
@@ -154,15 +158,17 @@ func (s *Store) AddMessage(ctx context.Context, chatID, threadID, fromID, fromNi
 
 	now := time.Now()
 	msg := model.Message{
-		ID:        id,
-		ChatID:    lookupID,
-		FromID:    fromID,
-		FromNick:  fromNick,
-		Text:      text,
-		CreatedAt: now,
-		UpdatedAt: now,
-		ReplyTo:   replyTo,
-		Location:  location,
+		ID:               id,
+		ChatID:           lookupID,
+		FromID:           fromID,
+		FromNick:         fromNick,
+		Text:             text,
+		Encrypted:        encrypted,
+		EncryptedPayload: encryptedPayload,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		ReplyTo:          replyTo,
+		Location:         location,
 	}
 
 	// Idempotent insert: if a row with the same primary key already
@@ -227,11 +233,13 @@ func (s *Store) DeleteMessage(ctx context.Context, chatID, messageID, userID str
 	})
 }
 
-func (s *Store) EditRawMessage(ctx context.Context, chatID, messageID, text string, editedAt time.Time, location *model.Location, clearLocation bool) error {
+func (s *Store) EditRawMessage(ctx context.Context, chatID, messageID, text string, editedAt time.Time, location *model.Location, clearLocation bool, encrypted bool, encryptedPayload string) error {
 	updates := map[string]any{
-		fieldText:      text,
-		fieldEditedAt:  &editedAt,
-		fieldUpdatedAt: editedAt,
+		fieldText:           text,
+		fieldEditedAt:       &editedAt,
+		fieldUpdatedAt:      editedAt,
+		"encrypted":         encrypted,
+		"encrypted_payload": encryptedPayload,
 	}
 
 	if clearLocation {

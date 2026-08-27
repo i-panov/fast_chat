@@ -83,9 +83,11 @@
 	"message.edited": "edited",
 	"message.retry": "Retry",
 	"message.failed": "Failed to send",
+	"message.undecryptable": "Message cannot be decrypted",
 	"message.openInMap": "Open in OpenStreetMap",
 	"message.location": "Location",
 	"message.queued": "Queued",
+	"message.notEncrypted": "Not encrypted",
 
 	"input.replyingTo": "Replying to @{{nick}}",
 
@@ -109,6 +111,7 @@
 	"error.verifyCode": "Invalid or expired code",
 	"error.invalidCoords": "Invalid coordinates",
 	"error.geolocationDenied": "Geolocation unavailable",
+	"error.encryptionKeyMissing": "Failed to encrypt message: no encryption key for one of the participants",
 	"error.boundaryTitle": "Something went wrong",
 	"error.boundaryMessage": "The application encountered an unexpected error.",
 	"error.boundaryReset": "Try again",

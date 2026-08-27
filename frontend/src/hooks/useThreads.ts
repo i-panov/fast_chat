@@ -4,12 +4,16 @@ import {
 	getThreadMessages,
 	getThreads,
 } from "../api.ts";
+import { messagesRepo } from "../db/messagesRepo.ts";
 import type { StoredThread, StoredThreadMessage } from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
 import { useLiveQuery } from "../db/useLiveQuery.ts";
+import { getMyKeyPair } from "../e2ee/keys.ts";
+import { decryptMessage, decryptMessageText } from "../e2ee/message.ts";
 import i18n from "../i18n.ts";
 import type { Message, Thread } from "../types/api.ts";
+import { useAuth } from "../useAuth.tsx";
 import { stripMeta } from "../utils/helpers.ts";
 import { emitNotification } from "../utils/notify.ts";
 
@@ -74,13 +78,82 @@ export function useThreads({
 		return { threadsMap: tm, messageToThread: mt };
 	}, [allStored]);
 
-	const activeThreadMessages = (activeThreadMessagesStored ?? []).map((m) => {
-		const { _updatedAt: _u, threadId: _tid, status: _s, ...rest } = m;
-		void _u;
-		void _tid;
-		void _s;
-		return rest;
-	});
+	const { activeAccount } = useAuth();
+	const userId = activeAccount?.user.id;
+
+	const [decryptedThreadMessages, setDecryptedThreadMessages] = useState<
+		Message[]
+	>([]);
+
+	useEffect(() => {
+		let alive = true;
+
+		(async () => {
+			const key = await getMyKeyPair();
+			const out: Message[] = [];
+
+			for (const m of activeThreadMessagesStored ?? []) {
+				const { _updatedAt: _u, threadId: _tid, status: _s, ...rest } = m;
+				void _u;
+				void _tid;
+				void _s;
+				const decrypted: Message =
+					userId !== undefined
+						? await decryptMessage(m, userId, key)
+						: (rest as Message);
+				out.push(decrypted);
+			}
+
+			if (alive) setDecryptedThreadMessages(out);
+		})();
+
+		return () => {
+			alive = false;
+		};
+	}, [activeThreadMessagesStored, userId]);
+
+	const activeThreadMessages = decryptedThreadMessages;
+
+	// The thread header shows the parent message text, which is encrypted
+	// on the server. Resolve it from the parent message's own record.
+	const [threadParentText, setThreadParentText] = useState<
+		Record<string, string>
+	>({});
+
+	useEffect(() => {
+		let alive = true;
+
+		(async () => {
+			const key = await getMyKeyPair();
+			const entries: Array<[string, string]> = [];
+
+			for (const t of Object.values(threadsMap)) {
+				const parent = await messagesRepo.getByIdAny(t.parentMessageId);
+
+				if (parent === undefined) {
+					entries.push([t.id, t.parentMessageText]);
+					continue;
+				}
+
+				if (!parent.encrypted) {
+					entries.push([t.id, parent.text]);
+					continue;
+				}
+
+				if (userId !== undefined && key !== null) {
+					entries.push([t.id, await decryptMessageText(parent, userId, key)]);
+				} else {
+					entries.push([t.id, i18n.t("message.undecryptable")]);
+				}
+			}
+
+			if (alive) setThreadParentText(Object.fromEntries(entries));
+		})();
+
+		return () => {
+			alive = false;
+		};
+	}, [threadsMap, userId]);
 
 	useEffect(() => {
 		if (allStored) {
@@ -205,11 +278,19 @@ export function useThreads({
 		? (threadsMap[activeThreadId] ?? null)
 		: null;
 
+	const activeThreadWithText =
+		activeThread !== null && threadParentText[activeThread.id] !== undefined
+			? {
+					...activeThread,
+					parentMessageText: threadParentText[activeThread.id],
+				}
+			: activeThread;
+
 	return {
 		threads: threadsMap,
 		messageToThread,
 		activeThreadId,
-		activeThread,
+		activeThread: activeThreadWithText,
 		activeThreadMessages,
 		threadHasMore,
 		threadIsLoadingMore,

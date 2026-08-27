@@ -3,8 +3,11 @@ import { getMessages } from "../api.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import type { StoredMessage } from "../db/schema.ts";
 import { useLiveQuery } from "../db/useLiveQuery.ts";
+import { getMyKeyPair } from "../e2ee/keys.ts";
+import { decryptMessage } from "../e2ee/message.ts";
 import i18n from "../i18n.ts";
 import type { Message, MessageStatus } from "../types/api.ts";
+import { useAuth } from "../useAuth.tsx";
 import { stripMeta } from "../utils/helpers.ts";
 import { emitNotification } from "../utils/notify.ts";
 
@@ -53,10 +56,68 @@ export function useMessages({
 	}, [chatId]);
 	const stored = useLiveQuery<StoredMessage[]>(query);
 
-	const visible = (stored ?? [])
-		.filter((m) => m.status !== "deleted")
-		.map(toClientMessage);
+	const { activeAccount } = useAuth();
+	const userId = activeAccount?.user.id;
 
+	// Decrypt E2E ciphertext at the render boundary; the cache keeps the
+	// ciphertext untouched. Decryptions are cached per message revision so
+	// large histories are not re-decrypted on every DB change, and the
+	// result array keeps a stable reference while contents are unchanged
+	// so unrelated notify() cycles do not re-render the message list.
+	const [visible, setVisible] = useState<MessageWithStatus[]>([]);
+	const decryptCacheRef = useRef<Map<string, MessageWithStatus>>(new Map());
+	const cacheOwnerRef = useRef<string | undefined>(undefined);
+	const lastVisibleRef = useRef<{
+		key: string;
+		value: MessageWithStatus[];
+	} | null>(null);
+
+	useEffect(() => {
+		let alive = true;
+
+		(async () => {
+			if (cacheOwnerRef.current !== userId) {
+				cacheOwnerRef.current = userId;
+				decryptCacheRef.current.clear();
+			}
+
+			const signature = (stored ?? [])
+				.map((s) => `${s.id}:${s.status}:${s._updatedAt}`)
+				.join("|");
+			const prev = lastVisibleRef.current;
+			if (prev !== null && prev.key === signature) {
+				if (alive) setVisible(prev.value);
+				return;
+			}
+
+			const key = await getMyKeyPair();
+			const out: MessageWithStatus[] = [];
+
+			for (const sm of stored ?? []) {
+				if (sm.status === "deleted") continue;
+
+				const cacheKey = `${sm.id}:${sm._updatedAt}:${sm.status}`;
+				const cached = decryptCacheRef.current.get(cacheKey);
+				if (cached !== undefined) {
+					out.push(cached);
+					continue;
+				}
+
+				const decrypted =
+					userId !== undefined ? await decryptMessage(sm, userId, key) : sm;
+				const client = toClientMessage({ ...sm, ...decrypted });
+				decryptCacheRef.current.set(cacheKey, client);
+				out.push(client);
+			}
+
+			lastVisibleRef.current = { key: signature, value: out };
+			if (alive) setVisible(out);
+		})();
+
+		return () => {
+			alive = false;
+		};
+	}, [stored, userId]);
 	const loadMore = useCallback(async () => {
 		if (chatId === null || token === undefined) return;
 		if (loadingMoreRef.current) return;

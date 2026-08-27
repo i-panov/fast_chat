@@ -60,6 +60,8 @@ interface Props {
 	onRetry?: (chatId: string, messageId: string) => void;
 	onCancelSend?: (chatId: string, messageId: string) => void;
 	showAuthorNick?: boolean;
+	encrypted?: boolean;
+	undecryptable?: boolean;
 }
 
 function isWithinTTL(createdAt: string, ttl: number): boolean {
@@ -109,7 +111,9 @@ function areEqual(prev: Props, next: Props): boolean {
 		prev.isInThread === next.isInThread &&
 		prev.status === next.status &&
 		prev.deliveryStatus === next.deliveryStatus &&
-		prev.showAuthorNick === next.showAuthorNick
+		prev.showAuthorNick === next.showAuthorNick &&
+		prev.encrypted === next.encrypted &&
+		prev.undecryptable === next.undecryptable
 	);
 }
 
@@ -141,6 +145,8 @@ export const MessageBubble = memo(function MessageBubble({
 	onRetry,
 	onCancelSend,
 	showAuthorNick,
+	encrypted,
+	undecryptable,
 }: Props) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
@@ -255,6 +261,8 @@ export const MessageBubble = memo(function MessageBubble({
 					time={time}
 					editedAt={editedAt}
 					locale={locale}
+					encrypted={encrypted}
+					undecryptable={undecryptable}
 				/>
 			</Paper>
 			{threadId !== undefined && onOpenThread !== undefined && (

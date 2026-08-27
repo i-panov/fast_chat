@@ -1,8 +1,12 @@
 import { useCallback } from "react";
+import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
+import { ensureAccountKeys, getRecipientPublicKeys } from "../e2ee/keys.ts";
+import { encryptMessageText } from "../e2ee/message.ts";
+import i18n from "../i18n.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
 import type {
 	FileInfo,
@@ -12,6 +16,7 @@ import type {
 	PendingFile,
 } from "../types/api.ts";
 import { useAuth } from "../useAuth";
+import { emitNotification } from "../utils/notify.ts";
 
 interface UseMessageSenderParams {
 	token?: string;
@@ -77,7 +82,7 @@ function buildStoredFile(pf: PendingFile): FileInfo {
 }
 
 export function useMessageSender({
-	token: _token,
+	token,
 }: UseMessageSenderParams): UseMessageSenderReturn {
 	const { activeAccount } = useAuth();
 	const user = activeAccount?.user ?? null;
@@ -101,6 +106,42 @@ export function useMessageSender({
 		[],
 	);
 
+	const encryptForChat = useCallback(
+		async (
+			chatId: string,
+			text: string,
+		): Promise<{ text: string; encryptedPayload: string } | null> => {
+			try {
+				const chat = await chatsRepo.getById(chatId);
+				if (chat === undefined || token === undefined) return null;
+
+				const memberIds = chat.members.map((m) => m.id);
+				if (memberIds.length === 0) {
+					throw new Error("chat has no members");
+				}
+				await ensureAccountKeys(token);
+
+				const recipientKeys = await getRecipientPublicKeys(token, memberIds);
+				const recipients = memberIds
+					.map((id) => ({
+						keyId: id,
+						publicKey: recipientKeys.get(id) ?? "",
+					}))
+					.filter((r) => r.publicKey !== "");
+
+				if (recipients.length !== memberIds.length) {
+					throw new Error("missing recipient key");
+				}
+
+				return encryptMessageText(text, recipients);
+			} catch {
+				emitNotification(i18n.t("error.encryptionKeyMissing"));
+				return null;
+			}
+		},
+		[token],
+	);
+
 	const sendMessage = useCallback(
 		async ({
 			chatId,
@@ -114,6 +155,10 @@ export function useMessageSender({
 
 			const msgId = genId();
 			const now = new Date().toISOString();
+
+			const encrypted = await encryptForChat(chatId, text);
+			if (encrypted === null) return;
+
 			const blobIds = await enqueuePendingBlobs(pendingFiles ?? []);
 			const fileInfos: FileInfo[] = (pendingFiles ?? []).map(buildStoredFile);
 
@@ -122,7 +167,9 @@ export function useMessageSender({
 				chatId,
 				fromId: user.id,
 				fromNick: user.nick,
-				text,
+				text: encrypted.text,
+				encrypted: true,
+				encryptedPayload: encrypted.encryptedPayload,
 				createdAt: now,
 				editedAt: undefined,
 				replyTo: undefined,
@@ -141,7 +188,9 @@ export function useMessageSender({
 				opId: genId(),
 				chatId,
 				msgId,
-				text,
+				text: encrypted.text,
+				encrypted: true,
+				encryptedPayload: encrypted.encryptedPayload,
 				replyToId,
 				pendingFileClientIds: blobIds,
 				location,
@@ -152,7 +201,7 @@ export function useMessageSender({
 
 			scheduleSync();
 		},
-		[user, enqueuePendingBlobs],
+		[user, enqueuePendingBlobs, encryptForChat],
 	);
 
 	const editMessage = useCallback(
@@ -200,9 +249,15 @@ export function useMessageSender({
 			const { status: _ignored, _updatedAt: _u, ...base } = current;
 			void _ignored;
 			void _u;
+
+			const encrypted = await encryptForChat(chatId, text);
+			if (encrypted === null) return;
+
 			const updated: Message = {
 				...base,
-				text,
+				text: encrypted.text,
+				encrypted: true,
+				encryptedPayload: encrypted.encryptedPayload,
 				files: mergedFiles,
 				location: nextLocation,
 				editedAt: now,
@@ -219,7 +274,9 @@ export function useMessageSender({
 				opId: genId(),
 				chatId,
 				messageId,
-				text,
+				text: encrypted.text,
+				encrypted: true,
+				encryptedPayload: encrypted.encryptedPayload,
 				pendingFileClientIds: blobIds,
 				keptFileIds,
 				filesToRemove: filesToRemove ?? [],
@@ -233,7 +290,7 @@ export function useMessageSender({
 
 			scheduleSync();
 		},
-		[enqueuePendingBlobs],
+		[enqueuePendingBlobs, encryptForChat],
 	);
 
 	const deleteMessage = useCallback(

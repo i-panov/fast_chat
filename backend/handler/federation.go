@@ -351,12 +351,14 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID        string          `json:"id"`
-		FromID    string          `json:"fromId"`
-		FromNick  string          `json:"fromNick"`
-		Text      string          `json:"text"`
-		ReplyToID string          `json:"replyToId"`
-		Location  *model.Location `json:"location,omitempty"`
+		ID               string          `json:"id"`
+		FromID           string          `json:"fromId"`
+		FromNick         string          `json:"fromNick"`
+		Text             string          `json:"text"`
+		ReplyToID        string          `json:"replyToId"`
+		Location         *model.Location `json:"location,omitempty"`
+		Encrypted        bool            `json:"encrypted"`
+		EncryptedPayload string          `json:"encryptedPayload"`
 	}
 
 	if err := h.decodeJSON(r, &req); err != nil {
@@ -380,7 +382,12 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if utf8.RuneCountInString(req.Text) > maxMessageLen {
+	maxLen := maxMessageLen
+	if req.Encrypted {
+		maxLen = encryptedMaxLen
+	}
+
+	if utf8.RuneCountInString(req.Text) > maxLen {
 		writeError(w, http.StatusBadRequest, "message too long")
 		return
 	}
@@ -391,13 +398,15 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	msg := model.Message{
-		ID:        req.ID,
-		ChatID:    chatID,
-		FromID:    req.FromID,
-		FromNick:  req.FromNick,
-		Text:      req.Text,
-		CreatedAt: time.Now(),
-		Location:  req.Location,
+		ID:               req.ID,
+		ChatID:           chatID,
+		FromID:           req.FromID,
+		FromNick:         req.FromNick,
+		Text:             req.Text,
+		Encrypted:        req.Encrypted,
+		EncryptedPayload: req.EncryptedPayload,
+		CreatedAt:        time.Now(),
+		Location:         req.Location,
 	}
 
 	if req.ReplyToID != "" {
@@ -471,9 +480,11 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Text     string          `json:"text"`
-		FileIDs  []string        `json:"fileIDs,omitempty"`
-		Location json.RawMessage `json:"location"`
+		Text             string          `json:"text"`
+		FileIDs          []string        `json:"fileIDs,omitempty"`
+		Location         json.RawMessage `json:"location"`
+		Encrypted        bool            `json:"encrypted"`
+		EncryptedPayload string          `json:"encryptedPayload"`
 	}
 
 	if err := h.decodeJSON(r, &req); err != nil {
@@ -489,20 +500,22 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 
-	if err := h.store.EditRawMessage(r.Context(), lookupID, messageID, req.Text, now, location, clearLocation); err != nil {
+	if err := h.store.EditRawMessage(r.Context(), lookupID, messageID, req.Text, now, location, clearLocation, req.Encrypted, req.EncryptedPayload); err != nil {
 		slog.Error("federated edit message failed", "err", err)
 		writeError(w, http.StatusNotFound, errKeyMsgNotFound)
 		return
 	}
 
 	updated := &model.Message{
-		ID:        messageID,
-		ChatID:    chatID,
-		FromID:    stored.FromID,
-		FromNick:  stored.FromNick,
-		Text:      req.Text,
-		CreatedAt: stored.CreatedAt,
-		EditedAt:  &now,
+		ID:               messageID,
+		ChatID:           chatID,
+		FromID:           stored.FromID,
+		FromNick:         stored.FromNick,
+		Text:             req.Text,
+		Encrypted:        req.Encrypted,
+		EncryptedPayload: req.EncryptedPayload,
+		CreatedAt:        stored.CreatedAt,
+		EditedAt:         &now,
 	}
 
 	if req.FileIDs != nil {

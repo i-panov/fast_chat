@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createChat, refreshToken } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
+import { ensureAccountKeys } from "../e2ee/keys.ts";
 import {
 	retryFailedOps,
 	scheduleSync,
@@ -137,6 +138,13 @@ export function useChatPage(): ChatPageState {
 
 	useEffect(() => {
 		setTokenProvider(() => token ?? null);
+	}, [token]);
+
+	// E2E: make sure the account has a key pair and its public key is
+	// uploaded before any message is sent.
+	useEffect(() => {
+		if (token === undefined) return;
+		void ensureAccountKeys(token).catch(() => {});
 	}, [token]);
 
 	const handleBackOnline = useCallback(() => {

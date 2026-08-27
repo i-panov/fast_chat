@@ -84,9 +84,11 @@
 	"message.edited": "ред.",
 	"message.retry": "Повторить",
 	"message.failed": "Не удалось отправить",
+	"message.undecryptable": "Сообщение недоступно для расшифровки",
 	"message.openInMap": "Открыть в OpenStreetMap",
 	"message.location": "Местоположение",
 	"message.queued": "В очереди",
+	"message.notEncrypted": "Не зашифровано",
 
 	"input.replyingTo": "Ответ @{{nick}}",
 
@@ -111,6 +113,7 @@
 	"error.verifyCode": "Неверный или истёкший код",
 	"error.invalidCoords": "Неверные координаты",
 	"error.geolocationDenied": "Геолокация недоступна",
+	"error.encryptionKeyMissing": "Не удалось зашифровать сообщение: нет ключа шифрования одного из участников",
 	"error.boundaryTitle": "Что-то пошло не так",
 	"error.boundaryMessage": "В приложении произошла непредвиденная ошибка.",
 	"error.boundaryReset": "Попробовать снова",

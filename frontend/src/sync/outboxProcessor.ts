@@ -84,6 +84,8 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 			fileIDs: fileIDs.length > 0 ? fileIDs : undefined,
 			location: op.location,
 			threadId: op.threadId,
+			encrypted: op.encrypted,
+			encryptedPayload: op.encryptedPayload,
 		});
 		await threadMessagesRepo.markStatus(op.threadId, op.msgId, "sent");
 	} else {
@@ -94,6 +96,8 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 			replyToId: op.replyToId,
 			fileIDs: fileIDs.length > 0 ? fileIDs : undefined,
 			location: op.location,
+			encrypted: op.encrypted,
+			encryptedPayload: op.encryptedPayload,
 		});
 		await messagesRepo.markStatus(op.chatId, op.msgId, "sent");
 	}
@@ -129,6 +133,8 @@ async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
 			fileIDs,
 			opts: editOpts,
 			threadId: op.threadId,
+			encrypted: op.encrypted,
+			encryptedPayload: op.encryptedPayload,
 		});
 		await threadMessagesRepo.markStatus(op.threadId, op.messageId, "sent");
 	} else {
@@ -138,6 +144,8 @@ async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
 			text: op.text,
 			fileIDs,
 			opts: editOpts,
+			encrypted: op.encrypted,
+			encryptedPayload: op.encryptedPayload,
 		});
 		await messagesRepo.markStatus(op.chatId, op.messageId, "sent");
 	}

@@ -181,6 +181,8 @@ export interface SendMessageParams {
 	fileIDs?: string[];
 	location?: Location;
 	threadId?: string;
+	encrypted?: boolean;
+	encryptedPayload?: string;
 }
 
 export function sendMessage(token: string, params: SendMessageParams) {
@@ -196,8 +198,24 @@ export function sendMessage(token: string, params: SendMessageParams) {
 			replyToId: params.replyToId,
 			fileIDs: params.fileIDs,
 			location: params.location,
+			encrypted: params.encrypted,
+			encryptedPayload: params.encryptedPayload,
 		}),
 	});
+}
+
+export function uploadPublicKey(token: string, publicKey: string) {
+	return request<{ status: string }>("/api/users/public-key", token, {
+		method: "PUT",
+		body: JSON.stringify({ publicKey }),
+	});
+}
+
+export function getPublicKey(token: string, userId: string) {
+	return request<{ publicKey: string }>(
+		`/api/users/${encodeURIComponent(userId)}/public-key`,
+		token,
+	);
 }
 
 export function uploadFile(token: string, file: File) {
@@ -240,6 +258,8 @@ export interface EditMessageParams {
 	fileIDs?: string[];
 	opts?: EditMessageOptions;
 	threadId?: string;
+	encrypted?: boolean;
+	encryptedPayload?: string;
 }
 
 function buildEditBody(params: EditMessageParams): Record<string, unknown> {
@@ -249,6 +269,10 @@ function buildEditBody(params: EditMessageParams): Record<string, unknown> {
 		body.location = null;
 	} else if (params.opts?.location !== undefined) {
 		body.location = params.opts.location;
+	}
+	if (params.encrypted === true) {
+		body.encrypted = true;
+		body.encryptedPayload = params.encryptedPayload;
 	}
 	return body;
 }

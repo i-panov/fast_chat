@@ -19,6 +19,8 @@ export interface StoredMessage {
 	fromId: string;
 	fromNick: string;
 	text: string;
+	encrypted?: boolean;
+	encryptedPayload?: string;
 	createdAt: string;
 	editedAt?: string;
 	replyTo?: ReplyToInfo;
@@ -41,6 +43,8 @@ export interface StoredThreadMessage {
 	fromId: string;
 	fromNick: string;
 	text: string;
+	encrypted?: boolean;
+	encryptedPayload?: string;
 	createdAt: string;
 	editedAt?: string;
 	replyTo?: ReplyToInfo;
@@ -59,6 +63,8 @@ export interface OutboxOpSend {
 	chatId: string;
 	msgId: string;
 	text: string;
+	encrypted?: boolean;
+	encryptedPayload?: string;
 	replyToId?: string;
 	pendingFileClientIds: string[];
 	location?: { lat: number; lng: number };
@@ -74,6 +80,8 @@ export interface OutboxOpEdit {
 	chatId: string;
 	messageId: string;
 	text: string;
+	encrypted?: boolean;
+	encryptedPayload?: string;
 	pendingFileClientIds: string[];
 	keptFileIds: string[];
 	filesToRemove: string[];

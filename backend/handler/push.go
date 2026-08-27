@@ -29,8 +29,10 @@ func (h *Handler) sendPushForMessage(ctx context.Context, chatID string, msg *mo
 
 	payload := pushPayload{
 		Title: msg.FromNick,
-		Body:  msg.Text,
-		Tag:   "chat-" + chatID,
+		// Message content is E2E-encrypted and never readable by the
+		// server; the push body must not leak plaintext.
+		Body: "New message",
+		Tag:  "chat-" + chatID,
 		Data: pushPayloadData{
 			ChatID:    chatID,
 			MessageID: msg.ID,

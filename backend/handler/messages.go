@@ -18,8 +18,12 @@ const (
 	defaultMessagesLimit = 30
 	maxMessagesLimit     = 100
 	maxMessageLen        = 10000
-	maxMessageFiles      = 10
-	maxReadByMembers     = 100
+	// E2E ciphertext is base64 of (plaintext + 16-byte tag); a generous
+	// cap so server-side validation still rejects absurd payloads while
+	// the plaintext length is enforced client-side before encryption.
+	encryptedMaxLen = 100000
+	maxMessageFiles = 10
+	maxReadByMembers = 100
 )
 
 type messageWithStatus struct {
@@ -216,11 +220,13 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID        string          `json:"id"`
-		Text      string          `json:"text"`
-		ReplyToID string          `json:"replyToId"`
-		FileIDs   []string        `json:"fileIDs,omitempty"`
-		Location  *model.Location `json:"location,omitempty"`
+		ID               string          `json:"id"`
+		Text             string          `json:"text"`
+		ReplyToID        string          `json:"replyToId"`
+		FileIDs          []string        `json:"fileIDs,omitempty"`
+		Location         *model.Location `json:"location,omitempty"`
+		Encrypted        bool            `json:"encrypted"`
+		EncryptedPayload string          `json:"encryptedPayload"`
 	}
 
 	if err := h.decodeJSON(r, &req); err != nil {
@@ -234,7 +240,12 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if utf8.RuneCountInString(req.Text) > maxMessageLen {
+	maxLen := maxMessageLen
+	if req.Encrypted {
+		maxLen = encryptedMaxLen
+	}
+
+	if utf8.RuneCountInString(req.Text) > maxLen {
 		writeError(w, http.StatusBadRequest, "message too long")
 		return
 	}
@@ -251,7 +262,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	msg, err := h.store.AddMessage(r.Context(), chatID, threadID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID, req.Location)
+	msg, err := h.store.AddMessage(r.Context(), chatID, threadID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID, req.Location, req.Encrypted, req.EncryptedPayload)
 	if err != nil {
 		slog.Error("failed to send message", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -292,12 +303,14 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		h.sendFedPost(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages", map[string]any{
-			"id":        msg.ID,
-			"fromId":    msg.FromID,
-			"fromNick":  msg.FromNick,
-			"text":      msg.Text,
-			"replyToId": req.ReplyToID,
-			"location":  req.Location,
+			"id":               msg.ID,
+			"fromId":           msg.FromID,
+			"fromNick":         msg.FromNick,
+			"text":             msg.Text,
+			"replyToId":        req.ReplyToID,
+			"location":         req.Location,
+			"encrypted":        msg.Encrypted,
+			"encryptedPayload": msg.EncryptedPayload,
 		})
 
 		for _, memberID := range chat.Members {
@@ -375,9 +388,11 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Text     string          `json:"text"`
-		FileIDs  []string        `json:"fileIDs,omitempty"`
-		Location json.RawMessage `json:"location"`
+		Text             string          `json:"text"`
+		FileIDs          []string        `json:"fileIDs,omitempty"`
+		Location         json.RawMessage `json:"location"`
+		Encrypted        bool            `json:"encrypted"`
+		EncryptedPayload string          `json:"encryptedPayload"`
 	}
 
 	if err := h.decodeJSON(r, &req); err != nil {
@@ -400,7 +415,12 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if utf8.RuneCountInString(req.Text) > maxMessageLen {
+	maxLen := maxMessageLen
+	if req.Encrypted {
+		maxLen = encryptedMaxLen
+	}
+
+	if utf8.RuneCountInString(req.Text) > maxLen {
 		writeError(w, http.StatusBadRequest, "message too long")
 		return
 	}
@@ -410,7 +430,7 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.EditMessage(r.Context(), chatID, threadID, messageID, user.ID, req.Text, location, clearLocation)
+	updated, err := h.store.EditMessage(r.Context(), chatID, threadID, messageID, user.ID, req.Text, location, clearLocation, req.Encrypted, req.EncryptedPayload)
 	if err != nil {
 		slog.Error("failed to edit message", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -428,9 +448,11 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 
 	if threadID != "" {
 		h.sendFedPatch(chat.RemoteServer, "/api/federated/chats/"+chatID+"/threads/"+threadID+"/messages/"+messageID, map[string]any{
-			"text":     req.Text,
-			"fileIDs":  req.FileIDs,
-			"location": req.Location,
+			"text":             req.Text,
+			"fileIDs":          req.FileIDs,
+			"location":         req.Location,
+			"encrypted":        req.Encrypted,
+			"encryptedPayload": req.EncryptedPayload,
 		})
 
 		eventData := map[string]any{
@@ -443,9 +465,11 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		h.sendFedPatch(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID, map[string]any{
-			"text":     req.Text,
-			"fileIDs":  req.FileIDs,
-			"location": req.Location,
+			"text":             req.Text,
+			"fileIDs":          req.FileIDs,
+			"location":         req.Location,
+			"encrypted":        req.Encrypted,
+			"encryptedPayload": req.EncryptedPayload,
 		})
 
 		for _, memberID := range chat.Members {

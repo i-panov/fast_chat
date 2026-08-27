@@ -105,6 +105,24 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*model.User, 
 	return &user, true
 }
 
+// UpdateUserPublicKey stores the user's E2E X25519 public key (base64).
+func (s *Store) UpdateUserPublicKey(ctx context.Context, userID, publicKey string) error {
+	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+		Update("public_key", publicKey).Error
+}
+
+// GetUserPublicKey returns the user's E2E public key; ok=false when the
+// user has no key yet (they have not completed E2E setup).
+func (s *Store) GetUserPublicKey(ctx context.Context, userID string) (string, bool) {
+	var key string
+	if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+		Select("public_key").Scan(&key).Error; err != nil || key == "" {
+		return "", false
+	}
+
+	return key, true
+}
+
 func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry time.Duration) (*model.User, error) {
 	user, ok := s.GetUserByID(ctx, userID)
 	if !ok {

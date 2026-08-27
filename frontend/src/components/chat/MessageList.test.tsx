@@ -148,3 +148,47 @@ describe("MessageList attachment-only messages", () => {
 		expect(bubble?.textContent).toMatch(/\d{1,2}:\d{2}/);
 	});
 });
+
+describe("MessageList encryption indicator", () => {
+	it("shows an open lock icon for a legacy (unencrypted) message", async () => {
+		const legacy = msg("legacy-msg", "2026-08-26T14:45:09.973Z", "old text");
+		await messagesRepo.upsertMany([legacy]);
+
+		renderMessageList(<MessagesHarness />);
+
+		await screen.findByText("old text");
+		expect(screen.getByLabelText("message.notEncrypted")).toBeTruthy();
+	});
+
+	it("does not show the lock icon for an encrypted message", async () => {
+		const enc = msg("enc-msg", "2026-08-26T14:45:09.973Z", "secret");
+		enc.encrypted = true;
+		await messagesRepo.upsertMany([enc]);
+
+		renderMessageList(<MessagesHarness />);
+
+		// No key in the test env, so an encrypted message renders an
+		// undecryptable placeholder — but it must NOT get the open-lock
+		// "not encrypted" indicator.
+		await screen.findByText("message.undecryptable");
+		const bubble = document.querySelector('[data-message-id="enc-msg"]');
+		expect(bubble).not.toBeNull();
+		expect(
+			bubble?.querySelector('[aria-label="message.notEncrypted"]'),
+		).toBeNull();
+	});
+
+	it("renders the undecryptable placeholder with a distinct closed-lock style", async () => {
+		const enc = msg("enc-msg", "2026-08-26T14:45:09.973Z", "secret");
+		enc.encrypted = true;
+		await messagesRepo.upsertMany([enc]);
+
+		renderMessageList(<MessagesHarness />);
+
+		const placeholder = await screen.findByText("message.undecryptable");
+		// Distinct styling: italic + a closed-lock icon.
+		expect(placeholder).toHaveStyle({ "font-style": "italic" });
+		const bubble = document.querySelector('[data-message-id="enc-msg"]');
+		expect(bubble?.querySelector("svg")).not.toBeNull();
+	});
+});

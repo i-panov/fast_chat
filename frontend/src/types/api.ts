@@ -63,6 +63,11 @@ export interface Message {
 	fromId: string;
 	fromNick: string;
 	text: string;
+	encrypted?: boolean;
+	encryptedPayload?: string;
+	// Set when the client could not decrypt this message (missing key,
+	// changed key, or envelope mismatch). The UI renders it distinctly.
+	undecryptable?: boolean;
 	createdAt: string;
 	editedAt?: string;
 	replyTo?: ReplyToInfo;
