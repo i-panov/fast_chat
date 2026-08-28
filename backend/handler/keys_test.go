@@ -312,3 +312,58 @@ func TestEncryptedMessagePayloadValidation(t *testing.T) {
 		t.Fatalf("expected 201 for valid payload, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestEncryptedMessageRequiresPayload(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
+
+	chat := createTestChat(t, h, alice.token, bob.id)
+
+	// encrypted=true without a payload must be rejected.
+	req := authReq(http.MethodPost, "/api/chats/"+chat.ID+"/messages", alice.token, `{"text":"hi","encrypted":true}`)
+	req.SetPathValue("id", chat.ID)
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.SendMessage)(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for encrypted without payload, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEditMessageKeepsLegacyEncryptionFields(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
+
+	chat := createTestChat(t, h, alice.token, bob.id)
+
+	// A message with a legacy (structurally invalid) payload, as could
+	// exist in the DB from before payload validation was introduced.
+	// It is inserted directly because SendMessage validates the payload.
+	legacyPayload := `{"v":1}`
+	if _, err := h.store.AddMessage(context.Background(), chat.ID, "", alice.id, "alice", "Y2lwaGVydGV4dA==", "msg-legacy", "", nil, true, legacyPayload); err != nil {
+		t.Fatal(err)
+	}
+
+	// An edit that does not carry encryption fields (old client) must
+	// succeed: the stored legacy payload is not re-validated.
+	patch := authReq(http.MethodPatch, "/api/chats/"+chat.ID+"/messages/msg-legacy", alice.token, `{"text":"edited"}`)
+	patch.SetPathValue("id", chat.ID)
+	patch.SetPathValue("messageId", "msg-legacy")
+	pw := httptest.NewRecorder()
+	h.AuthMiddleware(h.EditMessage)(pw, patch)
+
+	if pw.Code != http.StatusOK {
+		t.Fatalf("expected 200 for legacy edit, got %d: %s", pw.Code, pw.Body.String())
+	}
+
+	// The encryption fields must be preserved by the patch.
+	msg, err := h.store.GetMessage(context.Background(), chat.ID, "msg-legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !msg.Encrypted || msg.EncryptedPayload != legacyPayload {
+		t.Fatalf("expected encryption fields preserved, got encrypted=%v payload=%q", msg.Encrypted, msg.EncryptedPayload)
+	}
+}

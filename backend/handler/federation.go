@@ -513,9 +513,14 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		payload = stored.EncryptedPayload
 	}
 
-	if err := validateEncryptedPayload(encrypted, payload); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	// Validate only what the remote server sent. Store fallbacks were
+	// accepted when the message was created, so legacy payloads must
+	// not block a text/location edit from an older server.
+	if req.Encrypted != nil || req.EncryptedPayload != nil {
+		if err := validateEncryptedPayload(encrypted, payload); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	location, clearLocation, locErr := parseLocationPatch(req.Location)

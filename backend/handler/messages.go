@@ -41,8 +41,12 @@ const (
 // payload. The server does not decrypt messages but it verifies the
 // envelope is well-formed so garbage does not pollute the storage.
 func validateEncryptedPayload(encrypted bool, payload string) error {
-	if !encrypted || payload == "" {
+	if !encrypted {
 		return nil
+	}
+
+	if payload == "" {
+		return fmt.Errorf("missing encrypted payload")
 	}
 
 	if len(payload) > maxEncryptedPayloadLen {
@@ -486,9 +490,14 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		payload = msg.EncryptedPayload
 	}
 
-	if err := validateEncryptedPayload(encrypted, payload); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	// Validate only what the client sent. Fallbacks from the store were
+	// already accepted when the message was created, so legacy values
+	// must not block edits of the text/location.
+	if req.Encrypted != nil || req.EncryptedPayload != nil {
+		if err := validateEncryptedPayload(encrypted, payload); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	location, clearLocation, locErr := parseLocationPatch(req.Location)
