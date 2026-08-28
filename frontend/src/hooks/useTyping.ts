@@ -63,9 +63,9 @@ export function useTyping({ token }: UseTypingParams): UseTypingReturn {
 	useEffect(() => {
 		return () => {
 			// Очистка всех таймеров при размонтировании
-			Object.values(typingTimersRef.current).forEach((timerId) => {
+			for (const timerId of Object.values(typingTimersRef.current)) {
 				clearTimeout(timerId);
-			});
+			}
 		};
 	}, []);
 

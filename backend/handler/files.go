@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -37,7 +38,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer file.Close() //nolint:errcheck
+	defer file.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	// Storage name is a UUID with no extension so the client cannot influence
 	// the on-disk filename (e.g. ".php" tricks behind a misconfigured reverse
@@ -47,14 +48,14 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	relativePath := filepath.Join(dateDir, storageName)
 	fullPath := filepath.Join(h.cfg.Uploads.Dir, relativePath)
 
-	if err := os.MkdirAll(filepath.Dir(fullPath), uploadDirPermissions); err != nil { //nolint:gosec // paths are controlled
+	if err := os.MkdirAll(filepath.Dir(fullPath), uploadDirPermissions); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process file")
 		return
 	}
 
 	// Stage in the destination directory so the final os.Rename is atomic
 	// on the same filesystem (avoids EXDEV across /tmp and uploads dir).
-	tempFile, err := os.CreateTemp(filepath.Dir(fullPath), ".upload-*"+filepath.Ext(storageName)+".tmp") //nolint:gosec
+	tempFile, err := os.CreateTemp(filepath.Dir(fullPath), ".upload-*"+filepath.Ext(storageName)+".tmp")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process file")
 		return
@@ -62,7 +63,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	tempPath := tempFile.Name()
 
-	defer os.Remove(tempPath) //nolint:errcheck
+	defer os.Remove(tempPath) //nolint:errcheck // best-effort: failure is not actionable
 
 	// Detect MIME type from the first 512 bytes of the file body, ignoring the
 	// client-supplied Content-Type. This blocks an attacker from uploading
@@ -70,8 +71,8 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	peek := make([]byte, sniffBytes)
 
 	peekN, peekErr := io.ReadFull(file, peek)
-	if peekErr != nil && peekErr != io.ErrUnexpectedEOF && peekErr != io.EOF {
-		tempFile.Close() //nolint:errcheck,gosec
+	if peekErr != nil && !errors.Is(peekErr, io.ErrUnexpectedEOF) && peekErr != io.EOF {
+		tempFile.Close() //nolint:errcheck,gosec // temp-file removal is best-effort
 		writeError(w, http.StatusInternalServerError, "failed to read file")
 
 		return
@@ -83,7 +84,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	peekAndHash := io.MultiWriter(tempFile, hasher)
 
 	if _, err := peekAndHash.Write(peek[:peekN]); err != nil {
-		tempFile.Close() //nolint:errcheck,gosec
+		tempFile.Close() //nolint:errcheck,gosec // temp-file removal is best-effort
 		writeError(w, http.StatusInternalServerError, "failed to write file")
 
 		return
@@ -91,7 +92,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	size, err := io.Copy(peekAndHash, file)
 	if err != nil {
-		tempFile.Close() //nolint:errcheck,gosec
+		tempFile.Close() //nolint:errcheck,gosec // temp-file removal is best-effort
 		writeError(w, http.StatusInternalServerError, "failed to read file")
 
 		return
@@ -100,7 +101,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	size += int64(peekN)
 
 	if err := tempFile.Sync(); err != nil {
-		tempFile.Close() //nolint:errcheck,gosec
+		tempFile.Close() //nolint:errcheck,gosec // temp-file removal is best-effort
 		writeError(w, http.StatusInternalServerError, "failed to persist file")
 
 		return

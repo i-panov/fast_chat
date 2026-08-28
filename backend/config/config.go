@@ -13,6 +13,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var (
+	ErrDatabasePathRequired = errors.New("database.path is required")
+	ErrServerHostRequired   = errors.New("server.host is required")
+)
+
 type Config struct {
 	MessageEditTTL   int              `yaml:"message_edit_ttl"`
 	MessageDeleteTTL int              `yaml:"message_delete_ttl"`
@@ -101,11 +106,11 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	if cfg.Database.Path == "" {
-		return nil, errors.New("database.path is required")
+		return nil, ErrDatabasePathRequired
 	}
 
 	if cfg.Server.Host == "" {
-		return nil, errors.New("server.host is required")
+		return nil, ErrServerHostRequired
 	}
 
 	if cfg.Server.Port == 0 {

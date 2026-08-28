@@ -61,6 +61,7 @@
 	"login.sendCode": "Send Code",
 	"login.code": "Verification code",
 	"login.codeSent": "A code has been sent to {{email}}",
+	"login.debugCode": "Debug mode: code is {{code}}",
 	"login.verify": "Verify",
 	"login.chooseNick": "Choose your nickname",
 	"login.nick": "Nickname",

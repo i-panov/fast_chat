@@ -27,6 +27,16 @@ import (
 	"fast_chat/internal/httputil"
 )
 
+var (
+	ErrUnsafeAddress       = errors.New("refusing to connect to unsafe address")
+	ErrNoSafeAddress       = errors.New("no safe address found")
+	ErrWellKnownStatus     = errors.New("well-known request returned unexpected status")
+	ErrPEMBlockDecode      = errors.New("failed to decode PEM block")
+	ErrNotRSAPublicKey     = errors.New("not an RSA public key")
+	ErrPrivateKeyPEMDecode = errors.New("failed to decode private key PEM")
+	ErrKeyNotRSA           = errors.New("key is not RSA")
+)
+
 const (
 	wellKnownPath      = "/.well-known/fast-chat"
 	privFileName       = "federation.priv"
@@ -105,7 +115,7 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 			// IP literal: validate and dial directly.
 			if ip := net.ParseIP(host); ip != nil {
 				if isUnsafeIP(ip) {
-					return nil, fmt.Errorf("refusing to connect to unsafe address %s", ip)
+					return nil, fmt.Errorf("%w: %s", ErrUnsafeAddress, ip)
 				}
 
 				return dialer.DialContext(ctx, network, addr)
@@ -127,7 +137,7 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 				return dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
 			}
 
-			return nil, fmt.Errorf("no safe address found for %s", host)
+			return nil, fmt.Errorf("%w: %s", ErrNoSafeAddress, host)
 		},
 	}
 
@@ -230,56 +240,6 @@ func (m *Manager) Verify(ctx context.Context, serverDomain, signature, method, r
 	return m.markNonceFresh(serverDomain, signature)
 }
 
-func (m *Manager) timestampFresh(ts int64) bool {
-	now := time.Now().Unix()
-
-	delta := now - ts
-	if delta < 0 {
-		delta = -delta
-	}
-
-	return delta <= int64(timestampTolerance.Seconds())
-}
-
-func (m *Manager) markNonceFresh(serverDomain, signature string) bool {
-	key := serverDomain + ":" + signature
-	entry := nonceEntry{expiresAt: time.Now().Add(replayWindow)}
-
-	if _, loaded := m.nonces.LoadOrStore(key, entry); loaded {
-		// We've seen this exact (server, signature) pair before. Even if
-		// the prior entry is technically past its expiry (clock skew,
-		// slow cleanup tick), a duplicate signature is never legitimate
-		// during the freshness window.
-		return false
-	}
-
-	return true
-}
-
-func (m *Manager) cleanupNonces() {
-	ticker := time.NewTicker(nonceCleanupTick)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			now := time.Now()
-
-			m.nonces.Range(func(k, v any) bool {
-				entry := v.(nonceEntry) //nolint:errcheck // invariant: only nonceEntry is stored
-				if now.After(entry.expiresAt) {
-					m.nonces.Delete(k)
-				}
-
-				return true
-			})
-
-		case <-m.closeCh:
-			return
-		}
-	}
-}
-
 // signedPayload builds the byte string that is hashed and signed. The
 // pipe-separated layout makes accidental collisions between (method, path,
 // body) tuples vanishingly unlikely and is unambiguous to reconstruct.
@@ -361,6 +321,56 @@ func (m *Manager) getPublicKey(ctx context.Context, serverDomain string) *rsa.Pu
 	return key
 }
 
+func (m *Manager) timestampFresh(ts int64) bool {
+	now := time.Now().Unix()
+
+	delta := now - ts
+	if delta < 0 {
+		delta = -delta
+	}
+
+	return delta <= int64(timestampTolerance.Seconds())
+}
+
+func (m *Manager) markNonceFresh(serverDomain, signature string) bool {
+	key := serverDomain + ":" + signature
+	entry := nonceEntry{expiresAt: time.Now().Add(replayWindow)}
+
+	if _, loaded := m.nonces.LoadOrStore(key, entry); loaded {
+		// We've seen this exact (server, signature) pair before. Even if
+		// the prior entry is technically past its expiry (clock skew,
+		// slow cleanup tick), a duplicate signature is never legitimate
+		// during the freshness window.
+		return false
+	}
+
+	return true
+}
+
+func (m *Manager) cleanupNonces() {
+	ticker := time.NewTicker(nonceCleanupTick)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+
+			m.nonces.Range(func(k, v any) bool {
+				entry := v.(nonceEntry) //nolint:errcheck // invariant: only nonceEntry is stored
+				if now.After(entry.expiresAt) {
+					m.nonces.Delete(k)
+				}
+
+				return true
+			})
+
+		case <-m.closeCh:
+			return
+		}
+	}
+}
+
 func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa.PublicKey, error) {
 	wellKnownURL := fmt.Sprintf("%s://%s%s", m.scheme, serverDomain, wellKnownPath)
 
@@ -376,7 +386,7 @@ func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa
 	defer resp.Body.Close() //nolint:errcheck // body close errors are not actionable
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("well-known returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("%w: %d", ErrWellKnownStatus, resp.StatusCode)
 	}
 
 	var data struct {
@@ -393,7 +403,7 @@ func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa
 func parsePublicKeyPEM(pemStr string) (*rsa.PublicKey, error) {
 	block, _ := pem.Decode([]byte(pemStr))
 	if block == nil {
-		return nil, errors.New("failed to decode PEM block")
+		return nil, ErrPEMBlockDecode
 	}
 
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
@@ -403,7 +413,7 @@ func parsePublicKeyPEM(pemStr string) (*rsa.PublicKey, error) {
 
 	rsaPub, ok := pub.(*rsa.PublicKey)
 	if !ok {
-		return nil, errors.New("not an RSA public key")
+		return nil, ErrNotRSAPublicKey
 	}
 
 	return rsaPub, nil
@@ -417,7 +427,7 @@ func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
 
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, errors.New("failed to decode private key PEM")
+		return nil, ErrPrivateKeyPEMDecode
 	}
 
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
@@ -427,7 +437,7 @@ func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
 
 	priv, ok := key.(*rsa.PrivateKey)
 	if !ok {
-		return nil, errors.New("key is not RSA")
+		return nil, ErrKeyNotRSA
 	}
 
 	return priv, nil

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"gorm.io/gorm"
@@ -21,7 +22,14 @@ const (
 )
 
 var (
-	ErrChatNotFound = errors.New("chat not found")
+	ErrChatNotFound       = errors.New("chat not found")
+	ErrGroupChatNoMembers = errors.New("group chat must have at least one member (the owner)")
+	ErrAddMemberToPrivate = errors.New("cannot add members to non-group chat")
+	ErrTooManyMembers     = errors.New("too many members")
+	ErrRemoveFromPrivate  = errors.New("cannot remove members from non-group chat")
+	ErrRemoveLastMember   = errors.New("cannot remove the last member")
+	ErrNotGroupChat       = errors.New("not a group chat")
+	ErrDeleteNonGroup     = errors.New("cannot delete non-group chat")
 )
 
 func (s *Store) CreateChat(ctx context.Context, member1, member2, remoteServer string) (*model.Chat, error) {
@@ -34,7 +42,7 @@ func (s *Store) CreateChat(ctx context.Context, member1, member2, remoteServer s
 		Having("COUNT(DISTINCT user_id) = 2").
 		Pluck("chat_id", &chatIDs)
 
-	if len(chatIDs) > 0 { //nolint:nestif
+	if len(chatIDs) > 0 {
 		var chat model.Chat
 
 		chatIDQuery := s.db.WithContext(ctx).Model(&model.Chat{}).
@@ -105,7 +113,7 @@ func (s *Store) CreateGroupChat(ctx context.Context, name, ownerID string, membe
 	}
 
 	if len(dedup) < 1 {
-		return nil, errors.New("group chat must have at least one member (the owner)")
+		return nil, ErrGroupChatNoMembers
 	}
 
 	id := GenerateID()
@@ -177,13 +185,11 @@ func (s *Store) AddChatMember(ctx context.Context, chatID, userID string, maxMem
 	}
 
 	if chat.Type != chatTypeGroup {
-		return errors.New("cannot add members to non-group chat")
+		return ErrAddMemberToPrivate
 	}
 
-	for _, m := range chat.Members {
-		if m == userID {
-			return nil //nolint:nilerr // already a member is a no-op
-		}
+	if slices.Contains(chat.Members, userID) {
+		return nil
 	}
 
 	// The count check and insert run in a single write transaction so
@@ -196,7 +202,7 @@ func (s *Store) AddChatMember(ctx context.Context, chatID, userID string, maxMem
 		}
 
 		if count >= int64(maxMembers) {
-			return errors.New("too many members")
+			return ErrTooManyMembers
 		}
 
 		return tx.Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
@@ -210,11 +216,11 @@ func (s *Store) RemoveChatMember(ctx context.Context, chatID, userID string) err
 	}
 
 	if chat.Type != chatTypeGroup {
-		return errors.New("cannot remove members from non-group chat")
+		return ErrRemoveFromPrivate
 	}
 
 	if len(chat.Members) <= 1 {
-		return errors.New("cannot remove the last member")
+		return ErrRemoveLastMember
 	}
 
 	return s.db.WithContext(ctx).Where("chat_id = ? AND user_id = ?", chatID, userID).Delete(&ChatMember{}).Error
@@ -227,7 +233,7 @@ func (s *Store) findGroupChat(ctx context.Context, chatID string) (*model.Chat, 
 	}
 
 	if chat.Type != chatTypeGroup {
-		return nil, errors.New("not a group chat")
+		return nil, ErrNotGroupChat
 	}
 
 	return chat, nil
@@ -308,7 +314,7 @@ func (s *Store) DeleteChat(ctx context.Context, chatID string) error {
 	}
 
 	if chat.Type != chatTypeGroup {
-		return errors.New("cannot delete non-group chat")
+		return ErrDeleteNonGroup
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

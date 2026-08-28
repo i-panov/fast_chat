@@ -10,7 +10,7 @@ import (
 )
 
 func (h *Handler) CreateThread(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 	chatID := r.PathValue("id")

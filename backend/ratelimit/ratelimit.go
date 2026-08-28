@@ -31,28 +31,72 @@ type ClientIPExtractor struct {
 // IPs/CIDRs. An empty list means "trust no proxy headers". CIDRs are
 // parsed once here so the hot path does not re-parse them per request.
 func NewClientIPExtractor(trustedProxies []string) *ClientIPExtractor {
-	e := &ClientIPExtractor{
+	extractor := &ClientIPExtractor{
 		trustedIPs: make(map[string]struct{}, len(trustedProxies)),
 	}
 
-	for _, p := range trustedProxies {
-		p = strings.TrimSpace(p)
-		if p == "" {
+	for _, proxy := range trustedProxies {
+		proxy = strings.TrimSpace(proxy)
+		if proxy == "" {
 			continue
 		}
 
-		if strings.Contains(p, "/") {
-			if _, network, err := net.ParseCIDR(p); err == nil {
-				e.trustedCIDRs = append(e.trustedCIDRs, network)
+		if strings.Contains(proxy, "/") {
+			if _, network, err := net.ParseCIDR(proxy); err == nil {
+				extractor.trustedCIDRs = append(extractor.trustedCIDRs, network)
 			}
 
 			continue
 		}
 
-		e.trustedIPs[p] = struct{}{}
+		extractor.trustedIPs[proxy] = struct{}{}
 	}
 
-	return e
+	return extractor
+}
+
+// ClientIP returns the client IP, honouring X-Forwarded-For/X-Real-IP
+// only when the direct peer is a trusted proxy. Forwarded values that
+// are not valid IPs are ignored to avoid polluting the limiter map with
+// garbage keys.
+func (e *ClientIPExtractor) ClientIP(r *http.Request) string {
+	remoteIP := remoteHost(r.RemoteAddr)
+
+	if !e.isTrusted(remoteIP) {
+		return remoteIP
+	}
+
+	if forwarded, ok := forwardedClientIP(r); ok {
+		return forwarded
+	}
+
+	return remoteIP
+}
+
+// forwardedClientIP extracts the first valid client IP from the
+// X-Forwarded-For/X-Real-IP headers. Callers must only trust these
+// headers when the direct peer is a known proxy; invalid values are
+// ignored so garbage cannot pollute the limiter key space.
+func forwardedClientIP(r *http.Request) (string, bool) {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		first := fwd
+		if before, _, ok := strings.Cut(fwd, ","); ok {
+			first = before
+		}
+
+		first = strings.TrimSpace(first)
+		if net.ParseIP(first) != nil {
+			return first, true
+		}
+	}
+
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		if net.ParseIP(realIP) != nil {
+			return realIP, true
+		}
+	}
+
+	return "", false
 }
 
 func (e *ClientIPExtractor) isTrusted(ip string) bool {
@@ -76,36 +120,6 @@ func (e *ClientIPExtractor) isTrusted(ip string) bool {
 	}
 
 	return false
-}
-
-// ClientIP returns the client IP, honouring X-Forwarded-For/X-Real-IP
-// only when the direct peer is a trusted proxy. Forwarded values that
-// are not valid IPs are ignored to avoid polluting the limiter map with
-// garbage keys.
-func (e *ClientIPExtractor) ClientIP(r *http.Request) string {
-	remoteIP := remoteHost(r.RemoteAddr)
-
-	if e.isTrusted(remoteIP) {
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			first := fwd
-			if idx := strings.Index(fwd, ","); idx != -1 {
-				first = fwd[:idx]
-			}
-
-			first = strings.TrimSpace(first)
-			if net.ParseIP(first) != nil {
-				return first
-			}
-		}
-
-		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-			if net.ParseIP(realIP) != nil {
-				return realIP
-			}
-		}
-	}
-
-	return remoteIP
 }
 
 func remoteHost(remoteAddr string) string {

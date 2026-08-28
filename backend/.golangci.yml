@@ -21,6 +21,7 @@ linters:
     - contextcheck
     - nilerr
     - nilnil
+    - nilnesserr
     - prealloc
     - makezero
     - unconvert
@@ -29,6 +30,9 @@ linters:
     - perfsprint
     - gocognit
     - gocyclo
+    - cyclop
+    - funlen
+    - maintidx
     - dupl
     - goconst
     - gocritic
@@ -38,6 +42,8 @@ linters:
     - dupword
     - gosec
     - errname
+    - err113
+    - errorlint
     - exhaustive
     - forbidigo
     - iface
@@ -55,6 +61,36 @@ linters:
     - usestdlibvars
     - usetesting
     - whitespace
+    - unparam
+    - wastedassign
+    - durationcheck
+    - errchkjson
+    - canonicalheader
+    - dogsled
+    - grouper
+    - funcorder
+    - godot
+    - godoclint
+    - godox
+    - gocheckcompilerdirectives
+    - inamedparam
+    - iotamixing
+    - gomoddirectives
+    - goprintffuncname
+    - containedctx
+    - fatcontext
+    - asciicheck
+    - bidichk
+    - mirror
+    - modernize
+    - exptostd
+    - lll
+    - nosprintfhostport
+    - reassign
+    - sloglint
+    - testableexamples
+    - tparallel
+    - nolintlint
 
   settings:
     revive:
@@ -104,13 +140,28 @@ linters:
       min-complexity: 25
 
     gocognit:
-      min-complexity: 35
+      min-complexity: 40
+
+    cyclop:
+      max-complexity: 25
+      package-average: 0
+
+    funlen:
+      lines: 120
+      statements: 70
+
+    maintidx:
+      under: 20
 
     nestif:
-      min-complexity: 5
+      min-complexity: 8
 
     dupl:
       threshold: 100
+
+    lll:
+      line-length: 150
+      tab-width: 1
 
     varnamelen:
       max-distance: 5
@@ -125,6 +176,7 @@ linters:
         - r
         - ch
         - db
+        - fs
 
     nakedret:
       max-func-lines: 30
@@ -136,6 +188,10 @@ linters:
     errcheck:
       check-type-assertions: true
       check-blank: true
+
+    errorlint:
+      errorf: true
+      errorf-multi: true
 
     exhaustive:
       default-signifies-exhaustive: true
@@ -159,9 +215,6 @@ linters:
     interfacebloat:
       max: 10
 
-    intrange:
-      max: 5
-
     ireturn:
       allow:
         - anon
@@ -176,10 +229,12 @@ linters:
     testifylint:
       enable-all: true
 
-    usetesting:
-      os-specific:
-        os: false
-        exec: false
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+    errchkjson:
+      report-no-exported: true
 
   exclusions:
     rules:
@@ -212,6 +267,10 @@ linters:
           - goconst
           - funlen
           - cyclop
+          - unparam
+          - lll
+          - godox
+          - containedctx
         path: .*_test\.go
 
 formatters:

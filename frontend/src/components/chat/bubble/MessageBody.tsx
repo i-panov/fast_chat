@@ -38,7 +38,8 @@ export function MessageBody({
 
 	const editedLabel =
 		editedAt !== undefined
-			? `${t("message.edited")} ${new Date(editedAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}`
+			? // nosemgrep: missing-template-string-indicator // real interpolation, not a typo
+				`${t("message.edited")} ${new Date(editedAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}`
 			: null;
 
 	// Attachment-only messages (files/location) have no text, but the

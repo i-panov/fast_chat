@@ -8,6 +8,9 @@ import { useMessages } from "../../hooks/useMessages.ts";
 import type { FileInfo, Message } from "../../types/api.ts";
 import { MessageList } from "./MessageList.tsx";
 
+const MESSAGE_TEXT_REGEX = /old message|new message/;
+const TIME_REGEX = /\d{1,2}:\d{2}/;
+
 function renderMessageList(ui: ReactElement) {
 	return render(<MantineProvider>{ui}</MantineProvider>);
 }
@@ -107,7 +110,7 @@ function MessagesHarness() {
 	);
 }
 
-beforeEach(async () => {
+beforeEach(() => {
 	setActiveAccountKey("alice:test");
 });
 
@@ -124,7 +127,7 @@ describe("MessageList ordering", () => {
 
 		await screen.findByText("new message");
 
-		const rows = screen.getAllByText(/old message|new message/);
+		const rows = screen.getAllByText(MESSAGE_TEXT_REGEX);
 		expect(rows).toHaveLength(2);
 		expect(rows[0]).toHaveTextContent("old message");
 		expect(rows[1]).toHaveTextContent("new message");
@@ -145,7 +148,7 @@ describe("MessageList attachment-only messages", () => {
 
 		const bubble = document.querySelector('[data-message-id="file-msg"]');
 		expect(bubble).not.toBeNull();
-		expect(bubble?.textContent).toMatch(/\d{1,2}:\d{2}/);
+		expect(bubble?.textContent).toMatch(TIME_REGEX);
 	});
 });
 

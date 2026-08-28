@@ -29,13 +29,13 @@ export function usePendingFiles(): UsePendingFilesReturn {
 	// Очистка всех blobUrl при размонтировании
 	useEffect(() => {
 		return () => {
-			cleanupRef.current.forEach((url) => {
+			for (const url of cleanupRef.current) {
 				try {
 					URL.revokeObjectURL(url);
 				} catch {
 					/* ignore */
 				}
-			});
+			}
 			cleanupRef.current.clear();
 		};
 	}, []);

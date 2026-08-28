@@ -9,15 +9,15 @@ function getToken(): string | undefined {
 	try {
 		return sessionStorage.getItem("activeToken") ?? undefined;
 	} catch {
-		return undefined;
+		return;
 	}
 }
 
-export async function acquireFileBlobUrl(
+export function acquireFileBlobUrl(
 	fileUrl: string,
 	token?: string,
 ): Promise<string> {
-	if (fileUrl.startsWith("blob:")) return fileUrl;
+	if (fileUrl.startsWith("blob:")) return Promise.resolve(fileUrl);
 
 	const existing = inMemoryCache.get(fileUrl);
 	if (existing) {

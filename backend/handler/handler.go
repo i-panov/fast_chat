@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -159,13 +160,7 @@ func (h *Handler) enrichChatFromNicks(ctx context.Context, c *model.Chat, nicks 
 }
 
 func isMember(chat *model.Chat, userID string) bool {
-	for _, m := range chat.Members {
-		if m == userID {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(chat.Members, userID)
 }
 
 func isOwner(chat *model.Chat, userID string) bool {
@@ -210,6 +205,11 @@ func validCoords(lat, lng float64) bool {
 	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
 }
 
+var (
+	errInvalidLocation    = errors.New("invalid location")
+	errInvalidCoordinates = errors.New("invalid coordinates")
+)
+
 func parseLocationPatch(raw json.RawMessage) (*model.Location, bool, error) {
 	if len(raw) == 0 {
 		return nil, false, nil
@@ -222,11 +222,11 @@ func parseLocationPatch(raw json.RawMessage) (*model.Location, bool, error) {
 
 	var loc model.Location
 	if err := json.Unmarshal(raw, &loc); err != nil {
-		return nil, false, errors.New("invalid location")
+		return nil, false, errInvalidLocation
 	}
 
 	if !validCoords(loc.Lat, loc.Lng) {
-		return nil, false, errors.New("invalid coordinates")
+		return nil, false, errInvalidCoordinates
 	}
 
 	return &loc, false, nil

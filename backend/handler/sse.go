@@ -47,7 +47,7 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", h.cfg.CORS.Origin)
 
-	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"ok\"}\n\n") //nolint:errcheck
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"ok\"}\n\n") //nolint:errcheck // best-effort: failure is not actionable
 
 	flusher.Flush()
 
@@ -123,6 +123,9 @@ func sendSSE(w http.ResponseWriter, flusher http.Flusher, event string, data any
 		return
 	}
 
+	// SSE frames are JSON-encoded and consumed via fetch, not parsed as
+	// HTML, so raw Fprintf framing is the intended format (not XSS).
+	// nosemgrep: no-fprintf-to-responsewriter
 	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData); err != nil {
 		return
 	}

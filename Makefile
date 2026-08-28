@@ -24,6 +24,50 @@ frontend\:lint\:fix:
 frontend\:format:
 	cd frontend && npx biome format --write src/
 
+SEMGREP_RULES ?= $(HOME)/semgrep-rules
+SEMGREP_FLAGS = --metrics=off --config .semgrep/rules
+SEMGREP_SECRETS = --config $(SEMGREP_RULES)/generic/secrets
+
+analyze: analyze\:backend analyze\:frontend
+
+# Штатный анализ: курируемый набор (security + best-practice), почти без шума.
+analyze\:backend:
+	semgrep scan $(SEMGREP_FLAGS) $(SEMGREP_SECRETS) \
+		--config $(SEMGREP_RULES)/go/lang/security \
+		--config $(SEMGREP_RULES)/go/lang/best-practice \
+		--config $(SEMGREP_RULES)/go/gorm \
+		backend/
+
+analyze\:frontend:
+	semgrep scan $(SEMGREP_FLAGS) $(SEMGREP_SECRETS) \
+		--config $(SEMGREP_RULES)/typescript/react/security \
+		--config $(SEMGREP_RULES)/javascript/lang \
+		--config $(SEMGREP_RULES)/javascript/browser \
+		frontend/src/
+
+# Глубокий анализ: полные пакеты правил (шумнее, но покрывает всё).
+analyze\:deep: analyze\:deep\:backend analyze\:deep\:frontend
+
+analyze\:deep\:backend:
+	semgrep scan $(SEMGREP_FLAGS) $(SEMGREP_SECRETS) \
+		--config $(SEMGREP_RULES)/go \
+		backend/
+
+analyze\:deep\:frontend:
+	semgrep scan $(SEMGREP_FLAGS) $(SEMGREP_SECRETS) \
+		--config $(SEMGREP_RULES)/javascript \
+		--config $(SEMGREP_RULES)/typescript \
+		frontend/src/
+
+# Глубокий анализ CodeQL (periodic): создаёт базы в .codeql/, SARIF в .codeql/sarif/.
+codeql: codeql\:backend codeql\:frontend
+
+codeql\:backend:
+	scripts/codeql-go.sh
+
+codeql\:frontend:
+	scripts/codeql-js.sh
+
 lint:
 	make backend:lint
 	make frontend:lint

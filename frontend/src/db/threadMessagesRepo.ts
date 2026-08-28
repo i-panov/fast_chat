@@ -42,8 +42,8 @@ export const threadMessagesRepo = {
 	): Promise<StoredThreadMessage | undefined> {
 		const db = await getDB();
 		const existing = await db.get("threadMessages", messageId);
-		if (existing === undefined) return undefined;
-		if (existing.threadId !== threadId) return undefined;
+		if (existing === undefined) return;
+		if (existing.threadId !== threadId) return;
 		return existing;
 	},
 

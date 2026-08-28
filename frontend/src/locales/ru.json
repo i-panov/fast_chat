@@ -62,6 +62,7 @@
 	"login.sendCode": "Отправить код",
 	"login.code": "Код подтверждения",
 	"login.codeSent": "Код отправлен на {{email}}",
+	"login.debugCode": "Режим отладки: код {{code}}",
 	"login.verify": "Подтвердить",
 	"login.chooseNick": "Выберите никнейм",
 	"login.nick": "Никнейм",

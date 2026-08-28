@@ -107,7 +107,7 @@ export async function applyDelta(delta: SyncResponse): Promise<void> {
 	await metaRepo.setLastSyncedAt(delta.serverNow);
 }
 
-export async function pullDelta(
+export function pullDelta(
 	token: string,
 	since: string | null,
 ): Promise<SyncResponse> {

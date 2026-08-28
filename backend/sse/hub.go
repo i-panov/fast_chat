@@ -4,6 +4,7 @@ package sse
 import (
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 )
@@ -12,6 +13,8 @@ const (
 	HeartbeatInterval = 30 * time.Second
 	channelBuffer     = 128
 )
+
+var ErrConnectionNotFound = errors.New("connection not found")
 
 type Event struct {
 	Event string
@@ -66,30 +69,6 @@ func (h *Hub) Close() {
 		delete(h.connections, id)
 	}
 	h.userConns = make(map[string][]string)
-}
-
-func (h *Hub) cleanupLastTyping(cleanupInterval time.Duration) {
-	ticker := time.NewTicker(cleanupInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			cutoff := time.Now().Add(-cleanupInterval)
-
-			h.lastTyping.Range(func(k, v any) bool {
-				ts, ok := v.(time.Time)
-				if !ok || ts.Before(cutoff) {
-					h.lastTyping.Delete(k)
-				}
-
-				return true
-			})
-
-		case <-h.closeCh:
-			return
-		}
-	}
 }
 
 func (h *Hub) LoadLastTyping(key string) (any, bool) {
@@ -171,7 +150,7 @@ func (h *Hub) Authenticate(connectionID, userID, token string, expiresAt time.Ti
 
 	conn, ok := h.connections[connectionID]
 	if !ok {
-		return errors.New("connection not found")
+		return ErrConnectionNotFound
 	}
 
 	conn.mu.Lock()
@@ -184,10 +163,8 @@ func (h *Hub) Authenticate(connectionID, userID, token string, expiresAt time.Ti
 
 	// Avoid duplicate entries if sseAuth is replayed for the same
 	// connection (e.g. a retried auth request).
-	for _, existing := range h.userConns[userID] {
-		if existing == connectionID {
-			return nil
-		}
+	if slices.Contains(h.userConns[userID], connectionID) {
+		return nil
 	}
 
 	h.userConns[userID] = append(h.userConns[userID], connectionID)
@@ -218,6 +195,30 @@ func (h *Hub) Send(userID string, event Event) {
 		case conn.Channel <- event:
 		default:
 			slog.Info("SSE channel full, dropping event", "userID", userID)
+		}
+	}
+}
+
+func (h *Hub) cleanupLastTyping(cleanupInterval time.Duration) {
+	ticker := time.NewTicker(cleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			cutoff := time.Now().Add(-cleanupInterval)
+
+			h.lastTyping.Range(func(k, v any) bool {
+				ts, ok := v.(time.Time)
+				if !ok || ts.Before(cutoff) {
+					h.lastTyping.Delete(k)
+				}
+
+				return true
+			})
+
+		case <-h.closeCh:
+			return
 		}
 	}
 }

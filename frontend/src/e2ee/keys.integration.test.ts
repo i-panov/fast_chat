@@ -17,21 +17,21 @@ let failGetKeyBackupWith: Error | null = null;
 let uploadCount = 0;
 
 vi.mock("../api.ts", () => ({
-	uploadPublicKey: vi.fn(async () => {
+	uploadPublicKey: vi.fn(() => {
 		uploadCount += 1;
 	}),
-	getPublicKey: vi.fn(async () => ({ publicKey: "x", keyVersion: "v" })),
-	getKeyBackup: vi.fn(async () => {
+	getPublicKey: vi.fn(() => ({ publicKey: "x", keyVersion: "v" })),
+	getKeyBackup: vi.fn(() => {
 		if (failGetKeyBackupWith !== null) throw failGetKeyBackupWith;
 		if (backupOnServer === null) {
 			throw new Error("http 404: no key backup");
 		}
 		return { backup: backupOnServer as string };
 	}),
-	setKeyBackup: vi.fn(async (_token: string, backup: string) => {
+	setKeyBackup: vi.fn((_token: string, backup: string) => {
 		backupOnServer = backup;
 	}),
-	deleteKeyBackup: vi.fn(async () => {
+	deleteKeyBackup: vi.fn(() => {
 		backupOnServer = null;
 	}),
 }));

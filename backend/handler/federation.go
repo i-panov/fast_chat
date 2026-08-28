@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,8 @@ import (
 	"fast_chat/sse"
 	"fast_chat/store"
 )
+
+var errFederatedStatus = errors.New("federated request returned unexpected status")
 
 func isValidRemoteDomain(domain string) bool {
 	if domain == "localhost" || domain == "localhost." {
@@ -123,10 +126,10 @@ func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string,
 			}
 
 			if readErr != nil {
-				return nil, fmt.Errorf("federated request returned %d", resp.StatusCode)
+				return nil, fmt.Errorf("%w: %d", errFederatedStatus, resp.StatusCode)
 			}
 
-			return nil, fmt.Errorf("federated request returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+			return nil, fmt.Errorf("%w: %d: %s", errFederatedStatus, resp.StatusCode, strings.TrimSpace(string(respBody)))
 		}
 
 		resp.Body = http.MaxBytesReader(nil, resp.Body, 10<<20)
@@ -151,38 +154,40 @@ func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string,
 // Отправка выполняется в фоне: федеративные запросы имеют собственные
 // ретраи и таймауты, и синхронное ожидание заставило бы клиента ждать
 // ответа на каждое сообщение при недоступном удалённом сервере.
-func (h *Handler) sendFedPost(remoteServer, path string, body any) {
+func (h *Handler) sendFedPost(ctx context.Context, remoteServer, path string, body any) {
 	if remoteServer == "" {
 		return
 	}
 
-	h.doFedRequestBackground(remoteServer, path, http.MethodPost, body)
+	h.doFedRequestBackground(ctx, remoteServer, path, http.MethodPost, body)
 }
 
 // sendFedPatch отправляет PATCH-запрос на удалённый сервер федерации.
-func (h *Handler) sendFedPatch(remoteServer, path string, body any) {
+func (h *Handler) sendFedPatch(ctx context.Context, remoteServer, path string, body any) {
 	if remoteServer == "" {
 		return
 	}
 
-	h.doFedRequestBackground(remoteServer, path, http.MethodPatch, body)
+	h.doFedRequestBackground(ctx, remoteServer, path, http.MethodPatch, body)
 }
 
 // sendFedDelete отправляет DELETE-запрос на удалённый сервер федерации.
-func (h *Handler) sendFedDelete(remoteServer, path string) {
+func (h *Handler) sendFedDelete(ctx context.Context, remoteServer, path string) {
 	if remoteServer == "" {
 		return
 	}
 
-	h.doFedRequestBackground(remoteServer, path, http.MethodDelete, nil)
+	h.doFedRequestBackground(ctx, remoteServer, path, http.MethodDelete, nil)
 }
 
 // doFedRequestBackground выполняет федеративный запрос в фоне с
-// собственным контекстом и таймаутом, не привязанным к жизненному
-// циклу исходного HTTP-запроса. Семафор ограничивает число
+// собственным таймаутом, не привязанным к жизненному циклу исходного
+// HTTP-запроса. Значения (trace и пр.) из исходного контекста
+// сохраняются через context.WithoutCancel, но отмена запроса не
+// прерывает уже начатые ретраи. Семафор ограничивает число
 // одновременных фоновых запросов, а recover() не даёт панике в
 // горутине уронить процесс.
-func (h *Handler) doFedRequestBackground(remoteServer, path, method string, body any) {
+func (h *Handler) doFedRequestBackground(ctx context.Context, remoteServer, path, method string, body any) {
 	select {
 	case h.fedSem <- struct{}{}:
 	default:
@@ -201,7 +206,8 @@ func (h *Handler) doFedRequestBackground(remoteServer, path, method string, body
 			}
 		}()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		baseCtx := context.WithoutCancel(ctx)
+		ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
 		defer cancel()
 
 		_, err := h.doFederatedRequest(ctx, method, h.federatedURL(remoteServer, path), body)
@@ -278,7 +284,7 @@ func (h *Handler) FederatedSearchUsers(w http.ResponseWriter, r *http.Request) {
 
 // FederatedCreateChat creates a chat on behalf of a remote server.
 func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	var req struct {
 		ChatID       string   `json:"chatId"`
@@ -336,7 +342,7 @@ func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
 
 // FederatedSendMessage handles incoming messages from remote servers.
 func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	chatID := r.PathValue("id")
 
@@ -441,7 +447,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 
 // FederatedEditMessage handles incoming message edits from remote servers.
 func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	chatID := r.PathValue("id")
 	messageID := r.PathValue("messageId")
@@ -484,64 +490,18 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Text             string          `json:"text"`
-		FileIDs          []string        `json:"fileIDs,omitempty"`
-		Location         json.RawMessage `json:"location"`
-		Encrypted        *bool           `json:"encrypted"`
-		EncryptedPayload *string         `json:"encryptedPayload"`
-	}
-
-	if err := h.decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
-		return
-	}
-
-	encrypted := req.Encrypted != nil && *req.Encrypted
-	payload := ""
-	if req.EncryptedPayload != nil {
-		payload = *req.EncryptedPayload
-	}
-
-	// Patch semantics: when the edit does not carry encryption fields,
-	// keep the stored values so broadcast/response stay consistent with
-	// what EditRawMessage left in the store.
-	if req.Encrypted == nil {
-		encrypted = stored.Encrypted
-	}
-	if req.EncryptedPayload == nil {
-		payload = stored.EncryptedPayload
-	}
-
-	// Validate only what the remote server sent. Store fallbacks were
-	// accepted when the message was created, so legacy payloads must
-	// not block a text/location edit from an older server.
-	if req.Encrypted != nil || req.EncryptedPayload != nil {
-		if err := validateEncryptedPayload(encrypted, payload); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-
-	location, clearLocation, locErr := parseLocationPatch(req.Location)
-	if locErr != nil {
-		writeError(w, http.StatusBadRequest, locErr.Error())
-		return
-	}
-
-	req.Text = strings.TrimSpace(req.Text)
-	maxLen := maxMessageLen
-	if encrypted {
-		maxLen = encryptedMaxLen
-	}
-	if utf8.RuneCountInString(req.Text) > maxLen {
-		writeError(w, http.StatusBadRequest, "message too long")
+	edit, errMsg := h.parseEditPayload(r, stored.Encrypted, stored.EncryptedPayload)
+	if errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 
 	now := time.Now()
 
-	if err := h.store.EditRawMessage(r.Context(), lookupID, messageID, req.Text, now, location, clearLocation, req.Encrypted, req.EncryptedPayload); err != nil {
+	if err := h.store.EditRawMessage(
+		r.Context(), lookupID, messageID, edit.text, now,
+		edit.location, edit.clearLocation, edit.encryptedPtr, edit.encryptedPayloadPtr,
+	); err != nil {
 		slog.Error("federated edit message failed", "err", err)
 		writeError(w, http.StatusNotFound, errKeyMsgNotFound)
 		return
@@ -552,31 +512,31 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		ChatID:           chatID,
 		FromID:           stored.FromID,
 		FromNick:         stored.FromNick,
-		Text:             req.Text,
-		Encrypted:        encrypted,
-		EncryptedPayload: payload,
+		Text:             edit.text,
+		Encrypted:        edit.encrypted,
+		EncryptedPayload: edit.encryptedPayload,
 		CreatedAt:        stored.CreatedAt,
 		EditedAt:         &now,
 	}
 
-	if req.FileIDs != nil {
-		validIDs := getValidFileIDs(r.Context(), h.store, req.FileIDs)
+	if edit.fileIDs != nil {
+		validIDs := getValidFileIDs(r.Context(), h.store, edit.fileIDs)
 
 		if len(validIDs) > 0 {
 			if err := h.store.SetMessageFiles(r.Context(), messageID, validIDs); err != nil {
 				logger.Info("federated edit: failed to set message files", "err", err)
 			}
 
-			files, _ := h.store.GetMessageFiles(r.Context(), messageID) //nolint:errcheck
+			files, _ := h.store.GetMessageFiles(r.Context(), messageID) //nolint:errcheck // best-effort: failure is not actionable
 			updated.Files = files
 		}
 	}
 
-	if len(req.Location) > 0 {
-		if clearLocation {
+	if len(edit.rawLocation) > 0 {
+		if edit.clearLocation {
 			updated.Location = nil
 		} else {
-			updated.Location = location
+			updated.Location = edit.location
 		}
 	} else if stored, gerr := h.store.GetMessage(r.Context(), lookupID, messageID); gerr == nil {
 		updated.Location = stored.Location

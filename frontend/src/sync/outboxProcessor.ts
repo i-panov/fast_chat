@@ -5,6 +5,8 @@ import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import type { OutboxOp, OutboxOpEdit, OutboxOpSend } from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 
+const RETRY_AFTER_REGEX = /retry-after:(.+)/;
+
 export async function processOutbox(token: string): Promise<void> {
 	const ops = await outboxRepo.list();
 
@@ -31,7 +33,7 @@ export async function processOutbox(token: string): Promise<void> {
 
 export function extractRetryAfterMs(err: unknown): number | null {
 	if (!(err instanceof Error)) return null;
-	const match = /retry-after:(.+)/.exec(err.message);
+	const match = RETRY_AFTER_REGEX.exec(err.message);
 	if (match === null) return null;
 
 	const raw = match[1].trim();

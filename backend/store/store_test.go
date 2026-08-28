@@ -419,7 +419,7 @@ func TestGetMessagesPaginated(t *testing.T) {
 	createTestUser(t, s, "bob")
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", fmt.Sprintf("msg-%d", i), "", "", nil, false, "")
 	}
 
@@ -434,7 +434,7 @@ func TestGetMessagesPaginated(t *testing.T) {
 		t.Error("expected hasMore=true for first page")
 	}
 
-	msgs, next, hasMore = s.GetMessagesPaginated(context.Background(), chat.ID, 10, next)
+	msgs, _, hasMore = s.GetMessagesPaginated(context.Background(), chat.ID, 10, next)
 	if len(msgs) != 6 {
 		t.Errorf("expected 6 messages (remaining), got %d", len(msgs))
 	}
@@ -1034,7 +1034,7 @@ func TestGetMessageValue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	msg1.Text = "modified" //nolint:goconst // test value
+	msg1.Text = "modified"
 	if msg2.Text == "modified" {
 		t.Error("GetMessage should return a copy, modifications to one should not affect the other")
 	}

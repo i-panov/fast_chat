@@ -28,16 +28,18 @@ export function LoginPage() {
 	const [setupToken, setSetupToken] = useState("");
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(false);
+	const [debugCode, setDebugCode] = useState<string | null>(null);
 
 	async function handleSendCode() {
 		const trimmed = email.trim().toLowerCase();
 		if (trimmed.length === 0) return;
 		setLoading(true);
 		setError("");
+		setDebugCode(null);
 		try {
 			const result = await sendCode(trimmed);
-			if (result.debugCode) {
-				console.log("Debug code:", result.debugCode);
+			if (result.debugCode !== undefined) {
+				setDebugCode(result.debugCode);
 			}
 			setStep("code");
 		} catch (err) {
@@ -54,7 +56,10 @@ export function LoginPage() {
 		setError("");
 		try {
 			const result = await verifyCode(email.trim().toLowerCase(), trimmed);
-			if (!result.isNew) {
+			if (result.isNew) {
+				setSetupToken(result.setupToken);
+				setStep("nick");
+			} else {
 				addAccount(
 					result.token,
 					result.user,
@@ -62,9 +67,6 @@ export function LoginPage() {
 					result.expiresAt,
 				);
 				navigate({ to: "/chat" });
-			} else {
-				setSetupToken(result.setupToken);
-				setStep("nick");
 			}
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t("error.verifyCode"));
@@ -145,6 +147,11 @@ export function LoginPage() {
 							<Text size="sm" c="dimmed" ta="center">
 								{t("login.codeSent", { email: email.trim().toLowerCase() })}
 							</Text>
+							{debugCode !== null && (
+								<Text size="sm" c="orange" ta="center">
+									{t("login.debugCode", { code: debugCode })}
+								</Text>
+							)}
 							<TextInput
 								placeholder={t("login.code")}
 								maxLength={6}

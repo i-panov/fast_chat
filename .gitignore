@@ -17,3 +17,4 @@ backend/data/
 backend/uploads/
 KODA.md
 backend/bin/
+.codeql/

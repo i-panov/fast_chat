@@ -59,13 +59,13 @@ type Location struct {
 }
 
 type File struct {
-	ID           string    `gorm:"primaryKey;not null"  json:"id"`
-	Hash         string    `gorm:"not null"             json:"hash"`
-	MimeType     string    `gorm:"not null"             json:"mimeType"`
-	Size         int64     `gorm:"not null"             json:"size"`
-	OriginalName string    `gorm:"not null"             json:"originalName"`
-	StoragePath  string    `gorm:"not null"             json:"-"`
-	CreatedAt    time.Time `gorm:"not null"             json:"createdAt"`
+	ID           string    `gorm:"primaryKey;not null" json:"id"`
+	Hash         string    `gorm:"not null"            json:"hash"`
+	MimeType     string    `gorm:"not null"            json:"mimeType"`
+	Size         int64     `gorm:"not null"            json:"size"`
+	OriginalName string    `gorm:"not null"            json:"originalName"`
+	StoragePath  string    `gorm:"not null"            json:"-"`
+	CreatedAt    time.Time `gorm:"not null"            json:"createdAt"`
 }
 
 type MessageFile struct {
@@ -103,19 +103,19 @@ func (f *File) ToFileInfo() FileInfo {
 }
 
 type Message struct {
-	ID               string       `gorm:"primaryKey"         json:"id"`
-	ChatID           string       `gorm:"index;not null"     json:"chatId"`
-	FromID           string       `gorm:"not null"           json:"fromId"`
-	FromNick         string       `gorm:"not null"           json:"fromNick"`
-	Text             string       `gorm:"not null"           json:"text"`
+	ID               string       `gorm:"primaryKey"             json:"id"`
+	ChatID           string       `gorm:"index;not null"         json:"chatId"`
+	FromID           string       `gorm:"not null"               json:"fromId"`
+	FromNick         string       `gorm:"not null"               json:"fromNick"`
+	Text             string       `gorm:"not null"               json:"text"`
 	Encrypted        bool         `gorm:"not null;default:false" json:"encrypted"`
 	EncryptedPayload string       `gorm:"not null;default:''"    json:"encryptedPayload"`
-	CreatedAt        time.Time    `gorm:"not null;default:0" json:"createdAt"`
-	UpdatedAt        time.Time    `gorm:"not null;default:0" json:"-"`
+	CreatedAt        time.Time    `gorm:"not null;default:0"     json:"createdAt"`
+	UpdatedAt        time.Time    `gorm:"not null;default:0"     json:"-"`
 	EditedAt         *time.Time   `json:"editedAt,omitempty"`
-	ReplyTo          *ReplyToInfo `gorm:"serializer:json"    json:"replyTo,omitempty"`
-	Location         *Location    `gorm:"serializer:json"    json:"location,omitempty"`
-	Files            []FileInfo   `gorm:"-"                  json:"files,omitempty"`
+	ReplyTo          *ReplyToInfo `gorm:"serializer:json"        json:"replyTo,omitempty"`
+	Location         *Location    `gorm:"serializer:json"        json:"location,omitempty"`
+	Files            []FileInfo   `gorm:"-"                      json:"files,omitempty"`
 }
 
 type DeletedMessage struct {
@@ -134,7 +134,7 @@ type PushSubscription struct {
 	ID        string    `gorm:"primaryKey"           json:"id"`
 	UserID    string    `gorm:"index;not null"       json:"userId"`
 	Endpoint  string    `gorm:"uniqueIndex;not null" json:"endpoint"`
-	P256DH    string    `gorm:"not null"             json:"p256dh"` //nolint:tagliatelle
+	P256DH    string    `gorm:"not null"             json:"p256dh"` //nolint:tagliatelle // field names fixed by the Web Push protocol
 	Auth      string    `gorm:"not null"             json:"auth"`
 	CreatedAt time.Time `gorm:"not null"             json:"createdAt"`
 }

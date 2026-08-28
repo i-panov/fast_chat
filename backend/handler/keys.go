@@ -14,6 +14,8 @@ import (
 // crypto_box_PUBLICKEYBYTES).
 const publicKeyLen = 32
 
+var errInvalidPublicKey = errors.New("invalid public key")
+
 // decodePublicKey accepts any common base64 variant. The frontend
 // encodes keys with libsodium, whose default is URLSAFE_NO_PADDING
 // ("-" and "_" instead of "+" and "/", no padding); accept the standard
@@ -33,7 +35,7 @@ func decodePublicKey(s string) ([]byte, error) {
 		}
 	}
 
-	return nil, errors.New("invalid public key")
+	return nil, errInvalidPublicKey
 }
 
 // keyVersionFor derives a short fingerprint from the public key so
@@ -46,7 +48,7 @@ func keyVersionFor(publicKey string) string {
 // UpdatePublicKey stores the authenticated user's E2E X25519 public key
 // (base64). Private keys never leave the client.
 func (h *Handler) UpdatePublicKey(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 
@@ -132,7 +134,7 @@ const maxKeyBackupLen = 4 << 10
 // SetKeyBackup stores the authenticated user's client-encrypted private
 // key backup. The server treats it as opaque data; it cannot decrypt it.
 func (h *Handler) SetKeyBackup(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 

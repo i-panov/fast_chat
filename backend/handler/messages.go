@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -16,6 +16,17 @@ import (
 	"fast_chat/sse"
 )
 
+var (
+	errMissingEncryptedPayload   = errors.New("missing encrypted payload")
+	errEncryptedPayloadTooLarge  = errors.New("encrypted payload too large")
+	errInvalidEncryptedPayload   = errors.New("invalid encrypted payload JSON")
+	errUnsupportedPayloadVersion = errors.New("unsupported encrypted payload version")
+	errInvalidNonce              = errors.New("invalid nonce")
+	errMissingEnvelopes          = errors.New("missing envelopes")
+	errEmptyKeyID                = errors.New("empty keyId in envelope")
+	errInvalidBox                = errors.New("invalid box in envelope")
+)
+
 const (
 	defaultMessagesLimit = 30
 	maxMessagesLimit     = 100
@@ -23,8 +34,8 @@ const (
 	// E2E ciphertext is base64 of (plaintext + 16-byte tag); a generous
 	// cap so server-side validation still rejects absurd payloads while
 	// the plaintext length is enforced client-side before encryption.
-	encryptedMaxLen = 100000
-	maxMessageFiles = 10
+	encryptedMaxLen  = 100000
+	maxMessageFiles  = 10
 	maxReadByMembers = 100
 
 	// maxEncryptedPayloadLen is the maximum size of encryptedPayload JSON.
@@ -46,15 +57,15 @@ func validateEncryptedPayload(encrypted bool, payload string) error {
 	}
 
 	if payload == "" {
-		return fmt.Errorf("missing encrypted payload")
+		return errMissingEncryptedPayload
 	}
 
 	if len(payload) > maxEncryptedPayloadLen {
-		return fmt.Errorf("encrypted payload too large")
+		return errEncryptedPayloadTooLarge
 	}
 
 	var data struct {
-		V         int `json:"v"`
+		V         int    `json:"v"`
 		Nonce     string `json:"nonce"`
 		Envelopes []struct {
 			KeyID string `json:"keyId"`
@@ -63,33 +74,33 @@ func validateEncryptedPayload(encrypted bool, payload string) error {
 	}
 
 	if err := json.Unmarshal([]byte(payload), &data); err != nil {
-		return fmt.Errorf("invalid encrypted payload JSON")
+		return errInvalidEncryptedPayload
 	}
 
 	if data.V != 1 {
-		return fmt.Errorf("unsupported encrypted payload version")
+		return errUnsupportedPayloadVersion
 	}
 
 	// XChaCha20 nonce is exactly 24 bytes (libsodium
 	// crypto_aead_xchacha20poly1305_ietf_NPUBBYTES).
 	nonceRaw, err := base64.StdEncoding.DecodeString(data.Nonce)
 	if err != nil || len(nonceRaw) != xchachaNonceLen {
-		return fmt.Errorf("invalid nonce")
+		return errInvalidNonce
 	}
 
 	if len(data.Envelopes) == 0 {
-		return fmt.Errorf("missing envelopes")
+		return errMissingEnvelopes
 	}
 
 	// Sealed boxes are 48 bytes: 32-byte ephemeral key + 16-byte MAC
 	// (crypto_box_SEALBYTES + crypto_box_PUBLICKEYBYTES).
 	for _, e := range data.Envelopes {
 		if e.KeyID == "" {
-			return fmt.Errorf("empty keyId in envelope")
+			return errEmptyKeyID
 		}
 		boxRaw, err := base64.StdEncoding.DecodeString(e.Box)
 		if err != nil || len(boxRaw) != sealedBoxLen {
-			return fmt.Errorf("invalid box in envelope")
+			return errInvalidBox
 		}
 	}
 
@@ -100,6 +111,92 @@ type messageWithStatus struct {
 	model.Message
 	DeliveryStatus string   `json:"deliveryStatus,omitempty"`
 	ReadBy         []string `json:"readBy,omitempty"`
+}
+
+// editPayload holds the resolved fields of a message edit request after
+// parseEditPayload has applied the patch semantics and validation.
+type editPayload struct {
+	text                string
+	fileIDs             []string
+	rawLocation         json.RawMessage
+	location            *model.Location
+	clearLocation       bool
+	encrypted           bool
+	encryptedPayload    string
+	encryptedPtr        *bool
+	encryptedPayloadPtr *string
+}
+
+// parseEditPayload decodes an edit request and resolves the effective
+// encryption fields, keeping the stored values when the client omitted
+// them (old clients, location-only edits). The raw request pointers are
+// preserved so the store's patch semantics can distinguish "not sent"
+// from "explicit value". The returned error message is safe to surface.
+func (h *Handler) parseEditPayload(r *http.Request, storedEncrypted bool, storedPayload string) (*editPayload, string) {
+	var req struct {
+		Text             string          `json:"text"`
+		FileIDs          []string        `json:"fileIDs,omitempty"`
+		Location         json.RawMessage `json:"location"`
+		Encrypted        *bool           `json:"encrypted"`
+		EncryptedPayload *string         `json:"encryptedPayload"`
+	}
+
+	if err := h.decodeJSON(r, &req); err != nil {
+		return nil, errKeyInvalidBody
+	}
+
+	encrypted := req.Encrypted != nil && *req.Encrypted
+	payload := ""
+	if req.EncryptedPayload != nil {
+		payload = *req.EncryptedPayload
+	}
+
+	if req.Encrypted == nil {
+		encrypted = storedEncrypted
+	}
+	if req.EncryptedPayload == nil {
+		payload = storedPayload
+	}
+
+	// Validate only what the client sent. Fallbacks from the store were
+	// already accepted when the message was created, so legacy values
+	// must not block edits of the text/location.
+	if req.Encrypted != nil || req.EncryptedPayload != nil {
+		if err := validateEncryptedPayload(encrypted, payload); err != nil {
+			return nil, err.Error()
+		}
+	}
+
+	location, clearLocation, locErr := parseLocationPatch(req.Location)
+	if locErr != nil {
+		return nil, locErr.Error()
+	}
+
+	text := strings.TrimSpace(req.Text)
+
+	maxLen := maxMessageLen
+	if encrypted {
+		maxLen = encryptedMaxLen
+	}
+	if utf8.RuneCountInString(text) > maxLen {
+		return nil, "message too long"
+	}
+
+	if len(req.FileIDs) > maxMessageFiles {
+		return nil, "too many files"
+	}
+
+	return &editPayload{
+		text:                text,
+		fileIDs:             req.FileIDs,
+		rawLocation:         req.Location,
+		location:            location,
+		clearLocation:       clearLocation,
+		encrypted:           encrypted,
+		encryptedPayload:    payload,
+		encryptedPtr:        req.Encrypted,
+		encryptedPayloadPtr: req.EncryptedPayload,
+	}, ""
 }
 
 func (h *Handler) enrichOwnMessage(
@@ -123,7 +220,14 @@ func (h *Handler) enrichOwnMessage(
 	return result
 }
 
-func (h *Handler) enrichMessagesWithStatuses(ctx context.Context, messages []model.Message, chat *model.Chat, userID string, missingIDs []string) []messageWithStatus {
+func (h *Handler) enrichMessagesWithStatuses(
+	ctx context.Context,
+	messages []model.Message,
+	chat *model.Chat,
+	userID string,
+	missingIDs []string,
+) []messageWithStatus {
+
 	if len(messages) == 0 {
 		return nil
 	}
@@ -155,13 +259,13 @@ func (h *Handler) enrichMessagesWithStatuses(ctx context.Context, messages []mod
 		}
 	}
 
-	readStatuses, _ := h.store.GetMessageReadStatusesBatch(ctx, statusIDs, userID)    //nolint:errcheck
-	deliveryStatuses, _ := h.store.GetMessageDeliveryStatuses(ctx, statusIDs, userID) //nolint:errcheck
+	readStatuses, _ := h.store.GetMessageReadStatusesBatch(ctx, statusIDs, userID)    //nolint:errcheck // best-effort: failure is not actionable
+	deliveryStatuses, _ := h.store.GetMessageDeliveryStatuses(ctx, statusIDs, userID) //nolint:errcheck // best-effort: failure is not actionable
 
 	showReadBy := len(chat.Members) <= maxReadByMembers
 	var readersByMsg map[string][]string
 	if showReadBy {
-		readersByMsg, _ = h.store.GetMessageReadStatusesForSender(ctx, statusIDs, userID) //nolint:errcheck
+		readersByMsg, _ = h.store.GetMessageReadStatusesForSender(ctx, statusIDs, userID) //nolint:errcheck // best-effort: failure is not actionable
 	}
 
 	result := make([]messageWithStatus, len(messages))
@@ -218,7 +322,7 @@ func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetMessagesWithStatuses(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 	chatID := r.PathValue("id")
@@ -265,7 +369,7 @@ func (h *Handler) GetMessagesWithStatuses(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 	chatID := r.PathValue("id")
@@ -337,7 +441,10 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	msg, err := h.store.AddMessage(r.Context(), chatID, threadID, user.ID, user.Nick, req.Text, req.ID, req.ReplyToID, req.Location, req.Encrypted, req.EncryptedPayload)
+	msg, err := h.store.AddMessage(
+		r.Context(), chatID, threadID, user.ID, user.Nick, req.Text,
+		req.ID, req.ReplyToID, req.Location, req.Encrypted, req.EncryptedPayload,
+	)
 	if err != nil {
 		slog.Error("failed to send message", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -349,35 +456,12 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 			logger.Info("failed to link files to message", "err", err)
 		}
 
-		files, _ := h.store.GetMessageFiles(r.Context(), msg.ID) //nolint:errcheck
+		files, _ := h.store.GetMessageFiles(r.Context(), msg.ID) //nolint:errcheck // best-effort: failure is not actionable
 		msg.Files = files
 	}
 
-	if threadID != "" {
-		eventData := map[string]any{
-			"threadId": threadID,
-			"message":  msg,
-		}
-
-		for _, memberID := range chat.Members {
-			h.hub.Send(memberID, sse.Event{Event: "thread_message_new", Data: eventData})
-
-			if memberID != user.ID {
-				// Mark as delivered for other members (ignore errors - best effort)
-				_ = h.store.MarkMessagesDelivered(r.Context(), []string{msg.ID}, memberID) //nolint:errcheck
-				// Notify sender about delivery
-				h.hub.Send(user.ID, sse.Event{
-					Event: "message_delivered",
-					Data: map[string]any{
-						"messageId": msg.ID,
-						"chatId":    chatID,
-					},
-				})
-				h.sendPushForMessage(r.Context(), chatID, msg, threadID, memberID)
-			}
-		}
-	} else {
-		h.sendFedPost(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages", map[string]any{
+	if threadID == "" {
+		h.sendFedPost(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages", map[string]any{
 			"id":               msg.ID,
 			"fromId":           msg.FromID,
 			"fromNick":         msg.FromNick,
@@ -387,31 +471,54 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 			"encrypted":        msg.Encrypted,
 			"encryptedPayload": msg.EncryptedPayload,
 		})
-
-		for _, memberID := range chat.Members {
-			h.hub.Send(memberID, sse.Event{Event: "new_message", Data: msg})
-
-			if memberID != user.ID {
-				// Mark as delivered for other members (ignore errors - best effort)
-				_ = h.store.MarkMessagesDelivered(r.Context(), []string{msg.ID}, memberID) //nolint:errcheck
-				// Notify sender about delivery
-				h.hub.Send(user.ID, sse.Event{
-					Event: "message_delivered",
-					Data: map[string]any{
-						"messageId": msg.ID,
-						"chatId":    chatID,
-					},
-				})
-				h.sendPushForMessage(r.Context(), chatID, msg, "", memberID)
-			}
-		}
 	}
+
+	eventName := "new_message"
+	eventData := map[string]any{"message": msg}
+	if threadID != "" {
+		eventName = "thread_message_new"
+		eventData = map[string]any{"threadId": threadID, "message": msg}
+	}
+
+	h.notifyMessageSent(r, chat, msg, threadID, chatID, user.ID, eventName, eventData)
 
 	WriteJSON(w, http.StatusCreated, map[string]any{"message": msg})
 }
 
+// notifyMessageSent broadcasts a new message to all chat members and
+// pushes it to remote devices. Delivery tracking is best-effort.
+func (h *Handler) notifyMessageSent(
+	r *http.Request,
+	chat *model.Chat,
+	msg *model.Message,
+	threadID, chatID, senderID string,
+	eventName string,
+	eventData map[string]any,
+) {
+
+	for _, memberID := range chat.Members {
+		h.hub.Send(memberID, sse.Event{Event: eventName, Data: eventData})
+
+		if memberID == senderID {
+			continue
+		}
+
+		// Mark as delivered for other members (ignore errors - best effort)
+		_ = h.store.MarkMessagesDelivered(r.Context(), []string{msg.ID}, memberID) //nolint:errcheck // best-effort: failure is not actionable
+		// Notify sender about delivery
+		h.hub.Send(senderID, sse.Event{
+			Event: "message_delivered",
+			Data: map[string]any{
+				"messageId": msg.ID,
+				"chatId":    chatID,
+			},
+		})
+		h.sendPushForMessage(r.Context(), chatID, msg, threadID, memberID)
+	}
+}
+
 func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 	chatID := r.PathValue("id")
@@ -462,97 +569,45 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Text             string          `json:"text"`
-		FileIDs          []string        `json:"fileIDs,omitempty"`
-		Location         json.RawMessage `json:"location"`
-		Encrypted        *bool           `json:"encrypted"`
-		EncryptedPayload *string         `json:"encryptedPayload"`
-	}
-
-	if err := h.decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
+	edit, errMsg := h.parseEditPayload(r, msg.Encrypted, msg.EncryptedPayload)
+	if errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 
-	encrypted := req.Encrypted != nil && *req.Encrypted
-	payload := ""
-	if req.EncryptedPayload != nil {
-		payload = *req.EncryptedPayload
-	}
+	hasLocation := edit.location != nil
 
-	// Patch semantics: keep the stored encryption fields when the edit
-	// does not carry them (old clients, location-only edits).
-	if req.Encrypted == nil {
-		encrypted = msg.Encrypted
-	}
-	if req.EncryptedPayload == nil {
-		payload = msg.EncryptedPayload
-	}
-
-	// Validate only what the client sent. Fallbacks from the store were
-	// already accepted when the message was created, so legacy values
-	// must not block edits of the text/location.
-	if req.Encrypted != nil || req.EncryptedPayload != nil {
-		if err := validateEncryptedPayload(encrypted, payload); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-
-	location, clearLocation, locErr := parseLocationPatch(req.Location)
-	if locErr != nil {
-		writeError(w, http.StatusBadRequest, locErr.Error())
-		return
-	}
-
-	req.Text = strings.TrimSpace(req.Text)
-
-	hasLocation := location != nil
-
-	if req.Text == "" && len(req.FileIDs) == 0 && !hasLocation && !clearLocation {
+	if edit.text == "" && len(edit.fileIDs) == 0 && !hasLocation && !edit.clearLocation {
 		writeError(w, http.StatusBadRequest, errKeyEmptyMessage)
 		return
 	}
 
-	maxLen := maxMessageLen
-	if encrypted {
-		maxLen = encryptedMaxLen
-	}
-
-	if utf8.RuneCountInString(req.Text) > maxLen {
-		writeError(w, http.StatusBadRequest, "message too long")
-		return
-	}
-
-	if len(req.FileIDs) > maxMessageFiles {
-		writeError(w, http.StatusBadRequest, "too many files")
-		return
-	}
-
-	updated, err := h.store.EditMessage(r.Context(), chatID, threadID, messageID, user.ID, req.Text, location, clearLocation, req.Encrypted, req.EncryptedPayload)
+	updated, err := h.store.EditMessage(
+		r.Context(), chatID, threadID, messageID, user.ID, edit.text,
+		edit.location, edit.clearLocation, edit.encryptedPtr, edit.encryptedPayloadPtr,
+	)
 	if err != nil {
 		slog.Error("failed to edit message", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	if req.FileIDs != nil {
-		if err := h.store.SetMessageFiles(r.Context(), messageID, req.FileIDs); err != nil {
+	if edit.fileIDs != nil {
+		if err := h.store.SetMessageFiles(r.Context(), messageID, edit.fileIDs); err != nil {
 			logger.Info("failed to set message files", "err", err)
 		}
 
-		files, _ := h.store.GetMessageFiles(r.Context(), messageID) //nolint:errcheck
+		files, _ := h.store.GetMessageFiles(r.Context(), messageID) //nolint:errcheck // best-effort: failure is not actionable
 		updated.Files = files
 	}
 
 	if threadID != "" {
-		h.sendFedPatch(chat.RemoteServer, "/api/federated/chats/"+chatID+"/threads/"+threadID+"/messages/"+messageID, map[string]any{
-			"text":             req.Text,
-			"fileIDs":          req.FileIDs,
-			"location":         req.Location,
-			"encrypted":        encrypted,
-			"encryptedPayload": payload,
+		h.sendFedPatch(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/threads/"+threadID+"/messages/"+messageID, map[string]any{
+			"text":             edit.text,
+			"fileIDs":          edit.fileIDs,
+			"location":         edit.rawLocation,
+			"encrypted":        edit.encrypted,
+			"encryptedPayload": edit.encryptedPayload,
 		})
 
 		eventData := map[string]any{
@@ -564,12 +619,12 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 			h.hub.Send(memberID, sse.Event{Event: "thread_message_updated", Data: eventData})
 		}
 	} else {
-		h.sendFedPatch(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID, map[string]any{
-			"text":             req.Text,
-			"fileIDs":          req.FileIDs,
-			"location":         req.Location,
-			"encrypted":        encrypted,
-			"encryptedPayload": payload,
+		h.sendFedPatch(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID, map[string]any{
+			"text":             edit.text,
+			"fileIDs":          edit.fileIDs,
+			"location":         edit.rawLocation,
+			"encrypted":        edit.encrypted,
+			"encryptedPayload": edit.encryptedPayload,
 		})
 
 		for _, memberID := range chat.Members {
@@ -617,7 +672,7 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendFedDelete(chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
+	h.sendFedDelete(r.Context(), chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID)
 
 	for _, memberID := range chat.Members {
 		h.hub.Send(memberID, sse.Event{Event: "message_deleted", Data: map[string]string{"chatId": chatID, "messageId": messageID}})
@@ -627,7 +682,7 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) MarkMessagesRead(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 

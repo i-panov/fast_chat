@@ -14,7 +14,7 @@ function msg(id: string, createdAt: string, text: string): Message {
 	};
 }
 
-beforeEach(async () => {
+beforeEach(() => {
 	setActiveAccountKey("alice:test");
 });
 

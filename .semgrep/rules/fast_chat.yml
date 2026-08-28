@@ -1,0 +1,33 @@
+rules:
+  - id: fast-chat-inline-http-client
+    languages: [go]
+    message: >
+      Inline http.Client created without the project's SSRF-safe dialer.
+      Outgoing requests must go through federation.NewSafeHTTPClient, which
+      refuses loopback/private/link-local/multicast addresses. If the
+      endpoint set is strictly allowlisted (e.g. WebPush), annotate with
+      // nosemgrep: fast-chat-inline-http-client and explain why.
+    severity: WARNING
+    patterns:
+      - pattern-either:
+          - pattern: http.Client{}
+          - pattern: "&http.Client{...}"
+          - pattern: http.DefaultClient
+      - pattern-not-inside: |
+          func NewSafeHTTPClient($T time.Duration) *http.Client {
+            ...
+          }
+
+  - id: fast-chat-no-dynamic-code
+    languages: [javascript, typescript]
+    message: >
+      Dynamic code evaluation is an XSS / prototype-pollution vector.
+      Avoid eval/new Function/document.write/innerHTML in app code.
+    severity: WARNING
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function($X)
+          - pattern: document.write($X)
+          - pattern: $X.innerHTML = $Y
+          - pattern: "<$C dangerouslySetInnerHTML={$X} />"

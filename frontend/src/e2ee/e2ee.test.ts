@@ -9,7 +9,7 @@ import {
 	encryptMessageText,
 } from "./message.ts";
 
-async function keyPair(): Promise<KeyPair> {
+function keyPair(): Promise<KeyPair> {
 	return generateKeyPair();
 }
 

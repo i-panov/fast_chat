@@ -144,7 +144,7 @@ export function useMediaUrl(
 			await new Promise<void>((resolve, reject) => {
 				ms.addEventListener(
 					"sourceopen",
-					async () => {
+					() => {
 						if (cancelledRef.current) {
 							resolve();
 							return;

@@ -65,11 +65,87 @@ func rateLimitMiddleware(rl *ratelimit.RateLimiter, ipExtractor *ratelimit.Clien
 	}
 }
 
-func maxBody(limit int64, next http.HandlerFunc) http.HandlerFunc {
+const maxBodySize = 1 << 20
+
+func maxBody(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		next(w, r)
 	}
+}
+
+// registerRoutes wires all HTTP handlers onto the mux. The per-route rate
+// limiters are created here so main() can close them on shutdown.
+func registerRoutes(
+	mux *http.ServeMux,
+	handlers *handler.Handler,
+	fedManager *federation.Manager,
+	ipExtractor *ratelimit.ClientIPExtractor,
+	sendCodeRL, verifyCodeRL, registerRL, sseAuthRL *ratelimit.RateLimiter,
+) {
+
+	mux.HandleFunc("GET /api/config", handlers.GetConfig)
+
+	// Auth routes (no auth middleware, rate limited)
+	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL, ipExtractor)(maxBody(handlers.SendCode)))
+	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL, ipExtractor)(maxBody(handlers.VerifyCode)))
+	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL, ipExtractor)(maxBody(handlers.CompleteRegistration)))
+
+	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL, ipExtractor)(maxBody(handlers.SSEAuth)))
+	mux.HandleFunc("POST /api/auth/refresh-token", maxBody(handlers.AuthMiddleware(handlers.RefreshToken)))
+
+	// SSE endpoint (no auth middleware — auth happens via SSEAuth)
+	mux.HandleFunc("GET /api/events", handlers.SSE)
+
+	// Push endpoints
+	mux.HandleFunc("GET /api/push/vapid-public-key", handlers.VapidPublicKey)
+	mux.HandleFunc("POST /api/push/subscribe", maxBody(handlers.AuthMiddleware(handlers.SubscribePush)))
+	mux.HandleFunc("DELETE /api/push/subscribe", maxBody(handlers.AuthMiddleware(handlers.UnsubscribePush)))
+
+	mux.HandleFunc("GET /api/users/search", handlers.AuthMiddleware(handlers.SearchUsers))
+	mux.HandleFunc("PUT /api/users/public-key", maxBody(handlers.AuthMiddleware(handlers.UpdatePublicKey)))
+	mux.HandleFunc("GET /api/users/{userId}/public-key", handlers.AuthMiddleware(handlers.GetUserPublicKey))
+	mux.HandleFunc("PUT /api/users/key-backup", maxBody(handlers.AuthMiddleware(handlers.SetKeyBackup)))
+	mux.HandleFunc("GET /api/users/key-backup", handlers.AuthMiddleware(handlers.GetKeyBackup))
+	mux.HandleFunc("DELETE /api/users/key-backup", handlers.AuthMiddleware(handlers.DeleteKeyBackup))
+	mux.HandleFunc("GET /api/chats", handlers.AuthMiddleware(handlers.GetChats))
+	mux.HandleFunc("GET /api/sync", handlers.AuthMiddleware(handlers.Sync))
+	mux.HandleFunc("POST /api/chats", maxBody(handlers.AuthMiddleware(handlers.CreateChat)))
+	mux.HandleFunc("GET /api/chats/{id}", handlers.AuthMiddleware(handlers.GetChat))
+	mux.HandleFunc("PATCH /api/chats/{id}", maxBody(handlers.AuthMiddleware(handlers.UpdateChat)))
+	mux.HandleFunc("DELETE /api/chats/{id}", handlers.AuthMiddleware(handlers.DeleteChat))
+	mux.HandleFunc("POST /api/chats/{id}/members", maxBody(handlers.AuthMiddleware(handlers.AddChatMember)))
+	mux.HandleFunc("DELETE /api/chats/{id}/members/{userId}", handlers.AuthMiddleware(handlers.RemoveChatMember))
+	mux.HandleFunc("POST /api/chats/{id}/avatar", maxBody(handlers.AuthMiddleware(handlers.UpdateChatAvatar)))
+	mux.HandleFunc("GET /api/chats/{id}/messages", handlers.AuthMiddleware(handlers.GetMessages))
+	mux.HandleFunc("POST /api/chats/{id}/messages/query", maxBody(handlers.AuthMiddleware(handlers.GetMessagesWithStatuses)))
+	mux.HandleFunc("POST /api/chats/{id}/messages", maxBody(handlers.AuthMiddleware(handlers.SendMessage)))
+	mux.HandleFunc("PATCH /api/chats/{id}/messages/{messageId}", maxBody(handlers.AuthMiddleware(handlers.EditMessage)))
+	mux.HandleFunc("DELETE /api/chats/{id}/messages/{messageId}", handlers.AuthMiddleware(handlers.DeleteMessage))
+	mux.HandleFunc("POST /api/messages/read", maxBody(handlers.AuthMiddleware(handlers.MarkMessagesRead)))
+	mux.HandleFunc("POST /api/chats/{id}/messages/{messageId}/thread", maxBody(handlers.AuthMiddleware(handlers.CreateThread)))
+	mux.HandleFunc("GET /api/chats/{id}/threads", handlers.AuthMiddleware(handlers.GetThreads))
+	mux.HandleFunc("GET /api/chats/{id}/threads/{threadId}/messages", handlers.AuthMiddleware(handlers.GetThreadMessages))
+	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", maxBody(handlers.AuthMiddleware(handlers.SendMessage)))
+	mux.HandleFunc("PATCH /api/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(handlers.AuthMiddleware(handlers.EditMessage)))
+	mux.HandleFunc("POST /api/files/upload", handlers.AuthMiddleware(handlers.UploadFile))
+	mux.HandleFunc("GET /api/files/{fileId}", handlers.AuthMiddleware(handlers.ServeFile))
+	mux.HandleFunc("POST /api/chats/{id}/typing", maxBody(handlers.AuthMiddleware(handlers.HandleTyping)))
+
+	// Federated endpoints (server-to-server, with federated auth)
+	fedAuth := handlers.FederatedAuthMiddleware
+	mux.HandleFunc("GET /api/federated/users/search", fedAuth(handlers.FederatedSearchUsers))
+	mux.HandleFunc("GET /api/federated/users/{userId}/public-key", fedAuth(handlers.FederatedGetUserPublicKey))
+	mux.HandleFunc("POST /api/federated/chats", maxBody(fedAuth(handlers.FederatedCreateChat)))
+	mux.HandleFunc("POST /api/federated/chats/{id}/messages", maxBody(fedAuth(handlers.FederatedSendMessage)))
+	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", maxBody(fedAuth(handlers.FederatedEditMessage)))
+	mux.HandleFunc("PATCH /api/federated/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(fedAuth(handlers.FederatedEditMessage)))
+	mux.HandleFunc("DELETE /api/federated/chats/{id}/messages/{messageId}", fedAuth(handlers.FederatedDeleteMessage))
+	mux.HandleFunc("POST /api/federated/chats/{id}/typing", maxBody(fedAuth(handlers.FederatedHandleTyping)))
+	mux.HandleFunc("GET /api/federated/sync", fedAuth(handlers.FederatedSync))
+
+	// Well-known endpoint (no auth, public key for federation)
+	mux.HandleFunc("GET /.well-known/fast-chat", fedManager.WellKnownHandler)
 }
 
 var (
@@ -84,7 +160,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Fprintf(os.Stdout, "fastchat %s (commit %s)\n", version, commit) //nolint:errcheck
+		fmt.Fprintf(os.Stdout, "fastchat %s (commit %s)\n", version, commit) //nolint:errcheck // best-effort: failure is not actionable
 		os.Exit(0)
 	}
 
@@ -158,75 +234,13 @@ func main() {
 
 	ipExtractor := ratelimit.NewClientIPExtractor(cfg.Server.TrustedProxies)
 
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /api/config", handlerInstance.GetConfig)
-
-	// Auth routes (no auth middleware, rate limited)
 	sendCodeRL := ratelimit.New(cfg.RateLimits.SendCode.Limit, cfg.RateLimits.SendCode.Window, 10000)
 	verifyCodeRL := ratelimit.New(cfg.RateLimits.VerifyCode.Limit, cfg.RateLimits.VerifyCode.Window, 10000)
 	registerRL := ratelimit.New(cfg.RateLimits.Register.Limit, cfg.RateLimits.Register.Window, 10000)
-
-	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL, ipExtractor)(maxBody(1<<20, handlerInstance.SendCode)))
-	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL, ipExtractor)(maxBody(1<<20, handlerInstance.VerifyCode)))
-	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL, ipExtractor)(maxBody(1<<20, handlerInstance.CompleteRegistration)))
-
 	sseAuthRL := ratelimit.New(60, time.Minute, 10000)
-	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL, ipExtractor)(maxBody(1<<20, handlerInstance.SSEAuth)))
-	mux.HandleFunc("POST /api/auth/refresh-token", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.RefreshToken)))
 
-	// SSE endpoint (no auth middleware — auth happens via SSEAuth)
-	mux.HandleFunc("GET /api/events", handlerInstance.SSE)
-
-	// Push endpoints
-	mux.HandleFunc("GET /api/push/vapid-public-key", handlerInstance.VapidPublicKey)
-	mux.HandleFunc("POST /api/push/subscribe", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.SubscribePush)))
-	mux.HandleFunc("DELETE /api/push/subscribe", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.UnsubscribePush)))
-
-	mux.HandleFunc("GET /api/users/search", handlerInstance.AuthMiddleware(handlerInstance.SearchUsers))
-	mux.HandleFunc("PUT /api/users/public-key", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.UpdatePublicKey)))
-	mux.HandleFunc("GET /api/users/{userId}/public-key", handlerInstance.AuthMiddleware(handlerInstance.GetUserPublicKey))
-	mux.HandleFunc("PUT /api/users/key-backup", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.SetKeyBackup)))
-	mux.HandleFunc("GET /api/users/key-backup", handlerInstance.AuthMiddleware(handlerInstance.GetKeyBackup))
-	mux.HandleFunc("DELETE /api/users/key-backup", handlerInstance.AuthMiddleware(handlerInstance.DeleteKeyBackup))
-	mux.HandleFunc("GET /api/chats", handlerInstance.AuthMiddleware(handlerInstance.GetChats))
-	mux.HandleFunc("GET /api/sync", handlerInstance.AuthMiddleware(handlerInstance.Sync))
-	mux.HandleFunc("POST /api/chats", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.CreateChat)))
-	mux.HandleFunc("GET /api/chats/{id}", handlerInstance.AuthMiddleware(handlerInstance.GetChat))
-	mux.HandleFunc("PATCH /api/chats/{id}", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.UpdateChat)))
-	mux.HandleFunc("DELETE /api/chats/{id}", handlerInstance.AuthMiddleware(handlerInstance.DeleteChat))
-	mux.HandleFunc("POST /api/chats/{id}/members", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.AddChatMember)))
-	mux.HandleFunc("DELETE /api/chats/{id}/members/{userId}", handlerInstance.AuthMiddleware(handlerInstance.RemoveChatMember))
-	mux.HandleFunc("POST /api/chats/{id}/avatar", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.UpdateChatAvatar)))
-	mux.HandleFunc("GET /api/chats/{id}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetMessages))
-	mux.HandleFunc("POST /api/chats/{id}/messages/query", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.GetMessagesWithStatuses)))
-	mux.HandleFunc("POST /api/chats/{id}/messages", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.SendMessage)))
-	mux.HandleFunc("PATCH /api/chats/{id}/messages/{messageId}", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.EditMessage)))
-	mux.HandleFunc("DELETE /api/chats/{id}/messages/{messageId}", handlerInstance.AuthMiddleware(handlerInstance.DeleteMessage))
-	mux.HandleFunc("POST /api/messages/read", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.MarkMessagesRead)))
-	mux.HandleFunc("POST /api/chats/{id}/messages/{messageId}/thread", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.CreateThread)))
-	mux.HandleFunc("GET /api/chats/{id}/threads", handlerInstance.AuthMiddleware(handlerInstance.GetThreads))
-	mux.HandleFunc("GET /api/chats/{id}/threads/{threadId}/messages", handlerInstance.AuthMiddleware(handlerInstance.GetThreadMessages))
-	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.SendMessage)))
-	mux.HandleFunc("PATCH /api/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.EditMessage)))
-	mux.HandleFunc("POST /api/files/upload", handlerInstance.AuthMiddleware(handlerInstance.UploadFile))
-	mux.HandleFunc("GET /api/files/{fileId}", handlerInstance.AuthMiddleware(handlerInstance.ServeFile))
-	mux.HandleFunc("POST /api/chats/{id}/typing", maxBody(1<<20, handlerInstance.AuthMiddleware(handlerInstance.HandleTyping)))
-
-	// Federated endpoints (server-to-server, with federated auth)
-	fedAuth := handlerInstance.FederatedAuthMiddleware
-	mux.HandleFunc("GET /api/federated/users/search", fedAuth(handlerInstance.FederatedSearchUsers))
-	mux.HandleFunc("GET /api/federated/users/{userId}/public-key", fedAuth(handlerInstance.FederatedGetUserPublicKey))
-	mux.HandleFunc("POST /api/federated/chats", maxBody(1<<20, fedAuth(handlerInstance.FederatedCreateChat)))
-	mux.HandleFunc("POST /api/federated/chats/{id}/messages", maxBody(1<<20, fedAuth(handlerInstance.FederatedSendMessage)))
-	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", maxBody(1<<20, fedAuth(handlerInstance.FederatedEditMessage)))
-	mux.HandleFunc("PATCH /api/federated/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(1<<20, fedAuth(handlerInstance.FederatedEditMessage)))
-	mux.HandleFunc("DELETE /api/federated/chats/{id}/messages/{messageId}", fedAuth(handlerInstance.FederatedDeleteMessage))
-	mux.HandleFunc("POST /api/federated/chats/{id}/typing", maxBody(1<<20, fedAuth(handlerInstance.FederatedHandleTyping)))
-	mux.HandleFunc("GET /api/federated/sync", fedAuth(handlerInstance.FederatedSync))
-
-	// Well-known endpoint (no auth, public key for federation)
-	mux.HandleFunc("GET /.well-known/fast-chat", fedManager.WellKnownHandler)
+	mux := http.NewServeMux()
+	registerRoutes(mux, handlerInstance, fedManager, ipExtractor, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
 
 	// Static file serving for production frontend build
 	absStaticDir := resolveStaticDir(cfg.Server.StaticDir)
@@ -236,19 +250,38 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           securityHeadersMiddleware(corsMiddleware(cfg.CORS.Origin)(rateLimitMiddleware(generalRL, ipExtractor)(spaFallbackMiddleware(absStaticDir)(mux)))),
+		Addr: addr,
+		Handler: securityHeadersMiddleware(
+			corsMiddleware(cfg.CORS.Origin)(
+				rateLimitMiddleware(generalRL, ipExtractor)(
+					spaFallbackMiddleware(absStaticDir)(mux),
+				),
+			),
+		),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
 	}
 
+	runServer(server, fedManager, handlerInstance, st, generalRL, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
+}
+
+// runServer blocks until SIGINT/SIGTERM, then drains in-flight handlers
+// and background federation requests before tearing everything down.
+func runServer(
+	server *http.Server,
+	fedManager *federation.Manager,
+	handlerInstance *handler.Handler,
+	st *store.Store,
+	generalRL, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL *ratelimit.RateLimiter,
+) {
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		slog.Info("server starting", "addr", addr)
+		slog.Info("server starting", "addr", server.Addr)
 
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server error", "err", err)

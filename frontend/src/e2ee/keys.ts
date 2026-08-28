@@ -191,9 +191,7 @@ export async function getMyKeyPair(): Promise<KeyPair | null> {
 // generation) for an account is guarded, so concurrent calls share one
 // in-flight operation. The server backup is queried and the recovery event
 // is emitted at most once per racing burst.
-export async function ensureAccountKeys(
-	token: string | undefined,
-): Promise<KeyPair> {
+export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 	const scope = accountScope();
 	const inFlight = inFlightByAccount.get(scope);
 	if (inFlight !== undefined) {

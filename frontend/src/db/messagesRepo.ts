@@ -30,8 +30,8 @@ export const messagesRepo = {
 	): Promise<StoredMessage | undefined> {
 		const db = await getDB();
 		const existing = await db.get("messages", messageId);
-		if (existing === undefined) return undefined;
-		if (existing.chatId !== chatId) return undefined;
+		if (existing === undefined) return;
+		if (existing.chatId !== chatId) return;
 		return existing;
 	},
 

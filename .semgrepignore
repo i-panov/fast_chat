@@ -1,0 +1,17 @@
+**/node_modules/**
+**/dist/**
+**/dev-dist/**
+**/*.tsbuildinfo
+**/*.tsbuildinfo.*
+**/routeTree.gen.ts
+**/vitest.setup.ts
+**/*_test.go
+**/*_test.ts
+**/*_test.tsx
+**/*.test.ts
+**/*.test.tsx
+backend/data/**
+backend/uploads/**
+backend/keys/**
+frontend/public/**
+frontend/index.html

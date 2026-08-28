@@ -64,13 +64,13 @@ func (h *Handler) VapidPublicKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) SubscribePush(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 
 	var req struct {
 		Endpoint string `json:"endpoint"`
-		P256DH   string `json:"p256dh"` //nolint:tagliatelle
+		P256DH   string `json:"p256dh"` //nolint:tagliatelle // field names fixed by the Web Push protocol
 		Auth     string `json:"auth"`
 	}
 
@@ -119,7 +119,7 @@ func isValidPushEndpoint(endpoint string) bool {
 }
 
 func (h *Handler) UnsubscribePush(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 

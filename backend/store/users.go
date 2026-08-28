@@ -15,6 +15,7 @@ import (
 var (
 	ErrNicknameTaken = errors.New("nickname already taken")
 	ErrEmailTaken    = errors.New("email already taken")
+	ErrUserNotFound  = errors.New("user not found")
 )
 
 func GenerateID() string {
@@ -36,14 +37,14 @@ func hashToken(token string) string {
 
 // escapeLike escapes LIKE wildcards so user input cannot turn a search
 // into a wildcard match (e.g. "%" matching every user).
-func escapeLike(s string) string {
+func escapeLike(value string) string {
 	r := strings.NewReplacer(
 		`\`, `\\`,
 		`%`, `\%`,
 		`_`, `\_`,
 	)
 
-	return r.Replace(s)
+	return r.Replace(value)
 }
 
 func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string, tokenExpiry time.Duration) (*model.User, error) {
@@ -151,7 +152,7 @@ func (s *Store) DeleteKeyBackup(ctx context.Context, userID string) error {
 func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry time.Duration) (*model.User, error) {
 	user, ok := s.GetUserByID(ctx, userID)
 	if !ok {
-		return nil, errors.New("user not found")
+		return nil, ErrUserNotFound
 	}
 
 	token := GenerateID()
@@ -188,9 +189,10 @@ func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) map[string]stri
 	return out
 }
 
-// NOTE: LIKE '%...%' prevents index usage in SQLite. Acceptable for
-// the expected user base (<10K users). If performance becomes an issue,
-// add a FTS5 virtual table and migrate SearchUsers to MATCH.
+// SearchUsers returns users whose nick contains the query (case-insensitive),
+// excluding excludeID. NOTE: LIKE '%...%' prevents index usage in SQLite.
+// Acceptable for the expected user base (<10K users). If performance becomes
+// an issue, add a FTS5 virtual table and migrate SearchUsers to MATCH.
 func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []model.PublicUser {
 	q := escapeLike(strings.ToLower(query))
 
@@ -205,9 +207,9 @@ func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []mode
 	defer s.onlineMu.RUnlock()
 
 	out := make([]model.PublicUser, 0, len(users))
-	for _, u := range users {
-		_, online := s.online[u.ID]
-		out = append(out, model.PublicUser{ID: u.ID, Nick: u.Nick, Online: online})
+	for i := range users {
+		_, online := s.online[users[i].ID]
+		out = append(out, model.PublicUser{ID: users[i].ID, Nick: users[i].Nick, Online: online})
 	}
 
 	return out

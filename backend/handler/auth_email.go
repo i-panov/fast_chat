@@ -2,10 +2,12 @@ package handler
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
 	"net/mail"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,7 +16,7 @@ import (
 )
 
 func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	var req struct {
 		Email string `json:"email"`
@@ -32,14 +34,7 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(h.cfg.Email.AllowedEmails) > 0 {
-		allowed := false
-
-		for _, ae := range h.cfg.Email.AllowedEmails {
-			if req.Email == ae {
-				allowed = true
-				break
-			}
-		}
+		allowed := slices.Contains(h.cfg.Email.AllowedEmails, req.Email)
 
 		if !allowed {
 			writeError(w, http.StatusForbidden, "email not allowed")
@@ -74,7 +69,7 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	var req struct {
 		Email string `json:"email"`
@@ -123,7 +118,7 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CompleteRegistration(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	var req struct {
 		SetupToken string `json:"setupToken"`
@@ -154,12 +149,12 @@ func (h *Handler) CompleteRegistration(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.store.CreateUser(r.Context(), email, req.Nick, h.cfg.Server.Domain, h.cfg.Auth.TokenExpiry)
 	if err != nil {
-		if err == store.ErrNicknameTaken {
+		if errors.Is(err, store.ErrNicknameTaken) {
 			writeError(w, http.StatusConflict, "nickname already taken")
 			return
 		}
 
-		if err == store.ErrEmailTaken {
+		if errors.Is(err, store.ErrEmailTaken) {
 			writeError(w, http.StatusConflict, "email already registered")
 			return
 		}
@@ -202,7 +197,7 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) SSEAuth(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	var req struct {
 		ConnectionID string `json:"connectionId"`

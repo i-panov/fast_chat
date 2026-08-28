@@ -296,7 +296,7 @@ func TestUploadFileCreatesFileOnDisk(t *testing.T) {
 		t.Errorf("expected file on disk at %s: %v", full, err)
 	}
 
-	got, err := os.ReadFile(full) //nolint:gosec // controlled path
+	got, err := os.ReadFile(full)
 	if err != nil {
 		t.Fatal(err)
 	}

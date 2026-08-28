@@ -14,8 +14,8 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	query := r.URL.Query().Get("q")
 
-	if idx := strings.Index(query, ":"); idx != -1 {
-		h.searchFederated(w, r, query[:idx], query[idx+1:])
+	if before, after, ok := strings.Cut(query, ":"); ok {
+		h.searchFederated(w, r, before, after)
 
 		return
 	}
@@ -76,8 +76,8 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 	// Strip trailing ":domain" from ID for display purposes.
 	for idx := range result.Users {
 		nick := result.Users[idx].ID
-		if sep := strings.Index(nick, ":"); sep != -1 {
-			result.Users[idx].Nick = nick[:sep]
+		if before, _, ok := strings.Cut(nick, ":"); ok {
+			result.Users[idx].Nick = before
 		}
 	}
 

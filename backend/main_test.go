@@ -94,13 +94,9 @@ func TestRateLimiterConcurrent(t *testing.T) {
 	allowed := make(chan bool, 200)
 
 	for range 200 {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			allowed <- rl.Allow("shared")
-		}()
+		})
 	}
 
 	wg.Wait()

@@ -12,8 +12,8 @@
 			"**/vite.config.ts",
 			"**/postcss.config.mjs",
 			"!!**/routeTree.gen.ts",
-			"!!**/node_modules/**",
-			"!!**/dist/**"
+			"!!**/node_modules",
+			"!!**/dist"
 		]
 	},
 	"formatter": {
@@ -34,20 +34,59 @@
 					"options": {
 						"max": 7
 					}
-				}
+				},
+				"noForEach": "error",
+				"useOptionalChain": "error",
+				"useLiteralKeys": "error",
+				"noUselessTernary": "error",
+				"noUselessUndefined": "error",
+				"useDateNow": "error",
+				"useFlatMap": "error"
 			},
 			"suspicious": {
-				"noEmptyBlockStatements": "off"
+				"noEmptyBlockStatements": "off",
+				"noExplicitAny": "error",
+				"noImplicitAnyLet": "error",
+				"noEvolvingTypes": "error",
+				"noConfusingVoidType": "error",
+				"noConsole": {
+					"level": "error",
+					"options": {
+						"allow": ["error", "warn"]
+					}
+				},
+				"noCommentText": "error",
+				"noArrayIndexKey": "error",
+				"useAwait": "error",
+				"noUnusedExpressions": "error"
 			},
 			"correctness": {
-				"noUnresolvedImports": "off"
+				"noUnresolvedImports": "off",
+				"useExhaustiveDependencies": "error",
+				"noUnusedFunctionParameters": "error",
+				"useJsxKeyInIterable": "error",
+				"noUndeclaredDependencies": "error"
 			},
 			"performance": {
-				"useSolidForComponent": "off"
+				"useSolidForComponent": "off",
+				"noAccumulatingSpread": "error",
+				"useTopLevelRegex": "error"
 			},
 			"security": "error",
 			"style": {
-				"noJsxLiterals": "off"
+				"noJsxLiterals": "off",
+				"noNonNullAssertion": "error",
+				"noParameterAssign": "error",
+				"useConst": "error",
+				"useImportType": "error",
+				"useExportType": "error",
+				"useTemplate": "error",
+				"noUselessElse": "error",
+				"useThrowNewError": "error",
+				"useThrowOnlyError": "error",
+				"noSubstr": "error",
+				"useShorthandAssign": "error",
+				"noNegationElse": "error"
 			},
 			"a11y": "error"
 		}

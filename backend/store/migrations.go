@@ -17,13 +17,13 @@ func migrateLegacyTokens(db *gorm.DB) error {
 		return err
 	}
 
-	for _, u := range users {
-		if len(u.Token) == 64 {
+	for idx := range users {
+		if len(users[idx].Token) == 64 {
 			continue
 		}
 
-		if err := db.Model(&model.User{}).Where("id = ?", u.ID).
-			Update("token", hashToken(u.Token)).Error; err != nil {
+		if err := db.Model(&model.User{}).Where("id = ?", users[idx].ID).
+			Update("token", hashToken(users[idx].Token)).Error; err != nil {
 			return err
 		}
 	}

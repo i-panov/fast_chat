@@ -178,9 +178,9 @@ func TestKeyBackupRejectsInvalid(t *testing.T) {
 	alice := registerTestUser(t, h, "alice", "alice@test.local")
 
 	for name, body := range map[string]string{
-		"empty":     `{"backup":""}`,
+		"empty":      `{"backup":""}`,
 		"not base64": `{"backup":"!!not-b64!!"}`,
-		"too large": `{"backup":"` + strings.Repeat("A", maxKeyBackupLen+1) + `"}`,
+		"too large":  `{"backup":"` + strings.Repeat("A", maxKeyBackupLen+1) + `"}`,
 	} {
 		req := authReq(http.MethodPut, "/api/users/key-backup", alice.token, body)
 		w := httptest.NewRecorder()

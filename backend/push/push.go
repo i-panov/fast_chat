@@ -40,8 +40,12 @@ func NewService(subject, keysDir string, onExpired func(endpoint string)) (*Serv
 	slog.Info("VAPID keys loaded", "public_key", keys.PublicKey)
 
 	return &Service{
-		vapidKeys:  keys,
-		subject:    subject,
+		vapidKeys: keys,
+		subject:   subject,
+		// Endpoints are validated against a strict allowlist of push
+		// services (handler.isValidPushEndpoint), so a safe dialer is
+		// not required here.
+		// nosemgrep: fast-chat-inline-http-client
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		onExpired:  onExpired,
 	}, nil
@@ -70,7 +74,10 @@ func (s *Service) SendToUser(payload []byte, subscriptions []model.PushSubscript
 	}
 }
 
-var errSubscriptionExpired = errors.New("subscription expired")
+var (
+	errSubscriptionExpired = errors.New("subscription expired")
+	errPushService         = errors.New("push service returned an error")
+)
 
 func (s *Service) sendOne(payload []byte, endpoint, p256dh, auth string) error {
 	sub := &webpush.Subscription{
@@ -102,7 +109,7 @@ func (s *Service) sendOne(payload []byte, endpoint, p256dh, auth string) error {
 	}
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("push service returned %d", resp.StatusCode)
+		return fmt.Errorf("%w: %d", errPushService, resp.StatusCode)
 	}
 
 	return nil
@@ -134,7 +141,7 @@ func loadOrGenerateVAPIDKeys(keysDir string) (VAPIDKeys, error) {
 		return VAPIDKeys{}, err
 	}
 
-	data, err := json.MarshalIndent(keys, "", "  ") //nolint:gosec
+	data, err := json.MarshalIndent(keys, "", "  ") //nolint:gosec // VAPID key export must match the web-push JSON format
 	if err != nil {
 		return VAPIDKeys{}, err
 	}

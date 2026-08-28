@@ -30,7 +30,7 @@ func (h *Handler) GetChats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 
@@ -84,7 +84,7 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	enriched := h.enrichChat(r.Context(), chat)
 	h.hub.Send(user.ID, sse.Event{Event: "chat_created", Data: enriched})
 
-	h.sendFedPost(remoteServer, "/api/federated/chats", map[string]any{
+	h.sendFedPost(r.Context(), remoteServer, "/api/federated/chats", map[string]any{
 		"chatId":       chat.ID,
 		"members":      chat.Members,
 		"remoteServer": h.cfg.Server.Domain,
@@ -169,7 +169,7 @@ func (h *Handler) GetChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 	chatID := r.PathValue("id")
@@ -238,7 +238,7 @@ func (h *Handler) DeleteChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AddChatMember(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 	chatID := r.PathValue("id")
@@ -341,7 +341,7 @@ func (h *Handler) RemoveChatMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateChatAvatar(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck
+	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
 
 	user := getUser(r)
 	chatID := r.PathValue("id")
