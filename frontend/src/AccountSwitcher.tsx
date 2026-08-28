@@ -12,6 +12,9 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getConfig } from "./api.ts";
+import { BackupSettingsModal } from "./components/chat/BackupSettingsModal.tsx";
+import type { KeyPair } from "./e2ee/crypto.ts";
+import { getMyKeyPair } from "./e2ee/keys.ts";
 import i18n, { getCurrentLocale, SUPPORTED_LANGS } from "./i18n.ts";
 import type { AppConfig } from "./types/api.ts";
 import { useAuth } from "./useAuth.tsx";
@@ -124,6 +127,8 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const [confirmLogout, setConfirmLogout] = useState(false);
 	const [confirmClearData, setConfirmClearData] = useState(false);
 	const [clearDataLoading, setClearDataLoading] = useState(false);
+	const [backupOpen, setBackupOpen] = useState(false);
+	const [keyPair, setKeyPair] = useState<KeyPair | null>(null);
 	const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
 
@@ -142,6 +147,18 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 
 		return () => ctrl.abort();
 	}, [open]);
+
+	useEffect(() => {
+		if (!open) return;
+		getMyKeyPair()
+			.then(setKeyPair)
+			.catch(() => setKeyPair(null));
+	}, [open]);
+
+	// Keep the key pair in sync after the backup modal mutates local keys.
+	async function refreshKeyPair() {
+		setKeyPair(await getMyKeyPair().catch(() => null));
+	}
 
 	return (
 		<Drawer
@@ -183,6 +200,14 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					padding: "16px",
 				}}
 			>
+				<Button
+					variant="outline"
+					style={{ width: "100%", marginBottom: "8px" }}
+					onClick={() => setBackupOpen(true)}
+					disabled={activeAccount === null}
+				>
+					{t("backup.open")}
+				</Button>
 				<Button
 					variant="outline"
 					style={{
@@ -302,6 +327,17 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					</Button>
 				</div>
 			</Modal>
+			{activeAccount !== null && (
+				<BackupSettingsModal
+					open={backupOpen}
+					onClose={() => {
+						setBackupOpen(false);
+						void refreshKeyPair();
+					}}
+					token={activeAccount.token}
+					keyPair={keyPair}
+				/>
+			)}
 		</Drawer>
 	);
 }

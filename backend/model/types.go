@@ -11,6 +11,8 @@ type User struct {
 	TokenExpiresAt time.Time `gorm:"not null"             json:"-"`
 	Online         bool      `gorm:"default:false"        json:"online"`
 	PublicKey      string    `gorm:"not null;default:''"  json:"-"` // E2E X25519 public key (base64)
+	KeyBackup      string    `gorm:"not null;default:''"  json:"-"` // client-encrypted private key backup blob (base64)
+	KeyBackupAt    time.Time `gorm:"default:null"         json:"-"` // when the backup blob was last written
 }
 
 type PublicUser struct {

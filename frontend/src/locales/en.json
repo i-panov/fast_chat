@@ -11,7 +11,6 @@
 	"accounts.clearData": "Clear cache",
 	"accounts.clearDataConfirm": "You'll need to log in again.",
 	"accounts.clearDataTitle": "Clear cache",
-
 	"chat.newChat": "New chat",
 	"chat.sendTo": "Send a message to start a chat with @{{nick}}",
 	"chat.selectPrompt": "Select a chat or search for a user to start messaging",
@@ -41,7 +40,6 @@
 	"chat.you": "You",
 	"chat.settings": "Settings",
 	"chat.members": "Members",
-
 	"input.editBanner": "Editing",
 	"input.placeholder": "Type a message...",
 	"input.save": "Save",
@@ -54,11 +52,9 @@
 	"input.locationGetCurrent": "Use my location",
 	"input.locationMapHint": "Drag the marker to set the location",
 	"input.locationCoords": "Coordinates",
-
 	"search.placeholder": "Search users...",
 	"search.online": "(online)",
 	"search.noResults": "No users found",
-
 	"login.title": "Fast Chat",
 	"login.subtitle": "Enter your email to sign in",
 	"login.email": "Email",
@@ -71,7 +67,6 @@
 	"login.join": "Join",
 	"login.alreadyLoggedIn": "Already logged in as @{{nick}}",
 	"login.backToChat": "Back to chat",
-
 	"message.copy": "Copy",
 	"message.menuActions": "Message actions",
 	"message.edit": "Edit",
@@ -88,19 +83,15 @@
 	"message.location": "Location",
 	"message.queued": "Queued",
 	"message.notEncrypted": "Not encrypted",
-
 	"input.replyingTo": "Replying to @{{nick}}",
-
 	"sync.offline": "Offline",
 	"sync.online": "Online",
 	"sync.syncing": "Syncing...",
 	"sync.pending_one": "{{count}} pending",
 	"sync.pending_other": "{{count}} pending",
 	"sync.error": "Sync error",
-
 	"date.today": "Today",
 	"date.yesterday": "Yesterday",
-
 	"error.loadChats": "Failed to load chats",
 	"error.send": "Failed to send message",
 	"error.loadMessages": "Failed to load messages",
@@ -116,7 +107,6 @@
 	"error.boundaryTitle": "Something went wrong",
 	"error.boundaryMessage": "The application encountered an unexpected error.",
 	"error.boundaryReset": "Try again",
-
 	"media.loadImageFailed": "Failed to load image",
 	"media.loadVideoFailed": "Failed to load video",
 	"media.loadAudioFailed": "Failed to load audio",
@@ -124,7 +114,28 @@
 	"media.closeMenu": "Close menu",
 	"media.messageActions": "Message actions",
 	"media.removeLocation": "Remove location",
-
 	"lang.en": "English",
-	"lang.ru": "Русский"
+	"lang.ru": "Русский",
+	"backup.open": "Key backup",
+	"backup.title": "Key backup",
+	"backup.warningTitle": "Important",
+	"backup.warningMessage": "If you do not set a recovery password, all old messages will become impossible to decrypt when you log in on a new device, change your browser, or clear your cache.",
+	"backup.warningNoRecovery": "The password cannot be recovered. If you forget it, your encrypted messages are lost forever.",
+	"backup.needLocalKey": "You need to have your local encryption key to manage the backup. If you are on a new device, use the recovery prompt instead.",
+	"backup.password": "Recovery password",
+	"backup.confirm": "Confirm password",
+	"backup.save": "Enable backup",
+	"backup.change": "Change password",
+	"backup.close": "Close",
+	"backup.delete": "Delete backup",
+	"backup.doneTitle": "Saved",
+	"backup.doneEnabled": "Your recovery backup has been saved on the server.",
+	"backup.doneDisabled": "Your recovery backup has been removed.",
+	"backup.recoveryTitle": "Recover your messages",
+	"backup.recoveryWarningTitle": "Your messages are encrypted",
+	"backup.recoveryPrompt": "This account's messages are encrypted with a key that is not on this device. Enter your recovery password to restore access to your old messages.",
+	"backup.recoveryRecover": "Recover",
+	"backup.recoveryDecline": "Start fresh",
+	"backup.recoveryWrongPassword": "Wrong password. The keys could not be recovered.",
+	"backup.recoveryFailed": "Recovery failed. Please try again."
 }

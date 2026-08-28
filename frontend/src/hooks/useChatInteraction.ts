@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createChat, refreshToken } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
-import { ensureAccountKeys } from "../e2ee/keys.ts";
+import { ensureAccountKeys, RecoveryRequiredError } from "../e2ee/keys.ts";
 import {
 	retryFailedOps,
 	scheduleSync,
@@ -145,6 +145,9 @@ export function useChatPage(): ChatPageState {
 	useEffect(() => {
 		if (token === undefined) return;
 		void ensureAccountKeys(token).catch((err) => {
+			// Recovery is surfaced by the UI via the recovery-needed event;
+			// not a fatal error worth logging as a failure.
+			if (err instanceof RecoveryRequiredError) return;
 			console.error("E2E key generation failed:", err);
 		});
 	}, [token]);

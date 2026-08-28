@@ -140,6 +140,115 @@ func TestGetPublicKeyForUserWithoutKeyReturns404(t *testing.T) {
 	}
 }
 
+func TestKeyBackupRoundTrip(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+
+	blob := base64.StdEncoding.EncodeToString([]byte("encrypted-secret"))
+
+	// PUT stores the blob.
+	putReq := authReq(http.MethodPut, "/api/users/key-backup", alice.token, `{"backup":"`+blob+`"}`)
+	putW := httptest.NewRecorder()
+	h.AuthMiddleware(h.SetKeyBackup)(putW, putReq)
+	if putW.Code != http.StatusOK {
+		t.Fatalf("expected 200 on put, got %d: %s", putW.Code, putW.Body.String())
+	}
+
+	// GET returns it back.
+	getReq := authReq(http.MethodGet, "/api/users/key-backup", alice.token, "")
+	getW := httptest.NewRecorder()
+	h.AuthMiddleware(h.GetKeyBackup)(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("expected 200 on get, got %d: %s", getW.Code, getW.Body.String())
+	}
+
+	var resp struct {
+		Backup string `json:"backup"`
+	}
+	if err := json.Unmarshal(getW.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Backup != blob {
+		t.Fatalf("expected backup %q, got %q", blob, resp.Backup)
+	}
+}
+
+func TestKeyBackupRejectsInvalid(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+
+	for name, body := range map[string]string{
+		"empty":     `{"backup":""}`,
+		"not base64": `{"backup":"!!not-b64!!"}`,
+		"too large": `{"backup":"` + strings.Repeat("A", maxKeyBackupLen+1) + `"}`,
+	} {
+		req := authReq(http.MethodPut, "/api/users/key-backup", alice.token, body)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.SetKeyBackup)(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d", name, w.Code)
+		}
+	}
+}
+
+func TestKeyBackupNotFoundWithoutBlob(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+
+	req := authReq(http.MethodGet, "/api/users/key-backup", alice.token, "")
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.GetKeyBackup)(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestKeyBackupDelete(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+
+	blob := base64.StdEncoding.EncodeToString([]byte("secret"))
+	putReq := authReq(http.MethodPut, "/api/users/key-backup", alice.token, `{"backup":"`+blob+`"}`)
+	putW := httptest.NewRecorder()
+	h.AuthMiddleware(h.SetKeyBackup)(putW, putReq)
+	if putW.Code != http.StatusOK {
+		t.Fatalf("expected 200 on put, got %d", putW.Code)
+	}
+
+	delReq := authReq(http.MethodDelete, "/api/users/key-backup", alice.token, "")
+	delW := httptest.NewRecorder()
+	h.AuthMiddleware(h.DeleteKeyBackup)(delW, delReq)
+	if delW.Code != http.StatusOK {
+		t.Fatalf("expected 200 on delete, got %d", delW.Code)
+	}
+
+	if _, ok := h.store.GetKeyBackup(context.Background(), alice.id); ok {
+		t.Fatal("expected backup to be deleted")
+	}
+}
+
+func TestKeyBackupIsolatedPerUser(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
+
+	blob := base64.StdEncoding.EncodeToString([]byte("alice-secret"))
+	putReq := authReq(http.MethodPut, "/api/users/key-backup", alice.token, `{"backup":"`+blob+`"}`)
+	putW := httptest.NewRecorder()
+	h.AuthMiddleware(h.SetKeyBackup)(putW, putReq)
+	if putW.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", putW.Code)
+	}
+
+	// Bob's GET must not surface Alice's backup.
+	getReq := authReq(http.MethodGet, "/api/users/key-backup", bob.token, "")
+	getW := httptest.NewRecorder()
+	h.AuthMiddleware(h.GetKeyBackup)(getW, getReq)
+	if getW.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for other user's backup, got %d", getW.Code)
+	}
+}
+
 func TestFederatedGetUserPublicKey(t *testing.T) {
 	h := newTestHandler(t)
 	alice := registerTestUser(t, h, "alice", "alice@test.local")

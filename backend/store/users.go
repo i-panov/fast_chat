@@ -123,6 +123,31 @@ func (s *Store) GetUserPublicKey(ctx context.Context, userID string) (string, bo
 	return key, true
 }
 
+// SetKeyBackup stores the client-encrypted private key backup blob for a
+// user. The server never decrypts it; it only stores and returns it.
+func (s *Store) SetKeyBackup(ctx context.Context, userID, blob string) error {
+	now := time.Now()
+	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+		Updates(map[string]any{"key_backup": blob, "key_backup_at": now}).Error
+}
+
+// GetKeyBackup returns the stored backup blob; ok=false when none exists.
+func (s *Store) GetKeyBackup(ctx context.Context, userID string) (string, bool) {
+	var blob string
+	if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+		Select("key_backup").Scan(&blob).Error; err != nil || blob == "" {
+		return "", false
+	}
+
+	return blob, true
+}
+
+// DeleteKeyBackup removes a user's backup blob (key revocation).
+func (s *Store) DeleteKeyBackup(ctx context.Context, userID string) error {
+	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+		Updates(map[string]any{"key_backup": "", "key_backup_at": nil}).Error
+}
+
 func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry time.Duration) (*model.User, error) {
 	user, ok := s.GetUserByID(ctx, userID)
 	if !ok {

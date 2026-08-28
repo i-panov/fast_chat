@@ -12,6 +12,7 @@ import { GroupSettingsModal } from "../components/chat/GroupSettingsModal.tsx";
 import { InputBar } from "../components/chat/InputBar.tsx";
 import { LocationPickerModal } from "../components/chat/LocationPickerModal.tsx";
 import { MessageList } from "../components/chat/MessageList.tsx";
+import { RecoveryModal } from "../components/chat/RecoveryModal.tsx";
 import { SearchBox } from "../components/chat/SearchBox.tsx";
 import { ThreadView } from "../components/chat/ThreadView.tsx";
 import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
@@ -194,6 +195,7 @@ export function ChatPage() {
 					onClose={() => s.setSwitcherOpen(false)}
 					onLogout={s.logout}
 				/>
+				<RecoveryModal activeToken={s.activeAccount?.token ?? null} />
 				<AppHeader onSwitcherToggle={() => s.setSwitcherOpen(true)} />
 				<AudioPlayerBar />
 				<div style={{ display: "flex", flex: 1, minHeight: 0 }}>

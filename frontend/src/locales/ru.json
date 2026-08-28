@@ -11,7 +11,6 @@
 	"accounts.clearData": "Очистить кэш",
 	"accounts.clearDataConfirm": "Потребуется повторный вход в аккаунт.",
 	"accounts.clearDataTitle": "Очистить кэш",
-
 	"chat.newChat": "Новый чат",
 	"chat.sendTo": "Напишите сообщение, чтобы начать чат с @{{nick}}",
 	"chat.selectPrompt": "Выберите чат или найдите пользователя для начала переписки",
@@ -42,7 +41,6 @@
 	"chat.you": "Вы",
 	"chat.settings": "Настройки",
 	"chat.members": "Участники",
-
 	"input.editBanner": "Редактирование",
 	"input.placeholder": "Напишите сообщение...",
 	"input.save": "Сохранить",
@@ -55,11 +53,9 @@
 	"input.locationGetCurrent": "Использовать моё местоположение",
 	"input.locationMapHint": "Перетащите маркер, чтобы выбрать точку",
 	"input.locationCoords": "Координаты",
-
 	"search.placeholder": "Поиск пользователей...",
 	"search.online": "(в сети)",
 	"search.noResults": "Пользователи не найдены",
-
 	"login.title": "Fast Chat",
 	"login.subtitle": "Введите email для входа",
 	"login.email": "Email",
@@ -72,7 +68,6 @@
 	"login.join": "Присоединиться",
 	"login.alreadyLoggedIn": "Вы уже вошли как @{{nick}}",
 	"login.backToChat": "Вернуться в чат",
-
 	"message.copy": "Копировать",
 	"message.menuActions": "Действия с сообщением",
 	"message.edit": "Редактировать",
@@ -89,9 +84,7 @@
 	"message.location": "Местоположение",
 	"message.queued": "В очереди",
 	"message.notEncrypted": "Не зашифровано",
-
 	"input.replyingTo": "Ответ @{{nick}}",
-
 	"sync.offline": "Нет сети",
 	"sync.online": "В сети",
 	"sync.syncing": "Синхронизация...",
@@ -99,10 +92,8 @@
 	"sync.pending_few": "В очереди: {{count}} сообщения",
 	"sync.pending_many": "В очереди: {{count}} сообщений",
 	"sync.error": "Ошибка синхронизации",
-
 	"date.today": "Сегодня",
 	"date.yesterday": "Вчера",
-
 	"error.loadChats": "Не удалось загрузить чаты",
 	"error.send": "Не удалось отправить сообщение",
 	"error.loadMessages": "Не удалось загрузить сообщения",
@@ -118,7 +109,6 @@
 	"error.boundaryTitle": "Что-то пошло не так",
 	"error.boundaryMessage": "В приложении произошла непредвиденная ошибка.",
 	"error.boundaryReset": "Попробовать снова",
-
 	"media.loadImageFailed": "Не удалось загрузить изображение",
 	"media.loadVideoFailed": "Не удалось загрузить видео",
 	"media.loadAudioFailed": "Не удалось загрузить аудио",
@@ -126,7 +116,28 @@
 	"media.closeMenu": "Закрыть меню",
 	"media.messageActions": "Действия с сообщением",
 	"media.removeLocation": "Убрать местоположение",
-
 	"lang.en": "English",
-	"lang.ru": "Русский"
+	"lang.ru": "Русский",
+	"backup.open": "Бэкап ключей",
+	"backup.title": "Бэкап ключей",
+	"backup.warningTitle": "Важно",
+	"backup.warningMessage": "Если не задать пароль восстановления, при входе на новом устройстве, смене браузера или очистке кэша все старые сообщения станет невозможно расшифровать.",
+	"backup.warningNoRecovery": "Пароль восстановлению не подлежит. Если вы его забудете, зашифрованные сообщения будут потеряны навсегда.",
+	"backup.needLocalKey": "Для управления бэкапом нужен локальный ключ шифрования. Если вы на новом устройстве, воспользуйтесь окном восстановления.",
+	"backup.password": "Пароль восстановления",
+	"backup.confirm": "Повторите пароль",
+	"backup.save": "Включить бэкап",
+	"backup.change": "Сменить пароль",
+	"backup.close": "Закрыть",
+	"backup.delete": "Удалить бэкап",
+	"backup.doneTitle": "Сохранено",
+	"backup.doneEnabled": "Бэкап восстановления сохранён на сервере.",
+	"backup.doneDisabled": "Бэкап восстановления удалён.",
+	"backup.recoveryTitle": "Восстановить сообщения",
+	"backup.recoveryWarningTitle": "Ваши сообщения зашифрованы",
+	"backup.recoveryPrompt": "Сообщения этого аккаунта зашифрованы ключом, которого нет на этом устройстве. Введите пароль восстановления, чтобы получить доступ к старым сообщениям.",
+	"backup.recoveryRecover": "Восстановить",
+	"backup.recoveryDecline": "Начать заново",
+	"backup.recoveryWrongPassword": "Неверный пароль. Ключи не удалось восстановить.",
+	"backup.recoveryFailed": "Не удалось восстановить. Попробуйте ещё раз."
 }

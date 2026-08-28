@@ -218,6 +218,23 @@ export function getPublicKey(token: string, userId: string) {
 	);
 }
 
+export function setKeyBackup(token: string, backup: string) {
+	return request<{ status: string }>("/api/users/key-backup", token, {
+		method: "PUT",
+		body: JSON.stringify({ backup }),
+	});
+}
+
+export function getKeyBackup(token: string) {
+	return request<{ backup: string }>("/api/users/key-backup", token);
+}
+
+export function deleteKeyBackup(token: string) {
+	return request<{ status: string }>("/api/users/key-backup", token, {
+		method: "DELETE",
+	});
+}
+
 export function uploadFile(token: string, file: File) {
 	const formData = new FormData();
 	formData.append("file", file);

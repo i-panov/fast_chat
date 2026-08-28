@@ -124,6 +124,75 @@ func (h *Handler) GetUserPublicKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// maxKeyBackupLen bounds the accepted backup blob size. The blob is a
+// base64-encoded JSON document holding a small encrypted secret (two
+// 32-byte keys plus salt/nonce), so 4 KiB is ample while capping abuse.
+const maxKeyBackupLen = 4 << 10
+
+// SetKeyBackup stores the authenticated user's client-encrypted private
+// key backup. The server treats it as opaque data; it cannot decrypt it.
+func (h *Handler) SetKeyBackup(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close() //nolint:errcheck
+
+	user := getUser(r)
+
+	var req struct {
+		Backup string `json:"backup"`
+	}
+
+	if err := h.decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
+		return
+	}
+
+	if req.Backup == "" || len(req.Backup) > maxKeyBackupLen {
+		writeError(w, http.StatusBadRequest, "invalid backup")
+		return
+	}
+
+	if _, err := base64.StdEncoding.DecodeString(req.Backup); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid backup")
+		return
+	}
+
+	if err := h.store.SetKeyBackup(r.Context(), user.ID, req.Backup); err != nil {
+		logger.Error("failed to store key backup", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// GetKeyBackup returns the authenticated user's backup blob. It returns
+// the caller's own backup only; there is no cross-user access.
+func (h *Handler) GetKeyBackup(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+
+	blob, ok := h.store.GetKeyBackup(r.Context(), user.ID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no key backup")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]string{"backup": blob})
+}
+
+// DeleteKeyBackup revokes the authenticated user's backup blob.
+func (h *Handler) DeleteKeyBackup(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+
+	if err := h.store.DeleteKeyBackup(r.Context(), user.ID); err != nil {
+		logger.Error("failed to delete key backup", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Audit the destructive operation (revocation of the recovery material).
+	logger.Info("key backup deleted", "userId", user.ID)
+	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 // FederatedGetUserPublicKey serves a public key to a remote server.
 func (h *Handler) FederatedGetUserPublicKey(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("userId")
