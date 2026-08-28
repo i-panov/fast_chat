@@ -45,7 +45,7 @@ export function MessageBody({
 	// timestamp and delivery status must still be rendered.
 	const meta = (
 		<>
-			{encrypted !== true && (
+			{encrypted !== true && undecryptable !== true && (
 				<Tooltip
 					label={t("message.notEncrypted")}
 					withArrow
@@ -99,19 +99,22 @@ export function MessageBody({
 		<Group gap={6} wrap="nowrap" align="end">
 			<div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
 				{undecryptable === true ? (
-					<Text
-						span
-						fs="italic"
-						c="gray.6"
-						style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+					<div
+						style={{
+							fontStyle: "italic",
+							color: "var(--mantine-color-gray-6)",
+							display: "inline-flex",
+							alignItems: "center",
+							gap: 6,
+							padding: "4px 8px",
+							background: "var(--mantine-color-gray-0)",
+							borderRadius: "4px",
+						}}
+						title={t("message.undecryptable")}
 					>
-						<Lock
-							size={14}
-							style={{ color: "var(--mantine-color-gray-6)" }}
-							aria-hidden
-						/>
-						{text}
-					</Text>
+						<Lock size={14} aria-hidden />
+						<span>{text}</span>
+					</div>
 				) : (
 					<Markdown
 						remarkPlugins={[remarkGfm]}

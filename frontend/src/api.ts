@@ -212,7 +212,7 @@ export function uploadPublicKey(token: string, publicKey: string) {
 }
 
 export function getPublicKey(token: string, userId: string) {
-	return request<{ publicKey: string }>(
+	return request<{ publicKey: string; keyVersion?: string }>(
 		`/api/users/${encodeURIComponent(userId)}/public-key`,
 		token,
 	);

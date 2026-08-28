@@ -122,15 +122,35 @@ export function useMessageSender({
 				await ensureAccountKeys(token);
 
 				const recipientKeys = await getRecipientPublicKeys(token, memberIds);
-				const recipients = memberIds
-					.map((id) => ({
-						keyId: id,
-						publicKey: recipientKeys.get(id) ?? "",
-					}))
-					.filter((r) => r.publicKey !== "");
+				const recipients: Array<{ keyId: string; publicKey: string }> = [];
+				const missing: string[] = [];
 
-				if (recipients.length !== memberIds.length) {
-					throw new Error("missing recipient key");
+				for (const id of memberIds) {
+					const publicKey = recipientKeys.get(id);
+					if (publicKey && publicKey !== "") {
+						recipients.push({ keyId: id, publicKey });
+					} else {
+						missing.push(id);
+					}
+				}
+
+				if (recipients.length === 0) {
+					throw new Error("no recipient keys available");
+				}
+
+				if (missing.length > 0) {
+					// Show which members block the message so the user
+					// knows who needs to log in with E2E enabled.
+					const nicks = chat.members
+						.filter((m) => missing.includes(m.id))
+						.map((m) => `@${m.nick}`)
+						.join(", ");
+					emitNotification(
+						nicks !== ""
+							? i18n.t("error.encryptionKeyMissingMembers", { members: nicks })
+							: i18n.t("error.encryptionKeyMissing"),
+					);
+					return null;
 				}
 
 				return encryptMessageText(text, recipients);

@@ -144,7 +144,9 @@ export function useChatPage(): ChatPageState {
 	// uploaded before any message is sent.
 	useEffect(() => {
 		if (token === undefined) return;
-		void ensureAccountKeys(token).catch(() => {});
+		void ensureAccountKeys(token).catch((err) => {
+			console.error("E2E key generation failed:", err);
+		});
 	}, [token]);
 
 	const handleBackOnline = useCallback(() => {

@@ -29,6 +29,18 @@ interface UseMessagesReturn {
 
 const PAGE_SIZE = 30;
 
+// Bound the decrypt cache so long-lived chats with many edits do not
+// grow it forever; the oldest entries (insertion order) are evicted first.
+const DECRYPT_CACHE_MAX = 1000;
+
+function evictDecryptCache(cache: Map<string, MessageWithStatus>): void {
+	while (cache.size > DECRYPT_CACHE_MAX) {
+		const oldest = cache.keys().next().value;
+		if (oldest === undefined) break;
+		cache.delete(oldest);
+	}
+}
+
 function toClientMessage(sm: StoredMessage): MessageWithStatus {
 	const base = stripMeta(sm);
 	const status: MessageStatus = sm.status === "deleted" ? "sent" : sm.status;
@@ -98,7 +110,7 @@ export function useMessages({
 
 				const cacheKey = `${sm.id}:${sm._updatedAt}:${sm.status}`;
 				const cached = decryptCacheRef.current.get(cacheKey);
-				if (cached !== undefined) {
+				if (cached !== undefined && !cached.undecryptable) {
 					out.push(cached);
 					continue;
 				}
@@ -107,6 +119,7 @@ export function useMessages({
 					userId !== undefined ? await decryptMessage(sm, userId, key) : sm;
 				const client = toClientMessage({ ...sm, ...decrypted });
 				decryptCacheRef.current.set(cacheKey, client);
+				evictDecryptCache(decryptCacheRef.current);
 				out.push(client);
 			}
 

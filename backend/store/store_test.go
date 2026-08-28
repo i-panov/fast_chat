@@ -207,7 +207,7 @@ func TestEditMessage(t *testing.T) {
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 	msg, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello", "", "", nil, false, "")
 
-	updated, err := s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, testEdited, nil, false, false, "")
+	updated, err := s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, testEdited, nil, false, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestEditMessage(t *testing.T) {
 		t.Error("expected EditedAt to be set")
 	}
 
-	_, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testBob, "Hacked!", nil, false, false, "")
+	_, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testBob, "Hacked!", nil, false, nil, nil)
 	if err == nil {
 		t.Error("expected error when bob edits alice's message")
 	}
@@ -291,7 +291,7 @@ func TestEditThreadMessage(t *testing.T) {
 	thread, _ := s.CreateThread(context.Background(), chat.ID, parent.ID, parent.Text, parent.FromNick)
 	msg, _ := s.AddMessage(context.Background(), "", thread.ID, testAlice, "alice", "Hello", "", "", nil, false, "")
 
-	updated, err := s.EditMessage(context.Background(), "", thread.ID, msg.ID, testAlice, testEdited, nil, false, false, "")
+	updated, err := s.EditMessage(context.Background(), "", thread.ID, msg.ID, testAlice, testEdited, nil, false, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -302,12 +302,12 @@ func TestEditThreadMessage(t *testing.T) {
 		t.Error("expected EditedAt to be set")
 	}
 
-	_, err = s.EditMessage(context.Background(), "", thread.ID, msg.ID, testBob, "Hacked!", nil, false, false, "")
+	_, err = s.EditMessage(context.Background(), "", thread.ID, msg.ID, testBob, "Hacked!", nil, false, nil, nil)
 	if err == nil {
 		t.Error("expected error when bob edits alice's thread message")
 	}
 
-	_, err = s.EditMessage(context.Background(), "", "nonexistent", msg.ID, testAlice, "x", nil, false, false, "")
+	_, err = s.EditMessage(context.Background(), "", "nonexistent", msg.ID, testAlice, "x", nil, false, nil, nil)
 	if err == nil {
 		t.Error("expected error for nonexistent thread")
 	}
@@ -355,7 +355,7 @@ func TestEditMessageLocation(t *testing.T) {
 	msg, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "x", "", "", nil, false, "")
 
 	// Set initial location.
-	updated, err := s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "x", &model.Location{Lat: 1, Lng: 2}, false, false, "")
+	updated, err := s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "x", &model.Location{Lat: 1, Lng: 2}, false, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Replace with a different location.
-	updated, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "x", &model.Location{Lat: 3, Lng: 4}, false, false, "")
+	updated, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "x", &model.Location{Lat: 3, Lng: 4}, false, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Clear the location.
-	updated, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "x", nil, true, false, "")
+	updated, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "x", nil, true, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestEditMessageLocation(t *testing.T) {
 	}
 
 	// Leave unchanged (no location params).
-	updated, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "new text", nil, false, false, "")
+	updated, err = s.EditMessage(context.Background(), chat.ID, "", msg.ID, testAlice, "new text", nil, false, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestEditRawMessage(t *testing.T) {
 	s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello", "msg-1", "", nil, false, "")
 
 	now := time.Now()
-	err := s.EditRawMessage(context.Background(), chat.ID, "msg-1", testEdited, now, nil, false, false, "")
+	err := s.EditRawMessage(context.Background(), chat.ID, "msg-1", testEdited, now, nil, false, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestEditRawMessage(t *testing.T) {
 		t.Error("expected EditedAt to be set")
 	}
 
-	err = s.EditRawMessage(context.Background(), chat.ID, "nonexistent", "", time.Now(), nil, false, false, "")
+	err = s.EditRawMessage(context.Background(), chat.ID, "nonexistent", "", time.Now(), nil, false, nil, nil)
 	if err == nil {
 		t.Error("expected error for nonexistent message")
 	}

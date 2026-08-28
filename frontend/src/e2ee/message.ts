@@ -95,34 +95,44 @@ export async function decryptMessage(
 	if (key === null) {
 		out.text = i18n.t("message.undecryptable");
 		out.undecryptable = true;
+		if (message.replyTo !== undefined) {
+			out.replyTo = {
+				...message.replyTo,
+				text: i18n.t("message.undecryptable"),
+			};
+		}
 		return out;
 	}
 
 	try {
 		out.text = await decryptMessageText(message, userId, key);
-		if (out.text === i18n.t("message.undecryptable")) {
-			out.undecryptable = true;
-		}
 	} catch {
 		out.text = i18n.t("message.undecryptable");
 		out.undecryptable = true;
 	}
 
 	if (message.replyTo !== undefined) {
-		const parent =
-			(await messagesRepo.getByIdAny(message.replyTo.messageId)) ??
-			(await threadMessagesRepo.getByIdAny(message.replyTo.messageId));
+		let parentText = "";
+		try {
+			const parent =
+				(await messagesRepo.getByIdAny(message.replyTo.messageId)) ??
+				(await threadMessagesRepo.getByIdAny(message.replyTo.messageId));
 
-		if (parent !== undefined) {
-			out.replyTo = {
-				...message.replyTo,
-				text: parent.encrypted
-					? await decryptMessageText(parent, userId, key)
-					: parent.text,
-			};
-		} else {
-			out.replyTo = { ...message.replyTo, text: "" };
+			if (parent !== undefined) {
+				if (parent.encrypted) {
+					parentText = await decryptMessageText(parent, userId, key);
+				} else {
+					parentText = parent.text;
+				}
+			}
+		} catch {
+			parentText = i18n.t("message.undecryptable");
 		}
+
+		out.replyTo = {
+			...message.replyTo,
+			text: parentText,
+		};
 	}
 
 	return out;

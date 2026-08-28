@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -97,8 +98,11 @@ func TestUpdatePublicKeyAcceptsURLSafeBase64(t *testing.T) {
 	}
 
 	key, ok := h.store.GetUserPublicKey(context.Background(), alice.id)
-	if !ok || key != urlSafeKey {
-		t.Fatalf("expected stored key %q, got %q (ok=%v)", urlSafeKey, key, ok)
+	// The server stores a normalized (StdEncoding) form of the key so
+	// clients that only understand standard base64 can use it.
+	normalized := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, 32))
+	if !ok || key != normalized {
+		t.Fatalf("expected stored key %q, got %q (ok=%v)", normalized, key, ok)
 	}
 }
 
@@ -188,7 +192,9 @@ func TestSendEncryptedMessage(t *testing.T) {
 
 	// The server must store ciphertext + payload verbatim; it never sees
 	// the plaintext.
-	payload := `{"v":1,"nonce":"aGVsbG8=","envelopes":[{"keyId":"` + alice.id + `","box":"Ym94"}]}`
+	nonce24 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 24))
+	box48 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 48))
+	payload := `{"v":1,"nonce":"` + nonce24 + `","envelopes":[{"keyId":"` + alice.id + `","box":"` + box48 + `"}]}`
 
 	body, err := json.Marshal(map[string]any{
 		"id":               "msg-enc",
@@ -246,13 +252,63 @@ func TestEncryptedMessageLengthCap(t *testing.T) {
 	}
 
 	// Ciphertext of the same length is fine (the client enforces the
-	// plaintext limit before encrypting).
-	encBody := `{"text":"` + longText + `","encrypted":true,"encryptedPayload":"{\"v\":1}"}`
+	// plaintext limit before encrypting). The payload must be a
+	// well-formed envelope.
+	nonce24 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 24))
+	box48 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 48))
+	payload := `{"v":1,"nonce":"` + nonce24 + `","envelopes":[{"keyId":"` + bob.id + `","box":"` + box48 + `"}]}`
+	encBody := `{"text":"` + longText + `","encrypted":true,"encryptedPayload":` + strconv.Quote(payload) + `}`
 	encReq := authReq(http.MethodPost, "/api/chats/"+chat.ID+"/messages", alice.token, encBody)
 	encReq.SetPathValue("id", chat.ID)
 	encW := httptest.NewRecorder()
 	h.AuthMiddleware(h.SendMessage)(encW, encReq)
 	if encW.Code != http.StatusCreated {
 		t.Fatalf("expected 201 for long ciphertext, got %d: %s", encW.Code, encW.Body.String())
+	}
+}
+
+func TestEncryptedMessagePayloadValidation(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+	bob := registerTestUser(t, h, "bob", "bob@test.local")
+
+	chat := createTestChat(t, h, alice.token, bob.id)
+
+	nonce24 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 24))
+	box48 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 48))
+
+	for name, payload := range map[string]string{
+		"not json":        `not-json`,
+		"wrong version":   `{"v":2,"nonce":"` + nonce24 + `","envelopes":[{"keyId":"` + bob.id + `","box":"` + box48 + `"}]}`,
+		"missing nonce":   `{"v":1,"envelopes":[{"keyId":"` + bob.id + `","box":"` + box48 + `"}]}`,
+		"nonce too short": `{"v":1,"nonce":"` + base64.StdEncoding.EncodeToString([]byte("abc")) + `","envelopes":[{"keyId":"` + bob.id + `","box":"` + box48 + `"}]}`,
+		"nonce not b64":   `{"v":1,"nonce":"!!!","envelopes":[{"keyId":"` + bob.id + `","box":"` + box48 + `"}]}`,
+		"no envelopes":    `{"v":1,"nonce":"` + nonce24 + `","envelopes":[]}`,
+		"empty keyId":     `{"v":1,"nonce":"` + nonce24 + `","envelopes":[{"keyId":"","box":"` + box48 + `"}]}`,
+		"empty box":       `{"v":1,"nonce":"` + nonce24 + `","envelopes":[{"keyId":"` + bob.id + `","box":""}]}`,
+		"box too short":   `{"v":1,"nonce":"` + nonce24 + `","envelopes":[{"keyId":"` + bob.id + `","box":"` + base64.StdEncoding.EncodeToString([]byte("x")) + `"}]}`,
+		"too large":       `{"v":1,"nonce":"` + strings.Repeat("A", maxEncryptedPayloadLen) + `"}`,
+	} {
+		body := `{"text":"hi","encrypted":true,"encryptedPayload":` + strconv.Quote(payload) + `}`
+		req := authReq(http.MethodPost, "/api/chats/"+chat.ID+"/messages", alice.token, body)
+		req.SetPathValue("id", chat.ID)
+		w := httptest.NewRecorder()
+		h.AuthMiddleware(h.SendMessage)(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d: %s", name, w.Code, w.Body.String())
+		}
+	}
+
+	// A well-formed payload must be accepted.
+	valid := `{"v":1,"nonce":"` + nonce24 + `","envelopes":[{"keyId":"` + bob.id + `","box":"` + box48 + `"}]}`
+	body := `{"text":"hi","encrypted":true,"encryptedPayload":` + strconv.Quote(valid) + `}`
+	req := authReq(http.MethodPost, "/api/chats/"+chat.ID+"/messages", alice.token, body)
+	req.SetPathValue("id", chat.ID)
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.SendMessage)(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for valid payload, got %d: %s", w.Code, w.Body.String())
 	}
 }

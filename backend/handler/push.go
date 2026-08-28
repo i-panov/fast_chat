@@ -11,7 +11,7 @@ import (
 
 type pushPayload struct {
 	Title string          `json:"title"`
-	Body  string          `json:"body"`
+	Body  string          `json:"body,omitempty"`
 	Tag   string          `json:"tag"`
 	Data  pushPayloadData `json:"data"`
 }
@@ -29,10 +29,10 @@ func (h *Handler) sendPushForMessage(ctx context.Context, chatID string, msg *mo
 
 	payload := pushPayload{
 		Title: msg.FromNick,
-		// Message content is E2E-encrypted and never readable by the
-		// server; the push body must not leak plaintext.
-		Body: "New message",
-		Tag:  "chat-" + chatID,
+		// The server does not know the recipient's language and the
+		// message content is E2E-encrypted anyway; keep the body empty
+		// so the notification is just the sender's nickname.
+		Tag: "chat-" + chatID,
 		Data: pushPayloadData{
 			ChatID:    chatID,
 			MessageID: msg.ID,

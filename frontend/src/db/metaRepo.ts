@@ -16,6 +16,13 @@ export const metaRepo = {
 		notify();
 	},
 
+	// setNoNotify updates meta without triggering live-query notifications.
+	// Use for e2ee key updates to avoid unnecessary re-renders across all chats.
+	async setNoNotify(key: string, value: unknown): Promise<void> {
+		const db = await getDB();
+		await db.put("meta", { key, value });
+	},
+
 	async getLastSyncedAt(): Promise<string | null> {
 		const value = await this.get(KEY_LAST_SYNCED_AT);
 		return typeof value === "string" ? value : null;

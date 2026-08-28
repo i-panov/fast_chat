@@ -34,7 +34,7 @@ func (s *Store) GetMessage(ctx context.Context, chatID, messageID string) (model
 	return msg, nil
 }
 
-func (s *Store) EditMessage(ctx context.Context, chatID, threadID, messageID, userID, newText string, location *model.Location, clearLocation bool, encrypted bool, encryptedPayload string) (model.Message, error) {
+func (s *Store) EditMessage(ctx context.Context, chatID, threadID, messageID, userID, newText string, location *model.Location, clearLocation bool, encrypted *bool, encryptedPayload *string) (model.Message, error) {
 	lookupID := chatID
 
 	if threadID != "" {
@@ -59,17 +59,25 @@ func (s *Store) EditMessage(ctx context.Context, chatID, threadID, messageID, us
 
 	now := time.Now()
 	msg.Text = newText
-	msg.Encrypted = encrypted
-	msg.EncryptedPayload = encryptedPayload
 	msg.EditedAt = &now
 	msg.UpdatedAt = now
 
 	updates := map[string]any{
-		fieldText:           newText,
-		fieldEditedAt:       &now,
-		fieldUpdatedAt:      now,
-		"encrypted":         encrypted,
-		"encrypted_payload": encryptedPayload,
+		fieldText:     newText,
+		fieldEditedAt: &now,
+		fieldUpdatedAt: now,
+	}
+
+	// Patch semantics: only update encryption fields when the client
+	// explicitly sent them. Otherwise a location-only edit would wipe
+	// the ciphertext of an encrypted message.
+	if encrypted != nil {
+		msg.Encrypted = *encrypted
+		updates["encrypted"] = *encrypted
+	}
+	if encryptedPayload != nil {
+		msg.EncryptedPayload = *encryptedPayload
+		updates["encrypted_payload"] = *encryptedPayload
 	}
 
 	switch {
@@ -233,13 +241,19 @@ func (s *Store) DeleteMessage(ctx context.Context, chatID, messageID, userID str
 	})
 }
 
-func (s *Store) EditRawMessage(ctx context.Context, chatID, messageID, text string, editedAt time.Time, location *model.Location, clearLocation bool, encrypted bool, encryptedPayload string) error {
+func (s *Store) EditRawMessage(ctx context.Context, chatID, messageID, text string, editedAt time.Time, location *model.Location, clearLocation bool, encrypted *bool, encryptedPayload *string) error {
 	updates := map[string]any{
-		fieldText:           text,
-		fieldEditedAt:       &editedAt,
-		fieldUpdatedAt:      editedAt,
-		"encrypted":         encrypted,
-		"encrypted_payload": encryptedPayload,
+		fieldText:     text,
+		fieldEditedAt: &editedAt,
+		fieldUpdatedAt: editedAt,
+	}
+
+	// Patch semantics: only update encryption fields when present.
+	if encrypted != nil {
+		updates["encrypted"] = *encrypted
+	}
+	if encryptedPayload != nil {
+		updates["encrypted_payload"] = *encryptedPayload
 	}
 
 	if clearLocation {

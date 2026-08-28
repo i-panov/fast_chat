@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -24,7 +26,71 @@ const (
 	encryptedMaxLen = 100000
 	maxMessageFiles = 10
 	maxReadByMembers = 100
+
+	// maxEncryptedPayloadLen is the maximum size of encryptedPayload JSON.
+	// A typical 2-person chat payload is ~200 bytes; 32KB is generous.
+	maxEncryptedPayloadLen = 32768
+
+	// xchachaNonceLen is libsodium crypto_aead_xchacha20poly1305_ietf_NPUBBYTES.
+	xchachaNonceLen = 24
+	// sealedBoxLen is a sealed X25519 box: ephemeral public key + MAC.
+	sealedBoxLen = 48
 )
+
+// validateEncryptedPayload checks the structure and size of the encrypted
+// payload. The server does not decrypt messages but it verifies the
+// envelope is well-formed so garbage does not pollute the storage.
+func validateEncryptedPayload(encrypted bool, payload string) error {
+	if !encrypted || payload == "" {
+		return nil
+	}
+
+	if len(payload) > maxEncryptedPayloadLen {
+		return fmt.Errorf("encrypted payload too large")
+	}
+
+	var data struct {
+		V         int `json:"v"`
+		Nonce     string `json:"nonce"`
+		Envelopes []struct {
+			KeyID string `json:"keyId"`
+			Box   string `json:"box"`
+		} `json:"envelopes"`
+	}
+
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return fmt.Errorf("invalid encrypted payload JSON")
+	}
+
+	if data.V != 1 {
+		return fmt.Errorf("unsupported encrypted payload version")
+	}
+
+	// XChaCha20 nonce is exactly 24 bytes (libsodium
+	// crypto_aead_xchacha20poly1305_ietf_NPUBBYTES).
+	nonceRaw, err := base64.StdEncoding.DecodeString(data.Nonce)
+	if err != nil || len(nonceRaw) != xchachaNonceLen {
+		return fmt.Errorf("invalid nonce")
+	}
+
+	if len(data.Envelopes) == 0 {
+		return fmt.Errorf("missing envelopes")
+	}
+
+	// Sealed boxes are 48 bytes: 32-byte ephemeral key + 16-byte MAC
+	// (crypto_box_SEALBYTES + crypto_box_PUBLICKEYBYTES).
+	for _, e := range data.Envelopes {
+		if e.KeyID == "" {
+			return fmt.Errorf("empty keyId in envelope")
+		}
+		boxRaw, err := base64.StdEncoding.DecodeString(e.Box)
+		if err != nil || len(boxRaw) != sealedBoxLen {
+			return fmt.Errorf("invalid box in envelope")
+		}
+	}
+
+	return nil
+}
 
 type messageWithStatus struct {
 	model.Message
@@ -234,6 +300,11 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateEncryptedPayload(req.Encrypted, req.EncryptedPayload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	req.Text = strings.TrimSpace(req.Text)
 	if req.Text == "" && len(req.FileIDs) == 0 && req.Location == nil {
 		writeError(w, http.StatusBadRequest, errKeyEmptyMessage)
@@ -391,12 +462,32 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		Text             string          `json:"text"`
 		FileIDs          []string        `json:"fileIDs,omitempty"`
 		Location         json.RawMessage `json:"location"`
-		Encrypted        bool            `json:"encrypted"`
-		EncryptedPayload string          `json:"encryptedPayload"`
+		Encrypted        *bool           `json:"encrypted"`
+		EncryptedPayload *string         `json:"encryptedPayload"`
 	}
 
 	if err := h.decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
+		return
+	}
+
+	encrypted := req.Encrypted != nil && *req.Encrypted
+	payload := ""
+	if req.EncryptedPayload != nil {
+		payload = *req.EncryptedPayload
+	}
+
+	// Patch semantics: keep the stored encryption fields when the edit
+	// does not carry them (old clients, location-only edits).
+	if req.Encrypted == nil {
+		encrypted = msg.Encrypted
+	}
+	if req.EncryptedPayload == nil {
+		payload = msg.EncryptedPayload
+	}
+
+	if err := validateEncryptedPayload(encrypted, payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -416,7 +507,7 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	maxLen := maxMessageLen
-	if req.Encrypted {
+	if encrypted {
 		maxLen = encryptedMaxLen
 	}
 
@@ -451,8 +542,8 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 			"text":             req.Text,
 			"fileIDs":          req.FileIDs,
 			"location":         req.Location,
-			"encrypted":        req.Encrypted,
-			"encryptedPayload": req.EncryptedPayload,
+			"encrypted":        encrypted,
+			"encryptedPayload": payload,
 		})
 
 		eventData := map[string]any{
@@ -468,8 +559,8 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 			"text":             req.Text,
 			"fileIDs":          req.FileIDs,
 			"location":         req.Location,
-			"encrypted":        req.Encrypted,
-			"encryptedPayload": req.EncryptedPayload,
+			"encrypted":        encrypted,
+			"encryptedPayload": payload,
 		})
 
 		for _, memberID := range chat.Members {

@@ -141,7 +141,13 @@ export function useThreads({
 				}
 
 				if (userId !== undefined && key !== null) {
-					entries.push([t.id, await decryptMessageText(parent, userId, key)]);
+					let parentText: string;
+					try {
+						parentText = await decryptMessageText(parent, userId, key);
+					} catch {
+						parentText = i18n.t("message.undecryptable");
+					}
+					entries.push([t.id, parentText]);
 				} else {
 					entries.push([t.id, i18n.t("message.undecryptable")]);
 				}

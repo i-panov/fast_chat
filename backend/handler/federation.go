@@ -366,6 +366,11 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateEncryptedPayload(req.Encrypted, req.EncryptedPayload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if !userIDBelongsToServer(req.FromID, chat.RemoteServer) {
 		writeError(w, http.StatusForbidden, "fromId does not belong to remote server")
 		return
@@ -483,8 +488,8 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		Text             string          `json:"text"`
 		FileIDs          []string        `json:"fileIDs,omitempty"`
 		Location         json.RawMessage `json:"location"`
-		Encrypted        bool            `json:"encrypted"`
-		EncryptedPayload string          `json:"encryptedPayload"`
+		Encrypted        *bool           `json:"encrypted"`
+		EncryptedPayload *string         `json:"encryptedPayload"`
 	}
 
 	if err := h.decodeJSON(r, &req); err != nil {
@@ -492,9 +497,40 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	encrypted := req.Encrypted != nil && *req.Encrypted
+	payload := ""
+	if req.EncryptedPayload != nil {
+		payload = *req.EncryptedPayload
+	}
+
+	// Patch semantics: when the edit does not carry encryption fields,
+	// keep the stored values so broadcast/response stay consistent with
+	// what EditRawMessage left in the store.
+	if req.Encrypted == nil {
+		encrypted = stored.Encrypted
+	}
+	if req.EncryptedPayload == nil {
+		payload = stored.EncryptedPayload
+	}
+
+	if err := validateEncryptedPayload(encrypted, payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	location, clearLocation, locErr := parseLocationPatch(req.Location)
 	if locErr != nil {
 		writeError(w, http.StatusBadRequest, locErr.Error())
+		return
+	}
+
+	req.Text = strings.TrimSpace(req.Text)
+	maxLen := maxMessageLen
+	if encrypted {
+		maxLen = encryptedMaxLen
+	}
+	if utf8.RuneCountInString(req.Text) > maxLen {
+		writeError(w, http.StatusBadRequest, "message too long")
 		return
 	}
 
@@ -512,8 +548,8 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		FromID:           stored.FromID,
 		FromNick:         stored.FromNick,
 		Text:             req.Text,
-		Encrypted:        req.Encrypted,
-		EncryptedPayload: req.EncryptedPayload,
+		Encrypted:        encrypted,
+		EncryptedPayload: payload,
 		CreatedAt:        stored.CreatedAt,
 		EditedAt:         &now,
 	}

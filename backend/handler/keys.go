@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -34,6 +36,13 @@ func decodePublicKey(s string) ([]byte, error) {
 	return nil, errors.New("invalid public key")
 }
 
+// keyVersionFor derives a short fingerprint from the public key so
+// clients can detect a changed key and refresh their cache.
+func keyVersionFor(publicKey string) string {
+	sum := sha256.Sum256([]byte(publicKey))
+	return hex.EncodeToString(sum[:6])
+}
+
 // UpdatePublicKey stores the authenticated user's E2E X25519 public key
 // (base64). Private keys never leave the client.
 func (h *Handler) UpdatePublicKey(w http.ResponseWriter, r *http.Request) {
@@ -50,12 +59,14 @@ func (h *Handler) UpdatePublicKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := decodePublicKey(req.PublicKey); err != nil {
+	rawKey, err := decodePublicKey(req.PublicKey)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid public key")
 		return
 	}
+	normalized := base64.StdEncoding.EncodeToString(rawKey)
 
-	if err := h.store.UpdateUserPublicKey(r.Context(), user.ID, req.PublicKey); err != nil {
+	if err := h.store.UpdateUserPublicKey(r.Context(), user.ID, normalized); err != nil {
 		logger.Error("failed to update public key", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -77,7 +88,10 @@ func (h *Handler) GetUserPublicKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		WriteJSON(w, http.StatusOK, map[string]string{"publicKey": key})
+		WriteJSON(w, http.StatusOK, map[string]string{
+			"publicKey":  key,
+			"keyVersion": keyVersionFor(key),
+		})
 		return
 	}
 
@@ -91,7 +105,8 @@ func (h *Handler) GetUserPublicKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result struct {
-		PublicKey string `json:"publicKey"`
+		PublicKey  string `json:"publicKey"`
+		KeyVersion string `json:"keyVersion"`
 	}
 
 	if err := json.Unmarshal(data, &result); err != nil || result.PublicKey == "" {
@@ -99,7 +114,14 @@ func (h *Handler) GetUserPublicKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, map[string]string{"publicKey": result.PublicKey})
+	if result.KeyVersion == "" {
+		result.KeyVersion = keyVersionFor(result.PublicKey)
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"publicKey":  result.PublicKey,
+		"keyVersion": result.KeyVersion,
+	})
 }
 
 // FederatedGetUserPublicKey serves a public key to a remote server.
@@ -117,5 +139,8 @@ func (h *Handler) FederatedGetUserPublicKey(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, map[string]string{"publicKey": key})
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"publicKey":  key,
+		"keyVersion": keyVersionFor(key),
+	})
 }

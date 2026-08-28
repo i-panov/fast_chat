@@ -114,6 +114,7 @@
 	"error.invalidCoords": "Неверные координаты",
 	"error.geolocationDenied": "Геолокация недоступна",
 	"error.encryptionKeyMissing": "Не удалось зашифровать сообщение: нет ключа шифрования одного из участников",
+	"error.encryptionKeyMissingMembers": "Не удалось зашифровать сообщение: у {{members}} нет ключа шифрования",
 	"error.boundaryTitle": "Что-то пошло не так",
 	"error.boundaryMessage": "В приложении произошла непредвиденная ошибка.",
 	"error.boundaryReset": "Попробовать снова",

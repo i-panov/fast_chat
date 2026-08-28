@@ -112,6 +112,7 @@
 	"error.invalidCoords": "Invalid coordinates",
 	"error.geolocationDenied": "Geolocation unavailable",
 	"error.encryptionKeyMissing": "Failed to encrypt message: no encryption key for one of the participants",
+	"error.encryptionKeyMissingMembers": "Failed to encrypt message: {{members}} have no encryption key",
 	"error.boundaryTitle": "Something went wrong",
 	"error.boundaryMessage": "The application encountered an unexpected error.",
 	"error.boundaryReset": "Try again",
