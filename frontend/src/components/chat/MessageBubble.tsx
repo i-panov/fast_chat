@@ -91,7 +91,7 @@ function deepEq(a: unknown, b: unknown): boolean {
 	return false;
 }
 
-function areEqual(prev: Props, next: Props): boolean {
+function primitivePropsEqual(prev: Props, next: Props): boolean {
 	return (
 		prev.text === next.text &&
 		prev.isOwn === next.isOwn &&
@@ -100,9 +100,6 @@ function areEqual(prev: Props, next: Props): boolean {
 		prev.chatId === next.chatId &&
 		prev.msgId === next.msgId &&
 		prev.editedAt === next.editedAt &&
-		deepEq(prev.replyTo, next.replyTo) &&
-		deepEq(prev.files, next.files) &&
-		deepEq(prev.location, next.location) &&
 		prev.editTTL === next.editTTL &&
 		prev.deleteTTL === next.deleteTTL &&
 		prev.createdAt === next.createdAt &&
@@ -114,6 +111,222 @@ function areEqual(prev: Props, next: Props): boolean {
 		prev.showAuthorNick === next.showAuthorNick &&
 		prev.encrypted === next.encrypted &&
 		prev.undecryptable === next.undecryptable
+	);
+}
+
+function deepPropsEqual(prev: Props, next: Props): boolean {
+	return (
+		deepEq(prev.replyTo, next.replyTo) &&
+		deepEq(prev.files, next.files) &&
+		deepEq(prev.location, next.location)
+	);
+}
+
+function areEqual(prev: Props, next: Props): boolean {
+	return primitivePropsEqual(prev, next) && deepPropsEqual(prev, next);
+}
+
+function BubbleAuthor({
+	showAuthorNick,
+	isOwn,
+	fromNick,
+}: {
+	showAuthorNick?: boolean;
+	isOwn: boolean;
+	fromNick?: string;
+}) {
+	if (showAuthorNick !== true || isOwn || fromNick === undefined) return null;
+	return <MessageAuthor nick={fromNick} />;
+}
+
+function BubbleContent({
+	replyTo,
+	photoBlobUrl,
+	onReplyClick,
+	files,
+	status,
+	onPhotoClick,
+	location,
+	onOpenLocation,
+}: {
+	replyTo?: ReplyToInfo;
+	photoBlobUrl: string | null;
+	onReplyClick?: (messageId: string) => void;
+	files?: FileInfo[];
+	status?: "sent" | "queued" | "failed";
+	onPhotoClick: (idx: number) => void;
+	location?: Location;
+	onOpenLocation: () => void;
+}) {
+	return (
+		<>
+			{replyTo !== undefined && (
+				<MessageReplyPreview
+					replyTo={replyTo}
+					photoBlobUrl={photoBlobUrl}
+					onReplyClick={onReplyClick}
+				/>
+			)}
+			{(files ?? []).length > 0 && (
+				<MessageAttachments
+					files={files ?? []}
+					status={status}
+					onPhotoClick={onPhotoClick}
+				/>
+			)}
+			{location !== undefined && (
+				<MessageLocation location={location} onOpen={onOpenLocation} />
+			)}
+		</>
+	);
+}
+
+function BubbleThreadLink({
+	threadId,
+	threadMessageCount,
+	isOwn,
+	onOpenThread,
+}: {
+	threadId?: string;
+	threadMessageCount?: number;
+	isOwn: boolean;
+	onOpenThread?: (threadId: string) => void;
+}) {
+	if (threadId === undefined || onOpenThread === undefined) return null;
+	return (
+		<MessageThreadLink
+			threadId={threadId}
+			threadMessageCount={threadMessageCount}
+			isOwn={isOwn}
+			onOpen={onOpenThread}
+		/>
+	);
+}
+
+function BubbleContextMenu({
+	menuPos,
+	canEdit,
+	canDelete,
+	canCancelSend,
+	canReply,
+	canCreateThread,
+	status,
+	text,
+	chatId,
+	msgId,
+	files,
+	threadId,
+	onStartEdit,
+	onRetry,
+	onCancelSend,
+	onReply,
+	onCreateThread,
+	onDelete,
+	onClose,
+	menuRef,
+	firstMenuItemRef,
+}: {
+	menuPos: { x: number; y: number } | null;
+	canEdit: boolean;
+	canDelete: boolean;
+	canCancelSend: boolean;
+	canReply: boolean;
+	canCreateThread: boolean;
+	status?: "sent" | "queued" | "failed";
+	text: string;
+	chatId: string;
+	msgId: string;
+	files?: FileInfo[];
+	threadId?: string;
+	onStartEdit: Props["onStartEdit"];
+	onRetry: Props["onRetry"];
+	onCancelSend: Props["onCancelSend"];
+	onReply: Props["onReply"];
+	onCreateThread: Props["onCreateThread"];
+	onDelete: Props["onDelete"];
+	onClose: () => void;
+	menuRef: React.RefObject<HTMLDivElement | null>;
+	firstMenuItemRef: React.RefObject<HTMLButtonElement | null>;
+}) {
+	return (
+		<MessageContextMenu
+			opened={menuPos !== null}
+			position={menuPos ?? { x: 0, y: 0 }}
+			canEdit={canEdit}
+			canDelete={canDelete}
+			canCancelSend={canCancelSend}
+			canReply={canReply}
+			canCreateThread={canCreateThread}
+			hasText={text.length > 0}
+			status={status}
+			onCopy={() => {
+				void navigator.clipboard.writeText(text);
+				onClose();
+			}}
+			onEdit={() => {
+				onStartEdit(chatId, msgId, text, files, threadId);
+				onClose();
+			}}
+			onRetry={() => {
+				void onRetry?.(chatId, msgId);
+				onClose();
+			}}
+			onCancelSend={() => {
+				onCancelSend?.(chatId, msgId);
+				onClose();
+			}}
+			onReply={() => {
+				onReply?.(chatId, msgId);
+				onClose();
+			}}
+			onCreateThread={() => {
+				onCreateThread?.(chatId, msgId);
+				onClose();
+			}}
+			onDelete={() => {
+				void onDelete(chatId, msgId);
+				onClose();
+			}}
+			onClose={onClose}
+			menuRef={menuRef}
+			firstMenuItemRef={firstMenuItemRef}
+		/>
+	);
+}
+
+function BubbleLightboxes({
+	photoFiles,
+	lightboxIdx,
+	setLightboxIdx,
+	location,
+	locationLightboxOpen,
+	setLocationLightboxOpen,
+}: {
+	photoFiles: FileInfo[];
+	lightboxIdx: number | null;
+	setLightboxIdx: (idx: number | null) => void;
+	location?: Location;
+	locationLightboxOpen: boolean;
+	setLocationLightboxOpen: (open: boolean) => void;
+}) {
+	return (
+		<>
+			{lightboxIdx !== null && photoFiles[lightboxIdx] && (
+				<ImageLightbox
+					images={photoFiles}
+					startIndex={lightboxIdx}
+					onClose={() => setLightboxIdx(null)}
+				/>
+			)}
+			{locationLightboxOpen && location !== undefined && (
+				<LocationLightbox
+					open={locationLightboxOpen}
+					location={location}
+					editable={false}
+					onClose={() => setLocationLightboxOpen(false)}
+				/>
+			)}
+		</>
 	);
 }
 
@@ -221,9 +434,11 @@ export const MessageBubble = memo(function MessageBubble({
 
 	return (
 		<>
-			{showAuthorNick === true && !isOwn && fromNick !== undefined && (
-				<MessageAuthor nick={fromNick} />
-			)}
+			<BubbleAuthor
+				showAuthorNick={showAuthorNick}
+				isOwn={isOwn}
+				fromNick={fromNick}
+			/>
 			<Paper
 				className={isOwn ? "bubble-own" : "bubble-other"}
 				data-message-id={msgId}
@@ -233,26 +448,16 @@ export const MessageBubble = memo(function MessageBubble({
 				}}
 				style={{ overflow: "hidden" }}
 			>
-				{replyTo !== undefined && (
-					<MessageReplyPreview
-						replyTo={replyTo}
-						photoBlobUrl={replyPhotoBlobUrl}
-						onReplyClick={onReplyClick}
-					/>
-				)}
-				{(files ?? []).length > 0 && (
-					<MessageAttachments
-						files={files ?? []}
-						status={status}
-						onPhotoClick={(idx) => setLightboxIdx(idx)}
-					/>
-				)}
-				{location !== undefined && (
-					<MessageLocation
-						location={location}
-						onOpen={() => setLocationLightboxOpen(true)}
-					/>
-				)}
+				<BubbleContent
+					replyTo={replyTo}
+					photoBlobUrl={replyPhotoBlobUrl}
+					onReplyClick={onReplyClick}
+					files={files}
+					status={status}
+					onPhotoClick={setLightboxIdx}
+					location={location}
+					onOpenLocation={() => setLocationLightboxOpen(true)}
+				/>
 				<MessageBody
 					text={text}
 					status={status}
@@ -265,71 +470,43 @@ export const MessageBubble = memo(function MessageBubble({
 					undecryptable={undecryptable}
 				/>
 			</Paper>
-			{threadId !== undefined && onOpenThread !== undefined && (
-				<MessageThreadLink
-					threadId={threadId}
-					threadMessageCount={threadMessageCount}
-					isOwn={isOwn}
-					onOpen={onOpenThread}
-				/>
-			)}
-			<MessageContextMenu
-				opened={menuPos !== null}
-				position={menuPos ?? { x: 0, y: 0 }}
+			<BubbleThreadLink
+				threadId={threadId}
+				threadMessageCount={threadMessageCount}
+				isOwn={isOwn}
+				onOpenThread={onOpenThread}
+			/>
+			<BubbleContextMenu
+				menuPos={menuPos}
 				canEdit={canEdit}
 				canDelete={canDelete}
 				canCancelSend={canCancelSend}
 				canReply={canReply}
 				canCreateThread={canCreateThread}
-				hasText={text.length > 0}
 				status={status}
-				onCopy={() => {
-					void navigator.clipboard.writeText(text);
-					closeMenu();
-				}}
-				onEdit={() => {
-					onStartEdit(chatId, msgId, text, files, threadId);
-					closeMenu();
-				}}
-				onRetry={() => {
-					void onRetry?.(chatId, msgId);
-					closeMenu();
-				}}
-				onCancelSend={() => {
-					onCancelSend?.(chatId, msgId);
-					closeMenu();
-				}}
-				onReply={() => {
-					onReply?.(chatId, msgId);
-					closeMenu();
-				}}
-				onCreateThread={() => {
-					onCreateThread?.(chatId, msgId);
-					closeMenu();
-				}}
-				onDelete={() => {
-					void onDelete(chatId, msgId);
-					closeMenu();
-				}}
+				text={text}
+				chatId={chatId}
+				msgId={msgId}
+				files={files}
+				threadId={threadId}
+				onStartEdit={onStartEdit}
+				onRetry={onRetry}
+				onCancelSend={onCancelSend}
+				onReply={onReply}
+				onCreateThread={onCreateThread}
+				onDelete={onDelete}
 				onClose={closeMenu}
 				menuRef={menuRef}
 				firstMenuItemRef={firstMenuItemRef}
 			/>
-			{lightboxIdx !== null && photoFiles[lightboxIdx] && (
-				<ImageLightbox
-					images={photoFiles}
-					startIndex={lightboxIdx}
-					onClose={() => setLightboxIdx(null)}
-				/>
-			)}
-			{locationLightboxOpen && location !== undefined && (
-				<LocationLightbox
-					open={locationLightboxOpen}
-					location={location}
-					editable={false}
-					onClose={() => setLocationLightboxOpen(false)}
-				/>
-			)}
+			<BubbleLightboxes
+				photoFiles={photoFiles}
+				lightboxIdx={lightboxIdx}
+				setLightboxIdx={setLightboxIdx}
+				location={location}
+				locationLightboxOpen={locationLightboxOpen}
+				setLocationLightboxOpen={setLocationLightboxOpen}
+			/>
 		</>
 	);
 }, areEqual);

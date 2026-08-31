@@ -97,6 +97,19 @@ export function LocationPickerModal({
 		setCenter([loc.lat, loc.lng]);
 	}
 
+	function handleCoordChange(field: "lat" | "lng", raw: number | string) {
+		const n = typeof raw === "number" ? raw : Number(raw);
+		if (Number.isFinite(n)) {
+			handlePositionChange(
+				field === "lat"
+					? { lat: n, lng: position.lng }
+					: { lat: position.lat, lng: n },
+			);
+		} else {
+			setPosition((p) => ({ ...p, [field]: Number.NaN }));
+		}
+	}
+
 	async function locateDevice() {
 		setBusy(true);
 		setErrorKey(null);
@@ -183,14 +196,7 @@ export function LocationPickerModal({
 					<NumberInput
 						label={t("input.locationCoords")}
 						value={position.lat}
-						onChange={(value) => {
-							const n = typeof value === "number" ? value : Number(value);
-							if (Number.isFinite(n)) {
-								handlePositionChange({ lat: n, lng: position.lng });
-							} else {
-								setPosition((p) => ({ ...p, lat: Number.NaN }));
-							}
-						}}
+						onChange={(value) => handleCoordChange("lat", value)}
 						decimalScale={6}
 						min={-90}
 						max={90}
@@ -199,14 +205,7 @@ export function LocationPickerModal({
 					<NumberInput
 						label="Lng"
 						value={position.lng}
-						onChange={(value) => {
-							const n = typeof value === "number" ? value : Number(value);
-							if (Number.isFinite(n)) {
-								handlePositionChange({ lat: position.lat, lng: n });
-							} else {
-								setPosition((p) => ({ ...p, lng: Number.NaN }));
-							}
-						}}
+						onChange={(value) => handleCoordChange("lng", value)}
 						decimalScale={6}
 						min={-180}
 						max={180}

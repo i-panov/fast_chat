@@ -26,6 +26,180 @@ interface Props {
 	onUploadAvatar: (file: File) => void | Promise<void>;
 }
 
+interface GroupNameSectionProps {
+	name: string;
+	editing: boolean;
+	draft: string;
+	busy: boolean;
+	isOwner: boolean;
+	onDraftChange: (value: string) => void;
+	onCommit: () => void;
+	onCancel: () => void;
+	onStartRename: () => void;
+}
+
+function GroupNameSection({
+	name,
+	editing,
+	draft,
+	busy,
+	isOwner,
+	onDraftChange,
+	onCommit,
+	onCancel,
+	onStartRename,
+}: GroupNameSectionProps) {
+	const { t } = useTranslation();
+
+	if (!editing) {
+		return (
+			<Group justify="space-between" align="center">
+				<Text fw={600}>{name}</Text>
+				{isOwner && (
+					<Button variant="subtle" size="xs" onClick={onStartRename}>
+						{t("chat.rename")}
+					</Button>
+				)}
+			</Group>
+		);
+	}
+
+	return (
+		<Group gap="xs">
+			<TextInput
+				value={draft}
+				onChange={(e) => onDraftChange(e.currentTarget.value)}
+				maxLength={60}
+				style={{ flex: 1 }}
+				autoFocus
+			/>
+			<Button onClick={onCommit} loading={busy} size="xs">
+				{t("chat.save")}
+			</Button>
+			<Button variant="default" onClick={onCancel} size="xs">
+				{t("accounts.cancel")}
+			</Button>
+		</Group>
+	);
+}
+
+interface AddMemberSectionProps {
+	query: string;
+	results: User[];
+	onQueryChange: (value: string) => void;
+	onAddMember: (userId: string) => void;
+}
+
+function AddMemberSection({
+	query,
+	results,
+	onQueryChange,
+	onAddMember,
+}: AddMemberSectionProps) {
+	const { t } = useTranslation();
+
+	return (
+		<div>
+			<Text size="sm" fw={500} mb={4}>
+				{t("chat.addMember")}
+			</Text>
+			<TextInput
+				placeholder={t("search.placeholder")}
+				value={query}
+				onChange={(e) => onQueryChange(e.currentTarget.value)}
+			/>
+			{results.length > 0 && (
+				<ScrollArea
+					style={{
+						maxHeight: 140,
+						border: "1px solid var(--mantine-color-dark-4)",
+						borderRadius: 4,
+						marginTop: 4,
+					}}
+				>
+					{results.map((u) => (
+						<Button
+							key={u.id}
+							variant="subtle"
+							color="gray"
+							fullWidth
+							justify="flex-start"
+							style={{ borderRadius: 0 }}
+							onClick={() => onAddMember(u.id)}
+						>
+							<Text size="sm">@{u.nick}</Text>
+						</Button>
+					))}
+				</ScrollArea>
+			)}
+		</div>
+	);
+}
+
+interface DangerActionsSectionProps {
+	confirming: "leave" | "delete" | null;
+	canLeave: boolean;
+	isOwner: boolean;
+	busy: boolean;
+	onRequestLeave: () => void;
+	onRequestDelete: () => void;
+	onConfirm: () => void;
+	onCancel: () => void;
+}
+
+function DangerActionsSection({
+	confirming,
+	canLeave,
+	isOwner,
+	busy,
+	onRequestLeave,
+	onRequestDelete,
+	onConfirm,
+	onCancel,
+}: DangerActionsSectionProps) {
+	const { t } = useTranslation();
+
+	if (confirming !== null) {
+		return (
+			<Group>
+				<Text size="sm" c={confirming === "delete" ? "red" : "orange"}>
+					{confirming === "delete"
+						? t("chat.deleteGroupConfirm")
+						: t("chat.leaveGroupConfirm")}
+				</Text>
+				<Button
+					color={confirming === "delete" ? "red" : "orange"}
+					size="xs"
+					loading={busy}
+					onClick={onConfirm}
+				>
+					{t("chat.save")}
+				</Button>
+				<Button variant="default" size="xs" onClick={onCancel}>
+					{t("accounts.cancel")}
+				</Button>
+			</Group>
+		);
+	}
+
+	return (
+		<>
+			{canLeave && (
+				<Button color="orange" variant="default" onClick={onRequestLeave}>
+					{t("chat.leaveGroup")}
+				</Button>
+			)}
+			{isOwner ? (
+				<Button color="red" onClick={onRequestDelete}>
+					{t("chat.deleteGroup")}
+				</Button>
+			) : (
+				<div />
+			)}
+		</>
+	);
+}
+
 export function GroupSettingsModal({
 	open,
 	chat,
@@ -135,42 +309,19 @@ export function GroupSettingsModal({
 					onUploadAvatar={onUploadAvatar}
 				/>
 
-				{editingName ? (
-					<Group gap="xs">
-						<TextInput
-							value={nameDraft}
-							onChange={(e) => setNameDraft(e.currentTarget.value)}
-							maxLength={60}
-							style={{ flex: 1 }}
-							autoFocus
-						/>
-						<Button
-							onClick={() => {
-								void commitRename();
-							}}
-							loading={busy}
-							size="xs"
-						>
-							{t("chat.save")}
-						</Button>
-						<Button
-							variant="default"
-							onClick={() => setEditingName(false)}
-							size="xs"
-						>
-							{t("accounts.cancel")}
-						</Button>
-					</Group>
-				) : (
-					<Group justify="space-between" align="center">
-						<Text fw={600}>{chat.name}</Text>
-						{isOwner && (
-							<Button variant="subtle" size="xs" onClick={startRename}>
-								{t("chat.rename")}
-							</Button>
-						)}
-					</Group>
-				)}
+				<GroupNameSection
+					name={chat.name}
+					editing={editingName}
+					draft={nameDraft}
+					busy={busy}
+					isOwner={isOwner}
+					onDraftChange={setNameDraft}
+					onCommit={() => {
+						void commitRename();
+					}}
+					onCancel={() => setEditingName(false)}
+					onStartRename={startRename}
+				/>
 
 				<GroupMembersList
 					members={chat.members}
@@ -184,92 +335,31 @@ export function GroupSettingsModal({
 				/>
 
 				{isOwner && (
-					<div>
-						<Text size="sm" fw={500} mb={4}>
-							{t("chat.addMember")}
-						</Text>
-						<TextInput
-							placeholder={t("search.placeholder")}
-							value={query}
-							onChange={(e) => handleQueryChange(e.currentTarget.value)}
-						/>
-						{results.length > 0 && (
-							<ScrollArea
-								style={{
-									maxHeight: 140,
-									border: "1px solid var(--mantine-color-dark-4)",
-									borderRadius: 4,
-									marginTop: 4,
-								}}
-							>
-								{results.map((u) => (
-									<Button
-										key={u.id}
-										variant="subtle"
-										color="gray"
-										fullWidth
-										justify="flex-start"
-										style={{ borderRadius: 0 }}
-										onClick={() => {
-											setQuery("");
-											setResults([]);
-											void onAddMember(u.id);
-										}}
-									>
-										<Text size="sm">@{u.nick}</Text>
-									</Button>
-								))}
-							</ScrollArea>
-						)}
-					</div>
+					<AddMemberSection
+						query={query}
+						results={results}
+						onQueryChange={handleQueryChange}
+						onAddMember={(id) => {
+							setQuery("");
+							setResults([]);
+							void onAddMember(id);
+						}}
+					/>
 				)}
 
 				<Group justify="space-between">
-					{confirming === null ? (
-						<>
-							{canLeave && (
-								<Button
-									color="orange"
-									variant="default"
-									onClick={() => setConfirming("leave")}
-								>
-									{t("chat.leaveGroup")}
-								</Button>
-							)}
-							{isOwner ? (
-								<Button color="red" onClick={() => setConfirming("delete")}>
-									{t("chat.deleteGroup")}
-								</Button>
-							) : (
-								<div />
-							)}
-						</>
-					) : (
-						<Group>
-							<Text size="sm" c={confirming === "delete" ? "red" : "orange"}>
-								{confirming === "delete"
-									? t("chat.deleteGroupConfirm")
-									: t("chat.leaveGroupConfirm")}
-							</Text>
-							<Button
-								color={confirming === "delete" ? "red" : "orange"}
-								size="xs"
-								loading={busy}
-								onClick={() => {
-									void handleConfirm();
-								}}
-							>
-								{t("chat.save")}
-							</Button>
-							<Button
-								variant="default"
-								size="xs"
-								onClick={() => setConfirming(null)}
-							>
-								{t("accounts.cancel")}
-							</Button>
-						</Group>
-					)}
+					<DangerActionsSection
+						confirming={confirming}
+						canLeave={canLeave}
+						isOwner={isOwner}
+						busy={busy}
+						onRequestLeave={() => setConfirming("leave")}
+						onRequestDelete={() => setConfirming("delete")}
+						onConfirm={() => {
+							void handleConfirm();
+						}}
+						onCancel={() => setConfirming(null)}
+					/>
 				</Group>
 			</Stack>
 		</Modal>

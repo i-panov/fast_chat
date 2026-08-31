@@ -13,6 +13,7 @@ const KEY_BYTES = 32; // XChaCha20-Poly1305 key length
 // Version tag in the serialized payload. Bumped whenever the blob shape
 // changes so we can reject old blobs and migrate rather than mis-parsing.
 const BLOB_VERSION = 1;
+const MALFORMED_BACKUP_MSG = "malformed backup blob";
 
 interface PlainBackup {
 	publicKey: string;
@@ -113,7 +114,7 @@ export async function decryptBackup(
 			new TextDecoder().decode(fromBase64(blob)),
 		) as BlobPayload;
 	} catch {
-		throw new E2EBackupError("malformed backup blob");
+		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}
 
 	if (
@@ -121,7 +122,7 @@ export async function decryptBackup(
 		typeof payload?.nonce !== "string" ||
 		typeof payload?.ct !== "string"
 	) {
-		throw new E2EBackupError("malformed backup blob");
+		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}
 
 	// Reject blobs written by an older (or newer) format rather than
@@ -138,14 +139,14 @@ export async function decryptBackup(
 		nonce = sodium.from_base64(payload.nonce);
 		ciphertext = sodium.from_base64(payload.ct);
 	} catch {
-		throw new E2EBackupError("malformed backup blob");
+		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}
 
 	if (
 		salt.length !== SALT_BYTES ||
 		nonce.length !== sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
 	) {
-		throw new E2EBackupError("malformed backup blob");
+		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}
 
 	const key = await deriveKey(password, salt);
@@ -167,14 +168,14 @@ export async function decryptBackup(
 	try {
 		parsed = JSON.parse(sodium.to_string(plain)) as PlainBackup;
 	} catch {
-		throw new E2EBackupError("malformed backup blob");
+		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}
 
 	if (
 		typeof parsed?.publicKey !== "string" ||
 		typeof parsed?.privateKey !== "string"
 	) {
-		throw new E2EBackupError("malformed backup blob");
+		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}
 
 	return { publicKey: parsed.publicKey, privateKey: parsed.privateKey };

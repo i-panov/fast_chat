@@ -20,6 +20,43 @@ import type { AppConfig } from "./types/api.ts";
 import { useAuth } from "./useAuth.tsx";
 import { clearAllData } from "./utils/clearAllData.ts";
 
+const dividerBorder = "1px solid var(--mantine-color-dark-4)";
+
+function ConfirmModal({
+	open,
+	title,
+	body,
+	confirmLabel,
+	loading,
+	onCancel,
+	onConfirm,
+}: {
+	open: boolean;
+	title: string;
+	body: string;
+	confirmLabel: string;
+	loading?: boolean;
+	onCancel: () => void;
+	onConfirm: () => void;
+}) {
+	const { t } = useTranslation();
+	return (
+		<Modal opened={open} onClose={onCancel} title={title} size="sm">
+			<Text size="sm" mb="md">
+				{body}
+			</Text>
+			<div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+				<Button variant="default" disabled={loading} onClick={onCancel}>
+					{t("accounts.cancel")}
+				</Button>
+				<Button color="red" loading={loading} onClick={onConfirm}>
+					{confirmLabel}
+				</Button>
+			</div>
+		</Modal>
+	);
+}
+
 interface Props {
 	open: boolean;
 	onClose: () => void;
@@ -43,7 +80,7 @@ function AccountRow({
 				gap: "12px",
 				width: "100%",
 				padding: "12px 16px",
-				borderBottom: "1px solid var(--mantine-color-dark-4)",
+				borderBottom: dividerBorder,
 				background: isActive ? "var(--mantine-color-dark-6)" : undefined,
 			}}
 			onMouseEnter={(e) => {
@@ -189,7 +226,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 			<div
 				style={{
 					padding: "16px",
-					borderBottom: "1px solid var(--mantine-color-dark-4)",
+					borderBottom: dividerBorder,
 				}}
 			>
 				<Title
@@ -207,7 +244,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 			/>
 			<div
 				style={{
-					borderTop: "1px solid var(--mantine-color-dark-4)",
+					borderTop: dividerBorder,
 					padding: "16px",
 				}}
 			>
@@ -251,7 +288,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 				</Button>
 				<div
 					style={{
-						borderTop: "1px solid var(--mantine-color-dark-4)",
+						borderTop: dividerBorder,
 						padding: "12px 0 0",
 						marginTop: "12px",
 					}}
@@ -274,63 +311,29 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					)}
 				</div>
 			</div>
-			<Modal
-				opened={confirmLogout}
-				onClose={() => setConfirmLogout(false)}
+			<ConfirmModal
+				open={confirmLogout}
 				title={t("accounts.logoutTitle")}
-				size="sm"
-			>
-				<Text size="sm" mb="md">
-					{t("accounts.logoutConfirm")}
-				</Text>
-				<div
-					style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}
-				>
-					<Button variant="default" onClick={() => setConfirmLogout(false)}>
-						{t("accounts.cancel")}
-					</Button>
-					<Button
-						color="red"
-						onClick={() => {
-							setConfirmLogout(false);
-							onLogout();
-							onClose();
-						}}
-					>
-						{t("accounts.logout")}
-					</Button>
-				</div>
-			</Modal>
-			<Modal
-				opened={confirmClearData}
-				onClose={() => setConfirmClearData(false)}
+				body={t("accounts.logoutConfirm")}
+				confirmLabel={t("accounts.logout")}
+				onCancel={() => setConfirmLogout(false)}
+				onConfirm={() => {
+					setConfirmLogout(false);
+					onLogout();
+					onClose();
+				}}
+			/>
+			<ConfirmModal
+				open={confirmClearData}
 				title={t("accounts.clearDataTitle")}
-				size="sm"
-			>
-				<Text size="sm" mb="md">
-					{t("accounts.clearDataConfirm")}
-				</Text>
-				<div
-					style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}
-				>
-					<Button
-						variant="default"
-						disabled={clearDataLoading}
-						onClick={() => setConfirmClearData(false)}
-					>
-						{t("accounts.cancel")}
-					</Button>
-					<Button
-						color="red"
-						loading={clearDataLoading}
-						onClick={() => {
-							void handleClearData();
-						}}
-					>
-						{t("accounts.clearData")}
-					</Button>
-				</div>
-			</Modal>
+				body={t("accounts.clearDataConfirm")}
+				confirmLabel={t("accounts.clearData")}
+				loading={clearDataLoading}
+				onCancel={() => setConfirmClearData(false)}
+				onConfirm={() => {
+					void handleClearData();
+				}}
+			/>
 			{activeAccount !== null && (
 				<BackupSettingsModal
 					open={backupOpen}

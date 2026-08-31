@@ -18,6 +18,8 @@ export interface EncryptResult {
 	encryptedPayload: string; // JSON payload
 }
 
+const UNDECRYPTABLE_I18N_KEY = "message.undecryptable";
+
 // encryptMessageText encrypts plaintext to every recipient's public key
 // and returns the ciphertext plus the envelope payload. Only the holder
 // of a recipient's private key can open its envelope.
@@ -93,12 +95,12 @@ export async function decryptMessage(
 	const out = toMessage(message);
 
 	if (key === null) {
-		out.text = i18n.t("message.undecryptable");
+		out.text = i18n.t(UNDECRYPTABLE_I18N_KEY);
 		out.undecryptable = true;
 		if (message.replyTo !== undefined) {
 			out.replyTo = {
 				...message.replyTo,
-				text: i18n.t("message.undecryptable"),
+				text: i18n.t(UNDECRYPTABLE_I18N_KEY),
 			};
 		}
 		return out;
@@ -107,7 +109,7 @@ export async function decryptMessage(
 	try {
 		out.text = await decryptMessageText(message, userId, key);
 	} catch {
-		out.text = i18n.t("message.undecryptable");
+		out.text = i18n.t(UNDECRYPTABLE_I18N_KEY);
 		out.undecryptable = true;
 	}
 
@@ -126,7 +128,7 @@ export async function decryptMessage(
 				}
 			}
 		} catch {
-			parentText = i18n.t("message.undecryptable");
+			parentText = i18n.t(UNDECRYPTABLE_I18N_KEY);
 		}
 
 		out.replyTo = {

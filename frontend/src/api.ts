@@ -14,6 +14,7 @@ import type {
 import { emitUnauthorized } from "./utils/authEvents.ts";
 
 const HTTP_UNAUTHORIZED = 401;
+const KEY_BACKUP_ENDPOINT = "/api/users/key-backup";
 
 async function request<T>(
 	path: string,
@@ -219,18 +220,18 @@ export function getPublicKey(token: string, userId: string) {
 }
 
 export function setKeyBackup(token: string, backup: string) {
-	return request<{ status: string }>("/api/users/key-backup", token, {
+	return request<{ status: string }>(KEY_BACKUP_ENDPOINT, token, {
 		method: "PUT",
 		body: JSON.stringify({ backup }),
 	});
 }
 
 export function getKeyBackup(token: string) {
-	return request<{ backup: string }>("/api/users/key-backup", token);
+	return request<{ backup: string }>(KEY_BACKUP_ENDPOINT, token);
 }
 
 export function deleteKeyBackup(token: string) {
-	return request<{ status: string }>("/api/users/key-backup", token, {
+	return request<{ status: string }>(KEY_BACKUP_ENDPOINT, token, {
 		method: "DELETE",
 	});
 }

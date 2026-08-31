@@ -39,48 +39,10 @@ interface UseThreadsReturn {
 
 const PAGE_SIZE = 30;
 
-export function useThreads({
-	token,
-	chatId,
-}: UseThreadsParams): UseThreadsReturn {
-	const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-	const [threadHasMore, setThreadHasMore] = useState(false);
-	const [threadIsLoadingMore, setThreadIsLoadingMore] = useState(false);
-
-	const threadNextCursorsRef = useRef<Record<string, string | null>>({});
-	const threadLoadingMoreRef = useRef(false);
-	const knownThreadIdsRef = useRef<Set<string>>(new Set());
-
-	const allStored = useLiveQuery<StoredThread[]>(
-		useCallback(() => {
-			if (chatId === null) return Promise.resolve([]);
-			return threadsRepo.getByChat(chatId);
-		}, [chatId]),
-	);
-
-	const activeThreadMessagesStored = useLiveQuery<StoredThreadMessage[]>(
-		useCallback(() => {
-			if (activeThreadId === null) return Promise.resolve([]);
-			return threadMessagesRepo.getByThread(activeThreadId);
-		}, [activeThreadId]),
-	);
-
-	const { threadsMap, messageToThread } = useMemo(() => {
-		const tm: Record<string, Thread> = {};
-		const mt: Record<string, string> = {};
-		if (allStored) {
-			for (const t of allStored) {
-				const thread = stripMeta(t);
-				tm[thread.id] = thread;
-				mt[thread.parentMessageId] = thread.id;
-			}
-		}
-		return { threadsMap: tm, messageToThread: mt };
-	}, [allStored]);
-
-	const { activeAccount } = useAuth();
-	const userId = activeAccount?.user.id;
-
+function useDecryptedThreadMessages(
+	activeThreadMessagesStored: StoredThreadMessage[] | undefined,
+	userId: string | undefined,
+): Message[] {
 	const [decryptedThreadMessages, setDecryptedThreadMessages] = useState<
 		Message[]
 	>([]);
@@ -110,10 +72,15 @@ export function useThreads({
 		};
 	}, [activeThreadMessagesStored, userId]);
 
-	const activeThreadMessages = decryptedThreadMessages;
+	return decryptedThreadMessages;
+}
 
-	// The thread header shows the parent message text, which is encrypted
-	// on the server. Resolve it from the parent message's own record.
+// The thread header shows the parent message text, which is encrypted
+// on the server. Resolve it from the parent message's own record.
+function useThreadParentText(
+	threadsMap: Record<string, Thread>,
+	userId: string | undefined,
+): Record<string, string> {
 	const [threadParentText, setThreadParentText] = useState<
 		Record<string, string>
 	>({});
@@ -159,6 +126,66 @@ export function useThreads({
 		};
 	}, [threadsMap, userId]);
 
+	return threadParentText;
+}
+
+function fetchThreadsFromServer(token: string, chatId: string): Promise<void> {
+	return getThreads(token, chatId).then(({ threads: ts }) => {
+		if (ts.length > 0) {
+			void threadsRepo.upsertMany(ts);
+		}
+	});
+}
+
+export function useThreads({
+	token,
+	chatId,
+}: UseThreadsParams): UseThreadsReturn {
+	const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+	const [threadHasMore, setThreadHasMore] = useState(false);
+	const [threadIsLoadingMore, setThreadIsLoadingMore] = useState(false);
+
+	const threadNextCursorsRef = useRef<Record<string, string | null>>({});
+	const threadLoadingMoreRef = useRef(false);
+	const knownThreadIdsRef = useRef<Set<string>>(new Set());
+
+	const allStored = useLiveQuery<StoredThread[]>(
+		useCallback(() => {
+			if (chatId === null) return Promise.resolve([]);
+			return threadsRepo.getByChat(chatId);
+		}, [chatId]),
+	);
+
+	const activeThreadMessagesStored = useLiveQuery<StoredThreadMessage[]>(
+		useCallback(() => {
+			if (activeThreadId === null) return Promise.resolve([]);
+			return threadMessagesRepo.getByThread(activeThreadId);
+		}, [activeThreadId]),
+	);
+
+	const { threadsMap, messageToThread } = useMemo(() => {
+		const tm: Record<string, Thread> = {};
+		const mt: Record<string, string> = {};
+		if (allStored) {
+			for (const t of allStored) {
+				const thread = stripMeta(t);
+				tm[thread.id] = thread;
+				mt[thread.parentMessageId] = thread.id;
+			}
+		}
+		return { threadsMap: tm, messageToThread: mt };
+	}, [allStored]);
+
+	const { activeAccount } = useAuth();
+	const userId = activeAccount?.user.id;
+
+	const activeThreadMessages = useDecryptedThreadMessages(
+		activeThreadMessagesStored,
+		userId,
+	);
+
+	const threadParentText = useThreadParentText(threadsMap, userId);
+
 	useEffect(() => {
 		if (allStored) {
 			knownThreadIdsRef.current = new Set(allStored.map((t) => t.id));
@@ -169,13 +196,7 @@ export function useThreads({
 	useEffect(() => {
 		if (!token || !chatId) return;
 
-		getThreads(token, chatId)
-			.then(({ threads: ts }) => {
-				if (ts.length > 0) {
-					void threadsRepo.upsertMany(ts);
-				}
-			})
-			.catch(() => {});
+		fetchThreadsFromServer(token, chatId).catch(() => {});
 	}, [token, chatId]);
 
 	// Load thread messages from server when opening a thread

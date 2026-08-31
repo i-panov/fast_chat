@@ -5,6 +5,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import globals from "globals";
 import react from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
+import sonarjs from "eslint-plugin-sonarjs";
 import tseslint from "typescript-eslint";
 
 export default defineConfig([
@@ -37,6 +38,7 @@ export default defineConfig([
 		plugins: {
 			react,
 			"react-hooks": reactHooks,
+			sonarjs: sonarjs.configs.recommended.plugins.sonarjs,
 		},
 		settings: {
 			react: {
@@ -63,6 +65,24 @@ export default defineConfig([
 			// the recommended key/derive-in-render patterns without
 			// blocking the existing, tested implementations.
 			"react-hooks/set-state-in-effect": "warn",
+			// Copy-paste detection.
+			"sonarjs/no-identical-functions": "error",
+			"sonarjs/no-duplicate-string": "error",
+			// Oversized code: file / function size and complexity.
+			"max-lines": ["error", { max: 500, skipBlankLines: true, skipComments: true }],
+			"max-lines-per-function": ["error", { max: 200, skipBlankLines: true, skipComments: true }],
+			"max-statements": ["error", 65],
+			complexity: ["error", 30],
+		},
+	},
+
+	// Test files repeat fixture strings by design; mirror the backend, which
+	// excludes *_test.go from dupl and funlen.
+	{
+		files: ["**/*.{test,spec}.{ts,tsx}", "**/__tests__/**/*.{ts,tsx}"],
+		rules: {
+			"sonarjs/no-duplicate-string": "off",
+			"max-lines-per-function": "off",
 		},
 	},
 
