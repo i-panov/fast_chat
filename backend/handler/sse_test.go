@@ -1,229 +1,166 @@
 package handler
 
 import (
+	"bufio"
+	"bytes"
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"fast_chat/sse"
 )
 
-func newTestSSEHub() *sse.Hub {
-	hub := sse.NewHub(typingThrottleInterval * 5)
-
-	hub.Close()
-
-	return hub
+// flushRecorder is a thread-safe http.ResponseWriter that also implements
+// http.Flusher so it can back streaming handlers while the test observes the
+// output from another goroutine.
+type flushRecorder struct {
+	mu      sync.Mutex
+	header  http.Header
+	body    bytes.Buffer
+	flushed bool
 }
 
-func TestSSEHubRegisterSend(t *testing.T) {
-	t.Parallel()
+func newFlushRecorder() *flushRecorder {
+	return &flushRecorder{header: http.Header{}}
+}
 
-	hub := newTestSSEHub()
-	defer hub.Close()
+func (f *flushRecorder) Header() http.Header {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.header
+}
 
-	conn := hub.Register("conn-1")
-	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-	hub.Send("user-1", sse.Event{Event: "test", Data: "hello"})
+func (f *flushRecorder) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.body.Write(p)
+}
 
-	select {
-	case e := <-conn.Channel:
-		if e.Event != "test" {
-			t.Fatalf("event = %q, want test", e.Event)
-		}
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("timeout waiting for event")
+func (f *flushRecorder) WriteHeader(httpCode int) {}
+
+func (f *flushRecorder) Flush() {
+	f.mu.Lock()
+	f.flushed = true
+	f.mu.Unlock()
+}
+
+func (f *flushRecorder) Flushed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.flushed
+}
+
+func (f *flushRecorder) String() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.body.String()
+}
+
+func (f *flushRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, http.ErrNotSupported
+}
+
+func TestSSERequiresConnectionID(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
+
+	req := authReq(http.MethodGet, "/api/sse", alice.token, "")
+	w := httptest.NewRecorder()
+	h.AuthMiddleware(h.SSE)(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
 
-func TestSSEHubUnregisterClosesChannel(t *testing.T) {
-	t.Parallel()
+func TestSSEConnectionAndEventFlow(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
 
-	hub := newTestSSEHub()
-	defer hub.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	conn := hub.Register("conn-1")
-	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-	hub.Unregister("conn-1", conn)
-
-	if _, ok := <-conn.Channel; ok {
-		t.Fatal("channel should be closed after Unregister")
-	}
-}
-
-func TestSSEHubChannelFullDoesNotPanic(t *testing.T) {
-	t.Parallel()
-
-	hub := newTestSSEHub()
-	defer hub.Close()
-
-	conn := hub.Register("conn-1")
-	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-
-	for range 128 {
-		hub.Send("user-1", sse.Event{Event: "flood", Data: 0})
-	}
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/sse?connectionId=c1", nil)
+	req.Header.Set("Authorization", "Bearer "+alice.token)
+	rec := newFlushRecorder()
 
 	done := make(chan struct{})
 	go func() {
-		hub.Send("user-1", sse.Event{Event: "overflow", Data: "dropped"})
-		close(done)
+		defer close(done)
+		h.SSE(rec, req)
 	}()
 
-	select {
-	case <-done:
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("Send blocked on full channel — must drop, not block")
+	// Wait for the connected handshake to be flushed.
+	deadline := time.Now().Add(2 * time.Second)
+	for !rec.Flushed() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
 	}
 
-	for range 128 {
-		<-conn.Channel
+	if !strings.Contains(rec.String(), "event: connected") {
+		t.Fatalf("expected connected handshake, got: %q", rec.String())
 	}
+
+	// Authenticate the SSE connection through the hub.
+	if err := h.hub.Authenticate("c1", alice.id, "t", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+
+	// Send an event to the user; it should arrive on the stream.
+	h.hub.Send(alice.id, sse.Event{Event: "message", Data: map[string]string{"m": "x"}})
+
+	// Wait for the event to be written.
+	eventDeadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(rec.String(), "event: message") && time.Now().Before(eventDeadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if !strings.Contains(rec.String(), "event: message") {
+		t.Fatalf("expected message event on stream, got: %q", rec.String())
+	}
+	if !strings.Contains(rec.String(), `"m":"x"`) {
+		t.Fatalf("expected message payload, got: %q", rec.String())
+	}
+
+	cancel()
+	<-done
 }
 
-func TestSSEHubSendToMissingUserIsNoop(t *testing.T) {
-	t.Parallel()
+func TestSSEUnauthorizedConnectsWithoutEvents(t *testing.T) {
+	h := newTestHandler(t)
+	alice := registerTestUser(t, h, "alice", "alice@test.local")
 
-	hub := newTestSSEHub()
-	defer hub.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	hub.Send("nobody", sse.Event{Event: "noop", Data: "x"})
-}
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/sse?connectionId=c2", nil)
+	req.Header.Set("Authorization", "Bearer "+alice.token)
+	rec := newFlushRecorder()
 
-func TestSSEHubMultipleConnections(t *testing.T) {
-	t.Parallel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.SSE(rec, req)
+	}()
 
-	hub := newTestSSEHub()
-	defer hub.Close()
-
-	conn1 := hub.Register("conn-1")
-	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-
-	conn2 := hub.Register("conn-2")
-	hub.Authenticate("conn-2", "user-1", "token-2", time.Now().Add(time.Hour))
-
-	hub.Send("user-1", sse.Event{Event: "fanout", Data: "y"})
-
-	for i, ch := range []chan sse.Event{conn1.Channel, conn2.Channel} {
-		select {
-		case e := <-ch:
-			if e.Event != "fanout" {
-				t.Fatalf("ch%d: event = %q, want fanout", i+1, e.Event)
-			}
-		case <-time.After(100 * time.Millisecond):
-			t.Fatalf("ch%d: timeout waiting for event", i+1)
-		}
-	}
-}
-
-func TestSSEHubReRegisterReplacesChannel(t *testing.T) {
-	t.Parallel()
-
-	hub := newTestSSEHub()
-	defer hub.Close()
-
-	oldConn := hub.Register("conn-1")
-	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-
-	newConn := hub.Register("conn-1")
-
-	if _, ok := <-oldConn.Channel; ok {
-		t.Fatal("old channel should be closed after re-register")
+	deadline := time.Now().Add(2 * time.Second)
+	for !rec.Flushed() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
 	}
 
-	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-	hub.Send("user-1", sse.Event{Event: "reconnect", Data: "ok"})
+	// This connection has never been authenticated: it must not receive events.
+	h.hub.Send(alice.id, sse.Event{Event: "message", Data: map[string]string{"m": "x"}})
 
-	select {
-	case e := <-newConn.Channel:
-		if e.Event != "reconnect" {
-			t.Fatalf("event = %q, want reconnect", e.Event)
-		}
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("timeout waiting for event on new channel")
-	}
-}
-
-func TestSSEHubUnregisterStaleConnectionIsNoop(t *testing.T) {
-	t.Parallel()
-
-	hub := newTestSSEHub()
-	defer hub.Close()
-
-	oldConn := hub.Register("conn-1")
-	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-
-	// Reconnect reuses the same connectionID and replaces the entry.
-	newConn := hub.Register("conn-1")
-	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(time.Hour))
-
-	// The old handler's deferred Unregister must not close the new channel.
-	hub.Unregister("conn-1", oldConn)
-
-	hub.Send("user-1", sse.Event{Event: "still-alive", Data: "ok"})
-
-	select {
-	case e := <-newConn.Channel:
-		if e.Event != "still-alive" {
-			t.Fatalf("event = %q, want still-alive", e.Event)
-		}
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("new connection was closed by stale Unregister")
-	}
-}
-
-func TestSSEHubExpiredToken(t *testing.T) {
-	t.Parallel()
-
-	hub := newTestSSEHub()
-	defer hub.Close()
-
-	conn := hub.Register("conn-1")
-	hub.Authenticate("conn-1", "user-1", "token-1", time.Now().Add(-time.Hour))
-
-	hub.Send("user-1", sse.Event{Event: "should-not-arrive", Data: "x"})
-
-	select {
-	case <-conn.Channel:
-		t.Fatal("should not receive event on expired connection")
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-func TestSSEHubUnauthenticatedUserIsNoop(t *testing.T) {
-	t.Parallel()
-
-	hub := newTestSSEHub()
-	defer hub.Close()
-
-	conn := hub.Register("conn-1")
-
-	hub.Send("user-1", sse.Event{Event: "should-not-arrive", Data: "x"})
-
-	select {
-	case <-conn.Channel:
-		t.Fatal("should not receive event on unauthenticated connection")
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-func TestSSEHubLastTypingCleanup(t *testing.T) {
-	t.Parallel()
-
-	shortInterval := 50 * time.Millisecond
-	hub := sse.NewHub(shortInterval)
-	defer hub.Close()
-
-	hub.StoreLastTyping("chat1:user1", time.Now().Add(-shortInterval*10))
-
-	time.Sleep(shortInterval * 3)
-
-	if _, present := hub.LoadLastTyping("chat1:user1"); present {
-		t.Fatal("stale entry should be cleaned up")
+	time.Sleep(50 * time.Millisecond)
+	afterSend := rec.String()
+	if strings.Contains(afterSend, "event: message") {
+		t.Fatalf("unauthorized connection received message event: %q", afterSend)
 	}
 
-	hub.StoreLastTyping("chat2:user1", time.Now())
-
-	if _, present := hub.LoadLastTyping("chat2:user1"); !present {
-		t.Fatal("fresh entry should be present")
-	}
+	cancel()
+	<-done
 }

@@ -9,6 +9,13 @@ import (
 	"fast_chat/model"
 )
 
+// pushSender abstracts the web-push delivery service so the handler can be
+// tested without network access.
+type pushSender interface {
+	PublicKey() string
+	SendToUser(payload []byte, subscriptions []model.PushSubscription)
+}
+
 type pushPayload struct {
 	Title string          `json:"title"`
 	Body  string          `json:"body,omitempty"`
@@ -23,7 +30,7 @@ type pushPayloadData struct {
 }
 
 func (h *Handler) sendPushForMessage(ctx context.Context, chatID string, msg *model.Message, threadID, recipientID string) {
-	if h.pushService == nil || h.store.IsOnline(recipientID) {
+	if h.pushSender == nil || h.store.IsOnline(recipientID) {
 		return
 	}
 
@@ -50,17 +57,17 @@ func (h *Handler) sendPushForMessage(ctx context.Context, chatID string, msg *mo
 		return
 	}
 
-	go h.pushService.SendToUser(raw, subs)
+	go h.pushSender.SendToUser(raw, subs)
 }
 
 func (h *Handler) VapidPublicKey(w http.ResponseWriter, r *http.Request) {
-	if h.pushService == nil {
+	if h.pushSender == nil {
 		writeError(w, http.StatusNotFound, "push not configured")
 
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, map[string]string{"publicKey": h.pushService.PublicKey()})
+	WriteJSON(w, http.StatusOK, map[string]string{"publicKey": h.pushSender.PublicKey()})
 }
 
 func (h *Handler) SubscribePush(w http.ResponseWriter, r *http.Request) {

@@ -63,7 +63,7 @@ type Handler struct {
 	fedSem      chan struct{}
 	fedWG       sync.WaitGroup
 	emailSender email.Sender
-	pushService *push.Service
+	pushSender  pushSender
 }
 
 func New(s *store.Store, cfg *config.Config, fm *federation.Manager, ps *push.Service) *Handler {
@@ -82,7 +82,7 @@ func New(s *store.Store, cfg *config.Config, fm *federation.Manager, ps *push.Se
 		es = email.NewDebugSender()
 	}
 
-	return &Handler{
+	h := &Handler{
 		store:       s,
 		hub:         sse.NewHub(typingThrottleInterval * 5),
 		cfg:         cfg,
@@ -90,8 +90,12 @@ func New(s *store.Store, cfg *config.Config, fm *federation.Manager, ps *push.Se
 		fedClient:   federation.NewSafeHTTPClient(time.Duration(cfg.Federation.Timeout) * time.Second),
 		fedSem:      make(chan struct{}, 16),
 		emailSender: es,
-		pushService: ps,
 	}
+	if ps != nil {
+		h.pushSender = ps
+	}
+
+	return h
 }
 
 func (h *Handler) Close() {
