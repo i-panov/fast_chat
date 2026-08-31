@@ -48,5 +48,12 @@ export default defineConfig({
 		environment: "jsdom",
 		globals: true,
 		setupFiles: ["./vitest.setup.ts"],
+		coverage: {
+			provider: "v8",
+			reporter: ["text", "html"],
+			reportsDirectory: "../coverage/frontend",
+			include: ["src/**"],
+			exclude: ["src/routeTree.gen.ts", "src/sw.ts", "src/main.tsx"],
+		},
 	},
 });

@@ -72,6 +72,17 @@ lint:
 	make backend:lint
 	make frontend:lint
 
+coverage: coverage\:backend coverage\:frontend
+
+coverage\:backend:
+	mkdir -p coverage
+	cd backend && go test -coverprofile=../coverage/backend.out ./...
+	cd backend && go tool cover -func=../coverage/backend.out
+	cd backend && go tool cover -html=../coverage/backend.out -o ../coverage/backend.html
+
+coverage\:frontend:
+	cd frontend && npx vitest run --coverage
+
 build\:frontend:
 	cd frontend && npm ci && npm run build
 

@@ -12,7 +12,8 @@
     "lint": "biome check && eslint .",
     "lint:fix": "biome check --apply",
     "lint:eslint": "eslint .",
-    "lint:eslint:fix": "eslint . --fix"
+    "lint:eslint:fix": "eslint . --fix",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@mantine/core": "^9.2.2",
@@ -53,6 +54,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.4",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
