@@ -58,7 +58,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.5",
-    "@eslint/js": "^9.39.5",
+    "@eslint/js": "^10.0.1",
     "@size-limit/preset-app": "^13.0.3",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/router-plugin": "^1.132.0",
