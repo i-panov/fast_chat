@@ -12,6 +12,9 @@ backend\:lint:
 backend\:test:
 	cd backend && go test -race -count=1 ./...
 
+frontend\:test:
+	cd frontend && npx vitest run
+
 frontend\:run:
 	cd frontend && VITE_API_PROXY=$(API_PROXY) npx vite --host --port $(FRONTEND_PORT)
 
@@ -72,11 +75,15 @@ lint:
 	make backend:lint
 	make frontend:lint
 
+test:
+	make backend:test
+	make frontend:test
+
 coverage: coverage\:backend coverage\:frontend
 
 coverage\:backend:
 	mkdir -p coverage
-	cd backend && go test -coverprofile=../coverage/backend.out ./...
+	cd backend && go test -coverpkg=./... -coverprofile=../coverage/backend.out ./...
 	cd backend && go tool cover -func=../coverage/backend.out
 	cd backend && go tool cover -html=../coverage/backend.out -o ../coverage/backend.html
 

@@ -27,7 +27,7 @@ func (s *Store) AddPushSubscription(ctx context.Context, userID, endpoint, p256d
 		Columns: []clause.Column{{Name: "endpoint"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"user_id": userID,
-			"p256dh":  p256dh,
+			"p256_dh": p256dh,
 			"auth":    auth,
 		}),
 	}).Create(sub).Error; err != nil {

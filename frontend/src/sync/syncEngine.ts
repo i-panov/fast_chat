@@ -9,6 +9,8 @@ export type SyncState = "idle" | "syncing" | "error";
 
 type Listener = (state: SyncState) => void;
 
+const HTTP_STATUS_RE = /^http (\d{3})\b/;
+
 const listeners = new Set<Listener>();
 let currentState: SyncState = "idle";
 let lastError: unknown = null;
@@ -88,13 +90,12 @@ function isTransientSyncError(err: unknown): boolean {
 	if (err instanceof Error) {
 		const msg = err.message.toLowerCase();
 		if (msg === "unauthorized") return false;
-		if (msg.startsWith("http ")) {
-			const code = Number(msg.split(" ")[1]);
+		const statusMatch = HTTP_STATUS_RE.exec(msg);
+		if (statusMatch !== null) {
+			const code = Number(statusMatch[1]);
 			// 429 Too Many Requests and 5xx are transient; other 4xx are
 			// definitive (bad request, forbidden, not found, ...).
-			if (code === 0 || code >= 500) return true;
-			if (code === 429) return true;
-			return false;
+			return code >= 500 || code === 429;
 		}
 		// Network errors (fetch failed, DNS, ...) are transient.
 		return true;

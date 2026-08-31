@@ -7,6 +7,8 @@ import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 
 const RETRY_AFTER_REGEX = /retry-after:(.+)/;
 
+const HTTP_STATUS_RE = /^http (\d{3})\b/;
+
 export async function processOutbox(token: string): Promise<void> {
 	const ops = await outboxRepo.list();
 
@@ -231,12 +233,12 @@ function isTransient(err: unknown): boolean {
 	if (err instanceof Error) {
 		const msg = err.message.toLowerCase();
 		if (msg === "unauthorized") return false;
-		if (msg.startsWith("http ")) {
-			const code = Number(msg.split(" ")[1]);
-			if (code === 0 || code >= 500) return true;
+		const statusMatch = HTTP_STATUS_RE.exec(msg);
+		if (statusMatch !== null) {
+			const code = Number(statusMatch[1]);
 			// 429 Too Many Requests is transient; other 4xx are terminal.
-			if (code === 429) return true;
-			return false;
+			// 5xx are transient too.
+			return code >= 500 || code === 429;
 		}
 		// Network errors (fetch failed, DNS, etc.) are transient.
 		return true;
