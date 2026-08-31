@@ -62,7 +62,7 @@
     "@size-limit/preset-app": "^13.0.3",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/router-plugin": "^1.132.0",
-    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",
     "@types/leaflet": "^1.9.21",
     "@types/node": "^25.9.1",
