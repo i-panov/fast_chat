@@ -29,6 +29,16 @@ func (s *Store) DB() *gorm.DB {
 	return s.db
 }
 
+// Ping verifies the underlying database connection is alive.
+func (s *Store) Ping() error {
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+
+	return sqlDB.Ping()
+}
+
 func (s *Store) Codes() *CodeStore {
 	return s.codes
 }

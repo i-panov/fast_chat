@@ -102,17 +102,6 @@ async function deleteDatabase(name: string): Promise<void> {
 	});
 }
 
-export async function resetDB(): Promise<void> {
-	const name = dbNameFor(activeAccountKey);
-	const open = dbs.get(name);
-	if (open !== undefined) {
-		dbs.delete(name);
-		const db = await open;
-		db.close();
-	}
-	await deleteDatabase(name);
-}
-
 // Close and delete every account's IndexedDB (used by "clear all data").
 export async function resetAllDBs(): Promise<void> {
 	const names: string[] = [];

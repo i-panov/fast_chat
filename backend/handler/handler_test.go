@@ -842,3 +842,41 @@ func TestFederatedSearchUsersRejectsShortQuery(t *testing.T) {
 		t.Errorf("expected empty users for short query, got %d", len(users))
 	}
 }
+
+func TestHealthzHandler(t *testing.T) {
+	w := httptest.NewRecorder()
+	HealthzHandler(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	if resp["status"] != "ok" {
+		t.Errorf("expected status=ok, got %q", resp["status"])
+	}
+}
+
+func TestReadinessHandler(t *testing.T) {
+	h := newTestHandler(t)
+
+	w := httptest.NewRecorder()
+	h.ReadinessHandler(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	if resp["status"] != "ready" {
+		t.Errorf("expected status=ready, got %q", resp["status"])
+	}
+}

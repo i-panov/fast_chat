@@ -67,6 +67,74 @@ func rateLimitMiddleware(rl *ratelimit.RateLimiter, ipExtractor *ratelimit.Clien
 
 const maxBodySize = 1 << 20
 
+// requestLogMiddleware records method, path, status, duration, and client IP for
+// every request. It logs at Info level for success (status < 400) and Warn for
+// client/server errors, giving operators a complete traffic trail via slog.
+func requestLogMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Capture the response status without buffering the whole body.
+		wrapped := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(wrapped, r)
+
+		elapsed := time.Since(start)
+		id := handler.GetRequestID(r.Context())
+
+		level := slog.LevelInfo
+		if wrapped.status >= http.StatusBadRequest {
+			level = slog.LevelWarn
+		}
+
+		slog.LogAttrs(
+			r.Context(),
+			level,
+			"request completed",
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.Int("status", wrapped.status),
+			slog.Duration("duration", elapsed),
+			slog.String("remote_addr", r.RemoteAddr),
+			slog.String("request_id", id),
+		)
+	})
+}
+
+// statusWriter intercepts WriteHeader calls so the middleware can read the final
+// status code after the handler has finished.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// Write ensures the status defaults to 200 if the handler only wrote a body
+// without an explicit WriteHeader — otherwise we'd log status 0.
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+
+	return s.ResponseWriter.Write(b)
+}
+
+// Flush forwards flush calls to the underlying writer. Without this, handlers
+// that type-assert http.Flusher (the SSE stream does) would break behind the
+// logging middleware.
+func (s *statusWriter) Flush() {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func maxBody(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
@@ -85,6 +153,11 @@ func registerRoutes(
 ) {
 
 	mux.HandleFunc("GET /api/config", handlers.GetConfig)
+
+	// Health probes: no auth and no per-route rate limiter (used by
+	// orchestrators). The global generalRL still applies at the outer layer.
+	mux.HandleFunc("GET /healthz", handler.HealthzHandler)
+	mux.HandleFunc("GET /readyz", handlers.ReadinessHandler)
 
 	// Auth routes (no auth middleware, rate limited)
 	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL, ipExtractor)(maxBody(handlers.SendCode)))
@@ -251,10 +324,14 @@ func main() {
 
 	server := &http.Server{
 		Addr: addr,
-		Handler: securityHeadersMiddleware(
-			corsMiddleware(cfg.CORS.Origin)(
-				rateLimitMiddleware(generalRL, ipExtractor)(
-					spaFallbackMiddleware(absStaticDir)(mux),
+		Handler: handler.RequestIDMiddleware(
+			requestLogMiddleware(
+				securityHeadersMiddleware(
+					corsMiddleware(cfg.CORS.Origin)(
+						rateLimitMiddleware(generalRL, ipExtractor)(
+							spaFallbackMiddleware(absStaticDir)(mux),
+						),
+					),
 				),
 			),
 		),

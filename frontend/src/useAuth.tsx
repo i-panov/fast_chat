@@ -10,12 +10,12 @@ import { setActiveAccountKey } from "./db/init.ts";
 import { getRouter } from "./router.tsx";
 import { onUnauthorized } from "./utils/authEvents.ts";
 
-export interface StoredUser {
+interface StoredUser {
 	id: string;
 	nick: string;
 }
 
-export interface StoredAccount {
+interface StoredAccount {
 	token: string;
 	user: StoredUser;
 	email: string;

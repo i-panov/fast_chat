@@ -107,6 +107,12 @@ func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string,
 		req.Header.Set("X-Federation-Signature", signature)
 		req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
 
+		// Propagate the incoming request ID so the upstream server can correlate
+		// logs with the originating request.
+		if id := GetRequestID(ctx); id != "" {
+			req.Header.Set(RequestIDHeader, id)
+		}
+
 		resp, err := h.fedClient.Do(req)
 		if err != nil {
 			lastErr = err

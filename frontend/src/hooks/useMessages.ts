@@ -11,7 +11,7 @@ import { useAuth } from "../useAuth.tsx";
 import { stripMeta } from "../utils/helpers.ts";
 import { emitNotification } from "../utils/notify.ts";
 
-export interface MessageWithStatus extends Message {
+interface MessageWithStatus extends Message {
 	status: MessageStatus;
 }
 

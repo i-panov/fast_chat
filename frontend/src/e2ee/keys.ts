@@ -80,7 +80,7 @@ function accountScope(): string {
 
 // --- Server key backup (recovery) ---------------------------------------
 
-export type BackupState = "none" | "backup" | "unknown";
+type BackupState = "none" | "backup" | "unknown";
 
 // serverBackupState asks whether this account has a backup blob on the
 // server. Distinguishes 404 (no backup) from other failures (unknown,
@@ -248,7 +248,7 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 // getRecipientPublicKey returns another user's public key, fetching and
 // caching it from the server (transparently proxying federated users).
 // The cache expires after a few minutes so key changes are picked up.
-export async function getRecipientPublicKey(
+async function getRecipientPublicKey(
 	token: string,
 	userId: string,
 ): Promise<string> {

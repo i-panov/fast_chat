@@ -24,6 +24,12 @@ frontend\:lint:
 frontend\:lint\:fix:
 	cd frontend && npx biome check --write src/ && npx eslint . --fix
 
+frontend\:lint\:deadcode:
+	cd frontend && npx knip
+
+frontend\:size:
+	cd frontend && npx size-limit
+
 frontend\:format:
 	cd frontend && npx biome format --write src/
 
@@ -74,6 +80,9 @@ codeql\:frontend:
 lint:
 	make backend:lint
 	make frontend:lint
+
+dead-code:
+	make frontend:lint:deadcode
 
 test:
 	make backend:test

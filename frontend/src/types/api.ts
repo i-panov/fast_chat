@@ -78,13 +78,6 @@ export interface Message {
 	readBy?: string[];
 }
 
-export interface MessageReadStatus {
-	messageId: string;
-	userId: string;
-	status: "delivered" | "read";
-	readAt: string;
-}
-
 export interface Thread {
 	id: string;
 	chatId: string;
@@ -102,14 +95,14 @@ export interface AppConfig {
 	commit?: string;
 }
 
-export interface VerifyCodeExisting {
+interface VerifyCodeExisting {
 	isNew: false;
 	user: User;
 	token: string;
 	expiresAt: string;
 }
 
-export interface VerifyCodeNew {
+interface VerifyCodeNew {
 	isNew: true;
 	setupToken: string;
 }
@@ -131,13 +124,13 @@ export interface TypingPayload {
 	nick: string;
 }
 
-export interface SyncDeletedMessage {
+interface SyncDeletedMessage {
 	chatId: string;
 	messageId: string;
 	deletedAt: string;
 }
 
-export interface SyncDeletedChat {
+interface SyncDeletedChat {
 	chatId: string;
 	deletedAt: string;
 }

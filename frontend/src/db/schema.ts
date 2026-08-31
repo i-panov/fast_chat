@@ -93,7 +93,7 @@ export interface OutboxOpEdit {
 	threadId?: string;
 }
 
-export interface OutboxOpDelete {
+interface OutboxOpDelete {
 	kind: "delete";
 	opId: string;
 	status?: "pending" | "failed";
@@ -122,7 +122,7 @@ export interface CachedFile {
 	size: number;
 }
 
-export interface MetaEntry {
+interface MetaEntry {
 	key: string;
 	value: unknown;
 }

@@ -89,10 +89,6 @@ export function searchUsers(token: string, q: string) {
 	);
 }
 
-export function getChats(token: string) {
-	return request<{ chats: Chat[] }>("/api/chats", token);
-}
-
 export function createChat(token: string, opts: CreateChatOptions) {
 	return request<{ chat: Chat }>("/api/chats", token, {
 		method: "POST",
@@ -373,11 +369,4 @@ export function subscribePush(
 			body: JSON.stringify({ endpoint, p256dh, auth }),
 		},
 	);
-}
-
-export function unsubscribePush(token: string, endpoint: string) {
-	return request<{ status: string }>("/api/push/subscribe", token, {
-		method: "DELETE",
-		body: JSON.stringify({ endpoint }),
-	});
 }
