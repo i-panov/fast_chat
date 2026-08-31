@@ -118,14 +118,18 @@ export function RecoveryModal({ activeToken }: Props) {
 						variant="default"
 						loading={working === "decline"}
 						disabled={loading}
-						onClick={handleDecline}
+						onClick={() => {
+							void handleDecline();
+						}}
 					>
 						{t("backup.recoveryDecline")}
 					</Button>
 					<Button
 						loading={working === "recover"}
 						disabled={password === ""}
-						onClick={handleRecover}
+						onClick={() => {
+							void handleRecover();
+						}}
 					>
 						{t("backup.recoveryRecover")}
 					</Button>

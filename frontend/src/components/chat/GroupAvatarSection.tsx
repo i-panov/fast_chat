@@ -14,7 +14,7 @@ interface Props {
 	chat: Pick<Chat, "avatarUrl" | "name">;
 	token: string | undefined;
 	isOwner: boolean;
-	onUploadAvatar: (file: File) => void;
+	onUploadAvatar: (file: File) => void | Promise<void>;
 }
 
 export function GroupAvatarSection({
@@ -52,7 +52,7 @@ export function GroupAvatarSection({
 				<FileButton
 					onChange={(file) => {
 						if (file !== null) {
-							onUploadAvatar(file);
+							void onUploadAvatar(file);
 						}
 					}}
 					accept="image/png,image/jpeg,image/gif,image/webp"

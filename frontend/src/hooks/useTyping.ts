@@ -61,9 +61,10 @@ export function useTyping({ token }: UseTypingParams): UseTypingReturn {
 
 	// Автоматическая очистка индикаторов набора
 	useEffect(() => {
+		const timers = typingTimersRef.current;
 		return () => {
 			// Очистка всех таймеров при размонтировании
-			for (const timerId of Object.values(typingTimersRef.current)) {
+			for (const timerId of Object.values(timers)) {
 				clearTimeout(timerId);
 			}
 		};

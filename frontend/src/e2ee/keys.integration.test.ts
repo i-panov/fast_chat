@@ -26,7 +26,7 @@ vi.mock("../api.ts", () => ({
 		if (backupOnServer === null) {
 			throw new Error("http 404: no key backup");
 		}
-		return { backup: backupOnServer as string };
+		return { backup: backupOnServer };
 	}),
 	setKeyBackup: vi.fn((_token: string, backup: string) => {
 		backupOnServer = backup;

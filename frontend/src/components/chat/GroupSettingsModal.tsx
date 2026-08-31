@@ -144,7 +144,13 @@ export function GroupSettingsModal({
 							style={{ flex: 1 }}
 							autoFocus
 						/>
-						<Button onClick={commitRename} loading={busy} size="xs">
+						<Button
+							onClick={() => {
+								void commitRename();
+							}}
+							loading={busy}
+							size="xs"
+						>
 							{t("chat.save")}
 						</Button>
 						<Button
@@ -173,7 +179,7 @@ export function GroupSettingsModal({
 					isOwner={isOwner}
 					onRemoveMember={(id) => {
 						setConfirming(null);
-						onRemoveMember(id);
+						void onRemoveMember(id);
 					}}
 				/>
 
@@ -207,7 +213,7 @@ export function GroupSettingsModal({
 										onClick={() => {
 											setQuery("");
 											setResults([]);
-											onAddMember(u.id);
+											void onAddMember(u.id);
 										}}
 									>
 										<Text size="sm">@{u.nick}</Text>
@@ -249,7 +255,9 @@ export function GroupSettingsModal({
 								color={confirming === "delete" ? "red" : "orange"}
 								size="xs"
 								loading={busy}
-								onClick={handleConfirm}
+								onClick={() => {
+									void handleConfirm();
+								}}
 							>
 								{t("chat.save")}
 							</Button>

@@ -38,7 +38,7 @@ export function useMessageSearch(
 				clearTimeout(searchTimerRef.current);
 			}
 
-			searchTimerRef.current = setTimeout(async () => {
+			const debouncedSearch = async () => {
 				if (!token) return;
 				try {
 					const { users } = await searchUsers(token, value);
@@ -47,6 +47,10 @@ export function useMessageSearch(
 				} catch {
 					setShowSearchResults(false);
 				}
+			};
+
+			searchTimerRef.current = setTimeout(() => {
+				void debouncedSearch();
 			}, 300);
 		},
 		[token],

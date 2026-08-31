@@ -109,6 +109,16 @@ function useAuthState() {
 	const [activeToken, setActiveToken] = useState<string | null>(() =>
 		resolveActiveToken(accounts),
 	);
+	// Restore the active token when the account list changes and no token
+	// is currently active (e.g. accounts arrived from another tab).
+	const [prevAccounts, setPrevAccounts] = useState(accounts);
+	if (accounts !== prevAccounts) {
+		setPrevAccounts(accounts);
+		if (activeToken === null) {
+			const resolved = resolveActiveToken(accounts);
+			if (resolved !== null) setActiveToken(resolved);
+		}
+	}
 
 	useEffect(() => {
 		function handleStorage(e: StorageEvent) {
@@ -121,15 +131,6 @@ function useAuthState() {
 	}, []);
 
 	useEffect(() => {
-		if (activeToken === null && accounts.length > 0) {
-			const resolved = resolveActiveToken(accounts);
-			if (resolved !== null) {
-				setActiveToken(resolved);
-			}
-		}
-	}, [accounts, activeToken]);
-
-	useEffect(() => {
 		const unsub = onUnauthorized((token) => {
 			const updated = readAccounts().filter((a) => a.token !== token);
 			writeAccounts(updated);
@@ -139,7 +140,7 @@ function useAuthState() {
 				setActiveToken(next);
 				if (next === null) {
 					removeActiveToken();
-					getRouter().navigate({ to: "/login" });
+					void getRouter().navigate({ to: "/login" });
 				} else {
 					writeActiveToken(next);
 				}
@@ -179,7 +180,7 @@ function useAuthState() {
 				if (next === null) {
 					removeActiveToken();
 					removeLastActiveToken();
-					getRouter().navigate({ to: "/login" });
+					void getRouter().navigate({ to: "/login" });
 				} else {
 					writeActiveToken(next);
 				}

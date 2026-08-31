@@ -1,7 +1,7 @@
 import { Anchor, Button, Group, Modal, Stack, Text } from "@mantine/core";
 import type L from "leaflet";
 import { MapPin } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MapContainer, Marker, TileLayer } from "react-leaflet";
 import type { Location } from "../../types/api.ts";
@@ -32,12 +32,6 @@ export function LocationLightbox({
 		lng: location.lng,
 	});
 	const markerRef = useRef<L.Marker | null>(null);
-
-	useEffect(() => {
-		if (open) {
-			setPos({ lat: location.lat, lng: location.lng });
-		}
-	}, [open, location.lat, location.lng]);
 
 	function handleMarkerDragEnd() {
 		const m = markerRef.current;

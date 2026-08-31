@@ -87,7 +87,7 @@ export function useMessages({
 	useEffect(() => {
 		let alive = true;
 
-		(async () => {
+		void (async () => {
 			if (cacheOwnerRef.current !== userId) {
 				cacheOwnerRef.current = userId;
 				decryptCacheRef.current.clear();
@@ -178,7 +178,7 @@ export function useMessages({
 			return;
 		}
 		if (nextCursorsRef.current[chatId] === undefined) {
-			loadMore();
+			void loadMore();
 		} else {
 			setHasMore(nextCursorsRef.current[chatId] !== null);
 		}

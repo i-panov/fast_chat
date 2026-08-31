@@ -54,7 +54,11 @@ export function ThreadView() {
 	const handleCancel = useCallback(
 		(_chatId: string, messageId: string) => {
 			if (activeThreadId !== null) {
-				handleCancelSendMessage(activeChatId ?? "", messageId, activeThreadId);
+				void handleCancelSendMessage(
+					activeChatId ?? "",
+					messageId,
+					activeThreadId,
+				);
 			}
 		},
 		[activeThreadId, activeChatId, handleCancelSendMessage],
@@ -119,7 +123,9 @@ export function ThreadView() {
 				deleteTTL={config?.messageDeleteTTL ?? 0}
 				hasMore={threadHasMore}
 				isLoadingMore={threadIsLoadingMore}
-				onLoadMore={loadMoreThreadMessages}
+				onLoadMore={() => {
+					void loadMoreThreadMessages();
+				}}
 				isInThread
 				onRetry={handleRetry}
 				onCancelSend={handleCancel}
@@ -127,7 +133,9 @@ export function ThreadView() {
 			<InputBar
 				text={inputText}
 				onTextChange={setInputText}
-				onSubmit={handleSendThreadMessage}
+				onSubmit={(e) => {
+					void handleSendThreadMessage(e);
+				}}
 				editing={editingMessage !== null}
 				onCancelEdit={handleCancelEdit}
 				replyToNick={replyToMessage?.fromNick}

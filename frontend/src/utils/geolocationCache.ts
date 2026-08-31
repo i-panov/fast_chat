@@ -6,7 +6,7 @@ export function getLastCachedLocation(): Location | null {
 	try {
 		const raw = localStorage.getItem(CACHED_LOCATION_KEY);
 		if (raw === null) return null;
-		const parsed = JSON.parse(raw);
+		const parsed = JSON.parse(raw) as { lat: unknown; lng: unknown };
 		if (
 			typeof parsed.lat === "number" &&
 			typeof parsed.lng === "number" &&
@@ -50,7 +50,7 @@ export function requestGeolocation(
 				resolve(loc);
 			},
 			(err) => {
-				reject(err);
+				reject(err instanceof Error ? err : new Error(err.message));
 			},
 			options ?? { enableHighAccuracy: true, timeout: 10_000 },
 		);

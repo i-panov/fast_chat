@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import {
 	getSyncState,
 	type SyncState,
@@ -6,10 +6,5 @@ import {
 } from "../sync/syncEngine.ts";
 
 export function useSyncStatus(): SyncState {
-	const [state, setState] = useState<SyncState>(() => getSyncState());
-	useEffect(() => {
-		setState(getSyncState());
-		return subscribeSyncState(setState);
-	}, []);
-	return state;
+	return useSyncExternalStore(subscribeSyncState, getSyncState);
 }

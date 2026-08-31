@@ -57,7 +57,7 @@ self.addEventListener("activate", (event: ExtendableEvent) => {
 		}),
 	);
 
-	self.clients.claim();
+	void self.clients.claim();
 });
 
 registerRoute(
@@ -95,7 +95,7 @@ registerRoute(
 
 registerRoute(() => true, new NetworkOnly());
 
-self.skipWaiting();
+void self.skipWaiting();
 
 self.addEventListener("push", (event: PushEvent) => {
 	if (!event.data) {
@@ -104,7 +104,7 @@ self.addEventListener("push", (event: PushEvent) => {
 
 	let payload: PushPayload;
 	try {
-		payload = event.data.json();
+		payload = event.data.json() as PushPayload;
 	} catch {
 		return;
 	}

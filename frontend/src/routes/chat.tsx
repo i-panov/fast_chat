@@ -8,6 +8,9 @@ function readActiveToken(): string | null {
 export const Route = createFileRoute("/chat")({
 	beforeLoad: () => {
 		if (readActiveToken() === null) {
+			// TanStack Router requires throwing a redirect() object; this
+			// is framework control flow, not an application error.
+			// eslint-disable-next-line @typescript-eslint/only-throw-error
 			throw redirect({ to: "/login" });
 		}
 	},

@@ -66,7 +66,7 @@ export function LoginPage() {
 					email.trim().toLowerCase(),
 					result.expiresAt,
 				);
-				navigate({ to: "/chat" });
+				void navigate({ to: "/chat" });
 			}
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t("error.verifyCode"));
@@ -88,7 +88,7 @@ export function LoginPage() {
 				email.trim().toLowerCase(),
 				result.expiresAt,
 			);
-			navigate({ to: "/chat" });
+			void navigate({ to: "/chat" });
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t("error.register"));
 		} finally {
@@ -105,7 +105,12 @@ export function LoginPage() {
 							<Text ta="center" size="sm" c="dimmed">
 								{t("login.alreadyLoggedIn", { nick: activeAccount.user.nick })}
 							</Text>
-							<Button variant="light" onClick={() => navigate({ to: "/chat" })}>
+							<Button
+								variant="light"
+								onClick={() => {
+									void navigate({ to: "/chat" });
+								}}
+							>
 								{t("login.backToChat")}
 							</Button>
 							<Divider />
@@ -135,7 +140,9 @@ export function LoginPage() {
 							<Button
 								disabled={loading || email.trim().length === 0}
 								loading={loading}
-								onClick={handleSendCode}
+								onClick={() => {
+									void handleSendCode();
+								}}
 							>
 								{t("login.sendCode")}
 							</Button>
@@ -167,7 +174,9 @@ export function LoginPage() {
 							<Button
 								disabled={loading || code.trim().length < 6}
 								loading={loading}
-								onClick={handleVerifyCode}
+								onClick={() => {
+									void handleVerifyCode();
+								}}
 							>
 								{t("login.verify")}
 							</Button>
@@ -194,7 +203,9 @@ export function LoginPage() {
 							<Button
 								disabled={loading || nick.trim().length === 0}
 								loading={loading}
-								onClick={handleCompleteRegistration}
+								onClick={() => {
+									void handleCompleteRegistration();
+								}}
 							>
 								{t("login.join")}
 							</Button>

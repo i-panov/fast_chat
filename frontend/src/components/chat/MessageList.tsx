@@ -37,9 +37,9 @@ function LoadingHeader() {
 	);
 }
 
-function flashElement(el: HTMLElement) {
+function flashElement(el: Element) {
 	el.classList.remove("bubble-flash");
-	void el.offsetWidth;
+	void el.getBoundingClientRect();
 	el.classList.add("bubble-flash");
 	window.setTimeout(() => {
 		el.classList.remove("bubble-flash");
@@ -51,7 +51,7 @@ interface Props {
 	userId: string;
 	chatId: string | null;
 	token: string | undefined;
-	onDelete: (chatId: string, messageId: string) => void;
+	onDelete: (chatId: string, messageId: string) => void | Promise<void>;
 	onStartEdit: (
 		chatId: string,
 		messageId: string,
@@ -70,7 +70,7 @@ interface Props {
 	messageToThread?: Record<string, string>;
 	threads?: Record<string, Thread>;
 	isInThread?: boolean;
-	onRetry?: (chatId: string, messageId: string) => Promise<void>;
+	onRetry?: (chatId: string, messageId: string) => void | Promise<void>;
 	onCancelSend?: (chatId: string, messageId: string) => void;
 	scrollToMessageId?: string | null;
 	showAuthorForGroup?: boolean;
@@ -119,9 +119,7 @@ export function MessageList({
 
 	const handleReplyClick = useCallback((messageId: string) => {
 		prevScrollToRef.current = messageId;
-		const el = document.querySelector(
-			`[data-message-id="${messageId}"]`,
-		) as HTMLElement | null;
+		const el = document.querySelector(`[data-message-id="${messageId}"]`);
 		if (el !== null) {
 			el.scrollIntoView({ behavior: "smooth", block: "center" });
 			flashElement(el);
@@ -314,7 +312,7 @@ export function MessageList({
 					virtuosoRef.current?.scrollToIndex({ index: idx, align: "center" });
 					const el = document.querySelector(
 						`[data-message-id="${scrollToMessageId}"]`,
-					) as HTMLElement | null;
+					);
 					if (el !== null) flashElement(el);
 				}
 			}}

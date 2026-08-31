@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
@@ -25,7 +25,9 @@ export function useSseEvents({
 	onTokenExpired,
 }: UseSseEventsParams) {
 	const tokenRef = useRef(token);
-	tokenRef.current = token;
+	useEffect(() => {
+		tokenRef.current = token;
+	}, [token]);
 
 	const handler = useCallback(
 		async (event: string, data: unknown) => {

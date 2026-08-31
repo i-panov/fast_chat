@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { sseAuth } from "./api.ts";
 
-type EventHandler = (event: string, data: unknown) => void;
+type EventHandler = (event: string, data: unknown) => void | Promise<void>;
 
 const RECONNECT_BASE_MS = 3000;
 const RECONNECT_MAX_MS = 30_000;
@@ -88,7 +88,7 @@ export function useSse(token: string, onEvent: EventHandler) {
 			) {
 				source.addEventListener(event, (e: MessageEvent) => {
 					try {
-						handler(JSON.parse(e.data) as Record<string, unknown>);
+						handler(JSON.parse(e.data as string) as Record<string, unknown>);
 					} catch {
 						/* ignore */
 					}
@@ -114,7 +114,9 @@ export function useSse(token: string, onEvent: EventHandler) {
 			];
 
 			for (const event of jsonEvents) {
-				addJSONListener(event, (data) => onEventRef.current(event, data));
+				addJSONListener(event, (data) => {
+					void onEventRef.current(event, data);
+				});
 			}
 
 			source.addEventListener("connected", () => {
@@ -126,7 +128,7 @@ export function useSse(token: string, onEvent: EventHandler) {
 				// succeeded on this connection, so resetting the backoff here
 				// is safe.
 				reconnectAttempt = 0;
-				onEventRef.current("connected", null);
+				void onEventRef.current("connected", null);
 			});
 
 			source.onopen = () => {
@@ -146,7 +148,7 @@ export function useSse(token: string, onEvent: EventHandler) {
 					// won't retry on its own (that only happens in CONNECTING
 					// state). Notify listeners (e.g. to schedule a sync) and
 					// start a manual reconnect with exponential backoff.
-					onEventRef.current("sse_closed", null);
+					void onEventRef.current("sse_closed", null);
 					scheduleReconnect();
 					return;
 				}
@@ -155,7 +157,7 @@ export function useSse(token: string, onEvent: EventHandler) {
 				if (isConnecting(source)) {
 					return;
 				}
-				onEventRef.current("error", null);
+				void onEventRef.current("error", null);
 			};
 		}
 

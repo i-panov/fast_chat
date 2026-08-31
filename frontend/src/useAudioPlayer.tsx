@@ -31,7 +31,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 	const [isPlaying, setIsPlaying] = useState(false);
 	const audioRef = useRef<HTMLAudioElement | null>(null);
 	const currentTrackRef = useRef(currentTrack);
-	currentTrackRef.current = currentTrack;
+	useEffect(() => {
+		currentTrackRef.current = currentTrack;
+	}, [currentTrack]);
 
 	useEffect(() => {
 		audioRef.current = new Audio();

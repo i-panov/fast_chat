@@ -22,11 +22,11 @@ interface Props {
 	status?: "sent" | "queued" | "failed";
 	onCopy: () => void;
 	onEdit: () => void;
-	onRetry: () => void;
+	onRetry: () => void | Promise<void>;
 	onCancelSend: () => void;
 	onReply: () => void;
 	onCreateThread: () => void;
-	onDelete: () => void;
+	onDelete: () => void | Promise<void>;
 	onClose: () => void;
 	menuRef: React.RefObject<HTMLDivElement | null>;
 	firstMenuItemRef: React.RefObject<HTMLButtonElement | null>;
@@ -64,7 +64,7 @@ export function MessageContextMenu({
 		>
 			<Menu.Target>
 				<div
-					ref={menuRef as React.Ref<HTMLDivElement>}
+					ref={menuRef}
 					style={{
 						position: "fixed",
 						left: position.x,
@@ -95,7 +95,12 @@ export function MessageContextMenu({
 					</Menu.Item>
 				)}
 				{status === "failed" && (
-					<Menu.Item leftSection={<RotateCcw size={14} />} onClick={onRetry}>
+					<Menu.Item
+						leftSection={<RotateCcw size={14} />}
+						onClick={() => {
+							void onRetry();
+						}}
+					>
 						{t("message.retry")}
 					</Menu.Item>
 				)}
@@ -113,7 +118,12 @@ export function MessageContextMenu({
 					</Menu.Item>
 				)}
 				{canDelete && (
-					<Menu.Item leftSection={<Trash2 size={14} />} onClick={onDelete}>
+					<Menu.Item
+						leftSection={<Trash2 size={14} />}
+						onClick={() => {
+							void onDelete();
+						}}
+					>
 						{t("message.delete")}
 					</Menu.Item>
 				)}

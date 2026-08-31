@@ -13,10 +13,7 @@ export function useServerConfig(token: string | null | undefined): {
 	const abortRef = useRef<AbortController | null>(null);
 
 	useEffect(() => {
-		if (!token) {
-			setConfig(null);
-			return;
-		}
+		if (!token) return;
 		abortRef.current?.abort();
 		const ctrl = new AbortController();
 		abortRef.current = ctrl;
@@ -28,5 +25,5 @@ export function useServerConfig(token: string | null | undefined): {
 		return () => ctrl.abort();
 	}, [token]);
 
-	return { config };
+	return { config: token ? config : null };
 }

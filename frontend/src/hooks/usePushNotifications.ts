@@ -84,7 +84,7 @@ export function usePushNotifications(token: string) {
 			}
 		}
 
-		setup();
+		void setup();
 
 		return () => {
 			cancelled = true;
@@ -107,7 +107,7 @@ export function usePushNotifications(token: string) {
 		if (didUnsubscribeRef.current) return;
 		didUnsubscribeRef.current = true;
 
-		(async () => {
+		void (async () => {
 			try {
 				const registration = await navigator.serviceWorker.ready;
 				const subscription = await registration.pushManager.getSubscription();

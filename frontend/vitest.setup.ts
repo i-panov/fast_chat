@@ -14,7 +14,7 @@ class TestTextEncoder implements TextEncoder {
 	encode(input: string = ""): Uint8Array<ArrayBuffer> {
 		return Uint8Array.from(
 			Buffer.from(input, "utf8"),
-		) as unknown as Uint8Array<ArrayBuffer>;
+		);
 	}
 
 	encodeInto(
@@ -43,8 +43,8 @@ class TestTextDecoder implements TextDecoder {
 	}
 }
 
-globalThis.TextEncoder = TestTextEncoder as unknown as typeof TextEncoder;
-globalThis.TextDecoder = TestTextDecoder as unknown as typeof TextDecoder;
+globalThis.TextEncoder = TestTextEncoder;
+globalThis.TextDecoder = TestTextDecoder;
 
 class ResizeObserverMock {
 	observe(): void {}
@@ -53,7 +53,7 @@ class ResizeObserverMock {
 }
 
 if (typeof globalThis.ResizeObserver === "undefined") {
-	globalThis.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
+	globalThis.ResizeObserver = ResizeObserverMock;
 }
 
 if (typeof window.matchMedia !== "function") {
@@ -67,7 +67,7 @@ if (typeof window.matchMedia !== "function") {
 			addEventListener: () => {},
 			removeEventListener: () => {},
 			dispatchEvent: () => false,
-		}) as unknown as MediaQueryList) as typeof window.matchMedia;
+		}));
 }
 
 if (typeof window.scrollTo !== "function") {

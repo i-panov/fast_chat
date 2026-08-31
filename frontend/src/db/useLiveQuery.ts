@@ -18,9 +18,11 @@ export function useLiveQuery<T>(query: () => T | Promise<T>): T {
 	useEffect(() => {
 		let alive = true;
 		const run = () => {
-			Promise.resolve(query()).then((v) => {
-				if (alive) setValue(v);
-			});
+			Promise.resolve(query())
+				.then((v) => {
+					if (alive) setValue(v);
+				})
+				.catch(() => {});
 		};
 		run();
 		const unsub = subscribeToChanges(run);

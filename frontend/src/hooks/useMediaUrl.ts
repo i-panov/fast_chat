@@ -207,13 +207,13 @@ export function useMediaUrl(
 									offset = end + 1;
 									await appendNext();
 								} catch (err) {
-									reject(err);
+									reject(err instanceof Error ? err : new Error(String(err)));
 								}
 							};
 
-							appendNext();
+							void appendNext();
 						} catch (err) {
-							reject(err);
+							reject(err instanceof Error ? err : new Error(String(err)));
 						}
 					},
 					{ once: true },
@@ -221,7 +221,7 @@ export function useMediaUrl(
 			});
 		}
 
-		start();
+		void start();
 
 		return () => {
 			cancelledRef.current = true;

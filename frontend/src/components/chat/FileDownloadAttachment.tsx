@@ -29,9 +29,11 @@ export function FileDownloadAttachment({ file }: Props) {
 			}}
 			onClick={() => {
 				setDownloading(true);
-				downloadFile(file.url, file.originalName, activeAccount?.token).finally(
-					() => setDownloading(false),
-				);
+				void downloadFile(
+					file.url,
+					file.originalName,
+					activeAccount?.token,
+				).finally(() => setDownloading(false));
 			}}
 		>
 			{downloading ? <Loader size="sm" /> : <Download size={24} />}

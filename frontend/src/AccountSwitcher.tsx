@@ -160,6 +160,17 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 		setKeyPair(await getMyKeyPair().catch(() => null));
 	}
 
+	async function handleClearData() {
+		setClearDataLoading(true);
+		try {
+			await clearAllData();
+		} catch (err) {
+			console.error("clearAllData failed", err);
+		}
+		onClose();
+		window.location.replace("/login");
+	}
+
 	return (
 		<Drawer
 			opened={open}
@@ -217,7 +228,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					}}
 					onClick={() => {
 						onClose();
-						navigate({ to: "/login" });
+						void navigate({ to: "/login" });
 					}}
 				>
 					{t("accounts.add")}
@@ -252,7 +263,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 						}))}
 						value={getCurrentLocale()}
 						onChange={(val) => {
-							if (val !== null) i18n.changeLanguage(val);
+							if (val !== null) void i18n.changeLanguage(val);
 						}}
 						size="xs"
 					/>
@@ -312,15 +323,8 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					<Button
 						color="red"
 						loading={clearDataLoading}
-						onClick={async () => {
-							setClearDataLoading(true);
-							try {
-								await clearAllData();
-							} catch (err) {
-								console.error("clearAllData failed", err);
-							}
-							onClose();
-							window.location.replace("/login");
+						onClick={() => {
+							void handleClearData();
 						}}
 					>
 						{t("accounts.clearData")}

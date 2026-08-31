@@ -82,7 +82,10 @@ export interface ChatPageState {
 		e: React.FormEvent<HTMLFormElement>,
 	) => Promise<void>;
 
-	handleDeleteMessage: (chatId: string, messageId: string) => void;
+	handleDeleteMessage: (
+		chatId: string,
+		messageId: string,
+	) => void | Promise<void>;
 
 	editingMessage: EditingMessage | null;
 	handleStartEdit: (

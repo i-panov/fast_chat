@@ -96,7 +96,8 @@ async function deleteDatabase(name: string): Promise<void> {
 	await new Promise<void>((resolve, reject) => {
 		const req = indexedDB.deleteDatabase(name);
 		req.onsuccess = () => resolve();
-		req.onerror = () => reject(req.error);
+		req.onerror = () =>
+			reject(req.error ?? new Error("indexedDB.deleteDatabase failed"));
 		req.onblocked = () => resolve();
 	});
 }

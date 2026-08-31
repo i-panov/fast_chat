@@ -16,10 +16,10 @@ frontend\:run:
 	cd frontend && VITE_API_PROXY=$(API_PROXY) npx vite --host --port $(FRONTEND_PORT)
 
 frontend\:lint:
-	cd frontend && npx biome check src/
+	cd frontend && npx biome check src/ && npx eslint .
 
 frontend\:lint\:fix:
-	cd frontend && npx biome check --write src/
+	cd frontend && npx biome check --write src/ && npx eslint . --fix
 
 frontend\:format:
 	cd frontend && npx biome format --write src/

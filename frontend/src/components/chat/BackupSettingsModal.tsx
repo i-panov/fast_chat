@@ -138,7 +138,9 @@ export function BackupSettingsModal({ open, onClose, token, keyPair }: Props) {
 									color="red"
 									loading={saving}
 									disabled={!hasLocalKey}
-									onClick={handleDelete}
+									onClick={() => {
+										void handleDelete();
+									}}
 								>
 									{t("backup.delete")}
 								</Button>
@@ -146,7 +148,9 @@ export function BackupSettingsModal({ open, onClose, token, keyPair }: Props) {
 							<Button
 								loading={saving}
 								disabled={!canSave || !hasLocalKey}
-								onClick={handleSave}
+								onClick={() => {
+									void handleSave();
+								}}
 							>
 								{exists ? t("backup.change") : t("backup.save")}
 							</Button>

@@ -50,7 +50,7 @@ export function CodeBlock({ className, code, lang }: Props) {
 					color="gray"
 					size="sm"
 					onClick={() => {
-						navigator.clipboard.writeText(code).then(() => {
+						void navigator.clipboard.writeText(code).then(() => {
 							setCopied(true);
 							setTimeout(() => setCopied(false), 2000);
 						});

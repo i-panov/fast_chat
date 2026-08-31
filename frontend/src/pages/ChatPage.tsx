@@ -91,19 +91,25 @@ function ChatHeader({
 
 export function ChatPage() {
 	const s = useChatPage();
+	const { selectChat, handleOpenThread } = s;
 	const { t } = useTranslation();
 
 	usePushNotifications(s.activeAccount?.token ?? "");
 
 	useEffect(() => {
 		function handleMessage(event: MessageEvent) {
-			if (event.data?.type !== "NAVIGATE_TO_CHAT") return;
+			const data = event.data as {
+				type?: string;
+				chatId?: string;
+				threadId?: string;
+			};
+			if (data.type !== "NAVIGATE_TO_CHAT") return;
+			if (typeof data.chatId !== "string") return;
 
-			const { chatId, threadId } = event.data;
-			s.selectChat(chatId);
+			selectChat(data.chatId);
 
-			if (threadId) {
-				s.handleOpenThread(threadId);
+			if (typeof data.threadId === "string") {
+				handleOpenThread(data.threadId);
 			}
 		}
 
@@ -112,7 +118,7 @@ export function ChatPage() {
 		return () => {
 			navigator.serviceWorker.removeEventListener("message", handleMessage);
 		};
-	}, [s.selectChat, s.handleOpenThread]);
+	}, [selectChat, handleOpenThread]);
 
 	useEffect(() => {
 		const params = new URLSearchParams(window.location.search);
@@ -130,11 +136,11 @@ export function ChatPage() {
 			cleanSearch ? `/chat?${cleanSearch}` : "/chat",
 		);
 
-		s.selectChat(chatId);
+		selectChat(chatId);
 		if (threadId) {
-			s.handleOpenThread(threadId);
+			handleOpenThread(threadId);
 		}
-	}, [s.selectChat, s.handleOpenThread]);
+	}, [selectChat, handleOpenThread]);
 
 	if (s.activeAccount === null || s.user === null) {
 		return null;
@@ -177,7 +183,7 @@ export function ChatPage() {
 					isGroup
 						? () => {
 								if (s.activeChat !== undefined) {
-									s.openGroupSettings(s.activeChat.id);
+									void s.openGroupSettings(s.activeChat.id);
 								}
 							}
 						: undefined
@@ -259,7 +265,9 @@ export function ChatPage() {
 										<InputBar
 											text={s.inputText}
 											onTextChange={s.setInputText}
-											onSubmit={s.handleSend}
+											onSubmit={(e) => {
+												void s.handleSend(e);
+											}}
 											editing={s.editingMessage !== null}
 											onCancelEdit={s.handleCancelEdit}
 											replyToNick={s.replyToMessage?.fromNick}
@@ -301,22 +309,34 @@ export function ChatPage() {
 											isLoadingMore={s.isLoadingMore}
 											onLoadMore={
 												s.activeChatId !== null
-													? () => s.loadMoreMessages(s.activeChatId)
+													? () => {
+															void s.loadMoreMessages(s.activeChatId);
+														}
 													: undefined
 											}
-											onCreateThread={s.handleCreateThread}
-											onOpenThread={s.handleOpenThread}
+											onCreateThread={(chatId, messageId) => {
+												void s.handleCreateThread(chatId, messageId);
+											}}
+											onOpenThread={(threadId) => {
+												void s.handleOpenThread(threadId);
+											}}
 											messageToThread={s.messageToThread}
 											threads={s.threads}
-											onRetry={s.handleRetryMessage}
-											onCancelSend={s.handleCancelSendMessage}
+											onRetry={(chatId, messageId) => {
+												void s.handleRetryMessage(chatId, messageId);
+											}}
+											onCancelSend={(chatId, messageId) => {
+												void s.handleCancelSendMessage(chatId, messageId);
+											}}
 											showAuthorForGroup={showAuthorForGroup}
 											isOffline={!s.isOnline}
 										/>
 										<InputBar
 											text={s.inputText}
 											onTextChange={s.setInputText}
-											onSubmit={s.handleSend}
+											onSubmit={(e) => {
+												void s.handleSend(e);
+											}}
 											editing={s.editingMessage !== null}
 											onCancelEdit={s.handleCancelEdit}
 											replyToNick={s.replyToMessage?.fromNick}

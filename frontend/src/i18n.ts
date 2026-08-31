@@ -15,7 +15,7 @@ export function getCurrentLocale(): string {
 	return pickLang(i18n.language);
 }
 
-i18n
+void i18n
 	.use(LanguageDetector)
 	.use(initReactI18next)
 	.init({

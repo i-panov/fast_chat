@@ -178,7 +178,9 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 						{t("accounts.cancel")}
 					</Button>
 					<Button
-						onClick={handleCreate}
+						onClick={() => {
+							void handleCreate();
+						}}
 						disabled={name.trim().length === 0}
 						loading={submitting}
 					>

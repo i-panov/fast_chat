@@ -88,7 +88,7 @@ export function useThreads({
 	useEffect(() => {
 		let alive = true;
 
-		(async () => {
+		void (async () => {
 			const key = await getMyKeyPair();
 			const out: Message[] = [];
 
@@ -98,9 +98,7 @@ export function useThreads({
 				void _tid;
 				void _s;
 				const decrypted: Message =
-					userId !== undefined
-						? await decryptMessage(m, userId, key)
-						: (rest as Message);
+					userId !== undefined ? await decryptMessage(m, userId, key) : rest;
 				out.push(decrypted);
 			}
 
@@ -123,7 +121,7 @@ export function useThreads({
 	useEffect(() => {
 		let alive = true;
 
-		(async () => {
+		void (async () => {
 			const key = await getMyKeyPair();
 			const entries: Array<[string, string]> = [];
 

@@ -9,11 +9,7 @@ export function useFileUrl(
 	const [error, setError] = useState<Error | null>(null);
 
 	useEffect(() => {
-		if (!fileUrl) {
-			setBlobUrl(null);
-			setError(null);
-			return;
-		}
+		if (!fileUrl) return;
 
 		let cancelled = false;
 
@@ -36,7 +32,9 @@ export function useFileUrl(
 		};
 	}, [fileUrl, token]);
 
-	const loading = blobUrl === null && error === null;
+	const effectiveBlobUrl = fileUrl ? blobUrl : null;
+	const effectiveError = fileUrl ? error : null;
+	const loading = effectiveBlobUrl === null && effectiveError === null;
 
-	return { blobUrl, loading, error };
+	return { blobUrl: effectiveBlobUrl, loading, error: effectiveError };
 }

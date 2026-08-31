@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileInfo, Message } from "../types/api.ts";
 import type { EditingMessage, ReplyTarget } from "../types/chat.ts";
 
@@ -34,7 +34,9 @@ export function useMessageEditor(
 		null,
 	);
 	const activeMessagesRef = useRef(activeMessages);
-	activeMessagesRef.current = activeMessages;
+	useEffect(() => {
+		activeMessagesRef.current = activeMessages;
+	}, [activeMessages]);
 
 	const handleStartEdit = useCallback(
 		(

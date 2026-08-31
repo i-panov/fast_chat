@@ -97,7 +97,7 @@ export function LocationPickerModal({
 		setCenter([loc.lat, loc.lng]);
 	}
 
-	async function useDeviceLocation() {
+	async function locateDevice() {
 		setBusy(true);
 		setErrorKey(null);
 		try {
@@ -226,7 +226,9 @@ export function LocationPickerModal({
 						variant="subtle"
 						color="gray"
 						leftSection={busy ? <Loader size={14} /> : <Crosshair size={14} />}
-						onClick={useDeviceLocation}
+						onClick={() => {
+							void locateDevice();
+						}}
 						disabled={busy}
 					>
 						{t("input.locationGetCurrent")}

@@ -45,7 +45,7 @@ interface Props {
 		files?: FileInfo[],
 		threadId?: string,
 	) => void;
-	onDelete: (chatId: string, messageId: string) => void;
+	onDelete: (chatId: string, messageId: string) => void | Promise<void>;
 	onReply?: (chatId: string, messageId: string) => void;
 	editTTL: number;
 	deleteTTL: number;
@@ -57,7 +57,7 @@ interface Props {
 	isInThread?: boolean;
 	status?: "sent" | "queued" | "failed";
 	deliveryStatus?: MessageDeliveryStatus;
-	onRetry?: (chatId: string, messageId: string) => void;
+	onRetry?: (chatId: string, messageId: string) => void | Promise<void>;
 	onCancelSend?: (chatId: string, messageId: string) => void;
 	showAuthorNick?: boolean;
 	encrypted?: boolean;
@@ -78,8 +78,8 @@ function deepEq(a: unknown, b: unknown): boolean {
 		return a.every((v, i) => deepEq(v, b[i]));
 	}
 	if (typeof a === "object" && typeof b === "object") {
-		const ka = Object.keys(a as Record<string, unknown>);
-		const kb = Object.keys(b as Record<string, unknown>);
+		const ka = Object.keys(a);
+		const kb = Object.keys(b);
 		if (ka.length !== kb.length) return false;
 		return ka.every((k) =>
 			deepEq(
@@ -284,7 +284,7 @@ export const MessageBubble = memo(function MessageBubble({
 				hasText={text.length > 0}
 				status={status}
 				onCopy={() => {
-					navigator.clipboard.writeText(text);
+					void navigator.clipboard.writeText(text);
 					closeMenu();
 				}}
 				onEdit={() => {
@@ -292,7 +292,7 @@ export const MessageBubble = memo(function MessageBubble({
 					closeMenu();
 				}}
 				onRetry={() => {
-					onRetry?.(chatId, msgId);
+					void onRetry?.(chatId, msgId);
 					closeMenu();
 				}}
 				onCancelSend={() => {
@@ -308,7 +308,7 @@ export const MessageBubble = memo(function MessageBubble({
 					closeMenu();
 				}}
 				onDelete={() => {
-					onDelete(chatId, msgId);
+					void onDelete(chatId, msgId);
 					closeMenu();
 				}}
 				onClose={closeMenu}
