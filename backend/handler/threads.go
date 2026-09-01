@@ -6,7 +6,7 @@ import (
 	"strconv"
 
 	"fast_chat/model"
-	"fast_chat/sse"
+	"fast_chat/service"
 )
 
 func (h *Handler) CreateThread(w http.ResponseWriter, r *http.Request) {
@@ -21,31 +21,15 @@ func (h *Handler) CreateThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg, err := h.store.GetMessage(r.Context(), chatID, messageID)
+	thread, err := h.svc.CreateThread(r.Context(), chat, chatID, messageID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, errKeyMsgNotFound)
-		return
-	}
+		if messageError(w, err) {
+			return
+		}
 
-	if _, exists := h.store.GetThread(r.Context(), chatID); exists {
-		writeError(w, http.StatusBadRequest, "cannot create thread on a thread message")
-		return
-	}
-
-	if _, exists := h.store.GetThreadByParentMessage(r.Context(), chatID, messageID); exists {
-		writeError(w, http.StatusConflict, "thread already exists")
-		return
-	}
-
-	thread, err := h.store.CreateThread(r.Context(), chatID, messageID, msg.Text, msg.FromNick)
-	if err != nil {
 		slog.Error("failed to create thread", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
-	}
-
-	for _, memberID := range chat.Members {
-		h.hub.Send(memberID, sse.Event{Event: "thread_created", Data: thread})
 	}
 
 	WriteJSON(w, http.StatusCreated, map[string]any{"thread": thread})
@@ -66,33 +50,19 @@ func (h *Handler) GetThreadMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := defaultMessagesLimit
+	limit := service.DefaultMessagesLimit
 
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= maxMessagesLimit {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= service.MaxMessagesLimit {
 			limit = n
 		}
 	}
 
 	before := r.URL.Query().Get("before")
 
-	messages, nextCursor, _ := h.store.GetThreadMessagesPaginated(r.Context(), threadID, limit, before)
+	messages, nextCursor := h.svc.GetThreadMessages(r.Context(), threadID, limit, before)
 	if messages == nil {
 		messages = []model.Message{}
-	}
-
-	if len(messages) > 0 {
-		ids := make([]string, len(messages))
-		for i, m := range messages {
-			ids[i] = m.ID
-		}
-
-		filesByMsg, err := h.store.GetMessageFilesBatch(r.Context(), ids)
-		if err == nil {
-			for i := range messages {
-				messages[i].Files = filesByMsg[messages[i].ID]
-			}
-		}
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]any{
@@ -110,7 +80,7 @@ func (h *Handler) GetThreads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	threads := h.store.GetThreadsForChat(r.Context(), chatID)
+	threads := h.svc.GetThreads(r.Context(), chatID)
 
 	WriteJSON(w, http.StatusOK, map[string]any{"threads": threads})
 }

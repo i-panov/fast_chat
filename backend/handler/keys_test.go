@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"fast_chat/model"
+	"fast_chat/service"
 )
 
 // A valid X25519 public key: 32 zero bytes, base64-encoded.
@@ -349,7 +350,7 @@ func TestEncryptedMessageLengthCap(t *testing.T) {
 
 	chat := createTestChat(t, h, alice.token, bob.id)
 
-	longText := strings.Repeat("x", maxMessageLen+1)
+	longText := strings.Repeat("x", service.MaxMessageLen+1)
 
 	// Plaintext longer than maxMessageLen is rejected.
 	plainReq := authReq(http.MethodPost, "/api/chats/"+chat.ID+"/messages", alice.token, `{"text":"`+longText+`"}`)
@@ -396,7 +397,7 @@ func TestEncryptedMessagePayloadValidation(t *testing.T) {
 		"empty keyId":     `{"v":1,"nonce":"` + nonce24 + `","envelopes":[{"keyId":"","box":"` + box48 + `"}]}`,
 		"empty box":       `{"v":1,"nonce":"` + nonce24 + `","envelopes":[{"keyId":"` + bob.id + `","box":""}]}`,
 		"box too short":   `{"v":1,"nonce":"` + nonce24 + `","envelopes":[{"keyId":"` + bob.id + `","box":"` + base64.StdEncoding.EncodeToString([]byte("x")) + `"}]}`,
-		"too large":       `{"v":1,"nonce":"` + strings.Repeat("A", maxEncryptedPayloadLen) + `"}`,
+		"too large":       `{"v":1,"nonce":"` + strings.Repeat("A", service.MaxEncryptedPayloadLen) + `"}`,
 	} {
 		body := `{"text":"hi","encrypted":true,"encryptedPayload":` + strconv.Quote(payload) + `}`
 		req := authReq(http.MethodPost, "/api/chats/"+chat.ID+"/messages", alice.token, body)

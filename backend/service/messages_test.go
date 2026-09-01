@@ -1,4 +1,4 @@
-package handler
+package service
 
 import (
 	"encoding/json"
@@ -20,8 +20,8 @@ func TestValidCoords(t *testing.T) {
 		{999, 999, false},
 	}
 	for _, c := range cases {
-		if got := validCoords(c.lat, c.lng); got != c.want {
-			t.Errorf("validCoords(%v,%v)=%v want %v", c.lat, c.lng, got, c.want)
+		if got := ValidCoords(c.lat, c.lng); got != c.want {
+			t.Errorf("ValidCoords(%v,%v)=%v want %v", c.lat, c.lng, got, c.want)
 		}
 	}
 }
@@ -49,12 +49,12 @@ func TestParseLocationPatch(t *testing.T) {
 	}
 
 	// Invalid coords.
-	if _, _, err := parseLocationPatch(json.RawMessage(`{"lat":999,"lng":37.6}`)); !errors.Is(err, errInvalidCoordinates) {
-		t.Fatalf("bad coords: expected errInvalidCoordinates, got %v", err)
+	if _, _, err := parseLocationPatch(json.RawMessage(`{"lat":999,"lng":37.6}`)); !errors.Is(err, ErrInvalidCoordinates) {
+		t.Fatalf("bad coords: expected ErrInvalidCoordinates, got %v", err)
 	}
 
 	// Malformed JSON.
-	if _, _, err := parseLocationPatch(json.RawMessage(`{bad`)); !errors.Is(err, errInvalidLocation) {
-		t.Fatalf("malformed: expected errInvalidLocation, got %v", err)
+	if _, _, err := parseLocationPatch(json.RawMessage(`{bad`)); !errors.Is(err, ErrInvalidCoordinates) {
+		t.Fatalf("malformed: expected ErrInvalidCoordinates, got %v", err)
 	}
 }

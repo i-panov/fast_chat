@@ -3,12 +3,10 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -160,37 +158,6 @@ func (h *Handler) requireGroupOwner(w http.ResponseWriter, r *http.Request, chat
 	}
 
 	return chat
-}
-
-func validCoords(lat, lng float64) bool {
-	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
-}
-
-var (
-	errInvalidLocation    = errors.New("invalid location")
-	errInvalidCoordinates = errors.New("invalid coordinates")
-)
-
-func parseLocationPatch(raw json.RawMessage) (*model.Location, bool, error) {
-	if len(raw) == 0 {
-		return nil, false, nil
-	}
-
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "null" {
-		return nil, true, nil
-	}
-
-	var loc model.Location
-	if err := json.Unmarshal(raw, &loc); err != nil {
-		return nil, false, errInvalidLocation
-	}
-
-	if !validCoords(loc.Lat, loc.Lng) {
-		return nil, false, errInvalidCoordinates
-	}
-
-	return &loc, false, nil
 }
 
 func (h *Handler) decodeJSON(r *http.Request, v any) error {

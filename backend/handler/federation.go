@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"fast_chat/model"
+	"fast_chat/service"
 	"fast_chat/sse"
 	"fast_chat/store"
 )
@@ -340,7 +341,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := validateEncryptedPayload(req.Encrypted, req.EncryptedPayload); err != nil {
+	if err := service.ValidateEncryptedPayload(req.Encrypted, req.EncryptedPayload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -361,9 +362,9 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	maxLen := maxMessageLen
+	maxLen := service.MaxMessageLen
 	if req.Encrypted {
-		maxLen = encryptedMaxLen
+		maxLen = service.EncryptedMaxLen
 	}
 
 	if utf8.RuneCountInString(req.Text) > maxLen {
@@ -371,7 +372,7 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Location != nil && !validCoords(req.Location.Lat, req.Location.Lng) {
+	if req.Location != nil && !service.ValidCoords(req.Location.Lat, req.Location.Lng) {
 		writeError(w, http.StatusBadRequest, "invalid coordinates")
 		return
 	}
@@ -458,17 +459,23 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	edit, errMsg := h.parseEditPayload(r, stored.Encrypted, stored.EncryptedPayload)
-	if errMsg != "" {
-		writeError(w, http.StatusBadRequest, errMsg)
+	var editReq service.DecodedEditRequest
+	if err := h.decodeJSON(r, &editReq); err != nil {
+		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
+		return
+	}
+
+	edit, err := service.ParseEditPayload(&editReq, stored.Encrypted, stored.EncryptedPayload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	now := time.Now()
 
 	if err := h.store.EditRawMessage(
-		r.Context(), lookupID, messageID, edit.text, now,
-		edit.location, edit.clearLocation, edit.encryptedPtr, edit.encryptedPayloadPtr,
+		r.Context(), lookupID, messageID, edit.Text, now,
+		edit.Location, edit.ClearLocation, edit.EncryptedPtr, edit.EncryptedPayloadPtr,
 	); err != nil {
 		slog.Error("federated edit message failed", "err", err)
 		writeError(w, http.StatusNotFound, errKeyMsgNotFound)
@@ -480,19 +487,19 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		ChatID:           chatID,
 		FromID:           stored.FromID,
 		FromNick:         stored.FromNick,
-		Text:             edit.text,
-		Encrypted:        edit.encrypted,
-		EncryptedPayload: edit.encryptedPayload,
+		Text:             edit.Text,
+		Encrypted:        edit.Encrypted,
+		EncryptedPayload: edit.EncryptedPayload,
 		CreatedAt:        stored.CreatedAt,
 		EditedAt:         &now,
 	}
 
-	if edit.fileIDs != nil {
+	if edit.FileIDs != nil {
 		// Note: fileHashes (plaintext hash → file ID resolution) is not
 		// supported for federated edits. Remote servers send explicit fileIDs
 		// via getValidFileIDs. This is intentional: federation trust boundaries
 		// require explicit file references, not hash-based dedup.
-		validIDs := getValidFileIDs(r.Context(), h.store, edit.fileIDs)
+		validIDs := getValidFileIDs(r.Context(), h.store, edit.FileIDs)
 
 		if len(validIDs) > 0 {
 			if err := h.store.SetMessageFiles(r.Context(), messageID, validIDs); err != nil {
@@ -504,11 +511,11 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if len(edit.rawLocation) > 0 {
-		if edit.clearLocation {
+	if len(edit.RawLocation) > 0 {
+		if edit.ClearLocation {
 			updated.Location = nil
 		} else {
-			updated.Location = edit.location
+			updated.Location = edit.Location
 		}
 	} else if stored, gerr := h.store.GetMessage(r.Context(), lookupID, messageID); gerr == nil {
 		updated.Location = stored.Location
