@@ -21,7 +21,7 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if utf8.RuneCountInString(strings.TrimSpace(query)) < nickMinSearchRunes {
+	if utf8.RuneCountInString(strings.TrimSpace(query)) < service.MinSearchRunes {
 		WriteJSON(w, http.StatusOK, map[string]any{"users": []model.PublicUser{}})
 		return
 	}
@@ -35,7 +35,7 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remoteNick, remoteDomain string) {
-	if remoteNick == "" || remoteDomain == "" || utf8.RuneCountInString(remoteNick) < nickMinSearchRunes {
+	if remoteNick == "" || remoteDomain == "" || utf8.RuneCountInString(remoteNick) < service.MinSearchRunes {
 		writeError(w, http.StatusBadRequest, "invalid search query")
 		return
 	}

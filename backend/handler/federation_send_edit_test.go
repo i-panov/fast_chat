@@ -130,7 +130,7 @@ func TestGetValidFileIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	valid := getValidFileIDs(context.Background(), h.store, []string{f1.ID, "nope", f2.ID})
+	valid := h.svc.ValidFileIDs(context.Background(), []string{f1.ID, "nope", f2.ID})
 	if len(valid) != 2 {
 		t.Fatalf("expected 2 valid IDs, got %v", valid)
 	}
@@ -139,7 +139,7 @@ func TestGetValidFileIDs(t *testing.T) {
 	}
 
 	// All-invalid returns empty.
-	empty := getValidFileIDs(context.Background(), h.store, []string{"zz", "yy"})
+	empty := h.svc.ValidFileIDs(context.Background(), []string{"zz", "yy"})
 	if len(empty) != 0 {
 		t.Errorf("expected empty, got %v", empty)
 	}

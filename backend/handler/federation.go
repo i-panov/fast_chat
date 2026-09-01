@@ -13,15 +13,34 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"fast_chat/model"
 	"fast_chat/service"
-	"fast_chat/sse"
-	"fast_chat/store"
 )
 
 var errFederatedStatus = errors.New("federated request returned unexpected status")
+
+// federateError maps a service federation-domain error to an HTTP error
+// response and reports whether the response was written. Non-sentinel errors
+// are left to the caller for logging/status.
+func federateError(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, service.ErrFederatedChatMembers):
+		writeError(w, http.StatusBadRequest, "federated chat must have exactly 2 members")
+	case errors.Is(err, service.ErrFederatedMembersNotValid):
+		writeError(w, http.StatusBadRequest, "members must belong to federation endpoints")
+	case errors.Is(err, service.ErrFederatedFromNotRemote):
+		writeError(w, http.StatusForbidden, "fromId does not belong to remote server")
+	case errors.Is(err, service.ErrFederatedAuthorNotRemote):
+		writeError(w, http.StatusForbidden, "message author does not belong to remote server")
+	case errors.Is(err, service.ErrFederatedIDRequired):
+		writeError(w, http.StatusBadRequest, "id is required")
+	default:
+		return messageError(w, err)
+	}
+
+	return true
+}
 
 // federatedURL builds a federation URL using the configured scheme.
 func (h *Handler) federatedURL(remoteServer, path string) string {
@@ -198,55 +217,11 @@ func authorizeFederatedSource(w http.ResponseWriter, chat *model.Chat, r *http.R
 	return true
 }
 
-// userIDBelongsToServer returns true if userID is a federated ID whose
-// domain suffix matches the given server domain.
-func userIDBelongsToServer(userID, serverDomain string) bool {
-	idx := strings.LastIndex(userID, ":")
-	if idx < 0 || idx == len(userID)-1 {
-		return false
-	}
-
-	return userID[idx+1:] == serverDomain
-}
-
-// federatedChatMembersValid checks that exactly one member belongs to the
-// remote server and the other to the local server.
-func federatedChatMembersValid(members []string, remoteServer, localServer string) bool {
-	if remoteServer == "" || localServer == "" {
-		return false
-	}
-
-	remoteCount := 0
-	localCount := 0
-
-	for _, m := range members {
-		switch {
-		case userIDBelongsToServer(m, remoteServer):
-			remoteCount++
-		case userIDBelongsToServer(m, localServer):
-			localCount++
-		default:
-			return false
-		}
-	}
-
-	return remoteCount == 1 && localCount == 1
-}
-
 // FederatedSearchUsers handles search requests from remote servers (no auth).
 func (h *Handler) FederatedSearchUsers(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 
-	if utf8.RuneCountInString(strings.TrimSpace(query)) < nickMinSearchRunes {
-		WriteJSON(w, http.StatusOK, map[string]any{"users": []model.PublicUser{}})
-		return
-	}
-
-	users := h.store.SearchUsers(r.Context(), query, "")
-
-	if users == nil {
-		users = []model.PublicUser{}
-	}
+	users := h.svc.SearchFederatedUsers(r.Context(), query)
 
 	WriteJSON(w, http.StatusOK, map[string]any{"users": users})
 }
@@ -277,36 +252,24 @@ func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !federatedChatMembersValid(req.Members, headerServer, h.fedManager.ServerDomain()) {
-		writeError(w, http.StatusBadRequest, "members must belong to federation endpoints")
+	view, alreadyExists, err := h.svc.CreateFederatedChat(
+		r.Context(), req.ChatID, req.Members, headerServer, h.fedManager.ServerDomain(),
+	)
+	if err != nil {
+		if !federateError(w, err) {
+			logger.Error("failed to create remote chat", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+
 		return
 	}
 
-	if _, ok := h.store.GetChat(r.Context(), req.ChatID); ok {
+	if alreadyExists {
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "already exists"})
 		return
 	}
 
-	chat := &model.Chat{
-		ID:           req.ChatID,
-		Members:      req.Members,
-		CreatedAt:    time.Now(),
-		RemoteServer: req.RemoteServer,
-	}
-
-	if err := h.store.CreateRemoteChat(r.Context(), chat); err != nil {
-		logger.Error("failed to create remote chat", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
-
-		return
-	}
-
-	enriched := h.svc.EnrichChat(r.Context(), chat)
-	for _, memberID := range chat.Members {
-		h.hub.Send(memberID, sse.Event{Event: "chat_created", Data: enriched})
-	}
-
-	WriteJSON(w, http.StatusCreated, map[string]any{"chat": enriched})
+	WriteJSON(w, http.StatusCreated, map[string]any{"chat": view})
 }
 
 // FederatedSendMessage handles incoming messages from remote servers.
@@ -341,74 +304,28 @@ func (h *Handler) FederatedSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := service.ValidateEncryptedPayload(req.Encrypted, req.EncryptedPayload); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if !userIDBelongsToServer(req.FromID, chat.RemoteServer) {
-		writeError(w, http.StatusForbidden, "fromId does not belong to remote server")
-		return
-	}
-
-	if req.ID == "" {
-		writeError(w, http.StatusBadRequest, "id is required")
-		return
-	}
-
-	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" {
-		writeError(w, http.StatusBadRequest, errKeyEmptyMessage)
-		return
-	}
-
 	maxLen := service.MaxMessageLen
 	if req.Encrypted {
 		maxLen = service.EncryptedMaxLen
 	}
 
-	if utf8.RuneCountInString(req.Text) > maxLen {
-		writeError(w, http.StatusBadRequest, "message too long")
-		return
-	}
-
-	if req.Location != nil && !service.ValidCoords(req.Location.Lat, req.Location.Lng) {
-		writeError(w, http.StatusBadRequest, "invalid coordinates")
-		return
-	}
-
-	msg := model.Message{
+	msg, err := h.svc.SendFederatedMessage(r.Context(), chat, &service.FederatedInboundMessage{
 		ID:               req.ID,
-		ChatID:           chatID,
 		FromID:           req.FromID,
 		FromNick:         req.FromNick,
 		Text:             req.Text,
+		ReplyToID:        req.ReplyToID,
+		Location:         req.Location,
 		Encrypted:        req.Encrypted,
 		EncryptedPayload: req.EncryptedPayload,
-		CreatedAt:        time.Now(),
-		Location:         req.Location,
-	}
-
-	if req.ReplyToID != "" {
-		if parent, err := h.store.GetMessage(r.Context(), chatID, req.ReplyToID); err == nil {
-			msg.ReplyTo = &model.ReplyToInfo{
-				MessageID: req.ReplyToID,
-				Text:      parent.Text,
-				FromNick:  parent.FromNick,
-				Files:     h.store.GetMessageFilesForReply(r.Context(), parent.ID),
-				Location:  parent.Location,
-			}
+	}, maxLen)
+	if err != nil {
+		if !federateError(w, err) {
+			slog.Error("federated send message failed", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
 		}
-	}
 
-	if err := h.store.AddRawMessage(r.Context(), &msg); err != nil {
-		slog.Error("federated send message failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
 		return
-	}
-
-	for _, memberID := range chat.Members {
-		h.hub.Send(memberID, sse.Event{Event: "new_message", Data: &msg})
 	}
 
 	WriteJSON(w, http.StatusCreated, map[string]any{"message": msg})
@@ -433,30 +350,8 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lookupID := chatID
-
 	if threadID != "" {
 		lookupID = threadID
-	}
-
-	stored, err := h.store.GetMessage(r.Context(), lookupID, messageID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, errKeyMsgNotFound)
-		return
-	}
-
-	if !userIDBelongsToServer(stored.FromID, chat.RemoteServer) {
-		writeError(w, http.StatusForbidden, "message author does not belong to remote server")
-		return
-	}
-
-	if h.cfg.MessageEditTTL < 0 {
-		writeError(w, http.StatusForbidden, "editing not allowed")
-		return
-	}
-
-	if h.cfg.MessageEditTTL > 0 && time.Since(stored.CreatedAt) > time.Duration(h.cfg.MessageEditTTL)*time.Second {
-		writeError(w, http.StatusForbidden, "edit window expired")
-		return
 	}
 
 	var editReq service.DecodedEditRequest
@@ -465,75 +360,16 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	edit, err := service.ParseEditPayload(&editReq, stored.Encrypted, stored.EncryptedPayload)
+	updated, err := h.svc.EditFederatedMessage(
+		r.Context(), chat, lookupID, messageID, threadID, &editReq, h.cfg.MessageEditTTL,
+	)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		if !federateError(w, err) {
+			slog.Error("federated edit message failed", "err", err)
+			writeError(w, http.StatusNotFound, errKeyMsgNotFound)
+		}
+
 		return
-	}
-
-	now := time.Now()
-
-	if err := h.store.EditRawMessage(
-		r.Context(), lookupID, messageID, edit.Text, now,
-		edit.Location, edit.ClearLocation, edit.EncryptedPtr, edit.EncryptedPayloadPtr,
-	); err != nil {
-		slog.Error("federated edit message failed", "err", err)
-		writeError(w, http.StatusNotFound, errKeyMsgNotFound)
-		return
-	}
-
-	updated := &model.Message{
-		ID:               messageID,
-		ChatID:           chatID,
-		FromID:           stored.FromID,
-		FromNick:         stored.FromNick,
-		Text:             edit.Text,
-		Encrypted:        edit.Encrypted,
-		EncryptedPayload: edit.EncryptedPayload,
-		CreatedAt:        stored.CreatedAt,
-		EditedAt:         &now,
-	}
-
-	if edit.FileIDs != nil {
-		// Note: fileHashes (plaintext hash → file ID resolution) is not
-		// supported for federated edits. Remote servers send explicit fileIDs
-		// via getValidFileIDs. This is intentional: federation trust boundaries
-		// require explicit file references, not hash-based dedup.
-		validIDs := getValidFileIDs(r.Context(), h.store, edit.FileIDs)
-
-		if len(validIDs) > 0 {
-			if err := h.store.SetMessageFiles(r.Context(), messageID, validIDs); err != nil {
-				logger.Info("federated edit: failed to set message files", "err", err)
-			}
-
-			files, _ := h.store.GetMessageFiles(r.Context(), messageID) //nolint:errcheck // best-effort: failure is not actionable
-			updated.Files = files
-		}
-	}
-
-	if len(edit.RawLocation) > 0 {
-		if edit.ClearLocation {
-			updated.Location = nil
-		} else {
-			updated.Location = edit.Location
-		}
-	} else if stored, gerr := h.store.GetMessage(r.Context(), lookupID, messageID); gerr == nil {
-		updated.Location = stored.Location
-	}
-
-	if threadID != "" {
-		eventData := map[string]any{
-			"threadId": threadID,
-			"message":  updated,
-		}
-
-		for _, memberID := range chat.Members {
-			h.hub.Send(memberID, sse.Event{Event: "thread_message_updated", Data: eventData})
-		}
-	} else {
-		for _, memberID := range chat.Members {
-			h.hub.Send(memberID, sse.Event{Event: "message_updated", Data: updated})
-		}
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]any{"message": updated})
@@ -554,35 +390,13 @@ func (h *Handler) FederatedDeleteMessage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	stored, err := h.store.GetMessage(r.Context(), chatID, messageID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, errKeyMsgNotFound)
-		return
-	}
+	if err := h.svc.DeleteFederatedMessage(r.Context(), chat, messageID, h.cfg.MessageDeleteTTL); err != nil {
+		if !federateError(w, err) {
+			slog.Error("federated delete message failed", "err", err)
+			writeError(w, http.StatusNotFound, errKeyMsgNotFound)
+		}
 
-	if !userIDBelongsToServer(stored.FromID, chat.RemoteServer) {
-		writeError(w, http.StatusForbidden, "message author does not belong to remote server")
 		return
-	}
-
-	if h.cfg.MessageDeleteTTL < 0 {
-		writeError(w, http.StatusForbidden, "deleting not allowed")
-		return
-	}
-
-	if h.cfg.MessageDeleteTTL > 0 && time.Since(stored.CreatedAt) > time.Duration(h.cfg.MessageDeleteTTL)*time.Second {
-		writeError(w, http.StatusForbidden, "delete window expired")
-		return
-	}
-
-	if err := h.store.DeleteRawMessage(r.Context(), chatID, messageID); err != nil {
-		slog.Error("federated delete message failed", "err", err)
-		writeError(w, http.StatusNotFound, errKeyMsgNotFound)
-		return
-	}
-
-	for _, memberID := range chat.Members {
-		h.hub.Send(memberID, sse.Event{Event: "message_deleted", Data: map[string]string{"chatId": chatID, "messageId": messageID}})
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -612,38 +426,7 @@ func (h *Handler) FederatedHandleTyping(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	eventName := "typing_stop"
-	if req.Active {
-		eventName = "typing"
-	}
-
-	payload := map[string]string{
-		"chatId": chatID,
-		"userId": req.UserID,
-	}
-
-	if req.Active && req.Nick != "" {
-		payload["nick"] = req.Nick
-	}
-
-	event := sse.Event{Event: eventName, Data: payload}
-
-	for _, memberID := range chat.Members {
-		if memberID != req.UserID {
-			h.hub.Send(memberID, event)
-		}
-	}
+	h.svc.HandleFederatedTyping(r.Context(), chat, req.UserID, req.Nick, req.Active)
 
 	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func getValidFileIDs(ctx context.Context, st *store.Store, fileIDs []string) []string {
-	valid := make([]string, 0, len(fileIDs))
-	for _, fid := range fileIDs {
-		if _, err := st.GetFile(ctx, fid); err == nil {
-			valid = append(valid, fid)
-		}
-	}
-
-	return valid
 }
