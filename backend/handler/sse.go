@@ -31,7 +31,7 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 
 		if uid != "" {
 			if h.store.RemoveConnection(uid) {
-				h.broadcastUserStatus(context.Background(), uid, false)
+				h.svc.BroadcastUserStatus(context.Background(), uid, false)
 			}
 		}
 	}()

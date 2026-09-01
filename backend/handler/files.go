@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"fast_chat/service"
 	"fast_chat/store"
 )
 
@@ -307,7 +308,7 @@ func (h *Handler) userCanAccessFile(ctx context.Context, userID, fileID string) 
 		chats, err := h.store.GetChatsByIDs(ctx, chatIDs)
 		if err == nil {
 			for _, chat := range chats {
-				if isMember(&chat, userID) {
+				if service.IsMember(&chat, userID) {
 					return true
 				}
 			}
@@ -319,7 +320,7 @@ func (h *Handler) userCanAccessFile(ctx context.Context, userID, fileID string) 
 		chats, err := h.store.GetChatsByIDs(ctx, avatarChatIDs)
 		if err == nil {
 			for _, chat := range chats {
-				if isMember(&chat, userID) {
+				if service.IsMember(&chat, userID) {
 					return true
 				}
 			}

@@ -1,32 +1,53 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
-	"strings"
 
-	"fast_chat/model"
-	"fast_chat/sse"
+	"fast_chat/service"
 )
 
-const (
-	groupNameMaxLen = 60
-	maxGroupMembers = 100
-)
+// chatError maps a service chat error to an HTTP error response and reports
+// whether the response was written. Non-sentinel errors are transport errors
+// left to the caller for logging/status.
+func chatError(w http.ResponseWriter, err error) bool {
+	var mnf *service.GroupMemberNotFoundError
+	switch {
+	case errors.As(err, &mnf):
+		writeError(w, http.StatusNotFound, mnf.Error())
+	case errors.Is(err, service.ErrChatNotFound):
+		writeError(w, http.StatusNotFound, errKeyChatNotFound)
+	case errors.Is(err, service.ErrUserNotFound):
+		writeError(w, http.StatusNotFound, errKeyUserNotFound)
+	case errors.Is(err, service.ErrWithUserRequired):
+		writeError(w, http.StatusBadRequest, "withUserId required for private chat")
+	case errors.Is(err, service.ErrChatWithSelf):
+		writeError(w, http.StatusBadRequest, "cannot chat with yourself")
+	case errors.Is(err, service.ErrGroupNameInvalid):
+		writeError(w, http.StatusBadRequest, "group name must be 1-60 characters")
+	case errors.Is(err, service.ErrTooManyMembers):
+		writeError(w, http.StatusBadRequest, "too many members")
+	case errors.Is(err, service.ErrGroupRemoteMemb):
+		writeError(w, http.StatusBadRequest, "group chat members must be on the same server")
+	case errors.Is(err, service.ErrUserIDRequired):
+		writeError(w, http.StatusBadRequest, "userId required")
+	case errors.Is(err, service.ErrRemoteMember):
+		writeError(w, http.StatusBadRequest, "members must be on the same server")
+	case errors.Is(err, service.ErrFileIDRequired):
+		writeError(w, http.StatusBadRequest, "fileId required")
+	case errors.Is(err, service.ErrFileNotFound):
+		writeError(w, http.StatusNotFound, "file not found")
+	default:
+		return false
+	}
+
+	return true
+}
 
 func (h *Handler) GetChats(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
-	chats := h.store.GetUserChats(r.Context(), user.ID)
 
-	_, memberIDs := collectChatAndMemberIDs(chats)
-
-	nicks := h.store.GetUsersByIDs(r.Context(), memberIDs)
-
-	resp := make([]chatResponse, 0, len(chats))
-	for _, c := range chats {
-		resp = append(resp, h.enrichChatFromNicks(r.Context(), c, nicks))
-	}
-
-	WriteJSON(w, http.StatusOK, map[string]any{"chats": resp})
+	WriteJSON(w, http.StatusOK, map[string]any{"chats": h.svc.GetChats(r.Context(), user.ID)})
 }
 
 func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
@@ -47,113 +68,47 @@ func (h *Handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Type == "group" {
-		h.createGroupChat(w, r, user, req.Name, req.MemberIDs)
+		chatView, err := h.svc.CreateGroupChat(r.Context(), user.ID, req.Name, req.MemberIDs)
+		if err != nil {
+			if !chatError(w, err) {
+				writeError(w, http.StatusBadRequest, "failed to create group chat")
+			}
+
+			return
+		}
+
+		WriteJSON(w, http.StatusCreated, map[string]any{"chat": chatView})
 
 		return
 	}
 
-	if req.WithUserID == "" {
-		writeError(w, http.StatusBadRequest, "withUserId required for private chat")
+	chatView, err := h.svc.CreatePrivateChat(r.Context(), user.ID, req.WithUserID)
+	if err != nil {
+		if !chatError(w, err) {
+			logger.Error("failed to create chat", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+
 		return
 	}
 
-	if req.WithUserID == user.ID {
-		writeError(w, http.StatusBadRequest, "cannot chat with yourself")
-		return
-	}
-
-	remoteServer := remoteServerFromID(req.WithUserID)
+	remoteServer := service.RemoteServerFromID(req.WithUserID)
 	if remoteServer == h.cfg.Server.Domain {
 		remoteServer = ""
 	}
 
-	if remoteServer == "" {
-		if _, ok := h.store.GetUserByID(r.Context(), req.WithUserID); !ok {
-			writeError(w, http.StatusNotFound, errKeyUserNotFound)
-			return
-		}
+	memberIDs := make([]string, 0, len(chatView.Members))
+	for _, m := range chatView.Members {
+		memberIDs = append(memberIDs, m.ID)
 	}
-
-	chat, err := h.store.CreateChat(r.Context(), user.ID, req.WithUserID, remoteServer)
-	if err != nil {
-		logger.Error("failed to create chat", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-
-	enriched := h.enrichChat(r.Context(), chat)
-	h.hub.Send(user.ID, sse.Event{Event: "chat_created", Data: enriched})
 
 	h.sendFedPost(r.Context(), remoteServer, "/api/federated/chats", map[string]any{
-		"chatId":       chat.ID,
-		"members":      chat.Members,
+		"chatId":       chatView.ID,
+		"members":      memberIDs,
 		"remoteServer": h.cfg.Server.Domain,
 	})
 
-	if remoteServer == "" {
-		h.hub.Send(req.WithUserID, sse.Event{Event: "chat_created", Data: enriched})
-	}
-
-	WriteJSON(w, http.StatusCreated, map[string]any{"chat": enriched})
-}
-
-func (h *Handler) createGroupChat(w http.ResponseWriter, r *http.Request, user *model.User, name string, memberIDs []string) {
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > groupNameMaxLen {
-		writeError(w, http.StatusBadRequest, "group name must be 1-60 characters")
-		return
-	}
-
-	if len(memberIDs) > maxGroupMembers {
-		writeError(w, http.StatusBadRequest, "too many members")
-		return
-	}
-
-	seen := make(map[string]struct{}, len(memberIDs)+1)
-	cleaned := make([]string, 0, len(memberIDs)+1)
-
-	add := func(id string) {
-		if id == "" {
-			return
-		}
-
-		if _, ok := seen[id]; ok {
-			return
-		}
-
-		seen[id] = struct{}{}
-		cleaned = append(cleaned, id)
-	}
-	for _, memberID := range memberIDs {
-		add(memberID)
-	}
-
-	for _, memberID := range cleaned {
-		remoteServer := remoteServerFromID(memberID)
-		if remoteServer != "" && remoteServer != h.cfg.Server.Domain {
-			writeError(w, http.StatusBadRequest, "group chat members must be on the same server")
-			return
-		}
-
-		if _, ok := h.store.GetUserByID(r.Context(), memberID); !ok {
-			writeError(w, http.StatusNotFound, "user not found: "+memberID)
-			return
-		}
-	}
-
-	chat, err := h.store.CreateGroupChat(r.Context(), name, user.ID, cleaned, "")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to create group chat")
-		return
-	}
-
-	enriched := h.enrichChat(r.Context(), chat)
-
-	for _, memberID := range chat.Members {
-		h.hub.Send(memberID, sse.Event{Event: "chat_created", Data: enriched})
-	}
-
-	WriteJSON(w, http.StatusCreated, map[string]any{"chat": enriched})
+	WriteJSON(w, http.StatusCreated, map[string]any{"chat": chatView})
 }
 
 func (h *Handler) GetChat(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +120,7 @@ func (h *Handler) GetChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, map[string]any{"chat": h.enrichChat(r.Context(), chat)})
+	WriteJSON(w, http.StatusOK, map[string]any{"chat": h.svc.EnrichChat(r.Context(), chat)})
 }
 
 func (h *Handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
@@ -188,31 +143,24 @@ func (h *Handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated := chat
+	// If no updatable field is present, echo the current chat unchanged.
+	if req.Name == nil {
+		WriteJSON(w, http.StatusOK, map[string]any{"chat": h.svc.EnrichChat(r.Context(), chat)})
 
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
-		if name == "" || len(name) > groupNameMaxLen {
-			writeError(w, http.StatusBadRequest, "group name must be 1-60 characters")
-			return
-		}
+		return
+	}
 
-		updatedChat, err := h.store.UpdateChatName(r.Context(), chatID, name)
-		if err != nil {
+	updatedView, err := h.svc.UpdateChatName(r.Context(), chatID, *req.Name)
+	if err != nil {
+		if !chatError(w, err) {
 			logger.Error("failed to update chat", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
-			return
 		}
 
-		updated = updatedChat
+		return
 	}
 
-	enriched := h.enrichChat(r.Context(), updated)
-	for _, memberID := range updated.Members {
-		h.hub.Send(memberID, sse.Event{Event: "chat_updated", Data: enriched})
-	}
-
-	WriteJSON(w, http.StatusOK, map[string]any{"chat": enriched})
+	WriteJSON(w, http.StatusOK, map[string]any{"chat": updatedView})
 }
 
 func (h *Handler) DeleteChat(w http.ResponseWriter, r *http.Request) {
@@ -224,14 +172,10 @@ func (h *Handler) DeleteChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.DeleteChat(r.Context(), chatID); err != nil {
+	if err := h.svc.DeleteChat(r.Context(), chat); err != nil {
 		logger.Error("failed to delete chat", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
-	}
-
-	for _, memberID := range chat.Members {
-		h.hub.Send(memberID, sse.Event{Event: "chat_deleted", Data: map[string]string{"chatId": chatID}})
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -257,39 +201,16 @@ func (h *Handler) AddChatMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.UserID == "" {
-		writeError(w, http.StatusBadRequest, "userId required")
+	updatedView, err := h.svc.AddChatMember(r.Context(), chatID, req.UserID)
+	if err != nil {
+		if !chatError(w, err) {
+			writeError(w, http.StatusBadRequest, "failed to add member")
+		}
+
 		return
 	}
 
-	remoteServer := remoteServerFromID(req.UserID)
-	if remoteServer != "" && remoteServer != h.cfg.Server.Domain {
-		writeError(w, http.StatusBadRequest, "members must be on the same server")
-		return
-	}
-
-	if _, ok := h.store.GetUserByID(r.Context(), req.UserID); !ok {
-		writeError(w, http.StatusNotFound, errKeyUserNotFound)
-		return
-	}
-
-	if err := h.store.AddChatMember(r.Context(), chatID, req.UserID, maxGroupMembers); err != nil {
-		writeError(w, http.StatusBadRequest, "failed to add member")
-		return
-	}
-
-	updated, _ := h.store.GetChat(r.Context(), chatID)
-
-	enriched := h.enrichChat(r.Context(), updated)
-	for _, memberID := range updated.Members {
-		h.hub.Send(memberID, sse.Event{Event: "chat_member_added", Data: map[string]any{
-			"chatId": chatID,
-			"userId": req.UserID,
-			"chat":   enriched,
-		}})
-	}
-
-	WriteJSON(w, http.StatusOK, map[string]any{"chat": enriched})
+	WriteJSON(w, http.StatusOK, map[string]any{"chat": updatedView})
 }
 
 func (h *Handler) RemoveChatMember(w http.ResponseWriter, r *http.Request) {
@@ -307,37 +228,27 @@ func (h *Handler) RemoveChatMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if targetUserID != user.ID && !isOwner(chat, user.ID) {
+	if targetUserID != user.ID && !service.IsOwner(chat, user.ID) {
 		writeError(w, http.StatusForbidden, "only owner can remove other members")
 		return
 	}
 
-	if isOwner(chat, targetUserID) {
+	if service.IsOwner(chat, targetUserID) {
 		writeError(w, http.StatusBadRequest, "owner cannot leave the group; delete the group instead")
 
 		return
 	}
 
-	if err := h.store.RemoveChatMember(r.Context(), chatID, targetUserID); err != nil {
-		writeError(w, http.StatusBadRequest, "failed to remove member")
+	updatedView, err := h.svc.RemoveChatMember(r.Context(), chatID, targetUserID, user.ID)
+	if err != nil {
+		if !chatError(w, err) {
+			writeError(w, http.StatusBadRequest, "failed to remove member")
+		}
+
 		return
 	}
 
-	updated, _ := h.store.GetChat(r.Context(), chatID)
-
-	enriched := h.enrichChat(r.Context(), updated)
-	for _, memberID := range updated.Members {
-		h.hub.Send(memberID, sse.Event{Event: "chat_member_removed", Data: map[string]any{
-			"chatId":  chatID,
-			"userId":  targetUserID,
-			"chat":    enriched,
-			"isLeave": targetUserID == user.ID,
-		}})
-	}
-
-	h.hub.Send(targetUserID, sse.Event{Event: "chat_deleted", Data: map[string]string{"chatId": chatID}})
-
-	WriteJSON(w, http.StatusOK, map[string]any{"chat": enriched})
+	WriteJSON(w, http.StatusOK, map[string]any{"chat": updatedView})
 }
 
 func (h *Handler) UpdateChatAvatar(w http.ResponseWriter, r *http.Request) {
@@ -360,27 +271,15 @@ func (h *Handler) UpdateChatAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.FileID == "" {
-		writeError(w, http.StatusBadRequest, "fileId required")
-		return
-	}
-
-	if _, err := h.store.GetFile(r.Context(), req.FileID); err != nil {
-		writeError(w, http.StatusNotFound, "file not found")
-		return
-	}
-
-	updated, err := h.store.UpdateChatAvatar(r.Context(), chatID, req.FileID)
+	updatedView, err := h.svc.UpdateChatAvatar(r.Context(), chatID, req.FileID)
 	if err != nil {
-		logger.Error("failed to update chat avatar", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		if !chatError(w, err) {
+			logger.Error("failed to update chat avatar", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+
 		return
 	}
 
-	enriched := h.enrichChat(r.Context(), updated)
-	for _, memberID := range updated.Members {
-		h.hub.Send(memberID, sse.Event{Event: "chat_updated", Data: enriched})
-	}
-
-	WriteJSON(w, http.StatusOK, map[string]any{"chat": enriched})
+	WriteJSON(w, http.StatusOK, map[string]any{"chat": updatedView})
 }

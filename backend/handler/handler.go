@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -80,21 +79,10 @@ const (
 
 var maxUploadSize int64 = 50 << 20
 
-type memberInfo struct {
-	ID     string `json:"id"`
-	Nick   string `json:"nick"`
-	Online bool   `json:"online,omitempty"`
-}
-
-type chatResponse struct {
-	ID        string       `json:"id"`
-	Type      string       `json:"type"`
-	Name      string       `json:"name"`
-	OwnerID   string       `json:"ownerId"`
-	AvatarURL string       `json:"avatarUrl,omitempty"`
-	Members   []memberInfo `json:"members"`
-	CreatedAt time.Time    `json:"createdAt"`
-}
+// memberInfo is a transport alias for the shared service DTO. It keeps the
+// JSON shape stable while sync.go still resolves in package handler and will
+// be dropped once the sync domain is ported to the service layer.
+type memberInfo = service.MemberView
 
 // Handler is the HTTP transport layer. During the service-layer migration
 // (A2-A6) it still holds store/hub/cfg directly for handlers not yet ported;
@@ -140,79 +128,14 @@ func (h *Handler) Close() {
 	h.fedWG.Wait()
 }
 
-func (h *Handler) broadcastUserStatus(ctx context.Context, userID string, online bool) {
-	chats := h.store.GetUserChats(ctx, userID)
-	notified := make(map[string]bool)
-
-	for _, chat := range chats {
-		for _, memberID := range chat.Members {
-			if memberID != userID && !notified[memberID] {
-				h.hub.Send(memberID, sse.Event{
-					Event: "user_status_changed",
-					Data: map[string]any{
-						"userId": userID,
-						"online": online,
-					},
-				})
-				notified[memberID] = true
-			}
-		}
-	}
-}
-
-func (h *Handler) enrichChat(ctx context.Context, c *model.Chat) chatResponse {
-	return h.enrichChatFromNicks(ctx, c, nil)
-}
-
-func (h *Handler) enrichChatFromNicks(ctx context.Context, c *model.Chat, nicks map[string]string) chatResponse {
-	cr := chatResponse{
-		ID:        c.ID,
-		Type:      c.Type,
-		Name:      c.Name,
-		OwnerID:   c.OwnerID,
-		CreatedAt: c.CreatedAt,
-	}
-
-	if c.AvatarFileID != "" {
-		if f, err := h.store.GetFile(ctx, c.AvatarFileID); err == nil {
-			cr.AvatarURL = f.ToFileInfo().URL
-		}
-	}
-
-	for _, member := range c.Members {
-		nick, ok := nicks[member]
-		if !ok {
-			if nicks != nil {
-				nick = member
-			} else if u, found := h.store.GetUserByID(ctx, member); found {
-				nick = u.Nick
-			} else {
-				nick = member
-			}
-		}
-
-		cr.Members = append(cr.Members, memberInfo{ID: member, Nick: nick, Online: h.store.IsOnline(member)})
-	}
-
-	return cr
-}
-
-func isMember(chat *model.Chat, userID string) bool {
-	return slices.Contains(chat.Members, userID)
-}
-
-func isOwner(chat *model.Chat, userID string) bool {
-	return chat.OwnerID != "" && chat.OwnerID == userID
-}
-
 func (h *Handler) requireChatMember(w http.ResponseWriter, r *http.Request, chatID, userID string) *model.Chat {
-	chat, ok := h.store.GetChat(r.Context(), chatID)
-	if !ok {
+	chat, err := h.svc.Chat(r.Context(), chatID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, errKeyChatNotFound)
 		return nil
 	}
 
-	if !isMember(chat, userID) {
+	if !service.IsMember(chat, userID) {
 		writeError(w, http.StatusForbidden, errKeyNotMember)
 		return nil
 	}
@@ -231,7 +154,7 @@ func (h *Handler) requireGroupOwner(w http.ResponseWriter, r *http.Request, chat
 		return nil
 	}
 
-	if !isOwner(chat, userID) {
+	if !service.IsOwner(chat, userID) {
 		writeError(w, http.StatusForbidden, "only owner can perform this action")
 		return nil
 	}

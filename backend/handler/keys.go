@@ -8,6 +8,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+
+	"fast_chat/service"
 )
 
 // publicKeyLen is the X25519 key size in bytes (libsodium
@@ -82,7 +84,7 @@ func (h *Handler) UpdatePublicKey(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetUserPublicKey(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("userId")
 
-	remoteDomain := remoteServerFromID(userID)
+	remoteDomain := service.RemoteServerFromID(userID)
 	if remoteDomain == "" || remoteDomain == h.cfg.Server.Domain {
 		key, ok := h.store.GetUserPublicKey(r.Context(), userID)
 		if !ok {
@@ -199,7 +201,7 @@ func (h *Handler) DeleteKeyBackup(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) FederatedGetUserPublicKey(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("userId")
 
-	if remoteServerFromID(userID) != h.cfg.Server.Domain {
+	if service.RemoteServerFromID(userID) != h.cfg.Server.Domain {
 		writeError(w, http.StatusBadRequest, "user does not belong to this server")
 		return
 	}

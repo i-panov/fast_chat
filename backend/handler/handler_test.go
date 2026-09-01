@@ -19,6 +19,7 @@ import (
 	"fast_chat/config"
 	"fast_chat/federation"
 	"fast_chat/model"
+	"fast_chat/service"
 	"fast_chat/store"
 )
 
@@ -254,27 +255,10 @@ func TestRemoteServerFromID(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := remoteServerFromID(tc.id)
+		got := service.RemoteServerFromID(tc.id)
 		if got != tc.want {
 			t.Errorf("remoteServerFromID(%q): got %q, want %q", tc.id, got, tc.want)
 		}
-	}
-}
-
-func TestIsMember(t *testing.T) {
-	chat := &model.Chat{
-		ID:      "chat1",
-		Members: []string{"alice", "bob"},
-	}
-
-	if !isMember(chat, "alice") {
-		t.Error("expected alice to be a member")
-	}
-	if !isMember(chat, "bob") {
-		t.Error("expected bob to be a member")
-	}
-	if isMember(chat, "carol") {
-		t.Error("expected carol to not be a member")
 	}
 }
 

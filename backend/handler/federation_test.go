@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"fast_chat/service"
 )
 
 func TestFederatedURL(t *testing.T) {
@@ -49,7 +51,7 @@ func TestIsValidRemoteDomain(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		if got := isValidRemoteDomain(tc.domain); got != tc.want {
+		if got := service.IsValidRemoteDomain(tc.domain); got != tc.want {
 			t.Errorf("isValidRemoteDomain(%q) = %v, want %v", tc.domain, got, tc.want)
 		}
 	}
@@ -72,7 +74,7 @@ func TestRemoteServerFromIDRejectsUnsafeDomains(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		if got := remoteServerFromID(tc.id); got != tc.want {
+		if got := service.RemoteServerFromID(tc.id); got != tc.want {
 			t.Errorf("remoteServerFromID(%q) = %q, want %q", tc.id, got, tc.want)
 		}
 	}

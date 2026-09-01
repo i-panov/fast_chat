@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -23,46 +22,9 @@ import (
 
 var errFederatedStatus = errors.New("federated request returned unexpected status")
 
-func isValidRemoteDomain(domain string) bool {
-	if domain == "localhost" || domain == "localhost." {
-		return false
-	}
-
-	ip := net.ParseIP(domain)
-	if ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-			return false
-		}
-	}
-
-	return true
-}
-
 // federatedURL builds a federation URL using the configured scheme.
 func (h *Handler) federatedURL(remoteServer, path string) string {
 	return fmt.Sprintf("%s://%s%s", h.cfg.Federation.Scheme, remoteServer, path)
-}
-
-// remoteServerFromID extracts the server domain from a federated user ID ("nick:domain").
-func remoteServerFromID(id string) string {
-	if idx := strings.Index(id, ":"); idx != -1 && idx < len(id)-1 {
-		domain := id[idx+1:]
-		if _, err := url.Parse("//" + domain); err != nil {
-			return ""
-		}
-
-		if strings.ContainsAny(domain, "/@?#") {
-			return ""
-		}
-
-		if !isValidRemoteDomain(domain) {
-			return ""
-		}
-
-		return domain
-	}
-
-	return ""
 }
 
 func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string, body any) ([]byte, error) {
@@ -338,7 +300,7 @@ func (h *Handler) FederatedCreateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	enriched := h.enrichChat(r.Context(), chat)
+	enriched := h.svc.EnrichChat(r.Context(), chat)
 	for _, memberID := range chat.Members {
 		h.hub.Send(memberID, sse.Event{Event: "chat_created", Data: enriched})
 	}

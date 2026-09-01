@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"fast_chat/model"
+	"fast_chat/service"
 )
 
 func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +40,7 @@ func (h *Handler) searchFederated(w http.ResponseWriter, r *http.Request, remote
 		return
 	}
 
-	if !isValidRemoteDomain(remoteDomain) {
+	if !service.IsValidRemoteDomain(remoteDomain) {
 		writeError(w, http.StatusBadRequest, "invalid search query")
 		return
 	}
