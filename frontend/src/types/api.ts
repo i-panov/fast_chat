@@ -1,3 +1,5 @@
+import type { FileKey } from "../e2ee/file-crypto.ts";
+
 export interface User {
 	id: string;
 	nick: string;
@@ -41,6 +43,9 @@ export interface FileInfo {
 	originalName: string;
 	fileType: "photo" | "video" | "audio" | "file";
 	url: string;
+	// hash is the SHA-256 hex digest of the plaintext file content. Used to
+	// look up decryption keys (keys are indexed by hash, not file ID).
+	hash?: string;
 }
 
 export interface PendingFile {
@@ -78,6 +83,9 @@ export interface Message {
 	// Set when the client could not decrypt this message (missing key,
 	// changed key, or envelope mismatch). The UI renders it distinctly.
 	undecryptable?: boolean;
+	// fileKeys maps file ID to its decryption key for encrypted files.
+	// Populated during decryption. Absent for plaintext messages.
+	fileKeys?: Record<string, FileKey>;
 	createdAt: string;
 	editedAt?: string;
 	replyTo?: ReplyToInfo;

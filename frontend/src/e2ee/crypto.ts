@@ -76,7 +76,9 @@ export interface MessageContent {
 	text: string;
 	location?: { lat: number; lng: number };
 	replyToText?: string;
-	fileKeys?: FileKey[];
+	// fileKeys maps file ID to its decryption key. Only encrypted files have
+	// an entry; unencrypted files are absent (download as-is).
+	fileKeys?: Record<string, FileKey>;
 }
 
 // EncryptedContent is what gets stored in the message record and sent over

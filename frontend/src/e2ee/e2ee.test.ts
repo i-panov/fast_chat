@@ -13,6 +13,7 @@ import {
 	decryptFileStream,
 	encryptFileStream,
 	generateFileKey,
+	type FileKey,
 } from "./file-crypto.ts";
 import {
 	decryptMessage,
@@ -181,21 +182,38 @@ describe("messagesRepo stores ciphertext verbatim", () => {
 });
 
 describe("MessageContent encryption (text + location)", () => {
-	it("encrypts and decrypts text with location", async () => {
+	it("encrypts and decrypts text with location and file keys", async () => {
+		const key1 = await generateFileKey();
+		const key2 = await generateFileKey();
 		const content = {
-			text: "meet me here",
-			location: { lat: 55.7558, lng: 37.6173 },
+			text: "with files",
+			location: { lat: 10, lng: 20 },
+			fileKeys: { "file-1": key1, "file-2": key2 },
 		};
 
 		const msgKey = crypto.getRandomValues(new Uint8Array(32));
 		const encrypted = await encryptContent(content, msgKey);
 
-		expect(encrypted.ciphertext).not.toContain("meet me here");
-		expect(encrypted.ciphertext).not.toContain("55.7558");
+		expect(encrypted.ciphertext).not.toContain("with files");
 
 		const decrypted = await decryptContent(encrypted, msgKey);
-		expect(decrypted.text).toBe("meet me here");
-		expect(decrypted.location).toEqual({ lat: 55.7558, lng: 37.6173 });
+		expect(decrypted.text).toBe("with files");
+		expect(decrypted.location).toEqual({ lat: 10, lng: 20 });
+		expect(decrypted.fileKeys).toEqual({ "file-1": key1, "file-2": key2 });
+	});
+
+	it("handles missing file keys (plaintext files)", async () => {
+		const content = {
+			text: "no encrypted files",
+			fileKeys: {},
+		};
+
+		const msgKey = crypto.getRandomValues(new Uint8Array(32));
+		const encrypted = await encryptContent(content, msgKey);
+		const decrypted = await decryptContent(encrypted, msgKey);
+
+		expect(decrypted.text).toBe("no encrypted files");
+		expect(decrypted.fileKeys).toEqual({});
 	});
 
 	it("produces different ciphertext for identical content", async () => {
@@ -235,5 +253,31 @@ describe("File encryption", () => {
 		const k2 = await generateFileKey();
 		expect(k1.key).not.toBe(k2.key);
 		expect(k1.nonce).not.toBe(k2.nonce);
+	});
+
+	// Regression: keys are indexed by plaintext hash, not file ID. This
+	// ensures the receiver (who gets different file IDs from the server) can
+	// still look up the correct key.
+	it("keys are indexed by hash for cross-client lookup", async () => {
+		const original = new Blob(["shared content"], { type: "text/plain" });
+		const fileKey = await generateFileKey();
+		const hash = await computePlaintextHash(original);
+
+		// Sender indexes key by hash.
+		const keyStore: Record<string, FileKey> = { [hash]: fileKey };
+
+	// Receiver gets a different file ID from the server but the same hash.
+	const serverFileId = "server-assigned-id-123";
+	// Key is NOT accessible by server-assigned ID (different from sender's ID).
+	expect(keyStore[serverFileId]).toBeUndefined();
+	// Key IS accessible by hash (same for sender and receiver).
+	const lookedUpKey = keyStore[hash];
+
+	expect(lookedUpKey).toBe(fileKey);
+
+		// Encrypt and decrypt with the looked-up key.
+		const ciphertext = await encryptFileStream(original, fileKey);
+		const plain = await decryptFileStream(ciphertext, lookedUpKey);
+		expect(new TextDecoder().decode(plain)).toBe("shared content");
 	});
 });

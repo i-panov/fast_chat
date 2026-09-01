@@ -1,6 +1,7 @@
 import { Loader, Text, UnstyledButton } from "@mantine/core";
 import { Download } from "lucide-react";
 import { useState } from "react";
+import type { FileKey } from "../../e2ee/file-crypto.ts";
 import type { FileInfo } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { BORDER_RADIUS_SM } from "../../utils/constants.ts";
@@ -9,9 +10,10 @@ import { formatSize } from "../../utils/files.ts";
 
 interface Props {
 	file: FileInfo;
+	fileKeys?: Record<string, FileKey>;
 }
 
-export function FileDownloadAttachment({ file }: Props) {
+export function FileDownloadAttachment({ file, fileKeys }: Props) {
 	const { activeAccount } = useAuth();
 	const [downloading, setDownloading] = useState(false);
 
@@ -33,6 +35,7 @@ export function FileDownloadAttachment({ file }: Props) {
 					file.url,
 					file.originalName,
 					activeAccount?.token,
+					fileKeys?.[file.hash ?? ""],
 				).finally(() => setDownloading(false));
 			}}
 		>

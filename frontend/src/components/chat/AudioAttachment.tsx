@@ -1,7 +1,8 @@
 import { Loader, Text, UnstyledButton } from "@mantine/core";
 import { FileAudio } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import type { FileKey } from "../../e2ee/file-crypto.ts";
+import { useDecryptedFileUrl } from "../../hooks/useDecryptedFileUrl.ts";
 import type { FileInfo } from "../../types/api.ts";
 import { useAudioPlayer } from "../../useAudioPlayer.tsx";
 import { useAuth } from "../../useAuth.tsx";
@@ -9,14 +10,16 @@ import { BORDER_RADIUS_SM } from "../../utils/constants.ts";
 
 interface Props {
 	file: FileInfo;
+	fileKeys?: Record<string, FileKey>;
 }
 
-export function AudioAttachment({ file }: Props) {
+export function AudioAttachment({ file, fileKeys }: Props) {
 	const { t } = useTranslation();
 	const { play, currentTrack, isPlaying } = useAudioPlayer();
 	const { activeAccount } = useAuth();
-	const { blobUrl, loading, error } = useFileUrl(
-		file.url,
+	const { blobUrl, loading, error } = useDecryptedFileUrl(
+		file,
+		fileKeys,
 		activeAccount?.token,
 	);
 

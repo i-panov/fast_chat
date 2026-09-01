@@ -20,7 +20,7 @@ export async function encryptForChat(
 	token: string | undefined,
 	chatId: string,
 	content: { text: string; location?: Location },
-	fileKeys: FileKey[],
+	fileKeys: Record<string, FileKey>,
 ): Promise<EncryptResult | null> {
 	try {
 		const chat = await chatsRepo.getById(chatId);

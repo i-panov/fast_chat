@@ -7,6 +7,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import type { FileKey } from "../../e2ee/file-crypto.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { getCurrentLocale } from "../../i18n.ts";
 import type {
@@ -62,6 +63,8 @@ interface Props {
 	showAuthorNick?: boolean;
 	encrypted?: boolean;
 	undecryptable?: boolean;
+	// fileKeys maps file ID to decryption key for encrypted files.
+	fileKeys?: Record<string, FileKey>;
 }
 
 function isWithinTTL(createdAt: string, ttl: number): boolean {
@@ -144,6 +147,7 @@ function BubbleContent({
 	photoBlobUrl,
 	onReplyClick,
 	files,
+	fileKeys,
 	status,
 	onPhotoClick,
 	location,
@@ -153,6 +157,7 @@ function BubbleContent({
 	photoBlobUrl: string | null;
 	onReplyClick?: (messageId: string) => void;
 	files?: FileInfo[];
+	fileKeys?: Record<string, FileKey>;
 	status?: "sent" | "queued" | "failed";
 	onPhotoClick: (idx: number) => void;
 	location?: Location;
@@ -170,6 +175,7 @@ function BubbleContent({
 			{(files ?? []).length > 0 && (
 				<MessageAttachments
 					files={files ?? []}
+					fileKeys={fileKeys}
 					status={status}
 					onPhotoClick={onPhotoClick}
 				/>
@@ -360,6 +366,7 @@ export const MessageBubble = memo(function MessageBubble({
 	showAuthorNick,
 	encrypted,
 	undecryptable,
+	fileKeys,
 }: Props) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
@@ -453,6 +460,7 @@ export const MessageBubble = memo(function MessageBubble({
 					photoBlobUrl={replyPhotoBlobUrl}
 					onReplyClick={onReplyClick}
 					files={files}
+					fileKeys={fileKeys}
 					status={status}
 					onPhotoClick={setLightboxIdx}
 					location={location}

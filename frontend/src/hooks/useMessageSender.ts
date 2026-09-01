@@ -164,7 +164,7 @@ interface SenderDeps {
 		token: string | undefined,
 		chatId: string,
 		content: { text: string; location?: Location },
-		fileKeys: FileKey[],
+		fileKeys: Record<string, FileKey>,
 	) => Promise<EncryptResult | null>;
 	token: string | undefined;
 }
@@ -186,10 +186,18 @@ async function doSendMessage(params: SendMessageParams, deps: SenderDeps) {
 
 	// Prepare files: skip upload for files already on server (by hash).
 	const prepared = await deps.prepareFiles(pendingFiles ?? [], token);
-	const fileKeys = prepared
-		.map((p) => p.fileKey)
-		.filter((k): k is FileKey => k !== undefined);
 	const fileInfos: FileInfo[] = (pendingFiles ?? []).map(buildStoredFile);
+
+	// Build fileKeys map: plaintextHash → key. Only encrypted files have a key.
+	// Keyed by hash (not file ID) because the server assigns different IDs to
+	// the same content, but the hash stays the same for sender and receiver.
+	const fileKeys: Record<string, FileKey> = {};
+	for (let i = 0; i < prepared.length; i++) {
+		const key = prepared[i].fileKey;
+		if (key !== undefined) {
+			fileKeys[prepared[i].plaintextHash] = key;
+		}
+	}
 
 	const encrypted = await deps.encryptForChat(
 		token,
@@ -273,10 +281,16 @@ async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
 	if (current === undefined) return;
 
 	const blobIds = await deps.prepareFiles(pendingFiles ?? [], token);
-	const fileKeys = blobIds
-		.map((p) => p.fileKey)
-		.filter((k): k is FileKey => k !== undefined);
 	const newFileInfos: FileInfo[] = (pendingFiles ?? []).map(buildStoredFile);
+
+	// Build fileKeys map for new files: plaintextHash → key.
+	const fileKeys: Record<string, FileKey> = {};
+	for (let i = 0; i < blobIds.length; i++) {
+		const key = blobIds[i].fileKey;
+		if (key !== undefined) {
+			fileKeys[blobIds[i].plaintextHash] = key;
+		}
+	}
 
 	const removeSet = new Set(filesToRemove ?? []);
 	const keptFileIds: string[] = (current.files ?? [])

@@ -13,6 +13,7 @@ import {
 	openMessageKey,
 	sealMessageKey,
 } from "./crypto.ts";
+import type { FileKey } from "./file-crypto.ts";
 
 export interface EncryptResult {
 	text: string; // base64 ciphertext
@@ -65,7 +66,11 @@ export async function decryptMessageContent(
 	msg: Pick<Message, "text" | "encryptedPayload" | "location">,
 	userId: string,
 	key: KeyPair,
-): Promise<{ text: string; location?: { lat: number; lng: number } } | null> {
+): Promise<{
+	text: string;
+	location?: { lat: number; lng: number };
+	fileKeys: Record<string, FileKey>;
+} | null> {
 	if (!msg.encryptedPayload) return null;
 
 	// encryptedPayload carries the sealed msgKey envelopes + nonce.
@@ -86,6 +91,7 @@ export async function decryptMessageContent(
 		return {
 			text: content.text,
 			location: content.location,
+			fileKeys: content.fileKeys ?? {},
 		};
 	} catch {
 		return null;
@@ -148,6 +154,7 @@ export async function decryptMessage(
 		if (content !== null) {
 			out.text = content.text;
 			out.location = content.location;
+			out.fileKeys = content.fileKeys;
 		} else {
 			// Fall back to legacy v1 (text-only encryption).
 			out.text = await decryptMessageText(message, userId, key);

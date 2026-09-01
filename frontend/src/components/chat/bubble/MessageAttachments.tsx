@@ -1,4 +1,5 @@
 import { Loader } from "@mantine/core";
+import type { FileKey } from "../../../e2ee/file-crypto.ts";
 import type { FileInfo } from "../../../types/api.ts";
 import { AudioAttachment } from "../AudioAttachment.tsx";
 import { FileDownloadAttachment } from "../FileDownloadAttachment.tsx";
@@ -7,11 +8,17 @@ import { VideoAttachment } from "../VideoAttachment.tsx";
 
 interface Props {
 	files: FileInfo[];
+	fileKeys?: Record<string, FileKey>;
 	status?: "sent" | "queued" | "failed";
 	onPhotoClick: (idx: number) => void;
 }
 
-export function MessageAttachments({ files, status, onPhotoClick }: Props) {
+export function MessageAttachments({
+	files,
+	fileKeys,
+	status,
+	onPhotoClick,
+}: Props) {
 	const photoFiles = files.filter((f) => f.fileType === "photo");
 
 	return (
@@ -49,6 +56,7 @@ export function MessageAttachments({ files, status, onPhotoClick }: Props) {
 						<PhotoAttachment
 							key={file.id}
 							file={file}
+							fileKeys={fileKeys}
 							onPhotoClick={
 								photoIdx >= 0 ? () => onPhotoClick(photoIdx) : undefined
 							}
@@ -56,12 +64,22 @@ export function MessageAttachments({ files, status, onPhotoClick }: Props) {
 					);
 				}
 				if (file.fileType === "video") {
-					return <VideoAttachment key={file.id} file={file} />;
+					return (
+						<VideoAttachment key={file.id} file={file} fileKeys={fileKeys} />
+					);
 				}
 				if (file.fileType === "audio") {
-					return <AudioAttachment key={file.id} file={file} />;
+					return (
+						<AudioAttachment key={file.id} file={file} fileKeys={fileKeys} />
+					);
 				}
-				return <FileDownloadAttachment key={file.id} file={file} />;
+				return (
+					<FileDownloadAttachment
+						key={file.id}
+						file={file}
+						fileKeys={fileKeys}
+					/>
+				);
 			})}
 		</div>
 	);

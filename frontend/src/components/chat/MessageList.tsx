@@ -272,6 +272,7 @@ function MessageEntry(props: {
 				showAuthorNick={entry.showAuthor}
 				encrypted={msg.encrypted}
 				undecryptable={msg.undecryptable}
+				fileKeys={msg.fileKeys}
 			/>
 		</div>
 	);

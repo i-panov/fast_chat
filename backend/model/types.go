@@ -80,6 +80,10 @@ type FileInfo struct {
 	OriginalName string `json:"originalName"`
 	FileType     string `json:"fileType"`
 	URL          string `json:"url"`
+	// Hash is the SHA-256 hex digest of the plaintext file content. Used by the
+	// client to match decryption keys to files (keys are indexed by hash, not
+	// file ID, because IDs differ between sender and receiver).
+	Hash string `json:"hash"`
 }
 
 func (f *File) ToFileInfo() FileInfo {
@@ -99,6 +103,7 @@ func (f *File) ToFileInfo() FileInfo {
 		OriginalName: f.OriginalName,
 		FileType:     ft,
 		URL:          "/api/files/" + f.ID,
+		Hash:         f.Hash,
 	}
 }
 

@@ -1,6 +1,7 @@
 import { Loader, Text, UnstyledButton } from "@mantine/core";
 import { useTranslation } from "react-i18next";
-import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import type { FileKey } from "../../e2ee/file-crypto.ts";
+import { useDecryptedFileUrl } from "../../hooks/useDecryptedFileUrl.ts";
 import type { FileInfo } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { BORDER_RADIUS_SM } from "../../utils/constants.ts";
@@ -9,14 +10,16 @@ const FILE_ATTACHMENT_MAX_SIZE = 300;
 
 interface Props {
 	file: FileInfo;
+	fileKeys?: Record<string, FileKey>;
 	onPhotoClick?: () => void;
 }
 
-export function PhotoAttachment({ file, onPhotoClick }: Props) {
+export function PhotoAttachment({ file, fileKeys, onPhotoClick }: Props) {
 	const { t } = useTranslation();
 	const { activeAccount } = useAuth();
-	const { blobUrl, loading, error } = useFileUrl(
-		file.url,
+	const { blobUrl, loading, error } = useDecryptedFileUrl(
+		file,
+		fileKeys,
 		activeAccount?.token,
 	);
 
