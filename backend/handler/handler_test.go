@@ -20,6 +20,7 @@ import (
 	"fast_chat/federation"
 	"fast_chat/model"
 	"fast_chat/service"
+	"fast_chat/sse"
 	"fast_chat/store"
 )
 
@@ -62,8 +63,9 @@ func newTestHandler(t *testing.T) *Handler {
 
 	fm := federation.New(key, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout)
 	s := newTestStore(t)
+	hub := sse.NewHub(service.TypingThrottleInterval * 5)
 
-	return New(s, cfg, fm, nil)
+	return New(s, cfg, fm, nil, hub)
 }
 
 func TestSearchUsersDoesNotLeakToken(t *testing.T) {

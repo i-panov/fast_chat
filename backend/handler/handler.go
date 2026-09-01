@@ -94,9 +94,7 @@ type Handler struct {
 	pushSender pushSender
 }
 
-func New(s *store.Store, cfg *config.Config, fm *federation.Manager, ps *push.Service) *Handler {
-	hub := sse.NewHub(service.TypingThrottleInterval * 5)
-
+func New(s *store.Store, cfg *config.Config, fm *federation.Manager, ps *push.Service, hub *sse.Hub) *Handler {
 	h := &Handler{
 		store:      s,
 		hub:        hub,
@@ -119,6 +117,12 @@ func (h *Handler) Close() {
 	// Wait for in-flight federation background requests to finish so
 	// they are not silently dropped on shutdown.
 	h.fedWG.Wait()
+}
+
+// Service returns the underlying service layer. Used by alternative transports
+// (e.g. the Huma v2 pilot) that need access to the same service instance.
+func (h *Handler) Service() *service.Service {
+	return h.svc
 }
 
 func (h *Handler) requireChatMember(w http.ResponseWriter, r *http.Request, chatID, userID string) *model.Chat {

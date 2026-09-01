@@ -17,8 +17,11 @@ import (
 	"fast_chat/config"
 	"fast_chat/federation"
 	"fast_chat/handler"
+	"fast_chat/huma"
 	"fast_chat/push"
 	"fast_chat/ratelimit"
+	"fast_chat/service"
+	"fast_chat/sse"
 	"fast_chat/store"
 )
 
@@ -304,7 +307,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	handlerInstance := handler.New(st, cfg, fedManager, pushService)
+	hub := sse.NewHub(service.TypingThrottleInterval * 5)
+	handlerInstance := handler.New(st, cfg, fedManager, pushService, hub)
+
+	// Huma v2 pilot: mounts an alternative SSE implementation at /huma/events
+	// alongside the existing stdlib transport for validation during Stage B.
+	humaPilot := huma.NewPilot(hub, st, handlerInstance.Service(), cfg)
 
 	ipExtractor := ratelimit.NewClientIPExtractor(cfg.Server.TrustedProxies)
 
@@ -315,6 +323,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, handlerInstance, fedManager, ipExtractor, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
+
+	// Huma v2 pilot: alternative SSE implementation for validation during Stage B.
+	mux.Handle("/huma/", http.StripPrefix("/huma", humaPilot.Handler()))
 
 	// Static file serving for production frontend build
 	absStaticDir := resolveStaticDir(cfg.Server.StaticDir)
