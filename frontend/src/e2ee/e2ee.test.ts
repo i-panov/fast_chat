@@ -12,8 +12,8 @@ import {
 	computePlaintextHash,
 	decryptFileStream,
 	encryptFileStream,
-	generateFileKey,
 	type FileKey,
+	generateFileKey,
 } from "./file-crypto.ts";
 import {
 	decryptMessage,
@@ -266,14 +266,14 @@ describe("File encryption", () => {
 		// Sender indexes key by hash.
 		const keyStore: Record<string, FileKey> = { [hash]: fileKey };
 
-	// Receiver gets a different file ID from the server but the same hash.
-	const serverFileId = "server-assigned-id-123";
-	// Key is NOT accessible by server-assigned ID (different from sender's ID).
-	expect(keyStore[serverFileId]).toBeUndefined();
-	// Key IS accessible by hash (same for sender and receiver).
-	const lookedUpKey = keyStore[hash];
+		// Receiver gets a different file ID from the server but the same hash.
+		const serverFileId = "server-assigned-id-123";
+		// Key is NOT accessible by server-assigned ID (different from sender's ID).
+		expect(keyStore[serverFileId]).toBeUndefined();
+		// Key IS accessible by hash (same for sender and receiver).
+		const lookedUpKey = keyStore[hash];
 
-	expect(lookedUpKey).toBe(fileKey);
+		expect(lookedUpKey).toBe(fileKey);
 
 		// Encrypt and decrypt with the looked-up key.
 		const ciphertext = await encryptFileStream(original, fileKey);

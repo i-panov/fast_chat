@@ -1,6 +1,3 @@
 package handler
 
-const (
-	nickMaxRunes       = 20
-	nickMinSearchRunes = 2
-)
+const nickMinSearchRunes = 2

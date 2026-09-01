@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"fast_chat/config"
-	"fast_chat/email"
 	"fast_chat/federation"
 	"fast_chat/internal/httputil"
 	"fast_chat/model"
 	"fast_chat/push"
+	"fast_chat/service"
 	"fast_chat/sse"
 	"fast_chat/store"
 )
@@ -96,42 +96,34 @@ type chatResponse struct {
 	CreatedAt time.Time    `json:"createdAt"`
 }
 
+// Handler is the HTTP transport layer. During the service-layer migration
+// (A2-A6) it still holds store/hub/cfg directly for handlers not yet ported;
+// as each domain migrates, the duplicate access is funneled through svc and
+// these fields can be dropped. The pointers are the same instances svc holds,
+// so a mutation via either view stays visible to the other.
 type Handler struct {
-	store       *store.Store
-	hub         *sse.Hub
-	cfg         *config.Config
-	fedManager  *federation.Manager
-	fedClient   *http.Client
-	fedSem      chan struct{}
-	fedWG       sync.WaitGroup
-	emailSender email.Sender
-	pushSender  pushSender
+	store      *store.Store
+	hub        *sse.Hub
+	cfg        *config.Config
+	svc        *service.Service
+	fedManager *federation.Manager
+	fedClient  *http.Client
+	fedSem     chan struct{}
+	fedWG      sync.WaitGroup
+	pushSender pushSender
 }
 
 func New(s *store.Store, cfg *config.Config, fm *federation.Manager, ps *push.Service) *Handler {
-	var es email.Sender
-	if cfg.Email.DebugMode {
-		es = email.NewDebugSender()
-	} else if cfg.Email.SMTP.Host != "" {
-		es = email.NewSMTPSender(
-			cfg.Email.SMTP.Host,
-			cfg.Email.SMTP.Port,
-			cfg.Email.SMTP.Username,
-			cfg.Email.SMTP.Password,
-			cfg.Email.SMTP.From,
-		)
-	} else {
-		es = email.NewDebugSender()
-	}
+	hub := sse.NewHub(typingThrottleInterval * 5)
 
 	h := &Handler{
-		store:       s,
-		hub:         sse.NewHub(typingThrottleInterval * 5),
-		cfg:         cfg,
-		fedManager:  fm,
-		fedClient:   federation.NewSafeHTTPClient(time.Duration(cfg.Federation.Timeout) * time.Second),
-		fedSem:      make(chan struct{}, 16),
-		emailSender: es,
+		store:      s,
+		hub:        hub,
+		cfg:        cfg,
+		svc:        service.New(s, cfg, hub, ps),
+		fedManager: fm,
+		fedClient:  federation.NewSafeHTTPClient(time.Duration(cfg.Federation.Timeout) * time.Second),
+		fedSem:     make(chan struct{}, 16),
 	}
 	if ps != nil {
 		h.pushSender = ps
