@@ -217,7 +217,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		if memberID == user.ID {
 			continue
 		}
-		h.sendPushForMessage(r.Context(), chatID, msg, threadID, memberID)
+		h.svc.SendPushForMessage(r.Context(), chatID, msg, threadID, memberID)
 	}
 
 	WriteJSON(w, http.StatusCreated, map[string]any{"message": msg})

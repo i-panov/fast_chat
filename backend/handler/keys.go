@@ -1,51 +1,18 @@
 package handler
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 
 	"fast_chat/service"
 )
 
-// publicKeyLen is the X25519 key size in bytes (libsodium
-// crypto_box_PUBLICKEYBYTES).
-const publicKeyLen = 32
-
-var errInvalidPublicKey = errors.New("invalid public key")
-
-// decodePublicKey accepts any common base64 variant. The frontend
-// encodes keys with libsodium, whose default is URLSAFE_NO_PADDING
-// ("-" and "_" instead of "+" and "/", no padding); accept the standard
-// variants too for robustness.
-func decodePublicKey(s string) ([]byte, error) {
-	encodings := []*base64.Encoding{
-		base64.RawURLEncoding,
-		base64.URLEncoding,
-		base64.RawStdEncoding,
-		base64.StdEncoding,
-	}
-
-	for _, enc := range encodings {
-		raw, err := enc.DecodeString(s)
-		if err == nil && len(raw) == publicKeyLen {
-			return raw, nil
-		}
-	}
-
-	return nil, errInvalidPublicKey
-}
-
-// keyVersionFor derives a short fingerprint from the public key so
-// clients can detect a changed key and refresh their cache.
-func keyVersionFor(publicKey string) string {
-	sum := sha256.Sum256([]byte(publicKey))
-	return hex.EncodeToString(sum[:6])
-}
+// maxKeyBackupLen bounds the accepted backup blob size. The blob is a
+// base64-encoded JSON document holding a small encrypted secret (two
+// 32-byte keys plus salt/nonce), so 4 KiB is ample while capping abuse.
+const maxKeyBackupLen = 4 << 10
 
 // UpdatePublicKey stores the authenticated user's E2E X25519 public key
 // (base64). Private keys never leave the client.
@@ -63,11 +30,12 @@ func (h *Handler) UpdatePublicKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawKey, err := decodePublicKey(req.PublicKey)
+	rawKey, err := service.DecodePublicKey(req.PublicKey)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid public key")
 		return
 	}
+
 	normalized := base64.StdEncoding.EncodeToString(rawKey)
 
 	if err := h.store.UpdateUserPublicKey(r.Context(), user.ID, normalized); err != nil {
@@ -94,7 +62,7 @@ func (h *Handler) GetUserPublicKey(w http.ResponseWriter, r *http.Request) {
 
 		WriteJSON(w, http.StatusOK, map[string]string{
 			"publicKey":  key,
-			"keyVersion": keyVersionFor(key),
+			"keyVersion": service.KeyVersionFor(key),
 		})
 		return
 	}
@@ -119,7 +87,7 @@ func (h *Handler) GetUserPublicKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if result.KeyVersion == "" {
-		result.KeyVersion = keyVersionFor(result.PublicKey)
+		result.KeyVersion = service.KeyVersionFor(result.PublicKey)
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]string{
@@ -127,11 +95,6 @@ func (h *Handler) GetUserPublicKey(w http.ResponseWriter, r *http.Request) {
 		"keyVersion": result.KeyVersion,
 	})
 }
-
-// maxKeyBackupLen bounds the accepted backup blob size. The blob is a
-// base64-encoded JSON document holding a small encrypted secret (two
-// 32-byte keys plus salt/nonce), so 4 KiB is ample while capping abuse.
-const maxKeyBackupLen = 4 << 10
 
 // SetKeyBackup stores the authenticated user's client-encrypted private
 // key backup. The server treats it as opaque data; it cannot decrypt it.
@@ -214,6 +177,6 @@ func (h *Handler) FederatedGetUserPublicKey(w http.ResponseWriter, r *http.Reque
 
 	WriteJSON(w, http.StatusOK, map[string]string{
 		"publicKey":  key,
-		"keyVersion": keyVersionFor(key),
+		"keyVersion": service.KeyVersionFor(key),
 	})
 }

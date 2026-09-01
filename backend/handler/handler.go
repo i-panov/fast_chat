@@ -77,11 +77,6 @@ const (
 
 var maxUploadSize int64 = 50 << 20
 
-// memberInfo is a transport alias for the shared service DTO. It keeps the
-// JSON shape stable while sync.go still resolves in package handler and will
-// be dropped once the sync domain is ported to the service layer.
-type memberInfo = service.MemberView
-
 // Handler is the HTTP transport layer. During the service-layer migration
 // (A2-A6) it still holds store/hub/cfg directly for handlers not yet ported;
 // as each domain migrates, the duplicate access is funneled through svc and
@@ -100,7 +95,7 @@ type Handler struct {
 }
 
 func New(s *store.Store, cfg *config.Config, fm *federation.Manager, ps *push.Service) *Handler {
-	hub := sse.NewHub(typingThrottleInterval * 5)
+	hub := sse.NewHub(service.TypingThrottleInterval * 5)
 
 	h := &Handler{
 		store:      s,

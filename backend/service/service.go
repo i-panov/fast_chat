@@ -9,6 +9,7 @@ import (
 
 	"fast_chat/config"
 	"fast_chat/email"
+	"fast_chat/model"
 	"fast_chat/push"
 	"fast_chat/sse"
 	"fast_chat/store"
@@ -19,6 +20,12 @@ import (
 // up instead of being captured once at package init.
 func log() *slog.Logger {
 	return slog.Default()
+}
+
+// pushSender abstracts the web-push delivery service so the service can be
+// tested without network access.
+type pushSender interface {
+	SendToUser(payload []byte, subscriptions []model.PushSubscription)
 }
 
 // Service aggregates every external dependency required by the business
@@ -32,20 +39,26 @@ type Service struct {
 	hub   *sse.Hub
 	cfg   *config.Config
 	email email.Sender
-	push  *push.Service
+	push  pushSender
 }
 
 // New builds a Service bound to the given store, hub and config. The email
 // sender is derived from the config each time so constructor callers never
 // have to reason about SMTP vs debug mode.
 func New(s *store.Store, cfg *config.Config, hub *sse.Hub, ps *push.Service) *Service {
-	return &Service{
+	svc := &Service{
 		store: s,
 		hub:   hub,
 		cfg:   cfg,
 		email: newEmailSender(cfg),
-		push:  ps,
 	}
+	// Guard against a nil *push.Service being wrapped in a non-nil pushSender
+	// interface, which would defeat the `s.push == nil` check in SendPushForMessage.
+	if ps != nil {
+		svc.push = ps
+	}
+
+	return svc
 }
 
 //nolint:ireturn // the two concrete senders are interchangeable; callers hold email.Sender

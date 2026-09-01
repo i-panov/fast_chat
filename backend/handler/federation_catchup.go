@@ -2,10 +2,12 @@ package handler
 
 import (
 	"net/http"
+
+	"fast_chat/service"
 )
 
 func (h *Handler) FederatedSync(w http.ResponseWriter, r *http.Request) {
-	since, err := parseSince(r.URL.Query().Get("since"))
+	since, err := service.ParseSince(r.URL.Query().Get("since"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid since timestamp")
 		return

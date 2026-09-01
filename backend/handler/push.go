@@ -1,63 +1,16 @@
 package handler
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 
-	"fast_chat/model"
+	"fast_chat/service"
 )
 
 // pushSender abstracts the web-push delivery service so the handler can be
 // tested without network access.
 type pushSender interface {
 	PublicKey() string
-	SendToUser(payload []byte, subscriptions []model.PushSubscription)
-}
-
-type pushPayload struct {
-	Title string          `json:"title"`
-	Body  string          `json:"body,omitempty"`
-	Tag   string          `json:"tag"`
-	Data  pushPayloadData `json:"data"`
-}
-
-type pushPayloadData struct {
-	ChatID    string `json:"chatId"`
-	MessageID string `json:"messageId"`
-	ThreadID  string `json:"threadId,omitempty"`
-}
-
-func (h *Handler) sendPushForMessage(ctx context.Context, chatID string, msg *model.Message, threadID, recipientID string) {
-	if h.pushSender == nil || h.store.IsOnline(recipientID) {
-		return
-	}
-
-	payload := pushPayload{
-		Title: msg.FromNick,
-		// The server does not know the recipient's language and the
-		// message content is E2E-encrypted anyway; keep the body empty
-		// so the notification is just the sender's nickname.
-		Tag: "chat-" + chatID,
-		Data: pushPayloadData{
-			ChatID:    chatID,
-			MessageID: msg.ID,
-			ThreadID:  threadID,
-		},
-	}
-
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-
-	subs, err := h.store.GetPushSubscriptionsByUser(ctx, recipientID)
-	if err != nil || len(subs) == 0 {
-		return
-	}
-
-	go h.pushSender.SendToUser(raw, subs)
 }
 
 func (h *Handler) VapidPublicKey(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +46,7 @@ func (h *Handler) SubscribePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !isValidPushEndpoint(req.Endpoint) {
+	if !service.IsValidPushEndpoint(req.Endpoint) {
 		writeError(w, http.StatusBadRequest, "invalid push endpoint")
 
 		return
@@ -107,22 +60,6 @@ func (h *Handler) SubscribePush(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteJSON(w, http.StatusCreated, map[string]any{"subscription": sub})
-}
-
-func isValidPushEndpoint(endpoint string) bool {
-	prefixes := []string{
-		"https://fcm.googleapis.com/",
-		"https://updates.push.services.mozilla.com/",
-		"https://push.apple.com/",
-	}
-
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(endpoint, prefix) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (h *Handler) UnsubscribePush(w http.ResponseWriter, r *http.Request) {

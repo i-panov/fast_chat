@@ -364,27 +364,7 @@ func (s *Service) HandleFederatedTyping(
 	active bool,
 ) {
 
-	eventName := federationEventTypingStop
-	if active {
-		eventName = federationEventTyping
-	}
-
-	payload := map[string]string{
-		keyChatID: chat.ID,
-		keyUserID: userID,
-	}
-
-	if active && nick != "" {
-		payload["nick"] = nick
-	}
-
-	event := sse.Event{Event: eventName, Data: payload}
-
-	for _, memberID := range chat.Members {
-		if memberID != userID {
-			s.hub.Send(memberID, event)
-		}
-	}
+	s.broadcastTyping(chat, userID, nick, active)
 }
 
 // SyncFederatedResponse is the shape of the federation catchup response.

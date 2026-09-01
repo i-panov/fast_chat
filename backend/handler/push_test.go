@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"fast_chat/service"
 )
 
 func authed(hh *Handler, route func(http.ResponseWriter, *http.Request), token, body string) *httptest.ResponseRecorder {
@@ -27,8 +29,8 @@ func TestIsValidPushEndpoint(t *testing.T) {
 	}
 
 	for in, want := range cases {
-		if got := isValidPushEndpoint(in); got != want {
-			t.Errorf("isValidPushEndpoint(%q) = %v, want %v", in, got, want)
+		if got := service.IsValidPushEndpoint(in); got != want {
+			t.Errorf("IsValidPushEndpoint(%q) = %v, want %v", in, got, want)
 		}
 	}
 }

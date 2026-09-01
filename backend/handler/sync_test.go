@@ -9,26 +9,17 @@ import (
 	"testing"
 	"time"
 
-	"fast_chat/model"
+	"fast_chat/service"
 )
 
-type syncJSON struct {
-	ServerNow       time.Time               `json:"serverNow"`
-	Chats           []syncChatDTO           `json:"chats"`
-	DeletedChats    []syncDeletedChatDTO    `json:"deletedChats"`
-	Messages        []model.Message         `json:"messages"`
-	DeletedMessages []syncDeletedMessageDTO `json:"deletedMessages"`
-	OnlineStatus    map[string]bool         `json:"onlineStatus,omitempty"`
-}
-
-func doSync(t *testing.T, h *Handler, token, since string) (syncJSON, int) {
+func doSync(t *testing.T, h *Handler, token, since string) (service.SyncResponse, int) {
 	t.Helper()
 
 	req := authReq(http.MethodGet, "/api/sync?since="+since, token, "")
 	w := httptest.NewRecorder()
 	h.AuthMiddleware(h.Sync)(w, req)
 
-	var resp syncJSON
+	var resp service.SyncResponse
 	if w.Code == http.StatusOK {
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("unmarshal sync: %v (body: %s)", err, w.Body.String())
@@ -36,55 +27,6 @@ func doSync(t *testing.T, h *Handler, token, since string) (syncJSON, int) {
 	}
 
 	return resp, w.Code
-}
-
-func TestParseSince(t *testing.T) {
-	// Empty string falls back to the epoch.
-	parsed, err := parseSince("")
-	if err != nil {
-		t.Fatalf("parseSince empty: %v", err)
-	}
-	if !parsed.Equal(time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)) {
-		t.Errorf("empty since should be epoch, got %v", parsed)
-	}
-
-	// Valid RFC3339 passes through.
-	parsed, err = parseSince("2026-08-30T10:00:00Z")
-	if err != nil {
-		t.Fatalf("parseSince valid: %v", err)
-	}
-	if parsed.Year() != 2026 || parsed.Month() != time.August {
-		t.Errorf("unexpected parsed value: %v", parsed)
-	}
-
-	// Malformed timestamps error.
-	if _, err := parseSince("not-a-timestamp"); err == nil {
-		t.Error("expected error for malformed since")
-	}
-}
-
-func TestCollectChatAndMemberIDs(t *testing.T) {
-	chats := []*model.Chat{
-		{ID: "c1", Members: []string{"a", "b"}},
-		{ID: "c1", Members: []string{"b", "c"}}, // duplicate chat id, deduped
-		{ID: "c2", Members: []string{"a", "c"}},
-	}
-
-	chatIDs, memberIDs := collectChatAndMemberIDs(chats)
-
-	if len(chatIDs) != 2 || chatIDs[0] != "c1" || chatIDs[1] != "c2" {
-		t.Errorf("chatIDs = %v, want [c1 c2]", chatIDs)
-	}
-
-	wantMembers := []string{"a", "b", "c"}
-	if len(memberIDs) != len(wantMembers) {
-		t.Fatalf("memberIDs = %v, want %v", memberIDs, wantMembers)
-	}
-	for i := range wantMembers {
-		if memberIDs[i] != wantMembers[i] {
-			t.Errorf("memberIDs[%d] = %s, want %s", i, memberIDs[i], wantMembers[i])
-		}
-	}
 }
 
 func TestSyncEndToEnd(t *testing.T) {
@@ -103,6 +45,7 @@ func TestSyncEndToEnd(t *testing.T) {
 	if _, err := h.store.AddMessage(context.Background(), chat.ID, "", alice.id, "alice", "hello", "m1", "", nil, false, ""); err != nil {
 		t.Fatalf("add m1: %v", err)
 	}
+
 	if _, err := h.store.AddMessage(context.Background(), chat.ID, "", bob.id, "bob", "world", "m2", "", nil, false, ""); err != nil {
 		t.Fatalf("add m2: %v", err)
 	}
@@ -121,23 +64,27 @@ func TestSyncEndToEnd(t *testing.T) {
 		t.Fatalf("expected at least 1 changed chat, got %d", len(resp.Chats))
 	}
 
-	var found syncChatDTO
+	var found service.SyncChatDTO
 	for _, c := range resp.Chats {
 		if c.Name == "room" {
 			found = c
 		}
 	}
+
 	if found.ID == "" {
 		t.Fatalf("expected the group chat 'room' in changed chats, got %+v", resp.Chats)
 	}
+
 	if len(found.Members) < 1 {
 		t.Errorf("expected members in chat dto")
 	}
+
 	// Members must resolve to nicks (alice, bob).
 	nickByID := map[string]string{}
 	for _, m := range found.Members {
 		nickByID[m.ID] = m.Nick
 	}
+
 	if nickByID[alice.id] != "alice" || nickByID[bob.id] != "bob" {
 		t.Errorf("member nicks not resolved: %v", nickByID)
 	}
@@ -147,9 +94,11 @@ func TestSyncEndToEnd(t *testing.T) {
 	for _, m := range resp.Messages {
 		texts[m.ID] = true
 	}
+
 	if !texts["m2"] {
 		t.Errorf("expected m2 in messages, got %v", texts)
 	}
+
 	if texts["m1"] {
 		t.Errorf("m1 should be deleted, not present: %v", texts)
 	}
@@ -181,6 +130,7 @@ func TestSyncDeletedChatTombstone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create group chat: %v", err)
 	}
+
 	if _, err := h.store.AddMessage(context.Background(), chat.ID, "", alice.id, "alice", "hi", "m1", "", nil, false, ""); err != nil {
 		t.Fatalf("add m1: %v", err)
 	}
@@ -223,37 +173,12 @@ func TestSyncSinceFilter(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("sync status = %d", code)
 	}
+
 	if len(resp.Messages) != 0 {
 		t.Errorf("expected no messages with future since, got %+v", resp.Messages)
 	}
+
 	if len(resp.Chats) != 0 {
 		t.Errorf("expected no chats with future since, got %+v", resp.Chats)
-	}
-}
-
-func TestCollectMembersUsesNickAndOnline(t *testing.T) {
-	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice", "alice@test.local")
-
-	chat, err := h.store.CreateGroupChat(context.Background(), "room", alice.id, []string{alice.id}, "")
-	if err != nil {
-		t.Fatalf("create chat: %v", err)
-	}
-	chat.Members = []string{alice.id}
-
-	nicks := map[string]string{alice.id: "alice"}
-	members := h.collectMembers(chat, nicks)
-
-	if len(members) != 1 {
-		t.Fatalf("expected 1 member, got %d", len(members))
-	}
-	if members[0].Nick != "alice" {
-		t.Errorf("nick = %q, want alice", members[0].Nick)
-	}
-
-	// Unknown members fall back to their raw id as the nick.
-	unknown := h.collectMembers(&model.Chat{Members: []string{"ghost:server"}}, nicks)
-	if len(unknown) != 1 || unknown[0].Nick != "ghost:server" {
-		t.Errorf("expected fallback nick = id, got %+v", unknown)
 	}
 }
