@@ -77,16 +77,18 @@ async function runOp(op: OutboxOp, token: string): Promise<void> {
 }
 
 async function runSend(op: OutboxOpSend, token: string): Promise<void> {
-	const fileIDs = await uploadPendingFiles(op.pendingFileClientIds, token);
+	const uploadedIDs = await uploadPendingFiles(op.pendingFileClientIds, token);
 
+	// fileHashes are files already on the server (matched by plaintext hash).
+	// The server resolves them to existing file IDs.
 	if (op.threadId !== undefined) {
 		await sendMessage(token, {
 			chatId: op.chatId,
 			text: op.text,
 			id: op.msgId,
 			replyToId: op.replyToId,
-			fileIDs: fileIDs.length > 0 ? fileIDs : undefined,
-			location: op.location,
+			fileIDs: uploadedIDs.length > 0 ? uploadedIDs : undefined,
+			fileHashes: op.fileHashes,
 			threadId: op.threadId,
 			encrypted: op.encrypted,
 			encryptedPayload: op.encryptedPayload,
@@ -98,8 +100,8 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 			text: op.text,
 			id: op.msgId,
 			replyToId: op.replyToId,
-			fileIDs: fileIDs.length > 0 ? fileIDs : undefined,
-			location: op.location,
+			fileIDs: uploadedIDs.length > 0 ? uploadedIDs : undefined,
+			fileHashes: op.fileHashes,
 			encrypted: op.encrypted,
 			encryptedPayload: op.encryptedPayload,
 		});
@@ -124,18 +126,14 @@ async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
 		fileIDs = undefined;
 	}
 
-	const editOpts = {
-		location: op.location ?? undefined,
-		clearLocation: op.clearLocation,
-	};
-
 	if (op.threadId !== undefined) {
 		await editMessage(token, {
 			chatId: op.chatId,
 			messageId: op.messageId,
 			text: op.text,
 			fileIDs,
-			opts: editOpts,
+			fileHashes: op.fileHashes,
+			opts: { clearLocation: op.clearLocation },
 			threadId: op.threadId,
 			encrypted: op.encrypted,
 			encryptedPayload: op.encryptedPayload,
@@ -147,7 +145,8 @@ async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
 			messageId: op.messageId,
 			text: op.text,
 			fileIDs,
-			opts: editOpts,
+			fileHashes: op.fileHashes,
+			opts: { clearLocation: op.clearLocation },
 			encrypted: op.encrypted,
 			encryptedPayload: op.encryptedPayload,
 		});
@@ -222,7 +221,15 @@ async function uploadPendingFiles(
 		const file = new File([pending.blob], pending.name, {
 			type: pending.mimeType,
 		});
-		const { file: uploaded } = await uploadFile(token, file);
+		// Encrypted blobs need the client hash + encrypted flag so the server
+		// can deduplicate. The hash was computed before encryption and stored
+		// alongside the blob.
+		const { file: uploaded } = await uploadFile(
+			token,
+			file,
+			pending.plaintextHash,
+			pending.encrypted !== false,
+		);
 		out.push(uploaded.id);
 	}
 

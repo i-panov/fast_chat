@@ -60,7 +60,7 @@ export interface ChatPageState {
 	handleTyping: (chatId: string, active: boolean) => void;
 
 	pendingFiles: PendingFile[];
-	handleAttachFiles: (files: File[]) => void;
+	handleAttachFiles: (files: File[]) => void | Promise<void>;
 	handleRemoveFile: (id: string) => void;
 
 	config: { messageEditTTL: number; messageDeleteTTL: number } | null;

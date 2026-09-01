@@ -67,7 +67,7 @@ export interface OutboxOpSend {
 	encryptedPayload?: string;
 	replyToId?: string;
 	pendingFileClientIds: string[];
-	location?: { lat: number; lng: number };
+	fileHashes?: string[];
 	createdAt: string;
 	attempts: number;
 	threadId?: string;
@@ -83,9 +83,9 @@ export interface OutboxOpEdit {
 	encrypted?: boolean;
 	encryptedPayload?: string;
 	pendingFileClientIds: string[];
+	fileHashes?: string[];
 	keptFileIds: string[];
 	filesToRemove: string[];
-	location?: { lat: number; lng: number } | null;
 	clearLocation?: boolean;
 	clientEditedAt: string;
 	createdAt: string;
@@ -112,6 +112,15 @@ export interface PendingBlob {
 	name: string;
 	mimeType: string;
 	size: number;
+	// plaintextHash is the SHA-256 hex digest of the original (pre-encryption)
+	// file content. Required for encrypted uploads so the server can
+	// deduplicate without seeing the plaintext.
+	plaintextHash?: string;
+	// encrypted indicates whether the blob content is encrypted. When false,
+	// the blob is plaintext and the server computes its own hash for dedup.
+	// When true (or omitted for backward compat), the blob is ciphertext and
+	// the client-provided hash must be used.
+	encrypted?: boolean;
 }
 
 export interface CachedFile {

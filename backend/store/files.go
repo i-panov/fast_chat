@@ -44,6 +44,18 @@ func (s *Store) FindFileByHash(ctx context.Context, hash string) (*model.File, b
 	return &f, true
 }
 
+// FileExistsByHash reports whether a file with the given plaintext hash is
+// already stored. Used by the client to skip uploading a file that the
+// server already has (deduplication by content hash).
+func (s *Store) FileExistsByHash(ctx context.Context, hash string) bool {
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&model.File{}).Where("hash = ?", hash).Count(&count).Error; err != nil {
+		return false
+	}
+
+	return count > 0
+}
+
 // FindFileByHashAndName returns the record for an exact (hash, original
 // name) pair. Used to reuse the existing record when the same content is
 // uploaded again under the same name.

@@ -38,7 +38,7 @@ interface Props {
 	onTypingStart?: () => void;
 	onTypingStop?: () => void;
 	pendingFiles?: PendingFile[];
-	onAttachFiles?: (files: File[]) => void;
+	onAttachFiles?: (files: File[]) => void | Promise<void>;
 	onRemoveFile?: (fileId: string) => void;
 	existingFiles?: FileInfo[];
 	onRemoveExistingFile?: (fileId: string) => void;
@@ -207,7 +207,7 @@ function AttachToolbar({
 	onAttachFiles,
 	onOpenLocationPicker,
 }: {
-	onAttachFiles?: (files: File[]) => void;
+	onAttachFiles?: (files: File[]) => void | Promise<void>;
 	onOpenLocationPicker?: () => void;
 }) {
 	const { t } = useTranslation();
@@ -215,7 +215,7 @@ function AttachToolbar({
 
 	function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
 		if (e.target.files && e.target.files.length > 0 && onAttachFiles) {
-			onAttachFiles(Array.from(e.target.files));
+			void onAttachFiles(Array.from(e.target.files));
 		}
 		e.target.value = "";
 	}
@@ -337,7 +337,7 @@ function MessageForm({
 	existingFiles: FileInfo[] | undefined;
 	pendingLocation: Location | null | undefined;
 	hasExistingLocation: boolean;
-	onAttachFiles?: (files: File[]) => void;
+	onAttachFiles?: (files: File[]) => void | Promise<void>;
 	onOpenLocationPicker?: () => void;
 	onCancelEdit: () => void;
 }) {
@@ -379,7 +379,7 @@ function MessageForm({
 					const files = collectClipboardFiles(e.clipboardData?.items);
 					if (files.length === 0) return;
 					e.preventDefault();
-					onAttachFiles?.(files);
+					void onAttachFiles?.(files);
 				}}
 				onKeyDown={(e) => {
 					if (e.key === "Enter" && !e.shiftKey) {

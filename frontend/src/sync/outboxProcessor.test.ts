@@ -118,13 +118,17 @@ describe("processOutbox", () => {
 			mimeType: "text/plain",
 			size: 1,
 		});
-		await outboxRepo.enqueue(sendOp({ pendingFileClientIds: ["blob-1"] }));
+		await outboxRepo.enqueue(
+			sendOp({ pendingFileClientIds: ["blob-1"], fileHashes: ["hash-abc"] }),
+		);
 
 		await processOutbox("tok");
 
 		expect(uploadFileMock).toHaveBeenCalledWith(
 			"tok",
 			expect.objectContaining({ name: "a.txt" }),
+			undefined,
+			true,
 		);
 		expect(sendMessageMock).toHaveBeenCalledWith(
 			"tok",

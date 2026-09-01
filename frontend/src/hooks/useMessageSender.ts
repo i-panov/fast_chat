@@ -1,12 +1,16 @@
 import { useCallback } from "react";
-import { chatsRepo } from "../db/chatsRepo.ts";
+import { fileExistsByHash } from "../api.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
-import { ensureAccountKeys, getRecipientPublicKeys } from "../e2ee/keys.ts";
-import { encryptMessageText } from "../e2ee/message.ts";
-import i18n from "../i18n.ts";
+import { type EncryptResult, encryptForChat } from "../e2ee/chat-encrypt.ts";
+import {
+	computePlaintextHash,
+	encryptFileStream,
+	type FileKey,
+	generateFileKey,
+} from "../e2ee/index.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
 import type {
 	FileInfo,
@@ -16,7 +20,6 @@ import type {
 	PendingFile,
 } from "../types/api.ts";
 import { useAuth } from "../useAuth";
-import { emitNotification } from "../utils/notify.ts";
 
 interface UseMessageSenderParams {
 	token?: string;
@@ -81,88 +84,87 @@ function buildStoredFile(pf: PendingFile): FileInfo {
 	};
 }
 
-async function enqueuePendingBlobs(pending: PendingFile[]): Promise<string[]> {
-	const ids: string[] = [];
-	for (const pf of pending) {
-		const cid = genId();
-		await pendingBlobsRepo.put({
-			id: cid,
-			blob: pf.file,
-			name: pf.originalName,
-			mimeType: pf.mimeType,
-			size: pf.size,
-		});
-		ids.push(cid);
-	}
-	return ids;
+interface PreparedFile {
+	clientId: string;
+	fileKey?: FileKey;
+	plaintextHash: string;
+	// onServer indicates the file already exists on the server (matched by
+	// plaintext hash). No upload is needed; the message only needs the hash.
+	onServer?: boolean;
 }
 
-interface EncryptResult {
-	text: string;
-	encryptedPayload: string;
-}
-
-async function encryptForChat(
+// prepareFiles prepares each pending file for sending. It first checks whether
+// the file already exists on the server (by plaintext hash) to skip the upload
+// entirely. Files that exist on the server are recorded hash-only. Remaining
+// files are encrypted (unless opted out) and stored as pending blobs for
+// outbox upload.
+async function prepareFiles(
+	pending: PendingFile[],
 	token: string | undefined,
-	chatId: string,
-	text: string,
-): Promise<EncryptResult | null> {
-	try {
-		const chat = await chatsRepo.getById(chatId);
-		if (chat === undefined || token === undefined) return null;
+): Promise<PreparedFile[]> {
+	const out: PreparedFile[] = [];
 
-		const memberIds = chat.members.map((m) => m.id);
-		if (memberIds.length === 0) {
-			throw new Error("chat has no members");
-		}
-		await ensureAccountKeys(token);
+	for (const pf of pending) {
+		const clientId = genId();
+		const plaintextHash = await computePlaintextHash(pf.file);
 
-		const recipientKeys = await getRecipientPublicKeys(token, memberIds);
-		const recipients: Array<{ keyId: string; publicKey: string }> = [];
-		const missing: string[] = [];
-
-		for (const id of memberIds) {
-			const publicKey = recipientKeys.get(id);
-			if (publicKey && publicKey !== "") {
-				recipients.push({ keyId: id, publicKey });
-			} else {
-				missing.push(id);
+		// Check if the server already has this file to skip uploading.
+		if (token !== undefined) {
+			try {
+				if (await fileExistsByHash(token, plaintextHash)) {
+					out.push({ clientId, plaintextHash, onServer: true });
+					continue;
+				}
+			} catch {
+				// On any error, fall through to upload the file.
 			}
 		}
 
-		if (recipients.length === 0) {
-			throw new Error("no recipient keys available");
+		if (pf.encrypted === false) {
+			// Unencrypted: store plaintext blob, no file key.
+			await pendingBlobsRepo.put({
+				id: clientId,
+				blob: pf.file,
+				name: pf.originalName,
+				mimeType: pf.mimeType,
+				size: pf.size,
+				plaintextHash,
+				encrypted: false,
+			});
+			out.push({ clientId, plaintextHash });
+			continue;
 		}
 
-		if (missing.length > 0) {
-			// Show which members block the message so the user
-			// knows who needs to log in with E2E enabled.
-			const nicks = chat.members
-				.filter((m) => missing.includes(m.id))
-				.map((m) => `@${m.nick}`)
-				.join(", ");
-			emitNotification(
-				nicks !== ""
-					? i18n.t("error.encryptionKeyMissingMembers", { members: nicks })
-					: i18n.t("error.encryptionKeyMissing"),
-			);
-			return null;
-		}
+		// Encrypted: generate file key, encrypt blob, store ciphertext.
+		const fileKey = await generateFileKey();
+		const ciphertext = await encryptFileStream(pf.file, fileKey);
 
-		return encryptMessageText(text, recipients);
-	} catch {
-		emitNotification(i18n.t("error.encryptionKeyMissing"));
-		return null;
+		await pendingBlobsRepo.put({
+			id: clientId,
+			blob: new Blob([ciphertext as unknown as ArrayBuffer]),
+			name: pf.originalName,
+			mimeType: pf.mimeType,
+			size: pf.size,
+			plaintextHash,
+			encrypted: true,
+		});
+		out.push({ clientId, fileKey, plaintextHash });
 	}
+
+	return out;
 }
 
 interface SenderDeps {
 	user: { id: string; nick: string } | null;
-	enqueuePendingBlobs: (pending: PendingFile[]) => Promise<string[]>;
+	prepareFiles: (
+		pending: PendingFile[],
+		token: string | undefined,
+	) => Promise<PreparedFile[]>;
 	encryptForChat: (
 		token: string | undefined,
 		chatId: string,
-		text: string,
+		content: { text: string; location?: Location },
+		fileKeys: FileKey[],
 	) => Promise<EncryptResult | null>;
 	token: string | undefined;
 }
@@ -182,25 +184,49 @@ async function doSendMessage(params: SendMessageParams, deps: SenderDeps) {
 	const msgId = genId();
 	const now = new Date().toISOString();
 
-	const encrypted = await deps.encryptForChat(token, chatId, text);
+	// Prepare files: skip upload for files already on server (by hash).
+	const prepared = await deps.prepareFiles(pendingFiles ?? [], token);
+	const fileKeys = prepared
+		.map((p) => p.fileKey)
+		.filter((k): k is FileKey => k !== undefined);
+	const fileInfos: FileInfo[] = (pendingFiles ?? []).map(buildStoredFile);
+
+	const encrypted = await deps.encryptForChat(
+		token,
+		chatId,
+		{ text, location },
+		fileKeys,
+	);
 	if (encrypted === null) return;
 
-	const blobIds = await deps.enqueuePendingBlobs(pendingFiles ?? []);
-	const fileInfos: FileInfo[] = (pendingFiles ?? []).map(buildStoredFile);
+	const payload = JSON.stringify({
+		v: 1,
+		nonce: encrypted.nonce,
+		envelopes: encrypted.envelopes,
+	});
+
+	// Files already on server are sent as hashes; the server resolves them
+	// to existing file IDs. Other files are uploaded via the outbox.
+	const fileHashes = prepared
+		.filter((p) => p.onServer)
+		.map((p) => p.plaintextHash);
+	const uploadClientIds = prepared
+		.filter((p) => !p.onServer)
+		.map((p) => p.clientId);
 
 	const stored: Message = {
 		id: msgId,
 		chatId,
 		fromId: user.id,
 		fromNick: user.nick,
-		text: encrypted.text,
+		text: encrypted.ciphertext,
 		encrypted: true,
-		encryptedPayload: encrypted.encryptedPayload,
+		encryptedPayload: payload,
 		createdAt: now,
 		editedAt: undefined,
 		replyTo: undefined,
 		files: fileInfos.length > 0 ? fileInfos : undefined,
-		location: location,
+		location: undefined, // location is now inside encrypted content
 	};
 
 	if (inThreadId !== undefined) {
@@ -214,12 +240,12 @@ async function doSendMessage(params: SendMessageParams, deps: SenderDeps) {
 		opId: genId(),
 		chatId,
 		msgId,
-		text: encrypted.text,
+		text: encrypted.ciphertext,
 		encrypted: true,
-		encryptedPayload: encrypted.encryptedPayload,
+		encryptedPayload: payload,
 		replyToId,
-		pendingFileClientIds: blobIds,
-		location,
+		pendingFileClientIds: uploadClientIds,
+		fileHashes,
 		createdAt: now,
 		attempts: 0,
 		threadId: inThreadId,
@@ -246,7 +272,10 @@ async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
 		: await messagesRepo.getById(chatId, messageId);
 	if (current === undefined) return;
 
-	const blobIds = await deps.enqueuePendingBlobs(pendingFiles ?? []);
+	const blobIds = await deps.prepareFiles(pendingFiles ?? [], token);
+	const fileKeys = blobIds
+		.map((p) => p.fileKey)
+		.filter((k): k is FileKey => k !== undefined);
 	const newFileInfos: FileInfo[] = (pendingFiles ?? []).map(buildStoredFile);
 
 	const removeSet = new Set(filesToRemove ?? []);
@@ -274,16 +303,36 @@ async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
 	void _ignored;
 	void _u;
 
-	const encrypted = await deps.encryptForChat(token, chatId, text);
+	const encrypted = await deps.encryptForChat(
+		token,
+		chatId,
+		{ text, location: nextLocation },
+		fileKeys,
+	);
 	if (encrypted === null) return;
+
+	const payload = JSON.stringify({
+		v: 1,
+		nonce: encrypted.nonce,
+		envelopes: encrypted.envelopes,
+	});
+
+	// Files already on server are sent as hashes; the server resolves them
+	// to existing file IDs. Other files are uploaded via the outbox.
+	const fileHashes = blobIds
+		.filter((p) => p.onServer)
+		.map((p) => p.plaintextHash);
+	const uploadClientIds = blobIds
+		.filter((p) => !p.onServer)
+		.map((p) => p.clientId);
 
 	const updated: Message = {
 		...base,
-		text: encrypted.text,
+		text: encrypted.ciphertext,
 		encrypted: true,
-		encryptedPayload: encrypted.encryptedPayload,
+		encryptedPayload: payload,
 		files: mergedFiles,
-		location: nextLocation,
+		location: undefined, // location is now inside encrypted content
 		editedAt: now,
 	};
 
@@ -298,14 +347,14 @@ async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
 		opId: genId(),
 		chatId,
 		messageId,
-		text: encrypted.text,
+		text: encrypted.ciphertext,
 		encrypted: true,
-		encryptedPayload: encrypted.encryptedPayload,
-		pendingFileClientIds: blobIds,
+		encryptedPayload: payload,
+		pendingFileClientIds: uploadClientIds,
+		fileHashes,
 		keptFileIds,
 		filesToRemove: filesToRemove ?? [],
-		location: nextLocation,
-		clearLocation: clearLocation === true,
+		clearLocation: false,
 		clientEditedAt: now,
 		createdAt: now,
 		attempts: 0,
@@ -439,7 +488,7 @@ export function useMessageSender({
 		(params: SendMessageParams) =>
 			doSendMessage(params, {
 				user,
-				enqueuePendingBlobs,
+				prepareFiles,
 				encryptForChat,
 				token,
 			}),
@@ -450,7 +499,7 @@ export function useMessageSender({
 		(params: EditMessageParams) =>
 			doEditMessage(params, {
 				user,
-				enqueuePendingBlobs,
+				prepareFiles,
 				encryptForChat,
 				token,
 			}),

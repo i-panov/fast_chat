@@ -2,12 +2,25 @@ import { describe, expect, it } from "vitest";
 import { setActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import type { Message } from "../types/api.ts";
-import { generateKeyPair, type KeyPair } from "./crypto.ts";
+import {
+	decryptContent,
+	encryptContent,
+	generateKeyPair,
+	type KeyPair,
+} from "./crypto.ts";
+import {
+	computePlaintextHash,
+	decryptFileStream,
+	encryptFileStream,
+	generateFileKey,
+} from "./file-crypto.ts";
 import {
 	decryptMessage,
 	decryptMessageText,
 	encryptMessageText,
 } from "./message.ts";
+
+const HEX_HASH_REGEX = /^[0-9a-f]{64}$/; // SHA-256 = 32 bytes = 64 hex chars
 
 function keyPair(): Promise<KeyPair> {
 	return generateKeyPair();
@@ -164,5 +177,63 @@ describe("messagesRepo stores ciphertext verbatim", () => {
 		const stored = await messagesRepo.getByChat("c1");
 		expect(stored[0].text).toBe(enc.text);
 		expect(stored[0].text).not.toContain("secret text");
+	});
+});
+
+describe("MessageContent encryption (text + location)", () => {
+	it("encrypts and decrypts text with location", async () => {
+		const content = {
+			text: "meet me here",
+			location: { lat: 55.7558, lng: 37.6173 },
+		};
+
+		const msgKey = crypto.getRandomValues(new Uint8Array(32));
+		const encrypted = await encryptContent(content, msgKey);
+
+		expect(encrypted.ciphertext).not.toContain("meet me here");
+		expect(encrypted.ciphertext).not.toContain("55.7558");
+
+		const decrypted = await decryptContent(encrypted, msgKey);
+		expect(decrypted.text).toBe("meet me here");
+		expect(decrypted.location).toEqual({ lat: 55.7558, lng: 37.6173 });
+	});
+
+	it("produces different ciphertext for identical content", async () => {
+		const content = { text: "same", location: { lat: 1, lng: 2 } };
+		const key1 = crypto.getRandomValues(new Uint8Array(32));
+		const key2 = crypto.getRandomValues(new Uint8Array(32));
+		const a = await encryptContent(content, key1);
+		const b = await encryptContent(content, key2);
+		expect(a.ciphertext).not.toBe(b.ciphertext);
+	});
+});
+
+describe("File encryption", () => {
+	it("encrypts and decrypts a file roundtrip", async () => {
+		const original = new Blob(["hello file world"], { type: "text/plain" });
+		const fileKey = await generateFileKey();
+		const ciphertext = await encryptFileStream(original, fileKey);
+
+		expect(new TextDecoder().decode(ciphertext)).not.toContain(
+			"hello file world",
+		);
+
+		const plain = await decryptFileStream(ciphertext, fileKey);
+		expect(new TextDecoder().decode(plain)).toBe("hello file world");
+	});
+
+	it("produces a stable plaintext hash", async () => {
+		const blob = new Blob(["consistent content"], { type: "text/plain" });
+		const hash1 = await computePlaintextHash(blob);
+		const hash2 = await computePlaintextHash(blob);
+		expect(hash1).toBe(hash2);
+		expect(hash1).toMatch(HEX_HASH_REGEX);
+	});
+
+	it("generates unique file keys", async () => {
+		const k1 = await generateFileKey();
+		const k2 = await generateFileKey();
+		expect(k1.key).not.toBe(k2.key);
+		expect(k1.nonce).not.toBe(k2.nonce);
 	});
 });

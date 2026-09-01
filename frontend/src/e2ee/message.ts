@@ -4,6 +4,7 @@ import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import i18n from "../i18n.ts";
 import type { Message } from "../types/api.ts";
 import {
+	decryptContent,
 	decryptText,
 	type EncryptedPayload,
 	encryptText,
@@ -57,8 +58,42 @@ export async function decryptMessageText(
 	return decryptText(msg.text, payload.nonce, msgKey);
 }
 
-// decryptMessage returns a copy of the message with the plaintext text
-// and reply preview resolved. Legacy (non-encrypted) messages pass
+// decryptMessageContent decrypts the full content (text, location, file keys)
+// from the message's encrypted payload. Returns null if the message uses the
+// legacy v1 format (text-only encryption) or if decryption fails.
+export async function decryptMessageContent(
+	msg: Pick<Message, "text" | "encryptedPayload" | "location">,
+	userId: string,
+	key: KeyPair,
+): Promise<{ text: string; location?: { lat: number; lng: number } } | null> {
+	if (!msg.encryptedPayload) return null;
+
+	// encryptedPayload carries the sealed msgKey envelopes + nonce.
+	const payload = JSON.parse(msg.encryptedPayload) as EncryptedPayload;
+	const envelope = payload.envelopes.find((e) => e.keyId === userId);
+	if (envelope === undefined) {
+		return null;
+	}
+
+	const msgKey = await openMessageKey(envelope, key.publicKey, key.privateKey);
+
+	try {
+		const content = await decryptContent(
+			{ v: 1, nonce: payload.nonce, ciphertext: msg.text },
+			msgKey,
+		);
+
+		return {
+			text: content.text,
+			location: content.location,
+		};
+	} catch {
+		return null;
+	}
+}
+
+// decryptMessage returns a copy of the message with the plaintext text,
+// location, and reply preview resolved. Legacy (non-encrypted) messages pass
 // through untouched; undecryptable ones get a placeholder.
 export type EncryptedMessageLike = Omit<Message, "status"> & {
 	status?: string;
@@ -103,11 +138,20 @@ export async function decryptMessage(
 				text: i18n.t(UNDECRYPTABLE_I18N_KEY),
 			};
 		}
+
 		return out;
 	}
 
 	try {
-		out.text = await decryptMessageText(message, userId, key);
+		// Try the new content format first (v2 with location + file keys).
+		const content = await decryptMessageContent(message, userId, key);
+		if (content !== null) {
+			out.text = content.text;
+			out.location = content.location;
+		} else {
+			// Fall back to legacy v1 (text-only encryption).
+			out.text = await decryptMessageText(message, userId, key);
+		}
 	} catch {
 		out.text = i18n.t(UNDECRYPTABLE_I18N_KEY);
 		out.undecryptable = true;

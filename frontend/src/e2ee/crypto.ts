@@ -1,4 +1,5 @@
 import sodium from "libsodium-wrappers";
+import type { FileKey } from "./file-crypto.ts";
 
 export interface Envelope {
 	keyId: string;
@@ -66,6 +67,64 @@ export async function openMessageKey(
 export interface EncryptedText {
 	nonce: string;
 	ciphertext: string;
+}
+
+// MessageContent holds every sensitive field of a message. The whole struct
+// is serialised to JSON and encrypted as a single blob, so the server never
+// sees plaintext text, location, file metadata, or reply previews.
+export interface MessageContent {
+	text: string;
+	location?: { lat: number; lng: number };
+	replyToText?: string;
+	fileKeys?: FileKey[];
+}
+
+// EncryptedContent is what gets stored in the message record and sent over
+// the wire. The ciphertext is the JSON-serialised MessageContent.
+export interface EncryptedContent {
+	v: 1;
+	nonce: string;
+	ciphertext: string;
+}
+
+export async function encryptContent(
+	content: MessageContent,
+	msgKey: Uint8Array,
+): Promise<EncryptedContent> {
+	await ensureSodium();
+	const nonce = sodium.randombytes_buf(
+		sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
+	);
+	const plaintext = sodium.from_string(JSON.stringify(content));
+	const ciphertext = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+		plaintext,
+		null,
+		null,
+		nonce,
+		msgKey,
+	);
+
+	return {
+		v: 1,
+		nonce: sodium.to_base64(nonce),
+		ciphertext: sodium.to_base64(ciphertext),
+	};
+}
+
+export async function decryptContent(
+	encrypted: EncryptedContent,
+	msgKey: Uint8Array,
+): Promise<MessageContent> {
+	await ensureSodium();
+	const plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
+		null,
+		sodium.from_base64(encrypted.ciphertext),
+		null,
+		sodium.from_base64(encrypted.nonce),
+		msgKey,
+	);
+
+	return JSON.parse(sodium.to_string(plain)) as MessageContent;
 }
 
 export async function encryptText(

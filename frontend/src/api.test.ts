@@ -158,7 +158,6 @@ describe("endpoint helpers", () => {
 			text: "hi",
 			id: "m1",
 			replyToId: "m0",
-			location: { lat: 1, lng: 2 },
 			fileIDs: ["f1"],
 		});
 
@@ -170,7 +169,6 @@ describe("endpoint helpers", () => {
 			text: "hi",
 			replyToId: "m0",
 			fileIDs: ["f1"],
-			location: { lat: 1, lng: 2 },
 		});
 	});
 
@@ -195,12 +193,12 @@ describe("endpoint helpers", () => {
 			chatId: "chat-1",
 			messageId: "m1",
 			text: "edited",
-			opts: { clearLocation: true },
+			clearLocation: true,
 		});
 
 		const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
 		const body = parseBody(init);
-		expect(body.location).toBeNull();
+		expect(body.clearLocation).toBe(true);
 		expect(body.text).toBe("edited");
 	});
 

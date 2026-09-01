@@ -51,7 +51,17 @@ export interface PendingFile {
 	size: number;
 	mimeType: string;
 	fileType: "photo" | "video" | "audio" | "file";
+	// encrypted defaults to true. For large files the user may opt out of
+	// encryption (faster upload, less CPU). When false, the file is uploaded
+	// as-is and the server deduplicates by its own content hash.
+	encrypted?: boolean;
 }
+
+// LargeFileThreshold is the size above which the UI should ask the user
+// whether to encrypt the file. Encrypting very large files is CPU-intensive
+// and slow, so for media like movies/games the user may prefer to send them
+// unencrypted.
+export const LargeFileThreshold = 500 * 1024 * 1024; // 500 MiB
 
 export type MessageStatus = "sent" | "queued" | "failed";
 
@@ -114,7 +124,6 @@ export type CreateChatOptions =
 	| { type: "group"; name: string; memberIds: string[] };
 
 export interface EditMessageOptions {
-	location?: Location | null;
 	clearLocation?: boolean;
 }
 

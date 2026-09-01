@@ -118,6 +118,7 @@ type messageWithStatus struct {
 type editPayload struct {
 	text                string
 	fileIDs             []string
+	fileHashes          []string
 	rawLocation         json.RawMessage
 	location            *model.Location
 	clearLocation       bool
@@ -136,7 +137,9 @@ func (h *Handler) parseEditPayload(r *http.Request, storedEncrypted bool, stored
 	var req struct {
 		Text             string          `json:"text"`
 		FileIDs          []string        `json:"fileIDs,omitempty"`
+		FileHashes       []string        `json:"fileHashes,omitempty"`
 		Location         json.RawMessage `json:"location"`
+		ClearLocation    bool            `json:"clearLocation"`
 		Encrypted        *bool           `json:"encrypted"`
 		EncryptedPayload *string         `json:"encryptedPayload"`
 	}
@@ -171,6 +174,11 @@ func (h *Handler) parseEditPayload(r *http.Request, storedEncrypted bool, stored
 	if locErr != nil {
 		return nil, locErr.Error()
 	}
+	// clearLocation from the request takes precedence (new clients send it
+	// when the encrypted content no longer carries a location).
+	if req.ClearLocation {
+		clearLocation = true
+	}
 
 	text := strings.TrimSpace(req.Text)
 
@@ -189,6 +197,7 @@ func (h *Handler) parseEditPayload(r *http.Request, storedEncrypted bool, stored
 	return &editPayload{
 		text:                text,
 		fileIDs:             req.FileIDs,
+		fileHashes:          req.FileHashes,
 		rawLocation:         req.Location,
 		location:            location,
 		clearLocation:       clearLocation,
@@ -398,6 +407,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		Text             string          `json:"text"`
 		ReplyToID        string          `json:"replyToId"`
 		FileIDs          []string        `json:"fileIDs,omitempty"`
+		FileHashes       []string        `json:"fileHashes,omitempty"`
 		Location         *model.Location `json:"location,omitempty"`
 		Encrypted        bool            `json:"encrypted"`
 		EncryptedPayload string          `json:"encryptedPayload"`
@@ -414,7 +424,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" && len(req.FileIDs) == 0 && req.Location == nil {
+	if req.Text == "" && len(req.FileIDs) == 0 && len(req.FileHashes) == 0 && req.Location == nil {
 		writeError(w, http.StatusBadRequest, errKeyEmptyMessage)
 		return
 	}
@@ -429,16 +439,24 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.FileIDs) > maxMessageFiles {
-		writeError(w, http.StatusBadRequest, "too many files")
-		return
-	}
-
 	if req.Location != nil {
 		if !validCoords(req.Location.Lat, req.Location.Lng) {
 			writeError(w, http.StatusBadRequest, "invalid coordinates")
 			return
 		}
+	}
+
+	// Resolve file hashes to existing file IDs. The client sends hashes for
+	// files that already exist on server (deduplication) to skip re-uploading.
+	for _, hash := range req.FileHashes {
+		if file, ok := h.store.FindFileByHash(r.Context(), hash); ok {
+			req.FileIDs = append(req.FileIDs, file.ID)
+		}
+	}
+
+	if len(req.FileIDs) > maxMessageFiles {
+		writeError(w, http.StatusBadRequest, "too many files")
+		return
 	}
 
 	msg, err := h.store.AddMessage(
@@ -577,7 +595,7 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 
 	hasLocation := edit.location != nil
 
-	if edit.text == "" && len(edit.fileIDs) == 0 && !hasLocation && !edit.clearLocation {
+	if edit.text == "" && len(edit.fileIDs) == 0 && len(edit.fileHashes) == 0 && !hasLocation && !edit.clearLocation {
 		writeError(w, http.StatusBadRequest, errKeyEmptyMessage)
 		return
 	}
@@ -590,6 +608,13 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		slog.Error("failed to edit message", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+
+	// Resolve file hashes to existing file IDs (files already on server).
+	for _, hash := range edit.fileHashes {
+		if file, ok := h.store.FindFileByHash(r.Context(), hash); ok {
+			edit.fileIDs = append(edit.fileIDs, file.ID)
+		}
 	}
 
 	if edit.fileIDs != nil {

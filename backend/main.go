@@ -203,6 +203,7 @@ func registerRoutes(
 	mux.HandleFunc("PATCH /api/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(handlers.AuthMiddleware(handlers.EditMessage)))
 	mux.HandleFunc("POST /api/files/upload", handlers.AuthMiddleware(handlers.UploadFile))
 	mux.HandleFunc("GET /api/files/{fileId}", handlers.AuthMiddleware(handlers.ServeFile))
+	mux.HandleFunc("GET /api/files/exists", handlers.AuthMiddleware(handlers.FileExistsHandler))
 	mux.HandleFunc("POST /api/chats/{id}/typing", maxBody(handlers.AuthMiddleware(handlers.HandleTyping)))
 
 	// Federated endpoints (server-to-server, with federated auth)

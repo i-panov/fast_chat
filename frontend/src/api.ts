@@ -4,7 +4,6 @@ import type {
 	CreateChatOptions,
 	EditMessageOptions,
 	FileInfo,
-	Location,
 	Message,
 	SyncResponse,
 	Thread,
@@ -176,7 +175,7 @@ export interface SendMessageParams {
 	id: string;
 	replyToId?: string;
 	fileIDs?: string[];
-	location?: Location;
+	fileHashes?: string[];
 	threadId?: string;
 	encrypted?: boolean;
 	encryptedPayload?: string;
@@ -194,7 +193,7 @@ export function sendMessage(token: string, params: SendMessageParams) {
 			text: params.text,
 			replyToId: params.replyToId,
 			fileIDs: params.fileIDs,
-			location: params.location,
+			fileHashes: params.fileHashes,
 			encrypted: params.encrypted,
 			encryptedPayload: params.encryptedPayload,
 		}),
@@ -232,14 +231,42 @@ export function deleteKeyBackup(token: string) {
 	});
 }
 
-export function uploadFile(token: string, file: File) {
+export function uploadFile(
+	token: string,
+	file: File,
+	plaintextHash?: string,
+	encrypted = false,
+) {
 	const formData = new FormData();
 	formData.append("file", file);
+	// The plaintext hash lets the server deduplicate encrypted files without
+	// ever seeing the plaintext. Required when encrypted is true.
+	if (plaintextHash !== undefined) {
+		formData.append("hash", plaintextHash);
+	}
+	if (encrypted) {
+		formData.append("encrypted", "true");
+	}
 
 	return request<{ file: FileInfo }>("/api/files/upload", token, {
 		method: "POST",
 		body: formData,
 	});
+}
+
+// fileExistsByHash checks whether the server already has a file with the
+// given plaintext hash. The client calls this before uploading to skip the
+// upload entirely when the file content is already stored.
+export async function fileExistsByHash(
+	token: string,
+	hash: string,
+): Promise<boolean> {
+	const res = await request<{ exists: boolean }>(
+		`/api/files/exists?hash=${encodeURIComponent(hash)}`,
+		token,
+	);
+
+	return res.exists;
 }
 
 export function deleteMessage(
@@ -270,7 +297,9 @@ export interface EditMessageParams {
 	messageId: string;
 	text: string;
 	fileIDs?: string[];
+	fileHashes?: string[];
 	opts?: EditMessageOptions;
+	clearLocation?: boolean;
 	threadId?: string;
 	encrypted?: boolean;
 	encryptedPayload?: string;
@@ -279,10 +308,9 @@ export interface EditMessageParams {
 function buildEditBody(params: EditMessageParams): Record<string, unknown> {
 	const body: Record<string, unknown> = { text: params.text };
 	if (params.fileIDs !== undefined) body.fileIDs = params.fileIDs;
-	if (params.opts?.clearLocation) {
-		body.location = null;
-	} else if (params.opts?.location !== undefined) {
-		body.location = params.opts.location;
+	if (params.fileHashes !== undefined) body.fileHashes = params.fileHashes;
+	if (params.clearLocation) {
+		body.clearLocation = true;
 	}
 	if (params.encrypted === true) {
 		body.encrypted = true;

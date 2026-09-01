@@ -526,6 +526,10 @@ func (h *Handler) FederatedEditMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if edit.fileIDs != nil {
+		// Note: fileHashes (plaintext hash → file ID resolution) is not
+		// supported for federated edits. Remote servers send explicit fileIDs
+		// via getValidFileIDs. This is intentional: federation trust boundaries
+		// require explicit file references, not hash-based dedup.
 		validIDs := getValidFileIDs(r.Context(), h.store, edit.fileIDs)
 
 		if len(validIDs) > 0 {
