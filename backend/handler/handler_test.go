@@ -571,15 +571,15 @@ func TestServeFileForGroupAvatar(t *testing.T) {
 		t.Fatalf("set avatar: %d %s", w.Code, w.Body.String())
 	}
 
-	if !h.userCanAccessFile(context.Background(), bob.id, f.ID) {
+	if !h.svc.UserCanAccessFile(context.Background(), bob.id, f.ID) {
 		t.Error("expected bob to access group avatar")
 	}
-	if h.userCanAccessFile(context.Background(), bob.id, "no-such-file") {
+	if h.svc.UserCanAccessFile(context.Background(), bob.id, "no-such-file") {
 		t.Error("expected no access for unknown file")
 	}
 
 	eve := registerTestUser(t, h, "eve", "eve@test.local")
-	if h.userCanAccessFile(context.Background(), eve.id, f.ID) {
+	if h.svc.UserCanAccessFile(context.Background(), eve.id, f.ID) {
 		t.Error("expected eve (non-member) to NOT access group avatar")
 	}
 }

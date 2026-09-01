@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -39,7 +38,7 @@ func parseFileHash(r *http.Request) (string, bool, string) {
 	}
 
 	if clientHash != "" {
-		if len(clientHash) != 64 || !isHexString(clientHash) {
+		if len(clientHash) != 64 || !service.IsHexString(clientHash) {
 			return "", encrypted, "invalid hash format"
 		}
 	}
@@ -157,33 +156,6 @@ func stageAndHashFile(
 	return mimeType, size, hex.EncodeToString(hasher.Sum(nil)), tempPath, fullPath, relativePath, nil
 }
 
-// If found, it writes the existing file info response and returns true.
-func (h *Handler) dedupFileByHash(
-	ctx context.Context,
-	w http.ResponseWriter,
-	hash, mimeType string,
-	size int64,
-	originalName string,
-) bool {
-
-	if exact, ok := h.store.FindFileByHashAndName(ctx, hash, originalName); ok {
-		WriteJSON(w, http.StatusOK, map[string]any{"file": exact.ToFileInfo()})
-		return true
-	}
-
-	if existing, ok := h.store.FindFileByHash(ctx, hash); ok {
-		saved, saveErr := h.store.SaveFile(ctx, hash, mimeType, size, originalName, existing.StoragePath)
-		if saveErr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to save file metadata")
-			return true
-		}
-		WriteJSON(w, http.StatusCreated, map[string]any{"file": saved.ToFileInfo()})
-		return true
-	}
-
-	return false
-}
-
 func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 
@@ -216,7 +188,19 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	defer os.Remove(tempPath) //nolint:errcheck // best-effort: failure is not actionable
 
-	if h.dedupFileByHash(r.Context(), w, hash, mimeType, size, header.Filename) {
+	check, deduped, err := h.svc.DedupFileByHash(r.Context(), hash, mimeType, size, header.Filename)
+	if err != nil {
+		slog.Error("failed to dedup file", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to save file metadata")
+		return
+	}
+
+	if deduped {
+		status := http.StatusCreated
+		if check.ExactMatch {
+			status = http.StatusOK
+		}
+		WriteJSON(w, status, map[string]any{"file": check.File.ToFileInfo()})
 		return
 	}
 
@@ -244,9 +228,7 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasAccess := h.userCanAccessFile(r.Context(), user.ID, fileID)
-
-	if !hasAccess {
+	if !h.svc.UserCanAccessFile(r.Context(), user.ID, fileID) {
 		writeError(w, http.StatusForbidden, errKeyNotMember)
 		return
 	}
@@ -300,36 +282,6 @@ func sanitizeFilename(name string) string {
 	return r.Replace(name)
 }
 
-// userCanAccessFile returns true if the user has access to the file via any
-// message attachment or as a group chat avatar.
-func (h *Handler) userCanAccessFile(ctx context.Context, userID, fileID string) bool {
-	chatIDs, err := h.store.GetFileChats(ctx, fileID)
-	if err == nil && len(chatIDs) > 0 {
-		chats, err := h.store.GetChatsByIDs(ctx, chatIDs)
-		if err == nil {
-			for _, chat := range chats {
-				if service.IsMember(&chat, userID) {
-					return true
-				}
-			}
-		}
-	}
-
-	avatarChatIDs, err := h.store.GetChatsByAvatarFileID(ctx, fileID)
-	if err == nil && len(avatarChatIDs) > 0 {
-		chats, err := h.store.GetChatsByIDs(ctx, avatarChatIDs)
-		if err == nil {
-			for _, chat := range chats {
-				if service.IsMember(&chat, userID) {
-					return true
-				}
-			}
-		}
-	}
-
-	return false
-}
-
 // FileExistsHandler responds to GET /api/files/exists?hash=<sha256>.
 // The client calls this before uploading to skip the upload when the server
 // already has the file content (deduplication by plaintext hash). The hash is
@@ -342,20 +294,11 @@ func (h *Handler) FileExistsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate hash format (64 hex chars for SHA-256).
-	if len(hash) != 64 || !isHexString(hash) {
+	if len(hash) != 64 || !service.IsHexString(hash) {
 		writeError(w, http.StatusBadRequest, "invalid hash format")
 		return
 	}
 
 	exists := h.store.FileExistsByHash(r.Context(), hash)
 	WriteJSON(w, http.StatusOK, map[string]bool{"exists": exists})
-}
-
-func isHexString(s string) bool {
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return false
-		}
-	}
-	return true
 }
