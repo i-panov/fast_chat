@@ -178,7 +178,7 @@ func TestTransportMaxBody(t *testing.T) {
 
 // newFallbackTestServer wires the pilot behind FallbackHandler over a legacy
 // mux that fails the test if a migrated route ever reaches it.
-func newFallbackTestServer(t *testing.T) (http.Handler, *store.Store) {
+func newFallbackTestServer(t *testing.T) (http.Handler, *store.Store, *sse.Hub) {
 	t.Helper()
 
 	st := newTestStore(t)
@@ -192,14 +192,14 @@ func newFallbackTestServer(t *testing.T) (http.Handler, *store.Store) {
 		w.WriteHeader(http.StatusTeapot)
 	})
 
-	return pilot.FallbackHandler(legacyMux), st
+	return pilot.FallbackHandler(legacyMux), st, hub
 }
 
 // TestFallbackSSEAuthUnknownConnection covers a migrated operation answering a
 // legitimate 404: FallbackHandler must replay the Huma response, not treat it
 // as a route miss and fall through to the legacy mux.
 func TestFallbackSSEAuthUnknownConnection(t *testing.T) {
-	h, st := newFallbackTestServer(t)
+	h, st, _ := newFallbackTestServer(t)
 	user := createTestUser(t, st)
 
 	body := fmt.Sprintf(`{"connectionId":"missing-conn","token":%q}`, user.Token)
@@ -256,7 +256,7 @@ func readSSEEvent(t *testing.T, r *bufio.Reader) (string, string) {
 // register-after-connected race where sse-auth could 404 right after
 // connected.
 func TestFallbackSSEConnectAndAuth(t *testing.T) {
-	h, st := newFallbackTestServer(t)
+	h, st, _ := newFallbackTestServer(t)
 	user := createTestUser(t, st)
 
 	ts := httptest.NewServer(h)
@@ -310,7 +310,7 @@ func TestFallbackSSEConnectAndAuth(t *testing.T) {
 // TestFallbackSSEPresenceCleanup verifies the deferred cleanup: after the SSE
 // connection closes, the user's presence is removed from the store.
 func TestFallbackSSEPresenceCleanup(t *testing.T) {
-	h, st := newFallbackTestServer(t)
+	h, st, _ := newFallbackTestServer(t)
 	user := createTestUser(t, st)
 
 	ts := httptest.NewServer(h)
@@ -370,4 +370,138 @@ func TestFallbackSSEPresenceCleanup(t *testing.T) {
 	}
 
 	t.Fatal("presence was not cleaned up after SSE connection closed")
+}
+
+// TestFallbackSSEAuthInvalidToken mirrors the legacy "invalid token is
+// unauthorized" case for the migrated sse-auth operation.
+func TestFallbackSSEAuthInvalidToken(t *testing.T) {
+	h, _, _ := newFallbackTestServer(t)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/auth/sse-auth", strings.NewReader(`{"connectionId":"c1","token":"bogus"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestFallbackSSEEventFlow verifies the full event pipeline on the wire:
+// connected → sse-auth → hub event delivered to the authenticated stream.
+func TestFallbackSSEEventFlow(t *testing.T) {
+	h, st, hub := newFallbackTestServer(t)
+	user := createTestUser(t, st)
+
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/events?connectionId=flow-conn", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+
+	event, _ := readSSEEvent(t, reader)
+	if event != "connected" {
+		t.Fatalf("first SSE event = %q, want connected", event)
+	}
+
+	authBody := fmt.Sprintf(`{"connectionId":"flow-conn","token":%q}`, user.Token)
+	authReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/auth/sse-auth", strings.NewReader(authBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authReq.Header.Set("Content-Type", "application/json")
+	authResp, err := http.DefaultClient.Do(authReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authResp.Body.Close()
+
+	if authResp.StatusCode != http.StatusOK {
+		t.Fatalf("sse-auth: expected 200, got %d", authResp.StatusCode)
+	}
+
+	hub.Send(user.ID, sse.Event{Event: "message", Data: map[string]string{"m": "x"}})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected message event on stream, got nothing; connected block seen so far")
+		}
+
+		var data string
+
+		event, data = readSSEEvent(t, reader)
+		if event == "message" {
+			if data != `{"m":"x"}` {
+				t.Errorf("message data = %q", data)
+			}
+
+			return
+		}
+	}
+}
+
+// TestFallbackSSEUnauthorizedNoEvents mirrors the legacy guarantee: a
+// connection that never called sse-auth must not receive hub events.
+func TestFallbackSSEUnauthorizedNoEvents(t *testing.T) {
+	h, st, hub := newFallbackTestServer(t)
+	user := createTestUser(t, st)
+
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/events?connectionId=noauth-conn", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+
+	event, _ := readSSEEvent(t, reader)
+	if event != "connected" {
+		t.Fatalf("first SSE event = %q, want connected", event)
+	}
+
+	hub.Send(user.ID, sse.Event{Event: "message", Data: map[string]string{"m": "x"}})
+
+	// The stream must stay silent: heartbeats only start after 30s and the
+	// connection is unauthorized, so the next read blocks unless a hub event
+	// arrives.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		_, _ = reader.ReadString('\n') // blocks unless an event arrives
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("unauthorized connection received an event")
+	case <-time.After(400 * time.Millisecond):
+	}
 }

@@ -112,43 +112,6 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) SSEAuth(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close() //nolint:errcheck // best-effort: failure is not actionable
-
-	var req struct {
-		ConnectionID string `json:"connectionId"`
-		Token        string `json:"token"`
-	}
-
-	if err := h.decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, errKeyInvalidBody)
-		return
-	}
-
-	user, ok := h.store.GetUserByToken(r.Context(), req.Token)
-	if !ok || time.Now().After(user.TokenExpiresAt) {
-		writeError(w, http.StatusUnauthorized, errKeyUnauthorized)
-		return
-	}
-
-	conn := h.hub.GetConnection(req.ConnectionID)
-	if conn == nil {
-		writeError(w, http.StatusNotFound, "connection not found")
-		return
-	}
-
-	if err := h.hub.Authenticate(req.ConnectionID, user.ID, req.Token, user.TokenExpiresAt); err != nil {
-		writeError(w, http.StatusNotFound, "connection not found")
-		return
-	}
-
-	if h.store.AddConnection(user.ID) {
-		h.svc.BroadcastUserStatus(r.Context(), user.ID, true)
-	}
-
-	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
 // writeAuthError maps an auth-domain service error to the same HTTP status
 // and message the handler historically produced.
 func writeAuthError(w http.ResponseWriter, err error) {

@@ -192,44 +192,6 @@ func TestSendFedEmptyRemoteIsNoop(t *testing.T) {
 	h.sendFedDelete(context.Background(), "", "/x")
 }
 
-func TestSSEAuthFlow(t *testing.T) {
-	h := newTestHandler(t)
-	alice := registerTestUser(t, h, "alice", "alice@test.local")
-
-	t.Run("valid token with no connection is 404", func(t *testing.T) {
-		req := authReq(http.MethodPost, "/api/sse/auth", alice.token, `{"connectionId":"missing","token":"`+alice.token+`"}`)
-		w := httptest.NewRecorder()
-		h.SSEAuth(w, req)
-
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("invalid token is unauthorized", func(t *testing.T) {
-		req := authReq(http.MethodPost, "/api/sse/auth", alice.token, `{"connectionId":"c1","token":"bogus"}`)
-		w := httptest.NewRecorder()
-		h.SSEAuth(w, req)
-
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("valid connection authenticates", func(t *testing.T) {
-		conn := h.hub.Register("conn-SSEAuthFlow")
-		defer h.hub.Unregister("conn-SSEAuthFlow", conn)
-
-		req := authReq(http.MethodPost, "/api/sse/auth", alice.token, `{"connectionId":"conn-SSEAuthFlow","token":"`+alice.token+`"}`)
-		w := httptest.NewRecorder()
-		h.SSEAuth(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-		}
-	})
-}
-
 func TestRefreshToken(t *testing.T) {
 	h := newTestHandler(t)
 	alice := registerTestUser(t, h, "alice", "alice@test.local")
