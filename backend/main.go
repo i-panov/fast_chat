@@ -145,14 +145,36 @@ func maxBody(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// newHumaTransport mounts the Huma v2 pilot (auth + SSE domains) in front of
+// the legacy stdlib mux and returns the combined handler. Requests served by
+// Huma never reach the legacy mux; everything else falls through unchanged.
+func newHumaTransport(
+	legacyMux *http.ServeMux,
+	hub *sse.Hub,
+	st *store.Store,
+	handlers *handler.Handler,
+	cfg *config.Config,
+	ipExtractor *ratelimit.ClientIPExtractor,
+	sendCodeRL, verifyCodeRL, registerRL, sseAuthRL *ratelimit.RateLimiter,
+) http.Handler {
+
+	humaPilot := huma.NewPilot(hub, st, handlers.Service(), cfg, &huma.RateLimiters{
+		Extractor:  ipExtractor,
+		SendCode:   sendCodeRL,
+		VerifyCode: verifyCodeRL,
+		Register:   registerRL,
+		SSEAuth:    sseAuthRL,
+	})
+
+	return humaPilot.FallbackHandler(legacyMux)
+}
+
 // registerRoutes wires all HTTP handlers onto the mux. The per-route rate
 // limiters are created here so main() can close them on shutdown.
 func registerRoutes(
 	mux *http.ServeMux,
 	handlers *handler.Handler,
 	fedManager *federation.Manager,
-	ipExtractor *ratelimit.ClientIPExtractor,
-	sendCodeRL, verifyCodeRL, registerRL, sseAuthRL *ratelimit.RateLimiter,
 ) {
 
 	mux.HandleFunc("GET /api/config", handlers.GetConfig)
@@ -162,16 +184,9 @@ func registerRoutes(
 	mux.HandleFunc("GET /healthz", handler.HealthzHandler)
 	mux.HandleFunc("GET /readyz", handlers.ReadinessHandler)
 
-	// Auth routes (no auth middleware, rate limited)
-	mux.Handle("POST /api/auth/send-code", rateLimitMiddleware(sendCodeRL, ipExtractor)(maxBody(handlers.SendCode)))
-	mux.Handle("POST /api/auth/verify-code", rateLimitMiddleware(verifyCodeRL, ipExtractor)(maxBody(handlers.VerifyCode)))
-	mux.Handle("POST /api/auth/complete-registration", rateLimitMiddleware(registerRL, ipExtractor)(maxBody(handlers.CompleteRegistration)))
-
-	mux.Handle("POST /api/auth/sse-auth", rateLimitMiddleware(sseAuthRL, ipExtractor)(maxBody(handlers.SSEAuth)))
-	mux.HandleFunc("POST /api/auth/refresh-token", maxBody(handlers.AuthMiddleware(handlers.RefreshToken)))
-
-	// SSE endpoint (no auth middleware — auth happens via SSEAuth)
-	mux.HandleFunc("GET /api/events", handlers.SSE)
+	// Auth routes and SSE are served by the Huma v2 transport (see humaAPI).
+	// The per-route rate limiters (sendCodeRL, verifyCodeRL, registerRL,
+	// sseAuthRL) are passed to the Huma transport middleware below.
 
 	// Push endpoints
 	mux.HandleFunc("GET /api/push/vapid-public-key", handlers.VapidPublicKey)
@@ -310,10 +325,6 @@ func main() {
 	hub := sse.NewHub(service.TypingThrottleInterval * 5)
 	handlerInstance := handler.New(st, cfg, fedManager, pushService, hub)
 
-	// Huma v2 pilot: mounts an alternative SSE implementation at /huma/events
-	// alongside the existing stdlib transport for validation during Stage B.
-	humaPilot := huma.NewPilot(hub, st, handlerInstance.Service(), cfg)
-
 	ipExtractor := ratelimit.NewClientIPExtractor(cfg.Server.TrustedProxies)
 
 	sendCodeRL := ratelimit.New(cfg.RateLimits.SendCode.Limit, cfg.RateLimits.SendCode.Window, 10000)
@@ -322,10 +333,12 @@ func main() {
 	sseAuthRL := ratelimit.New(60, time.Minute, 10000)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, handlerInstance, fedManager, ipExtractor, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
+	registerRoutes(mux, handlerInstance, fedManager)
 
-	// Huma v2 pilot: alternative SSE implementation for validation during Stage B.
-	mux.Handle("/huma/", http.StripPrefix("/huma", humaPilot.Handler()))
+	// Huma v2 transport wraps the stdlib mux: migrated domains (auth, SSE) are
+	// served by Huma, unmigrated ones fall through to the legacy transport.
+	humaAPI := newHumaTransport(mux, hub, st, handlerInstance, cfg, ipExtractor,
+		sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
 
 	// Static file serving for production frontend build
 	absStaticDir := resolveStaticDir(cfg.Server.StaticDir)
@@ -341,7 +354,7 @@ func main() {
 				securityHeadersMiddleware(
 					corsMiddleware(cfg.CORS.Origin)(
 						rateLimitMiddleware(generalRL, ipExtractor)(
-							spaFallbackMiddleware(absStaticDir)(mux),
+							spaFallbackMiddleware(absStaticDir)(humaAPI),
 						),
 					),
 				),

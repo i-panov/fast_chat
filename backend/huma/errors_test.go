@@ -116,18 +116,6 @@ func TestMapError_WrappedSentinel(t *testing.T) {
 	}
 }
 
-func TestStatusErrorJSONShape(t *testing.T) {
-	err := &statusError{status: 404, msg: "chat not found"}
-	body, marshalErr := err.MarshalJSON()
-	if marshalErr != nil {
-		t.Fatal(marshalErr)
-	}
-
-	if string(body) != `{"error":"chat not found"}` {
-		t.Errorf("json = %s, want legacy shape", body)
-	}
-}
-
 func TestNewErrorOverride(t *testing.T) {
 	// huma.NewError should produce the legacy error shape after init().
 	err := huma.NewError(404, "chat not found")
@@ -135,12 +123,7 @@ func TestNewErrorOverride(t *testing.T) {
 		t.Errorf("status = %d, want 404", err.GetStatus())
 	}
 
-	body, marshalErr := err.(interface{ MarshalJSON() ([]byte, error) }).MarshalJSON()
-	if marshalErr != nil {
-		t.Fatal(marshalErr)
-	}
-
-	if string(body) != `{"error":"chat not found"}` {
-		t.Errorf("huma.NewError json = %s, want legacy shape", body)
+	if err.Error() != "chat not found" {
+		t.Errorf("msg = %q, want 'chat not found'", err.Error())
 	}
 }

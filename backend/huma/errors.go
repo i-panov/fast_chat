@@ -1,8 +1,8 @@
 package huma
 
 import (
-	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -10,35 +10,46 @@ import (
 	"fast_chat/service"
 )
 
-// errorResponse matches the legacy {"error": "<msg>} shape so the frontend
-// (which parses errors as `http ${status}: ${body}`) keeps working unchanged.
-type errorResponse struct {
-	Error string `doc:"Human-readable error message" json:"error"`
-}
-
 // statusError implements huma.StatusError using the legacy error shape.
+// Huma serializes errors via reflection on exported fields, so the JSON
+// output is `{"error": "<msg>"}` — matching the legacy writeError format.
 type statusError struct {
-	status int
-	msg    string
+	ErrorMessage string `doc:"Human-readable error message" json:"error"` //nolint:tagliatelle // legacy `error` key required
+	code         int
 }
 
 func (e *statusError) Error() string {
-	return e.msg
+	return e.ErrorMessage
 }
 
 func (e *statusError) GetStatus() int {
-	return e.status
-}
-
-func (e *statusError) MarshalJSON() ([]byte, error) {
-	return json.Marshal(errorResponse{Error: e.msg})
+	return e.code
 }
 
 func init() {
 	// Override Huma's default RFC 9457 error model with the legacy shape.
 	huma.NewError = func(status int, message string, _ ...error) huma.StatusError {
-		return &statusError{status: status, msg: message}
+		return &statusError{ErrorMessage: message, code: status}
 	}
+}
+
+// newHumaConfig builds a Huma config that mirrors the legacy transport: the
+// default `$schema` link transformer is stripped so JSON responses are
+// byte-identical to the old handler output (no `$schema` field).
+func newHumaConfig(title, version string) huma.Config {
+	cfg := huma.DefaultConfig(title, version)
+
+	// The default create-hook appends a JSON Schema link transformer that injects
+	// a `$schema` field into response bodies. Run an additional hook after it to
+	// disable that transformer, matching the legacy wire format.
+	cfg.CreateHooks = append(cfg.CreateHooks, func(c huma.Config) huma.Config {
+		c.OnAddOperation = c.OnAddOperation[:0]
+		c.Transformers = c.Transformers[:0]
+
+		return c
+	})
+
+	return cfg
 }
 
 // MapError maps a service sentinel error to a Huma status error, mirroring the
@@ -53,12 +64,12 @@ func MapError(err error) huma.StatusError { //nolint:ireturn // huma.StatusError
 	// Struct-based errors first (errors.As).
 	mnf, _ := errors.AsType[*service.GroupMemberNotFoundError](err)
 	if mnf != nil {
-		return &statusError{http.StatusNotFound, mnf.Error()}
+		return &statusError{ErrorMessage: mnf.Error(), code: http.StatusNotFound}
 	}
 
 	// E2E payload validation errors (share the same status/message pattern).
 	if isEncryptedPayloadError(err) {
-		return &statusError{http.StatusBadRequest, err.Error()}
+		return &statusError{ErrorMessage: err.Error(), code: http.StatusBadRequest}
 	}
 
 	// Sentinel errors by domain, matched via errors.Is so wrapped sentinels
@@ -70,6 +81,19 @@ func MapError(err error) huma.StatusError { //nolint:ireturn // huma.StatusError
 	}
 
 	return nil
+}
+
+// mapServerError translates a service error to a Huma status error, defaulting
+// to a generic 500 for unmapped errors (mirroring the legacy transport, which
+// logged and wrote 500 "internal error").
+func mapServerError(err error) huma.StatusError { //nolint:ireturn // huma.StatusError is the required interface
+	if se := MapError(err); se != nil {
+		return se
+	}
+
+	slog.Error("huma: unmapped service error", "err", err)
+
+	return &statusError{ErrorMessage: "internal error", code: http.StatusInternalServerError}
 }
 
 func isEncryptedPayloadError(err error) bool {
@@ -93,178 +117,178 @@ var sentinelErrors = []sentinelErrPair{
 	// Auth domain.
 	{
 		sentinel: service.ErrInvalidEmail,
-		target:   &statusError{http.StatusBadRequest, "invalid email"},
+		target:   &statusError{ErrorMessage: "invalid email", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrEmailNotAllowed,
-		target:   &statusError{http.StatusForbidden, "email not allowed"},
+		target:   &statusError{ErrorMessage: "email not allowed", code: http.StatusForbidden},
 	},
 	{
 		sentinel: service.ErrEmailSendFailed,
-		target:   &statusError{http.StatusInternalServerError, "failed to send email"},
+		target:   &statusError{ErrorMessage: "failed to send email", code: http.StatusInternalServerError},
 	},
 	{
 		sentinel: service.ErrInvalidCode,
-		target:   &statusError{http.StatusUnauthorized, "invalid code"},
+		target:   &statusError{ErrorMessage: "invalid code", code: http.StatusUnauthorized},
 	},
 	{
 		sentinel: service.ErrInvalidSetupToken,
-		target:   &statusError{http.StatusUnauthorized, "invalid setup token"},
+		target:   &statusError{ErrorMessage: "invalid setup token", code: http.StatusUnauthorized},
 	},
 	{
 		sentinel: service.ErrNickInvalid,
-		target:   &statusError{http.StatusBadRequest, "nick must be 1-20 characters"},
+		target:   &statusError{ErrorMessage: "nick must be 1-20 characters", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrNickColon,
-		target:   &statusError{http.StatusBadRequest, "nick must not contain ':'"},
+		target:   &statusError{ErrorMessage: "nick must not contain ':'", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrNicknameTaken,
-		target:   &statusError{http.StatusConflict, "nickname already taken"},
+		target:   &statusError{ErrorMessage: "nickname already taken", code: http.StatusConflict},
 	},
 	{
 		sentinel: service.ErrEmailAlreadyTaken,
-		target:   &statusError{http.StatusConflict, "email already registered"},
+		target:   &statusError{ErrorMessage: "email already registered", code: http.StatusConflict},
 	},
 
 	// Chat domain.
 	{
 		sentinel: service.ErrChatNotFound,
-		target:   &statusError{http.StatusNotFound, "chat not found"},
+		target:   &statusError{ErrorMessage: "chat not found", code: http.StatusNotFound},
 	},
 	{
 		sentinel: service.ErrUserNotFound,
-		target:   &statusError{http.StatusNotFound, "user not found"},
+		target:   &statusError{ErrorMessage: "user not found", code: http.StatusNotFound},
 	},
 	{
 		sentinel: service.ErrWithUserRequired,
-		target:   &statusError{http.StatusBadRequest, "withUserId required for private chat"},
+		target:   &statusError{ErrorMessage: "withUserId required for private chat", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrChatWithSelf,
-		target:   &statusError{http.StatusBadRequest, "cannot chat with yourself"},
+		target:   &statusError{ErrorMessage: "cannot chat with yourself", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrGroupNameInvalid,
-		target:   &statusError{http.StatusBadRequest, "group name must be 1-60 characters"},
+		target:   &statusError{ErrorMessage: "group name must be 1-60 characters", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrTooManyMembers,
-		target:   &statusError{http.StatusBadRequest, "too many members"},
+		target:   &statusError{ErrorMessage: "too many members", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrGroupRemoteMemb,
-		target:   &statusError{http.StatusBadRequest, "group chat members must be on the same server"},
+		target:   &statusError{ErrorMessage: "group chat members must be on the same server", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrUserIDRequired,
-		target:   &statusError{http.StatusBadRequest, "userId required"},
+		target:   &statusError{ErrorMessage: "userId required", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrRemoteMember,
-		target:   &statusError{http.StatusBadRequest, "members must be on the same server"},
+		target:   &statusError{ErrorMessage: "members must be on the same server", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrFileIDRequired,
-		target:   &statusError{http.StatusBadRequest, "fileId required"},
+		target:   &statusError{ErrorMessage: "fileId required", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrFileNotFound,
-		target:   &statusError{http.StatusNotFound, "file not found"},
+		target:   &statusError{ErrorMessage: "file not found", code: http.StatusNotFound},
 	},
 
 	// Message domain.
 	{
 		sentinel: service.ErrThreadNotFound,
-		target:   &statusError{http.StatusNotFound, "thread not found"},
+		target:   &statusError{ErrorMessage: "thread not found", code: http.StatusNotFound},
 	},
 	{
 		sentinel: service.ErrMessageNotFound,
-		target:   &statusError{http.StatusNotFound, "message not found"},
+		target:   &statusError{ErrorMessage: "message not found", code: http.StatusNotFound},
 	},
 	{
 		sentinel: service.ErrEmptyMessage,
-		target:   &statusError{http.StatusBadRequest, "empty message"},
+		target:   &statusError{ErrorMessage: "empty message", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrMessageTooLong,
-		target:   &statusError{http.StatusBadRequest, "message too long"},
+		target:   &statusError{ErrorMessage: "message too long", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrInvalidCoordinates,
-		target:   &statusError{http.StatusBadRequest, "invalid coordinates"},
+		target:   &statusError{ErrorMessage: "invalid coordinates", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrTooManyFiles,
-		target:   &statusError{http.StatusBadRequest, "too many files"},
+		target:   &statusError{ErrorMessage: "too many files", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrNotYourMessage,
-		target:   &statusError{http.StatusForbidden, "not your message"},
+		target:   &statusError{ErrorMessage: "not your message", code: http.StatusForbidden},
 	},
 	{
 		sentinel: service.ErrEditingNotAllowed,
-		target:   &statusError{http.StatusForbidden, "editing not allowed"},
+		target:   &statusError{ErrorMessage: "editing not allowed", code: http.StatusForbidden},
 	},
 	{
 		sentinel: service.ErrEditWindowExpired,
-		target:   &statusError{http.StatusForbidden, "edit window expired"},
+		target:   &statusError{ErrorMessage: "edit window expired", code: http.StatusForbidden},
 	},
 	{
 		sentinel: service.ErrDeletingNotAllowed,
-		target:   &statusError{http.StatusForbidden, "deleting not allowed"},
+		target:   &statusError{ErrorMessage: "deleting not allowed", code: http.StatusForbidden},
 	},
 	{
 		sentinel: service.ErrDeleteWindowExpired,
-		target:   &statusError{http.StatusForbidden, "delete window expired"},
+		target:   &statusError{ErrorMessage: "delete window expired", code: http.StatusForbidden},
 	},
 	{
 		sentinel: service.ErrDeleteForbidden,
-		target:   &statusError{http.StatusForbidden, "forbidden"},
+		target:   &statusError{ErrorMessage: "forbidden", code: http.StatusForbidden},
 	},
 	{
 		sentinel: service.ErrThreadOnThread,
-		target:   &statusError{http.StatusBadRequest, "cannot create thread on a thread message"},
+		target:   &statusError{ErrorMessage: "cannot create thread on a thread message", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrThreadAlreadyExists,
-		target:   &statusError{http.StatusConflict, "thread already exists"},
+		target:   &statusError{ErrorMessage: "thread already exists", code: http.StatusConflict},
 	},
 	{
 		sentinel: service.ErrReadInputRequired,
-		target:   &statusError{http.StatusBadRequest, "messageIds and chatId are required"},
+		target:   &statusError{ErrorMessage: "messageIds and chatId are required", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrTooManyReadIDs,
-		target:   &statusError{http.StatusBadRequest, "too many message IDs"},
+		target:   &statusError{ErrorMessage: "too many message IDs", code: http.StatusBadRequest},
 	},
 
 	// Federation domain.
 	{
 		sentinel: service.ErrFederatedChatMembers,
-		target:   &statusError{http.StatusBadRequest, "federated chat must have exactly 2 members"},
+		target:   &statusError{ErrorMessage: "federated chat must have exactly 2 members", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrFederatedMembersNotValid,
-		target:   &statusError{http.StatusBadRequest, "members must belong to federation endpoints"},
+		target:   &statusError{ErrorMessage: "members must belong to federation endpoints", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrFederatedFromNotRemote,
-		target:   &statusError{http.StatusForbidden, "fromId does not belong to remote server"},
+		target:   &statusError{ErrorMessage: "fromId does not belong to remote server", code: http.StatusForbidden},
 	},
 	{
 		sentinel: service.ErrFederatedAuthorNotRemote,
-		target:   &statusError{http.StatusForbidden, "message author does not belong to remote server"},
+		target:   &statusError{ErrorMessage: "message author does not belong to remote server", code: http.StatusForbidden},
 	},
 	{
 		sentinel: service.ErrFederatedIDRequired,
-		target:   &statusError{http.StatusBadRequest, "id is required"},
+		target:   &statusError{ErrorMessage: "id is required", code: http.StatusBadRequest},
 	},
 
 	// Key domain.
 	{
 		sentinel: service.ErrInvalidPublicKey,
-		target:   &statusError{http.StatusBadRequest, "invalid public key"},
+		target:   &statusError{ErrorMessage: "invalid public key", code: http.StatusBadRequest},
 	},
 }
