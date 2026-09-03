@@ -237,6 +237,9 @@ func (f *fallbackBuffer) Write(payload []byte) (int, error) {
 	}
 
 	if f.passthrough {
+		// Middleware passthrough: fallbackBuffer forwards handler-produced
+		// responses (JSON/SSE/file streams) to the real writer and never renders
+		// user input itself. codeql[go/reflected-xss]
 		return f.ResponseWriter.Write(payload)
 	}
 

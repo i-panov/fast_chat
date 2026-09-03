@@ -115,12 +115,15 @@ func (s *statusWriter) WriteHeader(code int) {
 
 // Write ensures the status defaults to 200 if the handler only wrote a body
 // without an explicit WriteHeader — otherwise we'd log status 0.
-func (s *statusWriter) Write(b []byte) (int, error) {
+func (s *statusWriter) Write(payload []byte) (int, error) {
 	if s.status == 0 {
 		s.status = http.StatusOK
 	}
 
-	return s.ResponseWriter.Write(b)
+	// Middleware passthrough: the body is produced by downstream handlers (JSON
+	// via httputil.WriteJSON or file streaming); this wrapper only forwards
+	// bytes so status logging sees them. codeql[go/reflected-xss]
+	return s.ResponseWriter.Write(payload)
 }
 
 // Flush forwards flush calls to the underlying writer. Without this, handlers
@@ -243,16 +246,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Directory mode is deliberate least privilege: 0700/0750 gives the owner
+	// rwx (or r-x for group) on a directory; anything below strips the execute
+	// bit and breaks path traversal. The rule targets file modes.
+	// nosemgrep: go.lang.correctness.permissions.incorrect-default-permission
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o750); err != nil {
 		slog.Error("failed to create data directory", "err", err)
 		os.Exit(1)
 	}
 
+	// Directory mode is deliberate least privilege: 0700/0750 gives the owner
+	// rwx (or r-x for group) on a directory; anything below strips the execute
+	// bit and breaks path traversal. The rule targets file modes.
+	// nosemgrep: go.lang.correctness.permissions.incorrect-default-permission
 	if err := os.MkdirAll(cfg.Uploads.Dir, 0o750); err != nil {
 		slog.Error("failed to create upload directory", "err", err)
 		os.Exit(1)
 	}
 
+	// Directory mode is deliberate least privilege: 0700/0750 gives the owner
+	// rwx (or r-x for group) on a directory; anything below strips the execute
+	// bit and breaks path traversal. The rule targets file modes.
+	// nosemgrep: go.lang.correctness.permissions.incorrect-default-permission
 	if err := os.MkdirAll(cfg.Push.KeyPath, 0o700); err != nil {
 		slog.Error("failed to create push keys directory", "err", err)
 		os.Exit(1)

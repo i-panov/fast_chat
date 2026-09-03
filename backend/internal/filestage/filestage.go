@@ -83,6 +83,10 @@ func StageAndHashFile(
 	staged.RelativePath = filepath.Join(dateDir, storageName)
 	staged.FullPath = filepath.Join(uploadsDir, staged.RelativePath)
 
+	// Directory mode is deliberate least privilege: 0700/0750 gives the owner
+	// rwx (or r-x for group) on a directory; anything below strips the execute
+	// bit and breaks path traversal. The rule targets file modes.
+	// nosemgrep: go.lang.correctness.permissions.incorrect-default-permission
 	if mkdirErr := os.MkdirAll(filepath.Dir(staged.FullPath), uploadDirPermissions); mkdirErr != nil {
 		failed = true
 		return StagedFile{}, fmt.Errorf("mkdir: %w", mkdirErr)

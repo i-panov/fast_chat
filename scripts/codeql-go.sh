@@ -20,6 +20,7 @@ echo ">> [codeql] ensuring go query pack"
 
 shopt -s nullglob
 SUITE=("${PACKS}"/go-queries/*/codeql-suites/go-code-scanning.qls)
+SUPPRESSIONS=("${PACKS}"/go-queries/*/AlertSuppression.ql)
 shopt -u nullglob
 if ((${#SUITE[@]} == 0)); then
 	echo "!! [codeql] go query suite not found under ${PACKS}" >&2
@@ -38,11 +39,13 @@ if [[ "${1:-}" != "analyze" ]]; then
 fi
 
 echo ">> [codeql] running ${SUITE}"
+# The alert-suppression query is not part of the code-scanning suite; run it
+# alongside so inline `// codeql[<query-id>]` suppressions are honored.
 "${CODEQL}" database analyze "${DB}" \
 	--format=sarif-latest \
 	--output="${SARIF}" \
 	--search-path="${PACKS}" \
 	--threads=0 \
-	"${SUITE}"
+	"${SUITE}" "${SUPPRESSIONS[0]}"
 
 echo ">> done: ${SARIF}"

@@ -165,6 +165,10 @@ func (m *Manager) Close() {
 
 // LoadOrGenerateKeys loads an existing RSA key pair or generates a new one.
 func LoadOrGenerateKeys(keyDir string) (*rsa.PrivateKey, error) {
+	// Directory mode is deliberate least privilege: 0700/0750 gives the owner
+	// rwx (or r-x for group) on a directory; anything below strips the execute
+	// bit and breaks path traversal. The rule targets file modes.
+	// nosemgrep: go.lang.correctness.permissions.incorrect-default-permission
 	if err := os.MkdirAll(keyDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create key directory: %w", err)
 	}
@@ -379,6 +383,10 @@ func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa
 		return nil, fmt.Errorf("well-known request creation failed: %w", err)
 	}
 
+	// By design: peers are addressed by domain from X-Federation-Server.
+	// NewSafeHTTPClient blocks private/loopback IPs at dial time and pins the
+	// resolved IP (DNS-rebinding safe); a forged peer still fails signature
+	// verification. codeql[go/request-forgery]
 	resp, err := m.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("well-known request failed: %w", err)

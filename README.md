@@ -13,11 +13,30 @@ make frontend:run   # Vite dev-сервер на :5173
 
 ## Стек
 
-**Бэкенд:** Go 1.26, `net/http` (без сторонних роутеров), GORM + SQLite, SSE для реалтайма.
+**Бэкенд:** Go 1.26, Huma v2 (HTTP-фреймворк поверх chi-адаптера), GORM + SQLite, SSE для реалтайма.
 
 **Фронтенд:** React 19 + Mantine v9 + TanStack Router (file-based) + Tailwind v4 + react-i18next.
 
 ## Архитектура
+
+### Структура бэкенда
+
+Слои разделены: бизнес-логика не зависит от HTTP-фреймворка.
+
+| Пакет | Ответственность |
+|-------|-----------------|
+| `transport` | Huma v2 API — все `/api/*` маршруты, auth/federation middleware, fallback к legacy mux |
+| `service` | Бизнес-логика (auth, чаты, сообщения, файлы, федерация, sync, push) — без HTTP |
+| `store` | Доступ к данным (GORM + SQLite), presence-счётчики |
+| `federation` | RSA-подписи, `Manager` (verify/well-known) и `Client` (исходящие запросы с ретраями и фоновой очередью) |
+| `sse` | Hub SSE-соединений, heartbeat, авторизация подключений |
+| `push` | Web Push (RFC 8030), VAPID-ключи |
+| `ratelimit` | In-memory rate limiter + извлечение клиентского IP |
+| `internal/httputil` | Request ID, JSON-ответы |
+| `internal/filestage` | Staging загрузок: MIME-сниффинг, хеширование, атомарный rename |
+| `email`, `config`, `model`, `push` | Отправка писем, YAML-конфиг, модели данных |
+
+Все `/api/*` домены обслуживает Huma; на legacy stdlib mux остались только health-пробы (`/healthz`, `/readyz`) и `/.well-known/fast-chat`, доступные через fallback-хендлер.
 
 ### Федерация (nick:domain)
 
@@ -27,7 +46,7 @@ make frontend:run   # Vite dev-сервер на :5173
 
 **Создание чата / отправка:** клиент всегда общается со своим сервером. Сервер дублирует действия на удалённый сервер по HTTP (создание чата, отправка/редактирование/удаление сообщений).
 
-**Федеративные эндпоинты** (`/api/federated/*`) — без авторизации, вызов только между серверами.
+**Федеративные эндпоинты** (`/api/federated/*`) — только сервер-сервер, с подписью RSA (HMAC-заголовки `X-Federation-Server/Signature/Timestamp`, окно 5 минут); тело ограничено 10 МиБ.
 
 ### Чаты: приватные и групповые
 
@@ -206,11 +225,11 @@ make frontend:size      # Проверка размера бандла (size-lim
 ### Статический анализ
 
 ```bash
-make analyze            # Semgrep (security + best-practice)
-make analyze:deep       # Полный semgrep-скан
-make codeql             # CodeQL анализ (требует CodeQL CLI)
+make backend:lint       # golangci-lint
+make analyze:backend    # Semgrep (security + best-practice + gorm)
+make analyze:deep:backend  # Полный semgrep-скан (go)
+make codeql:backend     # CodeQL (SSRF/taint-анализ, требует CodeQL CLI)
 ```
-
 ## Автоматизация
 
 - **Dependabot** (`.github/dependabot.yml`) — еженедельные обновления зависимостей (Go + npm).
