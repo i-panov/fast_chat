@@ -252,10 +252,10 @@ func TestUploadFileRespectsSizeLimit(t *testing.T) {
 
 	alice := registerTestUser(t, h, "alice", "alice@test.local")
 
-	prev := maxUploadSize
-	maxUploadSize = 100 * 1024
+	prev := MaxUploadSize
+	MaxUploadSize = 100 * 1024
 
-	t.Cleanup(func() { maxUploadSize = prev })
+	t.Cleanup(func() { MaxUploadSize = prev })
 
 	big := bytes.Repeat([]byte("A"), 200*1024)
 

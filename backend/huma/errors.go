@@ -34,20 +34,17 @@ func init() {
 }
 
 // newHumaConfig builds a Huma config that mirrors the legacy transport: the
-// default `$schema` link transformer is stripped so JSON responses are
+// default `$schema` link transformer is disabled so JSON responses are
 // byte-identical to the old handler output (no `$schema` field).
 func newHumaConfig(title, version string) huma.Config {
 	cfg := huma.DefaultConfig(title, version)
 
-	// The default create-hook appends a JSON Schema link transformer that injects
-	// a `$schema` field into response bodies. Run an additional hook after it to
-	// disable that transformer, matching the legacy wire format.
-	cfg.CreateHooks = append(cfg.CreateHooks, func(c huma.Config) huma.Config {
-		c.OnAddOperation = c.OnAddOperation[:0]
-		c.Transformers = c.Transformers[:0]
-
-		return c
-	})
+	// DefaultConfig registers a create-hook that appends the JSON Schema link
+	// transformer when the API is constructed. Dropping the hooks prevents
+	// exactly that transformer; anything added later to cfg.Transformers is
+	// still honored. (If a future huma version ships important default hooks,
+	// revisit this.)
+	cfg.CreateHooks = nil
 
 	return cfg
 }
@@ -155,7 +152,7 @@ var sentinelErrors = []sentinelErrPair{
 	// Chat domain.
 	{
 		sentinel: service.ErrChatNotFound,
-		target:   &statusError{ErrorMessage: "chat not found", code: http.StatusNotFound},
+		target:   &statusError{ErrorMessage: msgChatNotFound, code: http.StatusNotFound},
 	},
 	{
 		sentinel: service.ErrUserNotFound,

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"fast_chat/config"
+	"fast_chat/federation"
+	"fast_chat/handler"
 	"fast_chat/ratelimit"
 	"fast_chat/service"
 	"fast_chat/sse"
@@ -29,13 +32,34 @@ type Pilot struct {
 	mux *chi.Mux
 }
 
-// NewPilot builds a Huma API with the SSE endpoint registered. The returned
-// http.Handler can be mounted on any path prefix next to the existing mux.
-func NewPilot(hub *sse.Hub, st *store.Store, svc *service.Service, cfg *config.Config, rl *RateLimiters) *Pilot {
+// PushSender abstracts the web-push delivery service.
+type PushSender interface {
+	PushPublicKey() (string, bool)
+}
+
+// PilotDeps carries the collaborators the Huma transport needs. Handlers is a
+// transitional dependency: it provides the federation client and file-staging
+// helpers until those are extracted into dedicated packages.
+type PilotDeps struct {
+	Hub          *sse.Hub
+	Store        *store.Store
+	Svc          *service.Service
+	Legacy       *handler.Handler
+	Cfg          *config.Config
+	FedManager   *federation.Manager
+	PushSender   PushSender
+	Version      string
+	Commit       string
+	RateLimiters *RateLimiters
+}
+
+// NewPilot builds a Huma API serving the migrated domains. The returned
+// http.Handler can be mounted in front of the legacy stdlib mux.
+func NewPilot(deps *PilotDeps) *Pilot {
 	mux := chi.NewMux()
 
-	if rl != nil {
-		mux.Use(rateLimitMiddleware(rl))
+	if deps.RateLimiters != nil {
+		mux.Use(rateLimitMiddleware(deps.RateLimiters))
 	}
 
 	// Mark genuine route misses so FallbackHandler can tell them apart from
@@ -44,21 +68,44 @@ func NewPilot(hub *sse.Hub, st *store.Store, svc *service.Service, cfg *config.C
 	mux.MethodNotAllowed(routeMiss(http.StatusMethodNotAllowed))
 
 	humaConfig := newHumaConfig("Fast Chat", "1.0.0")
+	// Body limits: Huma's per-operation default (1MB) matches the legacy
+	// maxBody wrapper; the upload operation overrides it with MaxUploadSize.
 	humaConfig.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		bearerScheme: {
 			Type:         "http",
 			Scheme:       "bearer",
 			BearerFormat: "JWT",
 		},
+		federationScheme: {
+			Type:        "apiKey",
+			In:          "header",
+			Name:        "X-Federation-Signature",
+			Description: "Server-to-server federation HMAC signature",
+		},
 	}
 	api := humachi.New(mux, humaConfig)
-	api.UseMiddleware(AuthMiddleware(st))
+	api.UseMiddleware(AuthMiddleware(deps.Store))
+	api.UseMiddleware(FederatedAuthMiddleware(deps.FedManager))
+	api.UseMiddleware(requestStashMiddleware)
 
-	p := &Pilot{mux: mux}
-	p.registerSSE(api, hub, st, svc, cfg)
-	RegisterAuth(api, svc, st, hub, &APIConfig{DebugEmail: cfg.Email.DebugMode})
+	cfg := deps.Cfg
+	apiCfg := &APIConfig{
+		DebugEmail: cfg.Email.DebugMode,
+		Version:    deps.Version,
+		Commit:     deps.Commit,
+	}
+	pilot := &Pilot{mux: mux}
+	pilot.registerSSE(api, deps.Hub, deps.Store, deps.Svc, cfg)
+	RegisterAuth(api, deps.Svc, deps.Store, deps.Hub, apiCfg)
+	RegisterUsers(api, deps.Store, deps.Legacy, cfg, apiCfg)
+	RegisterPush(api, deps.Legacy)
+	RegisterChats(api, deps.Svc, deps.Legacy, cfg)
+	RegisterMessages(api, deps.Svc, deps.Store, deps.Legacy, cfg)
+	RegisterFiles(api, deps.Store, deps.Svc, cfg)
+	RegisterSync(api, deps.Svc)
+	RegisterFederated(api, deps.Store, deps.Svc, deps.FedManager, cfg)
 
-	return p
+	return pilot
 }
 
 // RateLimiters holds per-route rate limiters for auth endpoints.
@@ -130,22 +177,12 @@ func routeMiss(status int) http.HandlerFunc {
 // Huma operation fall through to the next handler (e.g. the stdlib mux). This
 // enables incremental migration: migrated domains are served by Huma while
 // unmigrated ones keep using the legacy transport.
-//
-// SSE streams (/api/events) are never buffered — they pass through directly to
-// avoid breaking incremental delivery of events.
 func (p *Pilot) FallbackHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// SSE streams must not be buffered; pass through directly.
-		if r.URL.Path == "/api/events" {
-			p.mux.ServeHTTP(w, r)
-
-			return
-		}
-
 		buf := newFallbackBuffer(w)
 		p.mux.ServeHTTP(buf, r)
 
-		if buf.header.Get(routeMissHeader) != "" {
+		if buf.miss {
 			// No Huma route matched — discard the buffered miss response and
 			// let the legacy transport serve the request from scratch.
 			buf.flushUnsent(next, r)
@@ -153,20 +190,32 @@ func (p *Pilot) FallbackHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Huma handled it — replay the captured response.
+		// Huma handled it — commit anything not already written (e.g. a
+		// status-only response); streamed responses were already passed
+		// through while the handler ran.
 		buf.flush()
 	})
 }
 
-// fallbackBuffer intercepts writes so the response can be inspected (route
-// miss marker) before it reaches the client. It owns a separate header map so
-// Huma's headers never leak into the legacy response on fall-through.
+// fallbackBuffer sits between Huma and the real ResponseWriter so the
+// fallback decision can be made from the route-miss marker instead of the
+// response status (a migrated operation may legitimately answer 404/405).
+//
+// It owns a separate header map so Huma's headers never leak into the legacy
+// response on fall-through. The body is NOT buffered: as soon as the response
+// begins (first WriteHeader), the marker decides the fate — a route miss
+// stays buffered (a tiny 404/405 body), anything else is replayed to the
+// underlying writer immediately and every further write/flush passes through.
+// This preserves incremental delivery for SSE, file downloads, and any other
+// streaming response.
 type fallbackBuffer struct {
 	http.ResponseWriter
-	header http.Header
-	buf    bytes.Buffer
-	status int
-	wrote  bool
+	header      http.Header
+	buf         bytes.Buffer
+	status      int
+	wrote       bool
+	miss        bool
+	passthrough bool
 }
 
 func newFallbackBuffer(w http.ResponseWriter) *fallbackBuffer {
@@ -178,29 +227,53 @@ func (f *fallbackBuffer) Header() http.Header {
 }
 
 func (f *fallbackBuffer) WriteHeader(code int) {
-	if !f.wrote {
-		f.status = code
-		f.wrote = true
+	if f.wrote {
+		return
 	}
+
+	f.wrote = true
+	f.status = code
+	f.decide()
 }
 
 func (f *fallbackBuffer) Write(payload []byte) (int, error) {
 	if !f.wrote {
-		f.status = http.StatusOK
 		f.wrote = true
+		f.status = http.StatusOK
+		f.decide()
+	}
+
+	if f.passthrough {
+		return f.ResponseWriter.Write(payload)
 	}
 
 	return f.buf.Write(payload)
 }
 
-// Flush ensures http.Flusher is satisfied for streaming responses.
+// Flush forwards to the underlying flusher once streaming has begun; it is a
+// no-op while still buffering (nothing reached the client yet).
 func (f *fallbackBuffer) Flush() {
+	if !f.passthrough {
+		return
+	}
+
 	if ff, ok := f.ResponseWriter.(http.Flusher); ok {
 		ff.Flush()
 	}
 }
 
-func (f *fallbackBuffer) flush() {
+// decide runs once, when the response begins. The route-miss marker is set by
+// the router's NotFound/MethodNotAllowed handlers before they write, so it is
+// reliable at this point.
+func (f *fallbackBuffer) decide() {
+	if f.header.Get(routeMissHeader) != "" {
+		f.miss = true
+
+		return
+	}
+
+	f.passthrough = true
+
 	for key, values := range f.header {
 		for _, value := range values {
 			f.ResponseWriter.Header().Add(key, value)
@@ -211,7 +284,23 @@ func (f *fallbackBuffer) flush() {
 		f.ResponseWriter.WriteHeader(f.status)
 	}
 
-	_, _ = f.ResponseWriter.Write(f.buf.Bytes()) //nolint:errcheck // best-effort: flushing buffered Huma response
+	if f.buf.Len() > 0 {
+		_, _ = f.ResponseWriter.Write(f.buf.Bytes()) //nolint:errcheck // best-effort: committing buffered prefix
+		f.buf.Reset()
+	}
+}
+
+// flush commits a response that never started writing (e.g. status-only).
+func (f *fallbackBuffer) flush() {
+	if f.miss || f.passthrough {
+		return
+	}
+
+	if f.status != 0 {
+		f.ResponseWriter.WriteHeader(f.status)
+	}
+
+	_, _ = f.ResponseWriter.Write(f.buf.Bytes()) //nolint:errcheck // best-effort: committing buffered response
 }
 
 func (f *fallbackBuffer) flushUnsent(next http.Handler, r *http.Request) {
@@ -244,15 +333,15 @@ type sseInput struct {
 // write the connected event, then loop between heartbeats and hub events.
 func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Store, svc *service.Service, cfg *config.Config, connectionID string) {
 	if connectionID == "" {
-		hctx.SetStatus(http.StatusBadRequest)
 		hctx.SetHeader("Content-Type", "application/json")
+		hctx.SetStatus(http.StatusBadRequest)
 		_, _ = fmt.Fprint(hctx.BodyWriter(), `{"error":"connectionId required"}`) //nolint:errcheck // best-effort: validation error before stream starts
 		return
 	}
 
 	if len(connectionID) > 128 {
-		hctx.SetStatus(http.StatusBadRequest)
 		hctx.SetHeader("Content-Type", "application/json")
+		hctx.SetStatus(http.StatusBadRequest)
 		_, _ = fmt.Fprint(hctx.BodyWriter(), `{"error":"connectionId too long"}`) //nolint:errcheck // best-effort: validation error before stream starts
 		return
 	}
@@ -260,8 +349,8 @@ func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Stor
 	writer := hctx.BodyWriter()
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
-		hctx.SetStatus(http.StatusInternalServerError)
 		hctx.SetHeader("Content-Type", "application/json")
+		hctx.SetStatus(http.StatusInternalServerError)
 		_, _ = fmt.Fprint(hctx.BodyWriter(), `{"error":"streaming unsupported"}`) //nolint:errcheck // best-effort: streaming unsupported
 		return
 	}
@@ -362,4 +451,134 @@ func writeEvent(w io.Writer, flusher http.Flusher, event string, data any) {
 func writeComment(w io.Writer, flusher http.Flusher, comment string) {
 	fmt.Fprintf(w, ": %s\n\n", comment) //nolint:errcheck // best-effort: SSE writer
 	flusher.Flush()
+}
+
+// --- Transport middleware ---
+
+// federationScheme names the security scheme used by server-to-server
+// federation endpoints.
+const federationScheme = "federationSignature"
+
+// federationTimestampToleranceSec bounds federation signature timestamps,
+// matching the legacy transport.
+const federationTimestampToleranceSec = 300
+
+// requestContextKey stores the raw *http.Request/*http.ResponseWriter for
+// operations that need legacy-style access (multipart uploads).
+type (
+	requestContextKey struct{}
+	responseWriterKey struct{}
+)
+
+// requestFromContext retrieves the raw *http.Request stored by
+// requestStashMiddleware.
+func requestFromContext(ctx context.Context) (*http.Request, bool) {
+	r, ok := ctx.Value(requestContextKey{}).(*http.Request)
+	return r, ok && r != nil
+}
+
+// responseWriterFromContext retrieves the raw http.ResponseWriter stored by
+// requestStashMiddleware.
+func responseWriterFromContext(ctx context.Context) (http.ResponseWriter, bool) {
+	w, ok := ctx.Value(responseWriterKey{}).(http.ResponseWriter)
+	return w, ok && w != nil
+}
+
+// requestStashMiddleware stores the raw request and writer in the context so
+// operations that need them (multipart upload) can retrieve them.
+func requestStashMiddleware(ctx huma.Context, next func(huma.Context)) {
+	r, w := humachi.Unwrap(ctx)
+	next(huma.WithValue(huma.WithValue(ctx, requestContextKey{}, r), responseWriterKey{}, w))
+}
+
+// FederatedAuthMiddleware verifies federation signature headers on operations
+// that declare the federation security scheme. On success the verified source
+// server is stashed in the request context (mirroring the legacy middleware
+// contract where handlers read X-Federation-Server directly).
+func FederatedAuthMiddleware(fm *federation.Manager) func(ctx huma.Context, next func(huma.Context)) {
+	return func(ctx huma.Context, next func(huma.Context)) {
+		needsFed := false
+		for _, scheme := range ctx.Operation().Security {
+			if _, ok := scheme[federationScheme]; ok {
+				needsFed = true
+				break
+			}
+		}
+
+		if !needsFed {
+			next(ctx)
+
+			return
+		}
+
+		r, w := humachi.Unwrap(ctx)
+
+		switch verified, tooLarge := verifyFederatedRequest(fm, w, r); {
+		case tooLarge:
+			ctx.SetHeader("Content-Type", "application/json")
+			ctx.SetStatus(http.StatusRequestEntityTooLarge)
+			_, _ = fmt.Fprintf(ctx.BodyWriter(), `{"error":"request body too large"}`) //nolint:errcheck // best-effort: rejection
+
+			return
+		case !verified:
+			ctx.SetHeader("Content-Type", "application/json")
+			ctx.SetStatus(http.StatusUnauthorized)
+			_, _ = fmt.Fprintf(ctx.BodyWriter(), `{"error":"unauthorized"}`) //nolint:errcheck // best-effort: auth rejection
+
+			return
+		}
+
+		next(huma.WithValue(ctx, federatedServerKey{}, r.Header.Get("X-Federation-Server")))
+	}
+}
+
+// verifyFederatedRequest checks federation headers, timestamp tolerance, and
+// the request signature, capping the signature body at 10 MiB. It mirrors
+// handler.VerifyFederatedRequest minus the response writing (the transport
+// owns the wire response). tooLarge reports a body over the cap so the caller
+// can answer 413 like the legacy transport.
+func verifyFederatedRequest(fm *federation.Manager, w http.ResponseWriter, r *http.Request) (bool, bool) {
+	serverDomain := r.Header.Get("X-Federation-Server")
+	signature := r.Header.Get("X-Federation-Signature")
+	timestampStr := r.Header.Get("X-Federation-Timestamp")
+
+	if serverDomain == "" || signature == "" || timestampStr == "" {
+		return false, false
+	}
+
+	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
+	if err != nil {
+		return false, false
+	}
+
+	now := time.Now().Unix()
+	if now-timestamp > federationTimestampToleranceSec || timestamp-now > federationTimestampToleranceSec {
+		return false, false
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		return false, true
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+	if !fm.Verify(r.Context(), serverDomain, signature, r.Method, r.URL.RequestURI(), bodyBytes, timestamp) {
+		return false, false
+	}
+
+	return true, false
+}
+
+// federatedServerKey stores the verified remote server domain.
+type federatedServerKey struct{}
+
+// federatedServerFromContext returns the verified remote server domain.
+func federatedServerFromContext(ctx context.Context) string {
+	if domain, ok := ctx.Value(federatedServerKey{}).(string); ok {
+		return domain
+	}
+
+	return ""
 }

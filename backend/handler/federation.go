@@ -47,6 +47,39 @@ func (h *Handler) federatedURL(remoteServer, path string) string {
 	return fmt.Sprintf("%s://%s%s", h.cfg.Federation.Scheme, remoteServer, path)
 }
 
+// FederatedURL is the exported form of federatedURL, used by the Huma
+// transport while the federation client is consolidated (transitional).
+func (h *Handler) FederatedURL(remoteServer, path string) string {
+	return h.federatedURL(remoteServer, path)
+}
+
+// FedServerDomain returns this server's federation domain.
+func (h *Handler) FedServerDomain() string {
+	return h.fedManager.ServerDomain()
+}
+
+// FederatedRequest performs a signed server-to-server request with retries.
+// Transitional export for the Huma transport.
+func (h *Handler) FederatedRequest(ctx context.Context, method, urlStr string, body any) ([]byte, error) {
+	return h.doFederatedRequest(ctx, method, urlStr, body)
+}
+
+// FedPost queues a background federated POST to remoteServer. Transitional
+// export for the Huma transport.
+func (h *Handler) FedPost(ctx context.Context, remoteServer, path string, body any) {
+	h.sendFedPost(ctx, remoteServer, path, body)
+}
+
+// FedPatch queues a background federated PATCH. Transitional export.
+func (h *Handler) FedPatch(ctx context.Context, remoteServer, path string, body any) {
+	h.sendFedPatch(ctx, remoteServer, path, body)
+}
+
+// FedDelete queues a background federated DELETE. Transitional export.
+func (h *Handler) FedDelete(ctx context.Context, remoteServer, path string) {
+	h.sendFedDelete(ctx, remoteServer, path)
+}
+
 func (h *Handler) doFederatedRequest(ctx context.Context, method, urlStr string, body any) ([]byte, error) {
 	var bodyBytes []byte
 

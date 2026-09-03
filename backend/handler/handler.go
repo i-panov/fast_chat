@@ -75,7 +75,9 @@ const (
 	errKeyThreadNotFound = "thread not found"
 )
 
-var maxUploadSize int64 = 50 << 20
+// MaxUploadSize caps file upload bodies. A var (not const) so tests can
+// shrink it.
+var MaxUploadSize int64 = 50 << 20
 
 // Handler is the HTTP transport layer. During the service-layer migration
 // (A2-A6) it still holds store/hub/cfg directly for handlers not yet ported;
@@ -123,6 +125,32 @@ func (h *Handler) Close() {
 // (e.g. the Huma v2 pilot) that need access to the same service instance.
 func (h *Handler) Service() *service.Service {
 	return h.svc
+}
+
+// PushPublicKey returns the VAPID public key when push delivery is configured.
+func (h *Handler) PushPublicKey() (string, bool) {
+	if h.pushSender == nil {
+		return "", false
+	}
+
+	return h.pushSender.PublicKey(), true
+}
+
+// SearchLocalUsers queries the local user directory. Transitional export for
+// the Huma transport while the search flow is consolidated.
+func (h *Handler) SearchLocalUsers(ctx context.Context, query, excludeUserID string) []model.PublicUser {
+	return h.store.SearchUsers(ctx, query, excludeUserID)
+}
+
+// AddPushSubscription stores a web-push subscription for the user.
+// Transitional export for the Huma transport.
+func (h *Handler) AddPushSubscription(ctx context.Context, userID, endpoint, p256dh, auth string) (*model.PushSubscription, error) {
+	return h.store.AddPushSubscription(ctx, userID, endpoint, p256dh, auth)
+}
+
+// DeletePushSubscription removes a web-push subscription. Transitional export.
+func (h *Handler) DeletePushSubscription(ctx context.Context, userID, endpoint string) error {
+	return h.store.DeletePushSubscription(ctx, userID, endpoint)
 }
 
 func (h *Handler) requireChatMember(w http.ResponseWriter, r *http.Request, chatID, userID string) *model.Chat {

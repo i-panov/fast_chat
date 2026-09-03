@@ -68,8 +68,6 @@ func rateLimitMiddleware(rl *ratelimit.RateLimiter, ipExtractor *ratelimit.Clien
 	}
 }
 
-const maxBodySize = 1 << 20
-
 // requestLogMiddleware records method, path, status, duration, and client IP for
 // every request. It logs at Info level for success (status < 400) and Warn for
 // client/server errors, giving operators a complete traffic trail via slog.
@@ -138,14 +136,7 @@ func (s *statusWriter) Flush() {
 	}
 }
 
-func maxBody(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-		next(w, r)
-	}
-}
-
-// newHumaTransport mounts the Huma v2 pilot (auth + SSE domains) in front of
+// newHumaTransport mounts the Huma v2 pilot (all /api/* domains) in front of
 // the legacy stdlib mux and returns the combined handler. Requests served by
 // Huma never reach the legacy mux; everything else falls through unchanged.
 func newHumaTransport(
@@ -154,16 +145,28 @@ func newHumaTransport(
 	st *store.Store,
 	handlers *handler.Handler,
 	cfg *config.Config,
+	fedManager *federation.Manager,
 	ipExtractor *ratelimit.ClientIPExtractor,
 	sendCodeRL, verifyCodeRL, registerRL, sseAuthRL *ratelimit.RateLimiter,
 ) http.Handler {
 
-	humaPilot := huma.NewPilot(hub, st, handlers.Service(), cfg, &huma.RateLimiters{
-		Extractor:  ipExtractor,
-		SendCode:   sendCodeRL,
-		VerifyCode: verifyCodeRL,
-		Register:   registerRL,
-		SSEAuth:    sseAuthRL,
+	humaPilot := huma.NewPilot(&huma.PilotDeps{
+		Hub:        hub,
+		Store:      st,
+		Svc:        handlers.Service(),
+		Legacy:     handlers,
+		Cfg:        cfg,
+		FedManager: fedManager,
+		PushSender: handlers,
+		Version:    version,
+		Commit:     commit,
+		RateLimiters: &huma.RateLimiters{
+			Extractor:  ipExtractor,
+			SendCode:   sendCodeRL,
+			VerifyCode: verifyCodeRL,
+			Register:   registerRL,
+			SSEAuth:    sseAuthRL,
+		},
 	})
 
 	return humaPilot.FallbackHandler(legacyMux)
@@ -177,64 +180,14 @@ func registerRoutes(
 	fedManager *federation.Manager,
 ) {
 
-	mux.HandleFunc("GET /api/config", handlers.GetConfig)
-
 	// Health probes: no auth and no per-route rate limiter (used by
 	// orchestrators). The global generalRL still applies at the outer layer.
 	mux.HandleFunc("GET /healthz", handler.HealthzHandler)
 	mux.HandleFunc("GET /readyz", handlers.ReadinessHandler)
 
-	// Auth routes and SSE are served by the Huma v2 transport (see humaAPI).
-	// The per-route rate limiters (sendCodeRL, verifyCodeRL, registerRL,
-	// sseAuthRL) are passed to the Huma transport middleware below.
-
-	// Push endpoints
-	mux.HandleFunc("GET /api/push/vapid-public-key", handlers.VapidPublicKey)
-	mux.HandleFunc("POST /api/push/subscribe", maxBody(handlers.AuthMiddleware(handlers.SubscribePush)))
-	mux.HandleFunc("DELETE /api/push/subscribe", maxBody(handlers.AuthMiddleware(handlers.UnsubscribePush)))
-
-	mux.HandleFunc("GET /api/users/search", handlers.AuthMiddleware(handlers.SearchUsers))
-	mux.HandleFunc("PUT /api/users/public-key", maxBody(handlers.AuthMiddleware(handlers.UpdatePublicKey)))
-	mux.HandleFunc("GET /api/users/{userId}/public-key", handlers.AuthMiddleware(handlers.GetUserPublicKey))
-	mux.HandleFunc("PUT /api/users/key-backup", maxBody(handlers.AuthMiddleware(handlers.SetKeyBackup)))
-	mux.HandleFunc("GET /api/users/key-backup", handlers.AuthMiddleware(handlers.GetKeyBackup))
-	mux.HandleFunc("DELETE /api/users/key-backup", handlers.AuthMiddleware(handlers.DeleteKeyBackup))
-	mux.HandleFunc("GET /api/chats", handlers.AuthMiddleware(handlers.GetChats))
-	mux.HandleFunc("GET /api/sync", handlers.AuthMiddleware(handlers.Sync))
-	mux.HandleFunc("POST /api/chats", maxBody(handlers.AuthMiddleware(handlers.CreateChat)))
-	mux.HandleFunc("GET /api/chats/{id}", handlers.AuthMiddleware(handlers.GetChat))
-	mux.HandleFunc("PATCH /api/chats/{id}", maxBody(handlers.AuthMiddleware(handlers.UpdateChat)))
-	mux.HandleFunc("DELETE /api/chats/{id}", handlers.AuthMiddleware(handlers.DeleteChat))
-	mux.HandleFunc("POST /api/chats/{id}/members", maxBody(handlers.AuthMiddleware(handlers.AddChatMember)))
-	mux.HandleFunc("DELETE /api/chats/{id}/members/{userId}", handlers.AuthMiddleware(handlers.RemoveChatMember))
-	mux.HandleFunc("POST /api/chats/{id}/avatar", maxBody(handlers.AuthMiddleware(handlers.UpdateChatAvatar)))
-	mux.HandleFunc("GET /api/chats/{id}/messages", handlers.AuthMiddleware(handlers.GetMessages))
-	mux.HandleFunc("POST /api/chats/{id}/messages/query", maxBody(handlers.AuthMiddleware(handlers.GetMessagesWithStatuses)))
-	mux.HandleFunc("POST /api/chats/{id}/messages", maxBody(handlers.AuthMiddleware(handlers.SendMessage)))
-	mux.HandleFunc("PATCH /api/chats/{id}/messages/{messageId}", maxBody(handlers.AuthMiddleware(handlers.EditMessage)))
-	mux.HandleFunc("DELETE /api/chats/{id}/messages/{messageId}", handlers.AuthMiddleware(handlers.DeleteMessage))
-	mux.HandleFunc("POST /api/messages/read", maxBody(handlers.AuthMiddleware(handlers.MarkMessagesRead)))
-	mux.HandleFunc("POST /api/chats/{id}/messages/{messageId}/thread", maxBody(handlers.AuthMiddleware(handlers.CreateThread)))
-	mux.HandleFunc("GET /api/chats/{id}/threads", handlers.AuthMiddleware(handlers.GetThreads))
-	mux.HandleFunc("GET /api/chats/{id}/threads/{threadId}/messages", handlers.AuthMiddleware(handlers.GetThreadMessages))
-	mux.HandleFunc("POST /api/chats/{id}/threads/{threadId}/messages", maxBody(handlers.AuthMiddleware(handlers.SendMessage)))
-	mux.HandleFunc("PATCH /api/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(handlers.AuthMiddleware(handlers.EditMessage)))
-	mux.HandleFunc("POST /api/files/upload", handlers.AuthMiddleware(handlers.UploadFile))
-	mux.HandleFunc("GET /api/files/{fileId}", handlers.AuthMiddleware(handlers.ServeFile))
-	mux.HandleFunc("GET /api/files/exists", handlers.AuthMiddleware(handlers.FileExistsHandler))
-	mux.HandleFunc("POST /api/chats/{id}/typing", maxBody(handlers.AuthMiddleware(handlers.HandleTyping)))
-
-	// Federated endpoints (server-to-server, with federated auth)
-	fedAuth := handlers.FederatedAuthMiddleware
-	mux.HandleFunc("GET /api/federated/users/search", fedAuth(handlers.FederatedSearchUsers))
-	mux.HandleFunc("GET /api/federated/users/{userId}/public-key", fedAuth(handlers.FederatedGetUserPublicKey))
-	mux.HandleFunc("POST /api/federated/chats", maxBody(fedAuth(handlers.FederatedCreateChat)))
-	mux.HandleFunc("POST /api/federated/chats/{id}/messages", maxBody(fedAuth(handlers.FederatedSendMessage)))
-	mux.HandleFunc("PATCH /api/federated/chats/{id}/messages/{messageId}", maxBody(fedAuth(handlers.FederatedEditMessage)))
-	mux.HandleFunc("PATCH /api/federated/chats/{id}/threads/{threadId}/messages/{messageId}", maxBody(fedAuth(handlers.FederatedEditMessage)))
-	mux.HandleFunc("DELETE /api/federated/chats/{id}/messages/{messageId}", fedAuth(handlers.FederatedDeleteMessage))
-	mux.HandleFunc("POST /api/federated/chats/{id}/typing", maxBody(fedAuth(handlers.FederatedHandleTyping)))
-	mux.HandleFunc("GET /api/federated/sync", fedAuth(handlers.FederatedSync))
+	// All /api/* domains are served by the Huma v2 transport (see humaAPI):
+	// auth, SSE, config, users/keys, push, chats, messages, threads, files,
+	// typing, sync, and the federated server-to-server endpoints.
 
 	// Well-known endpoint (no auth, public key for federation)
 	mux.HandleFunc("GET /.well-known/fast-chat", fedManager.WellKnownHandler)
@@ -335,9 +288,10 @@ func main() {
 	mux := http.NewServeMux()
 	registerRoutes(mux, handlerInstance, fedManager)
 
-	// Huma v2 transport wraps the stdlib mux: migrated domains (auth, SSE) are
-	// served by Huma, unmigrated ones fall through to the legacy transport.
-	humaAPI := newHumaTransport(mux, hub, st, handlerInstance, cfg, ipExtractor,
+	// Huma v2 transport wraps the stdlib mux: every /api/* domain is served
+	// by Huma; only health probes and the well-known endpoint remain on the
+	// legacy mux, reached via the fallback handler.
+	humaAPI := newHumaTransport(mux, hub, st, handlerInstance, cfg, fedManager, ipExtractor,
 		sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
 
 	// Static file serving for production frontend build

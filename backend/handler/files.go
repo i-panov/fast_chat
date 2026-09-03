@@ -26,10 +26,10 @@ const (
 	dispositionAttachment = "attachment"
 )
 
-// parseFileHash validates and returns the client-provided plaintext hash
+// ParseFileHash validates and returns the client-provided plaintext hash
 // for encrypted file uploads. Returns ("", false) when no hash is provided.
 // For encrypted uploads the hash is required and validated.
-func parseFileHash(r *http.Request) (string, bool, string) {
+func ParseFileHash(r *http.Request) (string, bool, string) {
 	encrypted := r.FormValue("encrypted") == "true"
 	clientHash := r.FormValue("hash")
 
@@ -46,11 +46,11 @@ func parseFileHash(r *http.Request) (string, bool, string) {
 	return clientHash, encrypted, ""
 }
 
-// stageAndHashFile writes the uploaded file to a temp location, computes
+// StageAndHashFile writes the uploaded file to a temp location, computes
 // its MIME type and size, and returns the hash (from client or computed).
 // Returns the temp path, full path, and relative path for the caller to
 // finalize the upload.
-func stageAndHashFile(
+func StageAndHashFile(
 	file io.Reader,
 	clientHash string,
 	encrypted bool,
@@ -157,9 +157,9 @@ func stageAndHashFile(
 }
 
 func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+	r.Body = http.MaxBytesReader(w, r.Body, MaxUploadSize)
 
-	if err := r.ParseMultipartForm(maxUploadSize); err != nil { //nolint:gosec // limited by MaxBytesReader above
+	if err := r.ParseMultipartForm(MaxUploadSize); err != nil { //nolint:gosec // limited by MaxBytesReader above
 		writeError(w, http.StatusRequestEntityTooLarge, errKeyFileTooLarge)
 		return
 	}
@@ -172,14 +172,14 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	defer file.Close() //nolint:errcheck // best-effort: failure is not actionable
 
-	clientHash, encrypted, errKey := parseFileHash(r)
+	clientHash, encrypted, errKey := ParseFileHash(r)
 	if errKey != "" {
 		writeError(w, http.StatusBadRequest, errKey)
 		return
 	}
 
 	mimeType, size, hash, tempPath, fullPath, relativePath, err :=
-		stageAndHashFile(file, clientHash, encrypted, h.cfg.Uploads.Dir)
+		StageAndHashFile(file, clientHash, encrypted, h.cfg.Uploads.Dir)
 	if err != nil {
 		slog.Error("failed to stage file", "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to process file")
@@ -243,20 +243,20 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", fileRecord.MimeType)
 
 	disposition := dispositionAttachment
-	if isInlinableMIME(fileRecord.MimeType) {
+	if IsInlinableMIME(fileRecord.MimeType) {
 		disposition = dispositionInline
 	}
 
-	w.Header().Set("Content-Disposition", disposition+"; filename=\""+sanitizeFilename(fileRecord.OriginalName)+"\"")
+	w.Header().Set("Content-Disposition", disposition+"; filename=\""+SanitizeFilename(fileRecord.OriginalName)+"\"")
 	w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(mimeCacheMaxAge))
 
 	http.ServeFile(w, r, fullPath) //nolint:gosec // path is controlled, generated UUID
 }
 
-// isInlinableMIME reports whether the given MIME type is safe to serve inline
+// IsInlinableMIME reports whether the given MIME type is safe to serve inline
 // in a browser. Everything else is forced to attachment to neutralise XSS via
 // uploaded HTML/JS/SVG/documents.
-func isInlinableMIME(mime string) bool {
+func IsInlinableMIME(mime string) bool {
 	switch {
 	case strings.HasPrefix(mime, "image/"),
 		strings.HasPrefix(mime, "video/"),
@@ -268,9 +268,9 @@ func isInlinableMIME(mime string) bool {
 	return false
 }
 
-// sanitizeFilename strips characters that could break out of the
+// SanitizeFilename strips characters that could break out of the
 // Content-Disposition header or be misinterpreted by the browser.
-func sanitizeFilename(name string) string {
+func SanitizeFilename(name string) string {
 	r := strings.NewReplacer(
 		"\"", "",
 		"\\", "",

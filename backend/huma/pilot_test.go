@@ -2,9 +2,11 @@ package huma
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,7 +60,7 @@ func newPilotTestServerWithRL(t *testing.T, rl *RateLimiters) *Pilot {
 	st := store.New(db)
 	svc := service.New(st, cfg, hub, nil)
 
-	return NewPilot(hub, st, svc, cfg, rl)
+	return NewPilot(&PilotDeps{Hub: hub, Store: st, Svc: svc, Cfg: cfg, RateLimiters: rl})
 }
 
 func TestPilotSSEConnected(t *testing.T) {
@@ -183,8 +185,10 @@ func newFallbackTestServer(t *testing.T) (http.Handler, *store.Store, *sse.Hub) 
 
 	st := newTestStore(t)
 	hub := newTestHub()
+	cfg := testAPIConfig()
+	cfg.Uploads = config.UploadsConfig{Dir: t.TempDir()}
 	svc := newTestService(st, hub)
-	pilot := NewPilot(hub, st, svc, testAPIConfig(), nil)
+	pilot := NewPilot(&PilotDeps{Hub: hub, Store: st, Svc: svc, Cfg: cfg})
 
 	legacyMux := http.NewServeMux()
 	legacyMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
@@ -503,5 +507,185 @@ func TestFallbackSSEUnauthorizedNoEvents(t *testing.T) {
 	case <-done:
 		t.Fatal("unauthorized connection received an event")
 	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+// recordingWriter is a minimal http.ResponseWriter/Flusher that records what
+// reaches the real transport.
+type recordingWriter struct {
+	header   http.Header
+	body     bytes.Buffer
+	status   int
+	flushed  bool
+	wroteHdr bool
+}
+
+func newRecordingWriter() *recordingWriter {
+	return &recordingWriter{header: make(http.Header)}
+}
+
+func (r *recordingWriter) Header() http.Header { return r.header }
+
+func (r *recordingWriter) Write(p []byte) (int, error) {
+	if !r.wroteHdr {
+		r.wroteHdr = true
+		if r.status == 0 {
+			r.status = http.StatusOK
+		}
+	}
+
+	return r.body.Write(p)
+}
+
+func (r *recordingWriter) WriteHeader(code int) {
+	if r.wroteHdr {
+		return
+	}
+
+	r.wroteHdr = true
+	r.status = code
+}
+
+func (r *recordingWriter) Flush() { r.flushed = true }
+
+func TestFallbackBufferStreamsThrough(t *testing.T) {
+	// A matched streaming response must reach the underlying writer as soon as
+	// it begins; the buffer must not accumulate the body.
+	underlying := newRecordingWriter()
+	buf := newFallbackBuffer(underlying)
+
+	buf.Header().Set("Content-Type", "text/event-stream")
+	buf.WriteHeader(http.StatusOK)
+
+	if !buf.passthrough {
+		t.Fatal("expected pass-through mode after WriteHeader on a matched response")
+	}
+
+	if _, err := buf.Write([]byte("event: connected\n\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	buf.Flush()
+
+	if !underlying.flushed {
+		t.Fatal("expected Flush to be forwarded to the underlying writer")
+	}
+
+	if got := underlying.body.String(); got != "event: connected\n\n" {
+		t.Fatalf("underlying body = %q, want the streamed chunk", got)
+	}
+
+	if underlying.status != http.StatusOK {
+		t.Fatalf("underlying status = %d, want 200", underlying.status)
+	}
+
+	// Subsequent writes keep flowing straight through.
+	if _, err := buf.Write([]byte(": heartbeat\n\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := underlying.body.String(); got != "event: connected\n\n: heartbeat\n\n" {
+		t.Fatalf("underlying body = %q", got)
+	}
+}
+
+func TestFallbackBufferKeepsMissBuffered(t *testing.T) {
+	// A route-miss response (marker header) stays buffered so nothing reaches
+	// the underlying writer before the legacy transport takes over.
+	underlying := newRecordingWriter()
+	buf := newFallbackBuffer(underlying)
+
+	buf.Header().Set(routeMissHeader, "1")
+	buf.WriteHeader(http.StatusNotFound)
+	_, _ = buf.Write([]byte("404 page not found"))
+
+	if !buf.miss {
+		t.Fatal("expected miss detection via marker header")
+	}
+
+	if underlying.body.Len() != 0 || underlying.status != 0 {
+		t.Fatalf("underlying writer was touched: status=%d body=%q", underlying.status, underlying.body.String())
+	}
+}
+
+func TestFallbackFileDownloadStreams(t *testing.T) {
+	// End-to-end through FallbackHandler: a multi-MB file must download
+	// byte-identically (correctness of the streaming pass-through on real
+	// transport).
+	h, st, _ := newFallbackTestServer(t)
+	alice := createTestUser(t, st)
+
+	bob, err := st.CreateUser(context.Background(), "bob@test.local", "bob", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create chat and upload a 3 MiB file.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/chats", alice.Token, `{"type":"private","withUserId":"`+bob.ID+`"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for chat, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	chatID, _ := decodeBody(t, rec)["chat"].(map[string]any)["id"].(string)
+
+	payload := make([]byte, 3<<20)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+
+	var bodyBuf bytes.Buffer
+	writer := multipart.NewWriter(&bodyBuf)
+
+	part, err := writer.CreateFormFile("file", "big.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := part.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/files/upload", &bodyBuf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+alice.Token)
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for upload, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	fileID, _ := decodeBody(t, rec)["file"].(map[string]any)["id"].(string)
+	if fileID == "" {
+		t.Fatal("expected file id")
+	}
+
+	// Attach the file to a message so it becomes downloadable.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/chats/"+chatID+"/messages", alice.Token,
+		`{"id":"big-msg","text":"big file","fileIDs":["`+fileID+`"]}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for message, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Download through the fallback chain and verify byte identity.
+	dl := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/files/"+fileID, http.NoBody)
+	dl.Header.Set("Authorization", "Bearer "+alice.Token)
+
+	dlRec := httptest.NewRecorder()
+	h.ServeHTTP(dlRec, dl)
+
+	if dlRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for download, got %d: %s", dlRec.Code, dlRec.Body.String())
+	}
+
+	if got := dlRec.Body.Bytes(); !bytes.Equal(got, payload) {
+		t.Fatalf("downloaded %d bytes, want %d identical bytes", len(got), len(payload))
 	}
 }

@@ -47,11 +47,11 @@ type verifyCodeInput struct {
 
 type verifyCodeOutput struct {
 	Body struct {
-		IsNew      bool        `json:"isNew"`
-		SetupToken string      `json:"setupToken,omitempty"`
-		User       *publicUser `json:"user,omitempty"`
-		Token      string      `json:"token,omitempty"`
-		ExpiresAt  string      `json:"expiresAt,omitempty"`
+		IsNew      bool              `json:"isNew"`
+		SetupToken string            `json:"setupToken,omitempty"`
+		User       *model.PublicUser `json:"user,omitempty"`
+		Token      string            `json:"token,omitempty"`
+		ExpiresAt  string            `json:"expiresAt,omitempty"`
 	}
 }
 
@@ -64,9 +64,9 @@ type completeRegistrationInput struct {
 
 type completeRegistrationOutput struct {
 	Body struct {
-		User      *publicUser `json:"user"`
-		Token     string      `json:"token"`
-		ExpiresAt string      `json:"expiresAt"`
+		User      *model.PublicUser `json:"user"`
+		Token     string            `json:"token"`
+		ExpiresAt string            `json:"expiresAt"`
 	}
 }
 
@@ -75,17 +75,6 @@ type refreshTokenOutput struct {
 		Token     string `json:"token"`
 		ExpiresAt string `json:"expiresAt"`
 	}
-}
-
-// publicUser is the transport-safe user shape.
-type publicUser struct {
-	ID     string `json:"id"`
-	Nick   string `json:"nick"`
-	Online bool   `json:"online"`
-}
-
-func newPublicUser(u *model.User) *publicUser {
-	return &publicUser{ID: u.ID, Nick: u.Nick, Online: u.Online}
 }
 
 // --- Registration ---
@@ -133,7 +122,8 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 			out.Body.SetupToken = res.SetupToken
 		} else {
 			out.Body.IsNew = false
-			out.Body.User = newPublicUser(res.User)
+			pub := res.User.Public()
+			out.Body.User = &pub
 			out.Body.Token = res.User.Token
 			out.Body.ExpiresAt = res.User.TokenExpiresAt.Format(time.RFC3339)
 		}
@@ -152,13 +142,15 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 			return nil, mapServerError(err)
 		}
 
+		pub := user.Public()
+
 		return &completeRegistrationOutput{
 			Body: struct {
-				User      *publicUser `json:"user"`
-				Token     string      `json:"token"`
-				ExpiresAt string      `json:"expiresAt"`
+				User      *model.PublicUser `json:"user"`
+				Token     string            `json:"token"`
+				ExpiresAt string            `json:"expiresAt"`
 			}{
-				User:      newPublicUser(user),
+				User:      &pub,
 				Token:     user.Token,
 				ExpiresAt: user.TokenExpiresAt.Format(time.RFC3339),
 			},
@@ -247,6 +239,8 @@ var errConnectionNotFound = &statusError{ErrorMessage: "connection not found", c
 // APIConfig holds transport-layer configuration needed by Huma operations.
 type APIConfig struct {
 	DebugEmail bool
+	Version    string
+	Commit     string
 }
 
 // --- Auth context ---
@@ -254,7 +248,8 @@ type APIConfig struct {
 type authContextKey struct{}
 
 type authUser struct {
-	ID string
+	ID   string
+	Nick string
 }
 
 // WithAuthUser stores the authenticated user in the context.
@@ -271,6 +266,17 @@ func userFromContext(ctx context.Context) (*authUser, bool) {
 }
 
 var errUnauthorized = &statusError{ErrorMessage: "unauthorized", code: http.StatusUnauthorized}
+
+// errInternal is the generic 500 for unmapped service failures, matching the
+// legacy transport's "internal error".
+var errInternal = &statusError{ErrorMessage: "internal error", code: http.StatusInternalServerError}
+
+// Shared legacy error messages (the wire format must stay byte-identical).
+const (
+	msgChatNotFound = "chat not found"
+	msgNotMember    = "not a member"
+	msgUnauthorized = "unauthorized"
+)
 
 // AuthMiddleware validates the Bearer token and, on success, stores the user
 // in the context for downstream handlers.
@@ -293,8 +299,10 @@ func AuthMiddleware(st *store.Store) func(ctx huma.Context, next func(huma.Conte
 
 		token := strings.TrimPrefix(ctx.Header("Authorization"), "Bearer ")
 		if token == "" {
-			ctx.SetStatus(http.StatusUnauthorized)
+			// Header must precede SetStatus: the adapter commits headers on
+			// SetStatus, and net/http ignores later header writes.
 			ctx.SetHeader("Content-Type", "application/json")
+			ctx.SetStatus(http.StatusUnauthorized)
 			ctx.BodyWriter().Write([]byte(`{"error":"unauthorized"}`)) //nolint:errcheck,gosec // best-effort: auth rejection
 
 			return
@@ -302,13 +310,13 @@ func AuthMiddleware(st *store.Store) func(ctx huma.Context, next func(huma.Conte
 
 		user, ok := st.GetUserByToken(ctx.Context(), token)
 		if !ok || time.Now().After(user.TokenExpiresAt) {
-			ctx.SetStatus(http.StatusUnauthorized)
 			ctx.SetHeader("Content-Type", "application/json")
+			ctx.SetStatus(http.StatusUnauthorized)
 			ctx.BodyWriter().Write([]byte(`{"error":"unauthorized"}`)) //nolint:errcheck,gosec // best-effort: auth rejection
 
 			return
 		}
 
-		next(huma.WithValue(ctx, authContextKey{}, &authUser{ID: user.ID}))
+		next(huma.WithValue(ctx, authContextKey{}, &authUser{ID: user.ID, Nick: user.Nick}))
 	}
 }
