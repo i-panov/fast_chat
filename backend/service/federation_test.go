@@ -309,3 +309,69 @@ func TestSyncFederated(t *testing.T) {
 		t.Errorf("expected no deleted messages, got %v", resp.DeletedMessages)
 	}
 }
+
+// TestCreateFederatedChatBroadcastsChatCreated guards the realtime fan-out:
+// every local member must receive the chat_created SSE event when a remote
+// server creates a chat (regression: the broadcast was lost in the A5 move).
+func TestCreateFederatedChatBroadcastsChatCreated(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+
+	members := []string{"a:loc", "b:rem"}
+	channels := make([]chan sse.Event, 0, len(members))
+	conns := make([]*sse.Connection, 0, len(members))
+
+	for _, member := range members {
+		connID := "conn-" + member
+		conn := s.hub.Register(connID)
+
+		if err := s.hub.Authenticate(connID, member, "t", time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+
+		conns = append(conns, conn)
+		channels = append(channels, conn.Channel)
+	}
+
+	defer func() {
+		for i, conn := range conns {
+			s.hub.Unregister("conn-"+members[i], conn)
+		}
+	}()
+
+	view, already, err := s.CreateFederatedChat(ctx, "c-broadcast", members, "rem", "loc")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if already {
+		t.Fatal("expected first creation to be new")
+	}
+
+	for _, ch := range channels {
+		select {
+		case evt := <-ch:
+			if evt.Event != "chat_created" {
+				t.Fatalf("event = %q, want chat_created", evt.Event)
+			}
+
+			data, ok := evt.Data.(ChatView)
+			if !ok || data.ID != view.ID {
+				t.Fatalf("data = %v, want ChatView with id %q", evt.Data, view.ID)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("expected chat_created event on member channel")
+		}
+	}
+
+	// Idempotent recreation must not broadcast again.
+	if _, already, err := s.CreateFederatedChat(ctx, "c-broadcast", members, "rem", "loc"); err != nil || !already {
+		t.Fatalf("expected idempotent recreation, err=%v already=%v", err, already)
+	}
+
+	select {
+	case evt := <-channels[0]:
+		t.Fatalf("unexpected event after idempotent call: %v", evt)
+	case <-time.After(50 * time.Millisecond):
+	}
+}

@@ -16,13 +16,13 @@ import (
 
 	"fast_chat/config"
 	"fast_chat/federation"
-	"fast_chat/handler"
-	"fast_chat/huma"
+	"fast_chat/internal/httputil"
 	"fast_chat/push"
 	"fast_chat/ratelimit"
 	"fast_chat/service"
 	"fast_chat/sse"
 	"fast_chat/store"
+	"fast_chat/transport"
 )
 
 func corsMiddleware(origin string) func(http.Handler) http.Handler {
@@ -80,7 +80,7 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(wrapped, r)
 
 		elapsed := time.Since(start)
-		id := handler.GetRequestID(r.Context())
+		id := httputil.GetRequestID(r.Context())
 
 		level := slog.LevelInfo
 		if wrapped.status >= http.StatusBadRequest {
@@ -136,31 +136,33 @@ func (s *statusWriter) Flush() {
 	}
 }
 
-// newHumaTransport mounts the Huma v2 pilot (all /api/* domains) in front of
-// the legacy stdlib mux and returns the combined handler. Requests served by
-// Huma never reach the legacy mux; everything else falls through unchanged.
-func newHumaTransport(
+// newHumaTransport mounts the Huma v2 transport (all /api/* domains) in front
+// of the legacy stdlib mux and returns the combined handler. Only health
+// probes and the federation well-known endpoint remain on the legacy mux.
+func newTransport(
 	legacyMux *http.ServeMux,
 	hub *sse.Hub,
 	st *store.Store,
-	handlers *handler.Handler,
+	svc *service.Service,
 	cfg *config.Config,
 	fedManager *federation.Manager,
+	fedClient *federation.Client,
+	pushService *push.Service,
 	ipExtractor *ratelimit.ClientIPExtractor,
 	sendCodeRL, verifyCodeRL, registerRL, sseAuthRL *ratelimit.RateLimiter,
 ) http.Handler {
 
-	humaPilot := huma.NewPilot(&huma.PilotDeps{
-		Hub:        hub,
-		Store:      st,
-		Svc:        handlers.Service(),
-		Legacy:     handlers,
-		Cfg:        cfg,
-		FedManager: fedManager,
-		PushSender: handlers,
-		Version:    version,
-		Commit:     commit,
-		RateLimiters: &huma.RateLimiters{
+	humaAPI := transport.New(&transport.Deps{
+		Hub:           hub,
+		Store:         st,
+		Svc:           svc,
+		Cfg:           cfg,
+		FedManager:    fedManager,
+		FedClient:     fedClient,
+		PushPublicKey: func() (string, bool) { return pushService.PublicKey(), true },
+		Version:       version,
+		Commit:        commit,
+		RateLimiters: &transport.RateLimiters{
 			Extractor:  ipExtractor,
 			SendCode:   sendCodeRL,
 			VerifyCode: verifyCodeRL,
@@ -169,21 +171,38 @@ func newHumaTransport(
 		},
 	})
 
-	return humaPilot.FallbackHandler(legacyMux)
+	return humaAPI.FallbackHandler(legacyMux)
 }
 
 // registerRoutes wires all HTTP handlers onto the mux. The per-route rate
 // limiters are created here so main() can close them on shutdown.
+// keyStatus is the shared health-probe JSON key.
+const keyStatus = "status"
+
 func registerRoutes(
 	mux *http.ServeMux,
-	handlers *handler.Handler,
 	fedManager *federation.Manager,
+	st *store.Store,
 ) {
 
 	// Health probes: no auth and no per-route rate limiter (used by
 	// orchestrators). The global generalRL still applies at the outer layer.
-	mux.HandleFunc("GET /healthz", handler.HealthzHandler)
-	mux.HandleFunc("GET /readyz", handlers.ReadinessHandler)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{keyStatus: "ok"})
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if err := st.Ping(); err != nil {
+			slog.Error("readiness check failed", "err", err)
+			httputil.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{
+				keyStatus: "error",
+				"message": "database unavailable",
+			})
+
+			return
+		}
+
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{keyStatus: "ready"})
+	})
 
 	// All /api/* domains are served by the Huma v2 transport (see humaAPI):
 	// auth, SSE, config, users/keys, push, chats, messages, threads, files,
@@ -276,7 +295,8 @@ func main() {
 	}
 
 	hub := sse.NewHub(service.TypingThrottleInterval * 5)
-	handlerInstance := handler.New(st, cfg, fedManager, pushService, hub)
+	svc := service.New(st, cfg, hub, pushService)
+	fedClient := federation.NewClient(fedManager, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout)
 
 	ipExtractor := ratelimit.NewClientIPExtractor(cfg.Server.TrustedProxies)
 
@@ -286,13 +306,12 @@ func main() {
 	sseAuthRL := ratelimit.New(60, time.Minute, 10000)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, handlerInstance, fedManager)
+	registerRoutes(mux, fedManager, st)
 
-	// Huma v2 transport wraps the stdlib mux: every /api/* domain is served
-	// by Huma; only health probes and the well-known endpoint remain on the
-	// legacy mux, reached via the fallback handler.
-	humaAPI := newHumaTransport(mux, hub, st, handlerInstance, cfg, fedManager, ipExtractor,
-		sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
+	// The Huma v2 transport serves every /api/* domain; only health probes
+	// and the well-known endpoint remain on the legacy mux.
+	humaAPI := newTransport(mux, hub, st, svc, cfg, fedManager, fedClient,
+		pushService, ipExtractor, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
 
 	// Static file serving for production frontend build
 	absStaticDir := resolveStaticDir(cfg.Server.StaticDir)
@@ -303,7 +322,7 @@ func main() {
 
 	server := &http.Server{
 		Addr: addr,
-		Handler: handler.RequestIDMiddleware(
+		Handler: httputil.RequestIDMiddleware(
 			requestLogMiddleware(
 				securityHeadersMiddleware(
 					corsMiddleware(cfg.CORS.Origin)(
@@ -320,7 +339,7 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	runServer(server, fedManager, handlerInstance, st, generalRL, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
+	runServer(server, fedManager, fedClient, st, generalRL, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
 }
 
 // runServer blocks until SIGINT/SIGTERM, then drains in-flight handlers
@@ -328,7 +347,7 @@ func main() {
 func runServer(
 	server *http.Server,
 	fedManager *federation.Manager,
-	handlerInstance *handler.Handler,
+	fedClient *federation.Client,
 	st *store.Store,
 	generalRL, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL *ratelimit.RateLimiter,
 ) {
@@ -365,7 +384,7 @@ func runServer(
 
 	fedManager.Close()
 
-	handlerInstance.Close()
+	fedClient.CloseWait()
 
 	st.Close()
 
@@ -405,7 +424,10 @@ func spaFallbackMiddleware(staticDir string) func(http.Handler) http.Handler {
 			}
 
 			path := r.URL.Path
-			if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/.well-known/") {
+			isAPI := strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/.well-known/")
+			isProbe := path == "/healthz" || path == "/readyz"
+
+			if isAPI || isProbe {
 				next.ServeHTTP(w, r)
 
 				return

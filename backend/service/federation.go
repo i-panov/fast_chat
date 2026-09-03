@@ -116,7 +116,14 @@ func (s *Service) CreateFederatedChat(
 		return ChatView{}, false, err
 	}
 
-	return s.EnrichChat(ctx, chat), false, nil
+	// Realtime fan-out is part of this use case (legacy parity): every local
+	// member must learn about the chat over SSE without waiting for a sync.
+	enriched := s.EnrichChat(ctx, chat)
+	for _, memberID := range chat.Members {
+		s.hub.Send(memberID, sse.Event{Event: eventChatCreated, Data: enriched})
+	}
+
+	return enriched, false, nil
 }
 
 // SearchFederatedUsers returns the public users matching query for a remote

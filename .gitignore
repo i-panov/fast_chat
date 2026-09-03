@@ -19,3 +19,6 @@ KODA.md
 backend/bin/
 .codeql/
 coverage/
+
+# Backend build artifacts
+backend/fast_chat

@@ -4,11 +4,23 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+
+	"fast_chat/config"
+	"fast_chat/federation"
+	"fast_chat/internal/httputil"
+	"fast_chat/model"
 	"fast_chat/ratelimit"
+	"fast_chat/service"
+	"fast_chat/sse"
+	"fast_chat/store"
+	"fast_chat/transport"
 )
 
 func newTestRateLimiter(limit int, window time.Duration) *ratelimit.RateLimiter {
@@ -151,5 +163,123 @@ func TestRequestLogMiddlewarePreservesFlusher(t *testing.T) {
 	}
 	if !rec.Flushed {
 		t.Error("expected the flush to reach the underlying writer")
+	}
+}
+
+// TestFullMiddlewareChainIntegration exercises the exact outer middleware
+// chain assembled in main() (request ID → request log → security headers →
+// CORS → general rate limit → SPA fallback) on top of the Huma transport with
+// its legacy-mux fallback. It verifies cross-cutting concerns on real traffic.
+func TestFullMiddlewareChainIntegration(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.Message{}, &model.Thread{}, &model.File{},
+		&model.MessageFile{}, &model.DeletedMessage{},
+		&model.DeletedChat{}, &model.PushSubscription{},
+		&model.MessageReadStatus{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Server:  config.ServerConfig{Domain: "localhost:8080", Port: 8080},
+		CORS:    config.CORSConfig{Origin: "*"},
+		Auth:    config.AuthConfig{TokenExpiry: time.Hour, TokenExpiryWarning: 5 * time.Minute},
+		Uploads: config.UploadsConfig{Dir: t.TempDir()},
+	}
+
+	hub := sse.NewHub(time.Minute)
+	st := store.New(db)
+	svc := service.New(st, cfg, hub, nil)
+
+	key, err := federation.LoadOrGenerateKeys(filepath.Join(t.TempDir(), "fed.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fm := federation.New(key, cfg.Server.Domain, "http", 5)
+	api := transport.New(&transport.Deps{
+		Hub:           hub,
+		Store:         st,
+		Svc:           svc,
+		Cfg:           cfg,
+		FedManager:    fm,
+		FedClient:     federation.NewClient(fm, cfg.Server.Domain, "http", 5),
+		PushPublicKey: func() (string, bool) { return "", false },
+	})
+
+	legacyMux := http.NewServeMux()
+	legacyMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	rl := newTestRateLimiter(5, time.Minute)
+	extractor := ratelimit.NewClientIPExtractor(nil)
+
+	root := httputil.RequestIDMiddleware(
+		requestLogMiddleware(
+			securityHeadersMiddleware(
+				corsMiddleware("*")(
+					rateLimitMiddleware(rl, extractor)(
+						spaFallbackMiddleware(t.TempDir())(api.FallbackHandler(legacyMux)),
+					),
+				),
+			),
+		),
+	)
+
+	do := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, http.NoBody)
+		req.Header.Set("X-Request-ID", "integration-req-1")
+		root.ServeHTTP(rec, req)
+
+		return rec
+	}
+
+	// Migrated API: Huma serves /api/config with all cross-cutting headers.
+	rec := do("/api/config")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("api/config: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if got := rec.Header().Get("X-Request-ID"); got != "integration-req-1" {
+		t.Errorf("X-Request-ID = %q, want incoming id echoed", got)
+	}
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("CORS header = %q", got)
+	}
+
+	for _, header := range []string{"X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy", "X-XSS-Protection"} {
+		if rec.Header().Get(header) == "" {
+			t.Errorf("missing security header %s", header)
+		}
+	}
+
+	// Legacy mux fallback: health probes stay reachable.
+	rec = do("/healthz")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz: expected 200, got %d", rec.Code)
+	}
+
+	if got := rec.Header().Get("X-Request-ID"); got != "integration-req-1" {
+		t.Errorf("healthz X-Request-ID = %q", got)
+	}
+
+	// General rate limit trips the whole chain: 3 allowed, the 4th is 429.
+	for range 3 {
+		if rec := do("/api/config"); rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 within limit, got %d", rec.Code)
+		}
+	}
+
+	if rec := do("/api/config"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after limit, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
