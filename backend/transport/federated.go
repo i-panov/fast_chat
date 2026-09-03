@@ -231,7 +231,7 @@ func registerFederatedSync(api huma.API, svc *service.Service) {
 }
 
 // federatedChatForSource loads the chat and verifies the request originates
-// from the server that owns it (legacy authorizeFederatedSource).
+// from the server that owns it (pre-migration authorizeFederatedSource).
 func federatedChatForSource(ctx context.Context, st *store.Store, chatID string) (*model.Chat, error) {
 	chat, ok := st.GetChat(ctx, chatID)
 	if !ok {
@@ -280,7 +280,7 @@ func federatedEdit(
 }
 
 // federatedOrInternalError maps federation-domain errors, logging and
-// converting unmapped ones to a 500 (legacy parity).
+// converting unmapped ones to a 500 (pre-migration parity).
 func federatedOrInternalError(err error) error {
 	if se := MapError(err); se != nil {
 		return se

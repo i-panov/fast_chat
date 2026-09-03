@@ -293,7 +293,7 @@ const (
 )
 
 // chatOrInternalError maps chat-domain errors, logging and converting
-// unmapped ones to a 500 (legacy parity).
+// unmapped ones to a 500 (pre-migration parity).
 func chatOrInternalError(err error) error {
 	if se := MapError(err); se != nil {
 		return se
@@ -305,7 +305,7 @@ func chatOrInternalError(err error) error {
 }
 
 // badRequestOrMapped maps a sentinel error if recognized, otherwise returns
-// the legacy fallback message with status 400.
+// the pre-migration fallback message with status 400.
 func badRequestOrMapped(err error, fallbackMessage string) error {
 	if se := MapError(err); se != nil {
 		return se
@@ -317,7 +317,7 @@ func badRequestOrMapped(err error, fallbackMessage string) error {
 }
 
 // requireChatMember loads the chat and verifies membership, mirroring the
-// legacy helper's statuses and messages.
+// pre-migration helper's statuses and messages.
 func requireChatMember(ctx context.Context, svc *service.Service, chatID, userID string) (*model.Chat, error) {
 	chat, err := svc.Chat(ctx, chatID)
 	if err != nil {
@@ -332,7 +332,7 @@ func requireChatMember(ctx context.Context, svc *service.Service, chatID, userID
 }
 
 // requireGroupOwner loads the chat, verifies membership, group type, and
-// ownership — mirroring the legacy helper.
+// ownership — mirroring the pre-migration helper.
 func requireGroupOwner(ctx context.Context, svc *service.Service, chatID, userID string) (*model.Chat, error) {
 	chat, err := requireChatMember(ctx, svc, chatID, userID)
 	if err != nil {

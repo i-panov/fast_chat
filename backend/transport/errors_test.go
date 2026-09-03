@@ -117,7 +117,7 @@ func TestMapError_WrappedSentinel(t *testing.T) {
 }
 
 func TestNewErrorOverride(t *testing.T) {
-	// huma.NewError should produce the legacy error shape after init().
+	// huma.NewError should produce the pre-migration error shape after init().
 	err := huma.NewError(404, "chat not found")
 	if err.GetStatus() != 404 {
 		t.Errorf("status = %d, want 404", err.GetStatus())

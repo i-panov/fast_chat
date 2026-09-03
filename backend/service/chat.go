@@ -64,7 +64,7 @@ type MemberView struct {
 }
 
 // ChatView is the transport-neutral enriched chat descriptor. Its JSON shape
-// matches the legacy handler DTO so SSE events and HTTP payloads stay
+// matches the pre-migration handler DTO so SSE events and HTTP payloads stay
 // byte-identical during the migration.
 type ChatView struct {
 	ID        string       `json:"id"`

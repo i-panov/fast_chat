@@ -99,7 +99,7 @@ func TestTransportSSEMissingConnectionID(t *testing.T) {
 
 	transport.Handler().ServeHTTP(rec, req)
 
-	// Missing connectionId returns 400 to match legacy behavior.
+	// Missing connectionId returns 400 to match pre-migration behavior.
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
@@ -149,14 +149,14 @@ func TestTransportRateLimit(t *testing.T) {
 			continue
 		}
 
-		// Second request from the same IP exceeds the limit; legacy shape is a
+		// Second request from the same IP exceeds the limit; pre-migration shape is a
 		// plain-text 429 from http.Error.
 		if rec.Code != http.StatusTooManyRequests {
 			t.Fatalf("second request: expected 429, got %d: %s", rec.Code, rec.Body.String())
 		}
 
 		if got := rec.Body.String(); got != "too many requests\n" {
-			t.Errorf("429 body = %q, want legacy plain-text form", got)
+			t.Errorf("429 body = %q, want pre-migration plain-text form", got)
 		}
 	}
 }
@@ -165,7 +165,7 @@ func TestTransportMaxBody(t *testing.T) {
 	transport := newTransportTestServer(t)
 
 	// Oversized body (> Huma's built-in 1MB MaxBodyBytes) is rejected before
-	// it can reach the service. Huma answers 413 (legacy: 400).
+	// it can reach the service. Huma answers 413 (pre-migration: 400).
 	big := strings.Repeat("a", 2<<20)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/auth/send-code", strings.NewReader(`{"email":"`+big+`"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -179,7 +179,7 @@ func TestTransportMaxBody(t *testing.T) {
 }
 
 // newFallbackTestServer wires the transport behind FallbackHandler over a
-// legacy mux that fails the test if a migrated route ever reaches it.
+// infra mux that fails the test if a migrated route ever reaches it.
 func newFallbackTestServer(t *testing.T) (http.Handler, *store.Store, *sse.Hub) {
 	t.Helper()
 
@@ -190,18 +190,18 @@ func newFallbackTestServer(t *testing.T) (http.Handler, *store.Store, *sse.Hub) 
 	svc := newTestService(st, hub)
 	transport := New(&Deps{Hub: hub, Store: st, Svc: svc, Cfg: cfg})
 
-	legacyMux := http.NewServeMux()
-	legacyMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		t.Error("request fell through to the legacy transport")
+	infraMux := http.NewServeMux()
+	infraMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("request fell through to the infra transport")
 		w.WriteHeader(http.StatusTeapot)
 	})
 
-	return transport.FallbackHandler(legacyMux), st, hub
+	return transport.FallbackHandler(infraMux), st, hub
 }
 
 // TestFallbackSSEAuthUnknownConnection covers a migrated operation answering a
 // legitimate 404: FallbackHandler must replay the Huma response, not treat it
-// as a route miss and fall through to the legacy mux.
+// as a route miss and fall through to the infra mux.
 func TestFallbackSSEAuthUnknownConnection(t *testing.T) {
 	h, st, _ := newFallbackTestServer(t)
 	user := createTestUser(t, st)
@@ -376,7 +376,7 @@ func TestFallbackSSEPresenceCleanup(t *testing.T) {
 	t.Fatal("presence was not cleaned up after SSE connection closed")
 }
 
-// TestFallbackSSEAuthInvalidToken mirrors the legacy "invalid token is
+// TestFallbackSSEAuthInvalidToken mirrors the pre-migration "invalid token is
 // unauthorized" case for the migrated sse-auth operation.
 func TestFallbackSSEAuthInvalidToken(t *testing.T) {
 	h, _, _ := newFallbackTestServer(t)
@@ -461,7 +461,7 @@ func TestFallbackSSEEventFlow(t *testing.T) {
 	}
 }
 
-// TestFallbackSSEUnauthorizedNoEvents mirrors the legacy guarantee: a
+// TestFallbackSSEUnauthorizedNoEvents mirrors the pre-migration guarantee: a
 // connection that never called sse-auth must not receive hub events.
 func TestFallbackSSEUnauthorizedNoEvents(t *testing.T) {
 	h, st, hub := newFallbackTestServer(t)
@@ -591,7 +591,7 @@ func TestFallbackBufferStreamsThrough(t *testing.T) {
 
 func TestFallbackBufferKeepsMissBuffered(t *testing.T) {
 	// A route-miss response (marker header) stays buffered so nothing reaches
-	// the underlying writer before the legacy transport takes over.
+	// the underlying writer before the infra transport takes over.
 	underlying := newRecordingWriter()
 	buf := newFallbackBuffer(underlying)
 

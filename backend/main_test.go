@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -169,7 +171,7 @@ func TestRequestLogMiddlewarePreservesFlusher(t *testing.T) {
 // TestFullMiddlewareChainIntegration exercises the exact outer middleware
 // chain assembled in main() (request ID → request log → security headers →
 // CORS → general rate limit → SPA fallback) on top of the Huma transport with
-// its legacy-mux fallback. It verifies cross-cutting concerns on real traffic.
+// its infra-mux fallback. It verifies cross-cutting concerns on real traffic.
 func TestFullMiddlewareChainIntegration(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -213,12 +215,19 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 		PushPublicKey: func() (string, bool) { return "", false },
 	})
 
-	legacyMux := http.NewServeMux()
-	legacyMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+	// A fake built frontend so the SPA fallback is active for this test.
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"),
+		[]byte("<!doctype html><html><body><div id=\"root\"></div></body></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	infraMux := http.NewServeMux()
+	infraMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	rl := newTestRateLimiter(5, time.Minute)
+	rl := newTestRateLimiter(7, time.Minute)
 	extractor := ratelimit.NewClientIPExtractor(nil)
 
 	root := httputil.RequestIDMiddleware(
@@ -226,7 +235,7 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 			securityHeadersMiddleware(
 				corsMiddleware("*")(
 					rateLimitMiddleware(rl, extractor)(
-						spaFallbackMiddleware(t.TempDir())(api.FallbackHandler(legacyMux)),
+						spaFallbackMiddleware(staticDir)(api.FallbackHandler(infraMux)),
 					),
 				),
 			),
@@ -270,6 +279,23 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 
 	if got := rec.Header().Get("X-Request-ID"); got != "integration-req-1" {
 		t.Errorf("healthz X-Request-ID = %q", got)
+	}
+
+	// With a built frontend present, backend routes still win over the SPA
+	// shell: /docs must be the API documentation, not the React app.
+	rec = do("/docs")
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "root") {
+		t.Fatalf("/docs must serve the docs page, not the SPA shell (code=%d)", rec.Code)
+	}
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "elements-api") {
+		t.Fatalf("/docs missing elements-api markup: %s", rec.Body.String())
+	}
+
+	// Unknown client-side paths fall back to the SPA shell.
+	rec = do("/chats/42")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "root") {
+		t.Fatalf("SPA fallback broken: code=%d body=%s", rec.Code, rec.Body.String())
 	}
 
 	// General rate limit trips the whole chain: 3 allowed, the 4th is 429.

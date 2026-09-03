@@ -10,11 +10,11 @@ import (
 	"fast_chat/service"
 )
 
-// statusError implements huma.StatusError using the legacy error shape.
-// Huma serializes errors via reflection on exported fields, so the JSON
-// output is `{"error": "<msg>"}` — matching the legacy writeError format.
+// statusError implements huma.StatusError using the pre-migration error
+// shape. Huma serializes errors via reflection on exported fields, so the
+// JSON output is `{"error": "<msg>"}` — matching the old writeError format.
 type statusError struct {
-	ErrorMessage string `doc:"Human-readable error message" json:"error"` //nolint:tagliatelle // legacy `error` key required
+	ErrorMessage string `doc:"Human-readable error message" json:"error"` //nolint:tagliatelle // pre-migration `error` key required
 	code         int
 }
 
@@ -27,13 +27,13 @@ func (e *statusError) GetStatus() int {
 }
 
 func init() {
-	// Override Huma's default RFC 9457 error model with the legacy shape.
+	// Override Huma's default RFC 9457 error model with the pre-migration shape.
 	huma.NewError = func(status int, message string, _ ...error) huma.StatusError {
 		return &statusError{ErrorMessage: message, code: status}
 	}
 }
 
-// newHumaConfig builds a Huma config that mirrors the legacy transport: the
+// newHumaConfig builds a Huma config that mirrors the pre-migration transport: the
 // default `$schema` link transformer is disabled so JSON responses are
 // byte-identical to the old handler output (no `$schema` field).
 func newHumaConfig(title, version string) huma.Config {
@@ -46,9 +46,16 @@ func newHumaConfig(title, version string) huma.Config {
 	// revisit this.)
 	cfg.CreateHooks = nil
 
-	// The OpenAPI spec, docs UI, and schema browser are internal tooling —
-	// they must not be exposed publicly on a chat server.
-	cfg.OpenAPIPath = ""
+	// The OpenAPI spec is served publicly: the server is open source, so the
+	// API surface is public knowledge anyway, and self-documentation is a
+	// feature for client developers.
+	//
+	// DocsPath stays empty — huma's renderer hardcodes a third-party CDN; the
+	// UI is served by registerDocs with vendored assets instead. SchemasPath
+	// stays empty too: it only serves $schema references produced by the link
+	// transformer, which is disabled (pre-migration byte-parity), so the route would
+	// answer null for unknown names and nothing links to it. The Stoplight UI
+	// reads the self-contained /openapi.json.
 	cfg.DocsPath = ""
 	cfg.SchemasPath = ""
 
@@ -56,7 +63,7 @@ func newHumaConfig(title, version string) huma.Config {
 }
 
 // MapError maps a service sentinel error to a Huma status error, mirroring the
-// legacy handler error mappers (chatError, messageError, federateError,
+// pre-migration handler error mappers (chatError, messageError, federateError,
 // writeAuthError). Returns nil for unrecognized errors so the caller can log
 // and return a generic 500.
 func MapError(err error) huma.StatusError { //nolint:ireturn // huma.StatusError is the required interface
@@ -87,7 +94,7 @@ func MapError(err error) huma.StatusError { //nolint:ireturn // huma.StatusError
 }
 
 // mapServerError translates a service error to a Huma status error, defaulting
-// to a generic 500 for unmapped errors (mirroring the legacy transport, which
+// to a generic 500 for unmapped errors (mirroring the pre-migration transport, which
 // logged and wrote 500 "internal error").
 func mapServerError(err error) huma.StatusError { //nolint:ireturn // huma.StatusError is the required interface
 	if se := MapError(err); se != nil {

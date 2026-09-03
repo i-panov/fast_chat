@@ -25,7 +25,7 @@ const maxConcurrentRequests = 16
 // maxResponseBody caps how much of a federated response is read into memory.
 const maxResponseBody = 10 << 20
 
-// retryCount and the exponential backoff base mirror the legacy client.
+// retryCount and the exponential backoff base mirror the pre-migration client.
 const (
 	retryCount     = 3
 	retryBackoffMs = 1000

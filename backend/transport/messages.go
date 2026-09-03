@@ -376,7 +376,7 @@ func registerTyping(api huma.API, svc *service.Service, fed *federation.Client) 
 // --- Shared operation helpers ---
 
 // messageOrInternalError maps message-domain errors, logging and converting
-// unmapped ones to a 500 (legacy parity).
+// unmapped ones to a 500 (pre-migration parity).
 func messageOrInternalError(err error) error {
 	if se := MapError(err); se != nil {
 		return se
@@ -397,7 +397,7 @@ func messageLimit(limit int) int {
 }
 
 // resolveMessageTarget loads the chat for a message operation: direct chat ID
-// or via a thread. Mirrors the legacy SendMessage/EditMessage resolution.
+// or via a thread. Mirrors the pre-migration SendMessage/EditMessage resolution.
 func resolveMessageTarget(ctx context.Context, svc *service.Service, st *store.Store, chatID, threadID, userID string) (*model.Chat, string, error) {
 	if threadID != "" {
 		thread, threadErr := requireThread(ctx, st, threadID)
@@ -421,7 +421,7 @@ func resolveMessageTarget(ctx context.Context, svc *service.Service, st *store.S
 	return chat, "", nil
 }
 
-// requireThread loads a thread or maps to the legacy 404.
+// requireThread loads a thread or maps to the pre-migration 404.
 func requireThread(ctx context.Context, st *store.Store, threadID string) (*model.Thread, error) {
 	thread, ok := st.GetThread(ctx, threadID)
 	if !ok {

@@ -86,7 +86,7 @@ const (
 )
 
 // MessageWithStatus extends a Message with delivery/read metadata shown to
-// the requesting user. Its JSON shape matches the legacy transport DTO.
+// the requesting user. Its JSON shape matches the pre-migration transport DTO.
 type MessageWithStatus struct {
 	model.Message
 	DeliveryStatus string   `json:"deliveryStatus,omitempty"`
@@ -151,7 +151,7 @@ func ParseEditPayload(req *DecodedEditRequest, storedEncrypted bool, storedPaylo
 	}
 
 	// Validate only what the client sent. Fallbacks from the store were
-	// already accepted when the message was created, so legacy values
+	// already accepted when the message was created, so values
 	// must not block edits of the text/location.
 	if req.Encrypted != nil || req.EncryptedPayload != nil {
 		if err := ValidateEncryptedPayload(encrypted, payload); err != nil {

@@ -119,10 +119,10 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 	})
 }
 
-// mimeCacheMaxAge matches the legacy file cache duration (one day).
+// mimeCacheMaxAge matches the pre-migration file cache duration (one day).
 const mimeCacheMaxAge = 86400
 
-// uploadFile mirrors the legacy multipart upload flow: cap, parse, stage,
+// uploadFile mirrors the pre-migration multipart upload flow: cap, parse, stage,
 // dedup, persist.
 func uploadFile(
 	ctx context.Context,

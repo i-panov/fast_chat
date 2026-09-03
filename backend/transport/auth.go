@@ -20,9 +20,9 @@ const bearerScheme = "bearer"
 //
 // Request bodies intentionally carry no format/maxLength constraints: input
 // validation lives in the service layer so responses stay byte-identical to
-// the legacy transport (e.g. whitespace-padded emails normalize to 200, an
+// the pre-migration transport (e.g. whitespace-padded emails normalize to 200, an
 // over-long code yields 401 "invalid code"). Fields are optional so missing
-// fields reach the service and map to the legacy 400/401 statuses instead of
+// fields reach the service and map to the pre-migration 400/401 statuses instead of
 // Huma's 422.
 
 type sendCodeInput struct {
@@ -189,7 +189,7 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 }
 
 // registerSSEAuth adds the SSE connection-authentication operation. It mirrors
-// the legacy handler.SSEAuth: token → 401, unknown connection → 404.
+// the pre-migration handler.SSEAuth: token → 401, unknown connection → 404.
 func registerSSEAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.Hub) {
 	huma.Register(api, huma.Operation{
 		OperationID: "sse-auth",
@@ -268,10 +268,10 @@ func userFromContext(ctx context.Context) (*authUser, bool) {
 var errUnauthorized = &statusError{ErrorMessage: "unauthorized", code: http.StatusUnauthorized}
 
 // errInternal is the generic 500 for unmapped service failures, matching the
-// legacy transport's "internal error".
+// pre-migration transport's "internal error".
 var errInternal = &statusError{ErrorMessage: "internal error", code: http.StatusInternalServerError}
 
-// Shared legacy error messages (the wire format must stay byte-identical).
+// Shared error messages (the wire format must stay byte-identical to the pre-migration transport).
 const (
 	msgChatNotFound = "chat not found"
 	msgNotMember    = "not a member"

@@ -23,10 +23,11 @@ import (
 
 // domainTestServer bundles the collaborators a domain test needs.
 type domainTestServer struct {
-	Handler http.Handler
-	Store   *store.Store
-	Cfg     *config.Config
-	Fed     *federation.Manager
+	Handler   http.Handler
+	Store     *store.Store
+	Cfg       *config.Config
+	Fed       *federation.Manager
+	Transport *Transport
 }
 
 // newDomainTestServer builds a full transport (all domains) wired with real
@@ -59,7 +60,7 @@ func newDomainTestServer(t *testing.T) *domainTestServer {
 		Commit:        "test-commit",
 	})
 
-	return &domainTestServer{Handler: transport.Handler(), Store: st, Cfg: cfg, Fed: fm}
+	return &domainTestServer{Handler: transport.Handler(), Store: st, Cfg: cfg, Fed: fm, Transport: transport}
 }
 
 // bearerReq builds an authenticated JSON request.
@@ -143,7 +144,7 @@ func TestPublicKeyFlow(t *testing.T) {
 	st := ts.Store
 	user := createTestUser(t, st)
 
-	// Invalid key is rejected with the legacy message.
+	// Invalid key is rejected with the pre-migration message.
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/public-key", user.Token, `{"publicKey":"not-base64!!"}`))
 	if rec.Code != http.StatusBadRequest {
@@ -222,14 +223,14 @@ func TestPushEndpoints(t *testing.T) {
 	st := ts.Store
 	user := createTestUser(t, st)
 
-	// No push sender configured in tests beyond the legacy nil → 404.
+	// No push sender configured in tests: nil PushPublicKey → 404.
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, bearerReq(t, http.MethodGet, "/api/push/vapid-public-key", "", ""))
 	if rec.Code != http.StatusOK && rec.Code != http.StatusNotFound {
 		t.Fatalf("unexpected vapid status %d", rec.Code)
 	}
 
-	// Missing fields → legacy message.
+	// Missing fields → pre-migration message.
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/push/subscribe", user.Token, `{"endpoint":"https://fcm.googleapis.com/fcm/send/x","p256dh":"","auth":""}`))
 	if rec.Code != http.StatusBadRequest {
@@ -284,7 +285,7 @@ func TestCreatePrivateChatAndMessages(t *testing.T) {
 		t.Fatal("expected chat id in response")
 	}
 
-	// Empty message is rejected by the service with the legacy message.
+	// Empty message is rejected by the service with the pre-migration message.
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/chats/"+chatID+"/messages", alice.Token, `{"id":"m1","text":""}`))
 	if rec.Code != http.StatusBadRequest {
@@ -503,7 +504,7 @@ func TestFederatedEndpointRequiresSignature(t *testing.T) {
 	h.ServeHTTP(rec, bearerReq(t, http.MethodGet, "/api/federated/users/search?q=alice", "", ""))
 
 	// No federation headers: the transport middleware rejects with 401 and the
-	// legacy error shape.
+	// pre-migration error shape.
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -562,7 +563,7 @@ func TestFederatedSignedRequestFlow(t *testing.T) {
 		t.Errorf("alice not found in remote search results: %v", users)
 	}
 
-	// A bad signature is rejected with the legacy 401 shape.
+	// A bad signature is rejected with the pre-migration 401 shape.
 	req = bearerReq(t, http.MethodGet, uri, "", "")
 	req.Header.Set("X-Federation-Server", "remote.example.com")
 	req.Header.Set("X-Federation-Signature", "badsig")
@@ -628,7 +629,7 @@ func TestOversizedFederatedBodyRejected(t *testing.T) {
 	h, fm := ts.Handler, ts.Fed
 
 	// A signed federated request whose body exceeds the 10 MiB signature cap
-	// must be rejected with 413 (legacy parity), not panic or hang.
+	// must be rejected with 413 (pre-migration parity), not panic or hang.
 	timestamp := time.Now().Unix()
 	uri := "/api/federated/chats"
 	big := bytes.Repeat([]byte("a"), (10<<20)+1024)
@@ -806,16 +807,27 @@ func TestServeFileRejectsNonMember(t *testing.T) {
 	}
 }
 
-func TestOpenAPIEndpointsDisabled(t *testing.T) {
+func TestOpenAPIEndpointsServed(t *testing.T) {
 	ts := newDomainTestServer(t)
 
-	for _, path := range []string{"/openapi.json", "/openapi.yaml", "/openapi-3.0.json", "/docs", "/schemas"} {
+	// The API is open source: the spec and docs are public by design.
+	for _, path := range []string{"/openapi.json", "/openapi-3.0.json", "/docs"} {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, http.NoBody)
 		rec := httptest.NewRecorder()
 		ts.Handler.ServeHTTP(rec, req)
 
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("GET %s = %d, want 404 (must not be exposed)", path, rec.Code)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", path, rec.Code)
 		}
+	}
+
+	// The /schemas/* route is disabled: it only served $schema references from
+	// the (disabled) link transformer and answered null for unknown names.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/schemas/openapi.json", http.NoBody)
+	rec := httptest.NewRecorder()
+	ts.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /schemas/openapi.json = %d, want 404 (route disabled)", rec.Code)
 	}
 }

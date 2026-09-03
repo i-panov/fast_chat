@@ -116,7 +116,7 @@ func (s *Service) CreateFederatedChat(
 		return ChatView{}, false, err
 	}
 
-	// Realtime fan-out is part of this use case (legacy parity): every local
+	// Realtime fan-out is part of this use case (pre-migration parity): every local
 	// member must learn about the chat over SSE without waiting for a sync.
 	enriched := s.EnrichChat(ctx, chat)
 	for _, memberID := range chat.Members {

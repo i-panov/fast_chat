@@ -35,7 +35,7 @@ func TestSendCodeValidation(t *testing.T) {
 
 	api.Adapter().ServeHTTP(rec, req)
 
-	// Input validation lives in the service layer (legacy parity): an
+	// Input validation lives in the service layer (pre-migration parity): an
 	// unparsable email maps to 400 "invalid email", not Huma's 422.
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
@@ -136,7 +136,7 @@ func TestErrorResponseLegacyShape(t *testing.T) {
 	api, _ := newAuthTestServer(t, &APIConfig{})
 
 	// An invalid/nonexistent setup token maps to ErrInvalidSetupToken → 401
-	// with the legacy {"error": "..."} shape.
+	// with the pre-migration {"error": "..."} shape.
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/auth/complete-registration", strings.NewReader(`{"setupToken":"nope","nick":"alice"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

@@ -1,5 +1,5 @@
 // Package transport provides the Huma v2 HTTP API serving every /api/*
-// domain. It sits in front of a small legacy stdlib mux (health probes and the
+// domain. It sits in front of a small infra mux (health probes and the
 // federation well-known endpoint) via the fallback handler.
 package transport
 
@@ -47,7 +47,7 @@ type Deps struct {
 }
 
 // New builds the Huma transport. The returned http.Handler must be wrapped by
-// FallbackHandler to keep the legacy stdlib mux (health probes, well-known)
+// FallbackHandler to keep the infra mux (health probes, well-known)
 // reachable.
 func New(deps *Deps) *Transport {
 	mux := chi.NewMux()
@@ -61,8 +61,11 @@ func New(deps *Deps) *Transport {
 	mux.NotFound(routeMiss(http.StatusNotFound))
 	mux.MethodNotAllowed(routeMiss(http.StatusMethodNotAllowed))
 
+	// Self-hosted API documentation (no third-party CDN).
+	registerDocs(mux)
+
 	humaConfig := newHumaConfig("Fast Chat", "1.0.0")
-	// Body limits: Huma's per-operation default (1MB) matches the legacy
+	// Body limits: Huma's per-operation default (1MB) matches the pre-migration
 	// maxBody wrapper; the upload operation overrides it with MaxUploadSize.
 	humaConfig.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		bearerScheme: {
@@ -112,12 +115,12 @@ type RateLimiters struct {
 }
 
 // rateLimitMiddleware applies route-specific rate limits before the request
-// reaches a Huma operation, mirroring the legacy per-route limiters.
+// reaches a Huma operation, mirroring the pre-migration per-route limiters.
 // Non-matching routes pass through untouched.
 //
 // Request body size is capped by Huma's built-in MaxBodyBytes (1MB, matching
-// the legacy maxBody wrapper); oversized bodies yield 413 instead of the
-// legacy 400 — a documented deviation.
+// the pre-migration maxBody wrapper); oversized bodies yield 413 instead of the
+// pre-migration 400 — a documented deviation.
 func rateLimitMiddleware(rl *RateLimiters) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -168,8 +171,8 @@ func routeMiss(status int) http.HandlerFunc {
 }
 
 // FallbackHandler serves unmatched requests through the next handler (the
-// legacy stdlib mux with health probes and the well-known endpoint). Requests
-// handled by a Huma operation never reach it.
+// infra mux with health probes and the well-known endpoint). Requests handled
+// by a Huma operation never reach it.
 func (t *Transport) FallbackHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buf := newFallbackBuffer(w)
@@ -177,7 +180,7 @@ func (t *Transport) FallbackHandler(next http.Handler) http.Handler {
 
 		if buf.miss {
 			// No Huma route matched — discard the buffered miss response and
-			// let the legacy transport serve the request from scratch.
+			// let the infra mux serve the request from scratch.
 			buf.flushUnsent(next, r)
 
 			return
@@ -194,7 +197,7 @@ func (t *Transport) FallbackHandler(next http.Handler) http.Handler {
 // fallback decision can be made from the route-miss marker instead of the
 // response status (a migrated operation may legitimately answer 404/405).
 //
-// It owns a separate header map so Huma's headers never leak into the legacy
+// It owns a separate header map so Huma's headers never leak into the
 // response on fall-through. The body is NOT buffered: as soon as the response
 // begins (first WriteHeader), the marker decides the fate — a route miss
 // stays buffered (a tiny 404/405 body), anything else is replayed to the
@@ -300,7 +303,7 @@ func (f *fallbackBuffer) flush() {
 }
 
 func (f *fallbackBuffer) flushUnsent(next http.Handler, r *http.Request) {
-	// Nothing was written to the underlying writer; the legacy handler starts
+	// Nothing was written to the underlying writer; the next handler starts
 	// with a clean slate (its own headers and status).
 	next.ServeHTTP(f.ResponseWriter, r)
 }
@@ -357,7 +360,7 @@ func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Stor
 	hctx.SetHeader("Access-Control-Allow-Origin", cfg.CORS.Origin)
 	hctx.SetStatus(http.StatusOK)
 
-	// Register the connection BEFORE writing the connected event (legacy
+	// Register the connection BEFORE writing the connected event (pre-migration
 	// parity): the client reacts to connected by calling /api/auth/sse-auth,
 	// which would 404 if the connection is not registered yet.
 	conn := hub.Register(connectionID)
@@ -456,11 +459,11 @@ func writeComment(w io.Writer, flusher http.Flusher, comment string) {
 const federationScheme = "federationSignature"
 
 // federationTimestampToleranceSec bounds federation signature timestamps,
-// matching the legacy transport.
+// matching the pre-migration transport.
 const federationTimestampToleranceSec = 300
 
 // requestContextKey stores the raw *http.Request/*http.ResponseWriter for
-// operations that need legacy-style access (multipart uploads).
+// operations that need direct request access (multipart uploads).
 type (
 	requestContextKey struct{}
 	responseWriterKey struct{}
@@ -489,7 +492,7 @@ func requestStashMiddleware(ctx huma.Context, next func(huma.Context)) {
 
 // FederatedAuthMiddleware verifies federation signature headers on operations
 // that declare the federation security scheme. On success the verified source
-// server is stashed in the request context (mirroring the legacy middleware
+// server is stashed in the request context (mirroring the pre-migration middleware
 // contract where handlers read X-Federation-Server directly).
 func FederatedAuthMiddleware(fm *federation.Manager) func(ctx huma.Context, next func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
@@ -532,7 +535,7 @@ func FederatedAuthMiddleware(fm *federation.Manager) func(ctx huma.Context, next
 // the request signature, capping the signature body at 10 MiB. It mirrors
 // handler.VerifyFederatedRequest minus the response writing (the transport
 // owns the wire response). tooLarge reports a body over the cap so the caller
-// can answer 413 like the legacy transport.
+// can answer 413 like the pre-migration transport.
 func verifyFederatedRequest(fm *federation.Manager, w http.ResponseWriter, r *http.Request) (bool, bool) {
 	serverDomain := r.Header.Get("X-Federation-Server")
 	signature := r.Header.Get("X-Federation-Signature")

@@ -239,7 +239,7 @@ func registerKeyBackup(api huma.API, st *store.Store) {
 	})
 }
 
-// maxKeyBackupLen bounds the accepted backup blob size, matching the legacy
+// maxKeyBackupLen bounds the accepted backup blob size, matching the pre-migration
 // transport (a base64 blob holding two 32-byte keys plus salt/nonce).
 const maxKeyBackupLen = 4 << 10
 
@@ -309,7 +309,7 @@ type keyBackupOutput struct {
 const pathKeyBackup = "/api/users/key-backup"
 
 // searchFederated handles "nick:domain" search queries, proxying to the
-// remote server when needed (mirrors the legacy searchFederated handler).
+// remote server when needed (mirrors the pre-migration searchFederated handler).
 func searchFederated(
 	ctx context.Context,
 	st *store.Store,

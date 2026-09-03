@@ -140,10 +140,10 @@ func (s *statusWriter) Flush() {
 }
 
 // newHumaTransport mounts the Huma v2 transport (all /api/* domains) in front
-// of the legacy stdlib mux and returns the combined handler. Only health
-// probes and the federation well-known endpoint remain on the legacy mux.
+// of the infra mux and returns the combined handler. Only health probes and
+// the federation well-known endpoint live on the infra mux.
 func newTransport(
-	legacyMux *http.ServeMux,
+	infraMux *http.ServeMux,
 	hub *sse.Hub,
 	st *store.Store,
 	svc *service.Service,
@@ -174,11 +174,11 @@ func newTransport(
 		},
 	})
 
-	return humaAPI.FallbackHandler(legacyMux)
+	return humaAPI.FallbackHandler(infraMux)
 }
 
-// registerRoutes wires all HTTP handlers onto the mux. The per-route rate
-// limiters are created here so main() can close them on shutdown.
+// registerRoutes wires the infra routes (health probes, federation
+// well-known) onto the mux.
 // keyStatus is the shared health-probe JSON key.
 const keyStatus = "status"
 
@@ -324,7 +324,7 @@ func main() {
 	registerRoutes(mux, fedManager, st)
 
 	// The Huma v2 transport serves every /api/* domain; only health probes
-	// and the well-known endpoint remain on the legacy mux.
+	// and the well-known endpoint remain on the infra mux.
 	humaAPI := newTransport(mux, hub, st, svc, cfg, fedManager, fedClient,
 		pushService, ipExtractor, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
 
@@ -439,10 +439,18 @@ func spaFallbackMiddleware(staticDir string) func(http.Handler) http.Handler {
 			}
 
 			path := r.URL.Path
-			isAPI := strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/.well-known/")
-			isProbe := path == "/healthz" || path == "/readyz"
+			// Backend-owned paths must reach their handlers; the SPA shell is
+			// only for client-side routes. This list mirrors the routes owned
+			// by the Huma transport (/api, /docs, /openapi) and the infra mux
+			// (health probes, federation well-known).
+			isBackend := strings.HasPrefix(path, "/api/") ||
+				strings.HasPrefix(path, "/.well-known/") ||
+				strings.HasPrefix(path, "/docs") ||
+				strings.HasPrefix(path, "/openapi") ||
+				path == "/healthz" ||
+				path == "/readyz"
 
-			if isAPI || isProbe {
+			if isBackend {
 				next.ServeHTTP(w, r)
 
 				return
