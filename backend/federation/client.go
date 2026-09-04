@@ -149,6 +149,14 @@ func (c *Client) Request(ctx context.Context, method, urlStr string, body any) (
 	return nil, fmt.Errorf("federated request failed after retries: %w", lastErr)
 }
 
+// SetHTTPClient replaces the HTTP client used for signed requests. Same
+// rationale as Manager.SetHTTPClient: tests that run federation peers on
+// loopback httptest servers must bypass the SSRF-safe dialer. Not safe for
+// concurrent use with in-flight requests; call before any traffic starts.
+func (c *Client) SetHTTPClient(h *http.Client) {
+	c.http = h
+}
+
 // Post queues a fire-and-forget signed POST to remoteServer. Empty remote
 // servers are a no-op.
 func (c *Client) Post(ctx context.Context, remoteServer, path string, body any) {

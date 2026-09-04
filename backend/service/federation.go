@@ -34,9 +34,11 @@ const (
 )
 
 // UserIDBelongsToServer reports whether userID is a federated ID whose domain
-// suffix matches serverDomain.
+// suffix matches serverDomain. The domain starts after the FIRST colon so
+// that host:port domains ("nick:localhost:8080") parse consistently with
+// RemoteServerFromID.
 func UserIDBelongsToServer(userID, serverDomain string) bool {
-	idx := strings.LastIndex(userID, ":")
+	idx := strings.Index(userID, ":")
 	if idx < 0 || idx == len(userID)-1 {
 		return false
 	}

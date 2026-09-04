@@ -53,6 +53,11 @@ func TestUserIDBelongsToServer(t *testing.T) {
 		{"trailing:", "remote.test", false},
 		{"nocolon", "", false},
 		{"", "remote.test", false},
+		// Domain names legitimately contain colons (host:port); the domain
+		// starts after the FIRST colon, matching RemoteServerFromID.
+		{"user:localhost:8080", "localhost:8080", true},
+		{"user:127.0.0.1:8081", "127.0.0.1:8081", true},
+		{"user:127.0.0.1:8081", "8081", false},
 	}
 	for _, c := range cases {
 		if got := UserIDBelongsToServer(c.userID, c.server); got != c.want {

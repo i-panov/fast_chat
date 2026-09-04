@@ -75,6 +75,16 @@ func (m *Manager) ServerDomain() string {
 	return m.serverDomain
 }
 
+// SetHTTPClient replaces the client used for well-known key fetches.
+// Production code never needs it: the default SSRF-safe dialer refuses
+// loopback targets, so integration tests that run federation peers on
+// httptest loopback servers must inject a client that can reach them.
+func (m *Manager) SetHTTPClient(c *http.Client) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.client = c
+}
+
 // New creates a new federation manager.
 func New(privateKey *rsa.PrivateKey, serverDomain, scheme string, timeoutSec int) *Manager {
 	mgr := &Manager{
