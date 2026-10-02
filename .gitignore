@@ -22,3 +22,8 @@ coverage/
 
 # Backend build artifacts
 backend/fast_chat
+
+
+.idea/
+.gigaide/
+
