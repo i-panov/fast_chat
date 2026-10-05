@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -451,4 +454,178 @@ func TestShutdownDrainsWithAnOpenSSEStream(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the SSE stream outlived the shutdown")
 	}
+}
+
+// TestServeUntilSignalFailsFastOnABindConflict covers the process that starts
+// without ever listening. The failure used to be logged inside the serving
+// goroutine and runServer then waited on a signal forever, so a port already in
+// use left a live process holding the SQLite file and reporting a healthy PID
+// while nothing answered on it.
+func TestServeUntilSignalFailsFastOnABindConflict(t *testing.T) {
+	// Occupy a port so the bind below cannot succeed.
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer occupied.Close()
+
+	// The teardown runs on this path too, so it needs the same dependencies
+	// production hands it.
+	dir := t.TempDir()
+	st := newTestStore(t, dir)
+	hub := sse.NewHub(time.Minute)
+
+	defer hub.Close()
+
+	fedManager, fedClient := newTestFederation(t, dir)
+
+	// Nothing ever signals: the old code would block here indefinitely.
+	quit := make(chan os.Signal)
+
+	done := make(chan error, 1)
+
+	addr := occupied.Addr().String()
+
+	go func() {
+		done <- serveUntilSignal(
+			func() error { return http.ListenAndServe(addr, http.NotFoundHandler()) },
+			shutdownDeps{
+				server:     &http.Server{Addr: addr, Handler: http.NotFoundHandler()},
+				hub:        hub,
+				fedManager: fedManager,
+				fedClient:  fedClient,
+				store:      st,
+				limiters:   newLimiters(testConfig()),
+				budget:     2 * time.Second,
+			},
+			quit,
+		)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("serveUntilSignal returned nil after failing to bind; the caller would keep running as a zombie")
+		}
+
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			t.Errorf("err = %v, want it to wrap EADDRINUSE", err)
+		}
+
+		if !strings.Contains(err.Error(), occupied.Addr().String()) {
+			t.Errorf("err = %q, want it to name the address it could not bind", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serveUntilSignal never returned: the bind failure was swallowed and the process waited for a signal")
+	}
+}
+
+// TestServeUntilSignalReturnsNilOnShutdown is the other half: a normal stop
+// must not look like a failure, or the process would exit non-zero on every
+// deploy.
+func TestServeUntilSignalReturnsNilOnShutdown(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	st := newTestStore(t, dir)
+	hub := sse.NewHub(time.Minute)
+
+	defer hub.Close()
+
+	fedManager, fedClient := newTestFederation(t, dir)
+
+	srv := &http.Server{Handler: http.NotFoundHandler()}
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- serveUntilSignal(func() error { return srv.Serve(listener) }, shutdownDeps{
+			server:     srv,
+			hub:        hub,
+			fedManager: fedManager,
+			fedClient:  fedClient,
+			store:      st,
+			limiters:   newLimiters(testConfig()),
+			budget:     2 * time.Second,
+		}, make(chan os.Signal))
+	}()
+
+	// Wait for the listener to come up, then stop it the way a signal would.
+	go func() {
+		for range 100 {
+			if conn, err := net.Dial("tcp", listener.Addr().String()); err == nil {
+				_ = conn.Close()
+
+				break
+			}
+
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		_ = srv.Close()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("a normal shutdown reported a failure: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serveUntilSignal never returned after the listener was closed")
+	}
+}
+
+// testConfig is the minimal config the shutdown paths need.
+func testConfig() *config.Config {
+	return &config.Config{
+		Server: config.ServerConfig{Domain: "localhost:8080", Port: 8080},
+		CORS:   config.CORSConfig{Origin: "*"},
+		Auth:   config.AuthConfig{TokenExpiry: 24 * time.Hour, TokenExpiryWarning: 5 * time.Minute},
+		RateLimits: config.RateLimitsConfig{
+			General:    config.RateLimitConfig{Limit: 600, Window: time.Minute},
+			SendCode:   config.RateLimitConfig{Limit: 5, Window: time.Minute},
+			VerifyCode: config.RateLimitConfig{Limit: 5, Window: time.Minute},
+			Register:   config.RateLimitConfig{Limit: 5, Window: time.Hour},
+		},
+	}
+}
+
+// newTestStore opens a file-backed store with the production schema applied.
+func newTestStore(t *testing.T, dir string) *store.Store {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(filepath.Join(dir, "t.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.Message{}, &model.Thread{}, &model.File{},
+		&model.MessageFile{}, &model.DeletedMessage{},
+		&model.DeletedChat{}, &model.PushSubscription{},
+		&model.MessageReadStatus{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	return store.New(db)
+}
+
+// newTestFederation builds the federation pair with keys in dir, which the
+// teardown closes.
+func newTestFederation(t *testing.T, dir string) (*federation.Manager, *federation.Client) {
+	t.Helper()
+
+	fedKey, err := federation.LoadOrGenerateKeys(filepath.Join(dir, "keys"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return federation.New(fedKey, "localhost:8080", "http", 1),
+		federation.NewClient(federation.New(fedKey, "localhost:8080", "http", 1), "localhost:8080", "http", 1)
 }

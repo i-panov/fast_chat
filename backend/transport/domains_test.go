@@ -721,7 +721,7 @@ func TestFileServingSecurityPolicy(t *testing.T) {
 	chatID, _ := decodeBody(t, rec)["chat"].(map[string]any)["id"].(string)
 
 	attach := func(fileID, messageID string) {
-		msg, err := st.AddMessage(context.Background(), chatID, "", alice.ID, alice.Nick, "f", messageID, "", nil, false, "")
+		msg, _, err := st.AddMessage(context.Background(), chatID, "", alice.ID, alice.Nick, "f", messageID, "", nil, false, "")
 		if err != nil {
 			t.Fatal(err)
 		}

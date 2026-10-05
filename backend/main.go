@@ -344,7 +344,10 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	runServer(server, hub, fedManager, fedClient, st, rl)
+	if err := runServer(server, hub, fedManager, fedClient, st, rl); err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // limiters groups the rate limiters from creation to teardown. They travel
@@ -391,6 +394,12 @@ type shutdownDeps struct {
 }
 
 // runServer blocks until SIGINT/SIGTERM, then tears everything down.
+//
+// A failure to bind is returned rather than logged: the caller cannot do
+// anything useful with a process that never served a request but is still
+// running, holding the SQLite file and reporting a live PID to whatever
+// supervises it. Signalling is what ends this, and a container that gets
+// SIGTERM on a failed deploy would otherwise look like a healthy start.
 func runServer(
 	server *http.Server,
 	hub *sse.Hub,
@@ -398,22 +407,11 @@ func runServer(
 	fedClient *federation.Client,
 	st *store.Store,
 	rl *limiters,
-) {
-
+) error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	go func() {
-		slog.Info("server starting", "addr", server.Addr)
-
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server error", "err", err)
-		}
-	}()
-
-	<-quit
-
-	shutdown(shutdownDeps{
+	return serveUntilSignal(server.ListenAndServe, shutdownDeps{
 		server:     server,
 		hub:        hub,
 		fedManager: fedManager,
@@ -421,7 +419,47 @@ func runServer(
 		store:      st,
 		limiters:   rl,
 		budget:     30 * time.Second,
-	}, context.Background())
+	}, quit)
+}
+
+// serveUntilSignal runs the listener and returns once a signal arrives or the
+// listener fails. Either way it tears down first, so a bind failure releases the
+// resources that were already acquired.
+//
+// serve is a parameter so a test can drive a real listener it controls,
+// instead of racing for a free port.
+func serveUntilSignal(serve func() error, deps shutdownDeps, quit <-chan os.Signal) error {
+	slog.Info("server starting", "addr", deps.server.Addr)
+
+	serveErr := make(chan error, 1)
+
+	go func() {
+		if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+
+			return
+		}
+
+		// The listener closed without an error: Shutdown was called.
+		serveErr <- nil
+	}()
+
+	var serveFailure error
+
+	select {
+	case <-quit:
+		slog.Info("shutdown signal received")
+	case serveFailure = <-serveErr:
+		slog.Error("server stopped before serving", "err", serveFailure)
+	}
+
+	shutdown(deps, context.Background())
+
+	if serveFailure != nil {
+		return fmt.Errorf("listen on %s: %w", deps.server.Addr, serveFailure)
+	}
+
+	return nil
 }
 
 // shutdown drains in-flight work and releases resources. The order matters:
