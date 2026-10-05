@@ -152,7 +152,7 @@ func newTransport(
 	fedClient *federation.Client,
 	pushService *push.Service,
 	ipExtractor *ratelimit.ClientIPExtractor,
-	sendCodeRL, verifyCodeRL, registerRL, sseAuthRL *ratelimit.RateLimiter,
+	rl *limiters,
 ) http.Handler {
 
 	humaAPI := transport.New(&transport.Deps{
@@ -167,10 +167,10 @@ func newTransport(
 		Commit:        commit,
 		RateLimiters: &transport.RateLimiters{
 			Extractor:  ipExtractor,
-			SendCode:   sendCodeRL,
-			VerifyCode: verifyCodeRL,
-			Register:   registerRL,
-			SSEAuth:    sseAuthRL,
+			SendCode:   rl.sendCode,
+			VerifyCode: rl.verifyCode,
+			Register:   rl.register,
+			SSEAuth:    rl.sseAuth,
 		},
 	})
 
@@ -189,7 +189,7 @@ func registerRoutes(
 ) {
 
 	// Health probes: no auth and no per-route rate limiter (used by
-	// orchestrators). The global generalRL still applies at the outer layer.
+	// orchestrators). The global rl.general still applies at the outer layer.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{keyStatus: "ok"})
 	})
@@ -310,10 +310,7 @@ func main() {
 
 	ipExtractor := ratelimit.NewClientIPExtractor(cfg.Server.TrustedProxies)
 
-	sendCodeRL := ratelimit.New(cfg.RateLimits.SendCode.Limit, cfg.RateLimits.SendCode.Window, 10000)
-	verifyCodeRL := ratelimit.New(cfg.RateLimits.VerifyCode.Limit, cfg.RateLimits.VerifyCode.Window, 10000)
-	registerRL := ratelimit.New(cfg.RateLimits.Register.Limit, cfg.RateLimits.Register.Window, 10000)
-	sseAuthRL := ratelimit.New(60, time.Minute, 10000)
+	rl := newLimiters(cfg)
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, fedManager, st)
@@ -321,12 +318,10 @@ func main() {
 	// The Huma v2 transport serves every /api/* domain; only health probes
 	// and the well-known endpoint remain on the infra mux.
 	humaAPI := newTransport(mux, hub, st, svc, cfg, fedManager, fedClient,
-		pushService, ipExtractor, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
+		pushService, ipExtractor, rl)
 
 	// Static file serving for production frontend build
 	absStaticDir := resolveStaticDir(cfg.Server.StaticDir)
-
-	generalRL := ratelimit.New(cfg.RateLimits.General.Limit, cfg.RateLimits.General.Window, 10000)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 
@@ -336,7 +331,7 @@ func main() {
 			requestLogMiddleware(
 				securityHeadersMiddleware(
 					corsMiddleware(cfg.CORS.Origin)(
-						rateLimitMiddleware(generalRL, ipExtractor)(
+						rateLimitMiddleware(rl.general, ipExtractor)(
 							spaFallbackMiddleware(absStaticDir)(humaAPI),
 						),
 					),
@@ -349,17 +344,60 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	runServer(server, fedManager, fedClient, st, generalRL, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL)
+	runServer(server, hub, fedManager, fedClient, st, rl)
 }
 
-// runServer blocks until SIGINT/SIGTERM, then drains in-flight handlers
-// and background federation requests before tearing everything down.
+// limiters groups the rate limiters from creation to teardown. They travel
+// together and five of the entries share one type, so passing them as a
+// positional list would let a misordering compile and close the wrong limiter.
+type limiters struct {
+	general    *ratelimit.RateLimiter
+	sendCode   *ratelimit.RateLimiter
+	verifyCode *ratelimit.RateLimiter
+	register   *ratelimit.RateLimiter
+	sseAuth    *ratelimit.RateLimiter
+}
+
+func newLimiters(cfg *config.Config) *limiters {
+	return &limiters{
+		general:    ratelimit.New(cfg.RateLimits.General.Limit, cfg.RateLimits.General.Window, 10000),
+		sendCode:   ratelimit.New(cfg.RateLimits.SendCode.Limit, cfg.RateLimits.SendCode.Window, 10000),
+		verifyCode: ratelimit.New(cfg.RateLimits.VerifyCode.Limit, cfg.RateLimits.VerifyCode.Window, 10000),
+		register:   ratelimit.New(cfg.RateLimits.Register.Limit, cfg.RateLimits.Register.Window, 10000),
+		sseAuth:    ratelimit.New(60, time.Minute, 10000),
+	}
+}
+
+// closeAll stops every limiter's background cleanup. Called once, at shutdown.
+func (l *limiters) closeAll() {
+	l.general.Close()
+	l.sendCode.Close()
+	l.verifyCode.Close()
+	l.register.Close()
+	l.sseAuth.Close()
+}
+
+// shutdownDeps carries everything the shutdown sequence needs. The order of
+// shutdown depends on it, so the fields are named: a positional list of twelve
+// arguments, five of them the same type, is easy to get wrong silently.
+type shutdownDeps struct {
+	server     *http.Server
+	hub        *sse.Hub
+	fedManager *federation.Manager
+	fedClient  *federation.Client
+	store      *store.Store
+	limiters   *limiters
+	budget     time.Duration
+}
+
+// runServer blocks until SIGINT/SIGTERM, then tears everything down.
 func runServer(
 	server *http.Server,
+	hub *sse.Hub,
 	fedManager *federation.Manager,
 	fedClient *federation.Client,
 	st *store.Store,
-	generalRL, sendCodeRL, verifyCodeRL, registerRL, sseAuthRL *ratelimit.RateLimiter,
+	rl *limiters,
 ) {
 
 	quit := make(chan os.Signal, 1)
@@ -374,29 +412,58 @@ func runServer(
 	}()
 
 	<-quit
+
+	shutdown(shutdownDeps{
+		server:     server,
+		hub:        hub,
+		fedManager: fedManager,
+		fedClient:  fedClient,
+		store:      st,
+		limiters:   rl,
+		budget:     30 * time.Second,
+	}, context.Background())
+}
+
+// shutdown drains in-flight work and releases resources. The order matters:
+//
+//   - the SSE hub goes first, because an open event stream never goes idle on
+//     its own. Draining with one still attached blocks until the deadline
+//     expires on every deploy.
+//   - the federation client wait is bounded, so a peer that stalls a request
+//     cannot hold the process past the deadline already spent draining.
+//
+// The context is a parameter rather than a field, and the sequence is a
+// separate function so it can be exercised in a test with a real server and a
+// real stream.
+func shutdown(deps shutdownDeps, ctx context.Context) {
 	slog.Info("shutting down server")
 
-	generalRL.Close()
-	sendCodeRL.Close()
-	verifyCodeRL.Close()
-	registerRL.Close()
-	sseAuthRL.Close()
+	deps.limiters.closeAll()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Closing each connection channel makes runSSE return immediately.
+	deps.hub.Close()
+
+	drainCtx, cancel := context.WithTimeout(ctx, deps.budget)
 	defer cancel()
 
 	// Stop accepting connections and drain in-flight handlers first so no
 	// new federated requests can be queued while we wait for the
 	// background federation requests to finish below.
-	if err := server.Shutdown(ctx); err != nil {
-		slog.Error("server forced to shutdown", "err", err)
+	drainErr := deps.server.Shutdown(drainCtx)
+
+	deps.fedManager.Close()
+
+	waitErr := deps.fedClient.CloseWaitContext(drainCtx)
+
+	deps.store.Close()
+
+	if drainErr != nil {
+		slog.Error("server forced to shutdown with requests still in flight", "err", drainErr)
 	}
 
-	fedManager.Close()
-
-	fedClient.CloseWait()
-
-	st.Close()
+	if waitErr != nil {
+		slog.Warn("federated requests still running at shutdown", "err", waitErr)
+	}
 
 	slog.Info("server stopped")
 }

@@ -179,6 +179,30 @@ func (c *Client) CloseWait() {
 	c.wg.Wait()
 }
 
+// CloseWaitContext blocks until the in-flight background requests finish, or
+// until ctx is done. A bare Wait has no bound: a peer that stalls a request
+// holds it for the full client timeout across all retries, which would keep
+// shutdown going past the server's own drain deadline.
+//
+// On a timeout the returned error is ctx.Err(); the waiter goroutine is left
+// behind on purpose, since only the process exit can release it. Callers are
+// expected to log it and continue tearing down.
+func (c *Client) CloseWaitContext(ctx context.Context) error {
+	done := make(chan struct{})
+
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // background runs a federated request in its own goroutine with a timeout
 // decoupled from the originating HTTP request (context values survive via
 // context.WithoutCancel). The semaphore bounds concurrency; recover keeps a

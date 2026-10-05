@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,14 +28,18 @@ import (
 func newTransportTestServer(t *testing.T) *Transport {
 	t.Helper()
 
-	return newTransportTestServerWithRL(t, nil)
+	transport, _ := newTransportTestServerWithHub(t, nil)
+
+	return transport
 }
 
-// newTransportTestServerWithRL builds a transport wired with the given rate
-// limiters (nil disables the per-route middleware).
-func newTransportTestServerWithRL(t *testing.T, rl *RateLimiters) *Transport {
+// newTransportTestServerWithHub builds the transport and also returns its SSE
+// hub, which a test needs when it wants to close it and watch an open stream
+// react. Every other test helper delegates here.
+func newTransportTestServerWithHub(t *testing.T, rl *RateLimiters) (*Transport, *sse.Hub) {
 	t.Helper()
 
+	hub := sse.NewHub(service.TypingThrottleInterval * 5)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -56,11 +61,20 @@ func newTransportTestServerWithRL(t *testing.T, rl *RateLimiters) *Transport {
 		Auth:   config.AuthConfig{TokenExpiry: 24 * time.Hour, TokenExpiryWarning: 5 * time.Minute},
 	}
 
-	hub := sse.NewHub(service.TypingThrottleInterval * 5)
 	st := store.New(db)
 	svc := service.New(st, cfg, hub, nil)
 
-	return New(&Deps{Hub: hub, Store: st, Svc: svc, Cfg: cfg, RateLimiters: rl})
+	return New(&Deps{Hub: hub, Store: st, Svc: svc, Cfg: cfg, RateLimiters: rl}), hub
+}
+
+// newTransportTestServerWithRL builds a transport wired with the given rate
+// limiters (nil disables the per-route middleware).
+func newTransportTestServerWithRL(t *testing.T, rl *RateLimiters) *Transport {
+	t.Helper()
+
+	transport, _ := newTransportTestServerWithHub(t, rl)
+
+	return transport
 }
 
 func TestTransportSSEConnected(t *testing.T) {
@@ -688,4 +702,66 @@ func TestFallbackFileDownloadStreams(t *testing.T) {
 	if got := dlRec.Body.Bytes(); !bytes.Equal(got, payload) {
 		t.Fatalf("downloaded %d bytes, want %d identical bytes", len(got), len(payload))
 	}
+}
+
+// TestTransportSSEReturnsWhenHubCloses is the mechanism behind closing the hub
+// before Shutdown. An open event stream never goes idle on its own, so without
+// this the graceful-shutdown drain blocks until its deadline on every deploy.
+func TestTransportSSEReturnsWhenHubCloses(t *testing.T) {
+	transport, hub := newTransportTestServerWithHub(t, nil)
+
+	// No deadline on the request: only the hub closing may end it.
+	req := httptest.NewRequestWithContext(
+		context.Background(), http.MethodGet, "/api/events?connectionId=close-test", http.NoBody,
+	)
+
+	// Signal on the first write instead of sleeping. runSSE registers the
+	// connection before writing the connected event, so the first write is a
+	// deterministic point at which the connection exists.
+	rec := &signallingRecorder{ResponseRecorder: httptest.NewRecorder(), wrote: make(chan struct{})}
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		transport.Handler().ServeHTTP(rec, req)
+	}()
+
+	select {
+	case <-rec.wrote:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the SSE handler never started writing; the connection was not registered")
+	}
+
+	hub.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the SSE handler did not return after the hub was closed; shutdown would stall")
+	}
+
+	if !strings.Contains(rec.Body.String(), "event: connected") {
+		t.Fatalf("expected the connected event before teardown, got: %q", rec.Body.String())
+	}
+}
+
+// signallingRecorder closes a channel on the first write, so a test can wait
+// for the handler to reach that point instead of guessing with a sleep.
+//
+// It deliberately does not declare Flush. runSSE needs an http.Flusher and
+// would reject a non-streaming request with 500 "streaming unsupported" before
+// writing anything, but the embedded *httptest.ResponseRecorder already
+// implements Flush, so the method is promoted and the interface is satisfied.
+type signallingRecorder struct {
+	*httptest.ResponseRecorder
+	wrote chan struct{}
+	once  sync.Once
+}
+
+func (r *signallingRecorder) Write(p []byte) (int, error) {
+	r.once.Do(func() { close(r.wrote) })
+
+	return r.ResponseRecorder.Write(p)
 }

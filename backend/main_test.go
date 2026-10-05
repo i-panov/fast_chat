@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -307,5 +309,146 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 
 	if rec := do("/api/config"); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 after limit, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestShutdownDrainsWithAnOpenSSEStream covers the shutdown order that broke
+// graceful restarts. An open event stream never becomes idle, so draining with
+// one still attached blocks until the deadline expires. Closing the hub first
+// makes the handler return, so the drain completes immediately.
+func TestShutdownDrainsWithAnOpenSSEStream(t *testing.T) {
+	dir := t.TempDir()
+
+	db, err := gorm.Open(sqlite.Open(filepath.Join(dir, "t.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.Message{}, &model.Thread{}, &model.File{},
+		&model.MessageFile{}, &model.DeletedMessage{},
+		&model.DeletedChat{}, &model.PushSubscription{},
+		&model.MessageReadStatus{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	st := store.New(db)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Domain: "localhost:8080", Port: 8080},
+		CORS:   config.CORSConfig{Origin: "*"},
+		Auth:   config.AuthConfig{TokenExpiry: 24 * time.Hour, TokenExpiryWarning: 5 * time.Minute},
+	}
+
+	hub := sse.NewHub(time.Minute)
+	svc := service.New(st, cfg, hub, nil)
+
+	fedKey, err := federation.LoadOrGenerateKeys(filepath.Join(dir, "keys"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fedManager := federation.New(fedKey, "localhost:8080", "http", 1)
+	fedClient := federation.NewClient(fedManager, "localhost:8080", "http", 1)
+
+	tr := transport.New(&transport.Deps{
+		Hub: hub, Store: st, Svc: svc, Cfg: cfg,
+		FedManager: fedManager, FedClient: fedClient,
+	})
+
+	// A real listener, so Shutdown has a non-idle connection to drain.
+	srv := httptest.NewServer(tr.Handler())
+
+	// Close must not block: if the stream is still attached (the failure this
+	// test guards), a plain srv.Close would wait on it forever.
+	t.Cleanup(func() {
+		srv.CloseClientConnections()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		_ = srv.Config.Shutdown(ctx)
+	})
+
+	// Signalled once the client has seen the connected event, which the
+	// handler writes only after registering the connection. That makes this a
+	// deterministic point to start the shutdown from, unlike a sleep.
+	//
+	// The channel carries an error rather than being closed, so a failed read
+	// is not reported as a connection that never appeared.
+	streamReady := make(chan error, 1)
+	streamDone := make(chan struct{})
+
+	go func() {
+		defer close(streamDone)
+
+		resp, err := http.Get(srv.URL + "/api/events?connectionId=shutdown-test") //nolint:noctx // short-lived test client
+		if err != nil {
+			streamReady <- fmt.Errorf("opening the stream: %w", err)
+
+			return
+		}
+
+		defer resp.Body.Close()
+
+		buf := make([]byte, 512)
+
+		if _, err := resp.Body.Read(buf); err != nil {
+			streamReady <- fmt.Errorf("reading the first SSE event: %w", err)
+		} else {
+			streamReady <- nil
+		}
+
+		// Read until the server closes the stream.
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}()
+
+	select {
+	case err := <-streamReady:
+		if err != nil {
+			t.Fatalf("the SSE stream did not deliver its first event: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the SSE stream produced nothing at all; the connection was not registered")
+	}
+
+	// Live limiters, as in main: shutdown closes each one exactly once, so
+	// they must not be pre-closed the way newTestRateLimiter leaves them.
+	rl := &limiters{
+		general:    ratelimit.New(1, time.Minute, 1000),
+		sendCode:   ratelimit.New(1, time.Minute, 1000),
+		verifyCode: ratelimit.New(1, time.Minute, 1000),
+		register:   ratelimit.New(1, time.Minute, 1000),
+		sseAuth:    ratelimit.New(1, time.Minute, 1000),
+	}
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		shutdown(shutdownDeps{
+			server:     srv.Config,
+			hub:        hub,
+			fedManager: fedManager,
+			fedClient:  fedClient,
+			store:      st,
+			limiters:   rl,
+			budget:     5 * time.Second,
+		}, context.Background())
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("shutdown did not complete while an SSE stream was open")
+	}
+
+	select {
+	case <-streamDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the SSE stream outlived the shutdown")
 	}
 }
