@@ -370,3 +370,118 @@ func TestMalformedTrustedProxyIsReported(t *testing.T) {
 		t.Errorf("valid entries were reported as malformed: %s", out)
 	}
 }
+
+// TestMaxEntriesIsAnActualCap covers the bound that gave the field its name.
+// Reaching it only triggered a sweep of expired keys, so a flood of distinct
+// keys — spoofed forwarded addresses, or a client with a large IPv6 prefix —
+// grew the map without limit, and every request past the threshold walked all of
+// it while holding the mutex.
+func TestMaxEntriesIsAnActualCap(t *testing.T) {
+	const maxEntries = 50
+
+	rl := New(5, time.Minute, maxEntries)
+	defer rl.Close()
+
+	for i := range maxEntries * 4 {
+		if !rl.Allow(fmt.Sprintf("10.0.%d.%d", i/256, i%256)) {
+			t.Fatalf("request %d from a fresh key was denied", i)
+		}
+	}
+
+	rl.mu.Lock()
+	got := len(rl.entries)
+	rl.mu.Unlock()
+
+	if got > maxEntries {
+		t.Errorf("entries = %d, want at most %d", got, maxEntries)
+	}
+}
+
+// TestSaturatedLimiterStillThrottlesAnActiveKey is the property that makes the
+// bound safe. Bounding memory means something has to be forgotten, so the
+// question is what: if a flood of one-off keys could push a live client out of
+// the map, that client would start over with a full budget every time and the
+// limiter would be bypassable by sending padding traffic. A key that keeps
+// sending refreshes its own timestamp and so stays the newest.
+func TestSaturatedLimiterStillThrottlesAnActiveKey(t *testing.T) {
+	rl := New(3, time.Minute, 4)
+	defer rl.Close()
+
+	// Saturate with one-off keys.
+	for i := range 16 {
+		if !rl.Allow(fmt.Sprintf("filler-%d", i)) {
+			t.Fatalf("padding request %d denied", i)
+		}
+	}
+
+	allowed := 0
+
+	for range 10 {
+		if rl.Allow("target") {
+			allowed++
+		}
+	}
+
+	if allowed != 3 {
+		t.Errorf("target was allowed %d of 10 under a saturated map, want 3: "+
+			"a client that keeps sending must not lose its history to eviction", allowed)
+	}
+}
+
+// TestAllowStillCountsAfterEviction makes sure bounding memory did not turn the
+// limiter into a pass-through: an evicted key that keeps sending is counted
+// again from its new entry.
+func TestAllowStillCountsAfterEviction(t *testing.T) {
+	rl := New(3, time.Minute, 2)
+	defer rl.Close()
+
+	for i := range 8 {
+		rl.Allow(fmt.Sprintf("filler-%d", i))
+	}
+
+	allowed := 0
+
+	for range 10 {
+		if rl.Allow("target") {
+			allowed++
+		}
+	}
+
+	if allowed > 3 {
+		t.Errorf("target was allowed %d times, want at most the limit of 3", allowed)
+	}
+}
+
+// TestCloseIsIdempotent covers a shutdown path that can reach Close twice: the
+// second call would panic on an already closed channel, and a panic while
+// tearing down hides whatever else failed.
+func TestCloseIsIdempotent(_ *testing.T) {
+	rl := New(5, time.Minute, 10)
+
+	rl.Close()
+	rl.Close()
+}
+
+// TestNewWithoutABoundDoesNotGrowForever documents the zero case: an unset
+// maxEntries must not mean "evict on every request", which would turn each
+// request into a full map walk.
+func TestNewWithoutABoundDoesNotGrowForever(t *testing.T) {
+	rl := New(5, time.Minute, 0)
+	defer rl.Close()
+
+	for i := range 200 {
+		rl.Allow(fmt.Sprintf("10.1.%d.%d", i/256, i%256))
+	}
+
+	rl.mu.Lock()
+	got := len(rl.entries)
+	rl.mu.Unlock()
+
+	if got == 0 {
+		t.Error("every entry was evicted; a zero bound must not disable counting")
+	}
+
+	if got > 200 {
+		t.Errorf("entries = %d, want at most the 200 keys inserted", got)
+	}
+}

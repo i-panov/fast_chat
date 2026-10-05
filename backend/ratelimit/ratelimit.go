@@ -18,6 +18,7 @@ type RateLimiter struct {
 	window     time.Duration
 	maxEntries int
 	closeCh    chan struct{}
+	closeOnce  sync.Once
 }
 
 // ClientIPExtractor resolves the client IP for rate limiting. Proxy
@@ -199,53 +200,112 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	if len(rl.entries) >= rl.maxEntries {
-		now := time.Now()
-
-		cutoff := now.Add(-rl.window)
-		for ip, timestamps := range rl.entries {
-			var valid []time.Time
-
-			for _, t := range timestamps {
-				if t.After(cutoff) {
-					valid = append(valid, t)
-				}
-			}
-
-			if len(valid) == 0 {
-				delete(rl.entries, ip)
-			} else {
-				rl.entries[ip] = valid
-			}
-		}
-	}
-
 	now := time.Now()
 	cutoff := now.Add(-rl.window)
 
-	timestamps := rl.entries[ip]
+	if rl.atCapacity() {
+		// Nothing has expired, so the map cannot shrink on its own and the
+		// request would otherwise be the one that pushes it past the bound.
+		rl.prune(cutoff)
 
-	var valid []time.Time
-
-	for _, t := range timestamps {
-		if t.After(cutoff) {
-			valid = append(valid, t)
+		if rl.atCapacity() {
+			rl.evictOldest()
 		}
 	}
 
-	if len(valid) >= rl.limit {
-		rl.entries[ip] = valid
+	timestamps := pruneTimestamps(rl.entries[ip], cutoff)
+
+	if len(timestamps) >= rl.limit {
+		rl.entries[ip] = timestamps
 
 		return false
 	}
 
-	rl.entries[ip] = append(valid, now)
+	rl.entries[ip] = append(timestamps, now)
 
 	return true
 }
 
+// atCapacity reports whether the next request has to make room. A maxEntries of
+// zero or less means "no bound configured", which is a valid configuration and
+// must not degrade into evicting on every request.
+
+// prune drops every timestamp that has fallen out of the window, and every key
+// left with none. This is what bounds the map in the steady state: keys stop
+// being added once their window has passed.
+
+// evictOldest makes room when every key is still inside its window, which is
+// what a flood of one-off keys looks like. The key closest to expiring goes
+// first, so a client that is still sending keeps its history and a key that has
+// already served its window is the one forgotten.
+//
+// Failing closed instead — refusing new keys while the map is full — would let
+// anyone with rotating addresses deny service to everyone else, so the bound
+// costs accuracy rather than availability.
+
+// pruneTimestamps returns the timestamps still inside the window.
+//
+// Timestamps are appended in order, so the live ones are the tail and the first
+// entry at or before the cutoff marks where they start. Reslicing keeps this
+// allocation-free on the request path, and it leaves the spare capacity after
+// the new length for the next append.
+func pruneTimestamps(timestamps []time.Time, cutoff time.Time) []time.Time {
+	for i, t := range timestamps {
+		if !t.After(cutoff) {
+			return timestamps[:i]
+		}
+	}
+
+	return timestamps
+}
+
+// Close stops the cleanup goroutine. It is safe to call more than once, so two
+// shutdown paths reaching it cannot turn into a panic that hides the original
+// failure.
 func (rl *RateLimiter) Close() {
-	close(rl.closeCh)
+	rl.closeOnce.Do(func() {
+		close(rl.closeCh)
+	})
+}
+
+func (rl *RateLimiter) atCapacity() bool {
+	return rl.maxEntries > 0 && len(rl.entries) >= rl.maxEntries
+}
+
+func (rl *RateLimiter) prune(cutoff time.Time) {
+	for ip, timestamps := range rl.entries {
+		valid := pruneTimestamps(timestamps, cutoff)
+		if len(valid) == 0 {
+			delete(rl.entries, ip)
+		} else {
+			rl.entries[ip] = valid
+		}
+	}
+}
+
+func (rl *RateLimiter) evictOldest() {
+	victim := ""
+	var oldest time.Time
+
+	for ip, timestamps := range rl.entries {
+		if len(timestamps) == 0 {
+			victim = ip
+			break
+		}
+
+		// The last timestamp is the most recent hit, so it is the closest this
+		// key is to being out of its window.
+		last := timestamps[len(timestamps)-1]
+		if victim == "" || last.Before(oldest) {
+			victim, oldest = ip, last
+		}
+	}
+
+	if victim == "" {
+		return
+	}
+
+	delete(rl.entries, victim)
 }
 
 func (rl *RateLimiter) clean() {
@@ -256,25 +316,7 @@ func (rl *RateLimiter) clean() {
 		select {
 		case <-ticker.C:
 			rl.mu.Lock()
-			now := time.Now()
-			cutoff := now.Add(-rl.window)
-
-			for ip, timestamps := range rl.entries {
-				var valid []time.Time
-
-				for _, t := range timestamps {
-					if t.After(cutoff) {
-						valid = append(valid, t)
-					}
-				}
-
-				if len(valid) == 0 {
-					delete(rl.entries, ip)
-				} else {
-					rl.entries[ip] = valid
-				}
-			}
-
+			rl.prune(time.Now().Add(-rl.window))
 			rl.mu.Unlock()
 
 		case <-rl.closeCh:
