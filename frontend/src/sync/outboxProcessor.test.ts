@@ -272,6 +272,40 @@ describe("processOutbox", () => {
 		expect(await outboxRepo.list()).toHaveLength(0);
 	});
 
+	it("deletes a thread message by its real chat, not the thread id", async () => {
+		await threadMessagesRepo.upsert(
+			{
+				id: "t-msg",
+				chatId: "chat-1",
+				fromId: "alice:test",
+				fromNick: "alice",
+				text: "in thread",
+				createdAt: "2026-08-30T09:00:00.000Z",
+			},
+			"thread-1",
+			"sent",
+		);
+		await outboxRepo.enqueue({
+			kind: "delete",
+			opId: "del-thread",
+			chatId: "chat-1",
+			threadId: "thread-1",
+			messageId: "t-msg",
+			createdAt: "2026-08-30T09:30:00.000Z",
+			attempts: 0,
+		});
+
+		await processOutbox("tok");
+
+		// The thread id is not a chat, so sending it would 404 on the server's
+		// membership check.
+		expect(deleteMessageMock).toHaveBeenCalledWith("tok", "chat-1", "t-msg");
+		expect(
+			await threadMessagesRepo.getById("thread-1", "t-msg"),
+		).toBeUndefined();
+		expect(await outboxRepo.list()).toHaveLength(0);
+	});
+
 	it("treats a 404 delete as already-deleted", async () => {
 		deleteMessageMock.mockRejectedValue(new Error("http 404"));
 		await outboxRepo.enqueue({

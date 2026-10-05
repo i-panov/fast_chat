@@ -164,10 +164,10 @@ async function runDelete(
 	token: string,
 ): Promise<void> {
 	try {
-		// For thread messages, the server expects threadId as chatId
-		// in the DELETE /api/chats/{chatId}/messages/{messageId} endpoint.
-		const deleteChatId = op.threadId ?? op.chatId;
-		await deleteMessage(token, deleteChatId, op.messageId);
+		// Thread messages are addressed by their real chat too: the server
+		// resolves the container from the message, and the thread id is not a
+		// chat, so sending it here would fail the membership check with 404.
+		await deleteMessage(token, op.chatId, op.messageId);
 	} catch (err) {
 		if (isNotFound(err)) {
 			if (op.threadId !== undefined) {
