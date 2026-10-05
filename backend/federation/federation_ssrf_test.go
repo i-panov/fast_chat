@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -238,5 +239,53 @@ func TestGetPublicKeyNonOKStatusIsNil(t *testing.T) {
 
 	if got := m.getPublicKey(context.Background(), domain); got != nil {
 		t.Fatal("getPublicKey should return nil when well-known returns non-200")
+	}
+}
+
+// TestFetchWellKnownRejectsOversizedBody covers the pre-authentication read of
+// a peer's well-known document. The key is fetched before the request signature
+// is checked, so an anonymous caller naming a hostile host in X-Federation-Server
+// reaches this decode with no valid credential. Without a cap, a peer streaming
+// a huge body makes the server allocate all of it.
+//
+// fetchWellKnown is called directly rather than through getPublicKey, which
+// collapses every failure to a nil key: the observable difference is the error
+// itself, and that the body is refused before it is buffered in full.
+func TestFetchWellKnownRejectsOversizedBody(t *testing.T) {
+	// Four chunks of 64 KiB: four times maxWellKnownBody.
+	filler := bytes.Repeat([]byte("A"), 64<<10)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"publicKeyPem":"`))
+
+		flusher, _ := w.(http.Flusher)
+
+		for range 4 {
+			if _, err := w.Write(filler); err != nil {
+				return
+			}
+
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+
+		_, _ = w.Write([]byte(`"}`))
+	}))
+	defer srv.Close()
+
+	m := newTestManager(t, "local.test")
+	m.client = srv.Client()
+
+	domain := strings.TrimPrefix(srv.URL, "http://")
+
+	_, err := m.fetchWellKnown(context.Background(), domain)
+	if err == nil {
+		t.Fatal("an oversized well-known body was accepted")
+	}
+
+	if _, ok := errors.AsType[*http.MaxBytesError](err); !ok {
+		t.Fatalf("error = %v; want a *http.MaxBytesError, so the body is refused before being buffered", err)
 	}
 }

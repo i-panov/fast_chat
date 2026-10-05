@@ -45,6 +45,10 @@ const (
 	replayWindow       = 10 * time.Minute
 	nonceCleanupTick   = 1 * time.Minute
 	timestampTolerance = 5 * time.Minute
+	// A well-known document carries one PEM public key, so this is three
+	// orders of magnitude more than a real response needs. It exists to bound
+	// memory for a peer that streams garbage, not to accommodate large keys.
+	maxWellKnownBody = 64 << 10
 )
 
 type cacheEntry struct {
@@ -410,6 +414,14 @@ func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa
 	var data struct {
 		PublicKeyPem string `json:"publicKeyPem"`
 	}
+
+	// The body is read before the request is authenticated: Verify fetches the
+	// peer's key to check the signature, so an anonymous caller naming an
+	// arbitrary host in X-Federation-Server reaches this decode with no
+	// credential presented and a signature that need not be valid. Cap it so a
+	// hostile peer cannot make the server allocate whatever it likes: the
+	// payload is a single PEM public key of a few hundred bytes.
+	resp.Body = http.MaxBytesReader(nil, resp.Body, maxWellKnownBody)
 
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, fmt.Errorf("failed to decode well-known response: %w", err)
