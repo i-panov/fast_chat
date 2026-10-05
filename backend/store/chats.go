@@ -357,6 +357,26 @@ func writeChatDeleteTombs(tx *gorm.DB, chatID string, members []string, at time.
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&tombs).Error
 }
 
+// The driver rejects a statement binding more than sqliteMaxVariables
+// parameters. A tombstone binds three columns and an IN list binds one per id,
+// so a chat with more than about 10900 messages could not be deleted at all: the
+// error came from inside the transaction, which rolled back everything and
+// returned the same error on every retry.
+//
+// Measured on this driver: a 3-column bulk insert fails at 33000 parameters and
+// an IN list at 33000 ids.
+const sqliteMaxVariables = 32766
+
+const (
+	// deleteBatchRows bounds a batched tombstone insert. A tombstone binds three
+	// columns, so the divisor leaves roughly 6000 parameters against a ceiling
+	// of 32766, and deriving it keeps the two from drifting apart.
+	deleteBatchRows = sqliteMaxVariables / 16
+
+	// deleteBatchIDs bounds a batched IN list, which binds one parameter per id.
+	deleteBatchIDs = sqliteMaxVariables / 16
+)
+
 func writeMessageDeleteTombs(tx *gorm.DB, chatID string, at time.Time) error {
 	var msgIDs []string
 	if err := tx.Model(&model.Message{}).Where("chat_id = ?", chatID).Pluck("id", &msgIDs).Error; err != nil {
@@ -367,21 +387,29 @@ func writeMessageDeleteTombs(tx *gorm.DB, chatID string, at time.Time) error {
 		return nil
 	}
 
-	tombs := make([]model.DeletedMessage, 0, len(msgIDs))
-	for _, mid := range msgIDs {
-		tombs = append(tombs, model.DeletedMessage{
-			ChatID:    chatID,
-			MessageID: mid,
-			DeletedAt: at,
-		})
+	for start := 0; start < len(msgIDs); start += deleteBatchRows {
+		end := min(start+deleteBatchRows, len(msgIDs))
+
+		tombs := make([]model.DeletedMessage, 0, end-start)
+		for _, mid := range msgIDs[start:end] {
+			tombs = append(tombs, model.DeletedMessage{
+				ChatID:    chatID,
+				MessageID: mid,
+				DeletedAt: at,
+			})
+		}
+
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&tombs).Error; err != nil {
+			return err
+		}
 	}
 
-	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&tombs).Error; err != nil {
-		return err
-	}
+	for start := 0; start < len(msgIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(msgIDs))
 
-	if err := tx.Where("message_id IN ?", msgIDs).Delete(&model.MessageFile{}).Error; err != nil {
-		return err
+		if err := tx.Where("message_id IN ?", msgIDs[start:end]).Delete(&model.MessageFile{}).Error; err != nil {
+			return err
+		}
 	}
 
 	return tx.Where("chat_id = ?", chatID).Delete(&model.Message{}).Error

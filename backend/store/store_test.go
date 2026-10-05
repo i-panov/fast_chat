@@ -1195,3 +1195,76 @@ func TestGetUsersByIDsEmpty(t *testing.T) {
 		t.Errorf("expected empty map, got %d entries", len(got))
 	}
 }
+
+// TestDeleteChatHandlesMoreMessagesThanSQLiteHasVariables covers both statements
+// in the tombstone write for a large chat. The rows went out in one bulk insert
+// binding three columns each, and the driver rejects a statement past 32766
+// parameters — about 10900 messages for the insert, and 32766 for the IN list
+// that clears the file links. The failure came from inside the transaction, so
+// nothing was deleted and the chat could never be deleted at all, only retried
+// into the same error.
+//
+// The count is set above both ceilings rather than just the first one, so a
+// change that fixes only the insert still fails here.
+func TestDeleteChatHandlesMoreMessagesThanSQLiteHasVariables(t *testing.T) {
+	const messageCount = 34000
+
+	s := newTestStore(t)
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+
+	ctx := context.Background()
+	chat, err := s.CreateGroupChat(ctx, "big", testAlice, []string{testBob}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Inserted directly and in batches: the point is the size of the chat, not
+	// how the rows arrived.
+	for start := 0; start < messageCount; start += 500 {
+		rows := make([]model.Message, 0, 500)
+
+		for i := start; i < start+500 && i < messageCount; i++ {
+			rows = append(rows, model.Message{
+				ID:        fmt.Sprintf("big-%d", i),
+				ChatID:    chat.ID,
+				FromID:    testAlice,
+				FromNick:  "alice",
+				Text:      "x",
+				CreatedAt: time.Now().UTC(),
+			})
+		}
+
+		if err := s.db.CreateInBatches(rows, 500).Error; err != nil {
+			t.Fatalf("seeding message %d: %v", start, err)
+		}
+	}
+
+	if err := s.DeleteChat(ctx, chat.ID); err != nil {
+		t.Fatalf("DeleteChat on a chat with %d messages: %v", messageCount, err)
+	}
+
+	if _, ok := s.GetChat(ctx, chat.ID); ok {
+		t.Error("the chat survived deletion")
+	}
+
+	var remaining int64
+	if err := s.db.Model(&model.Message{}).Where("chat_id = ?", chat.ID).Count(&remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if remaining != 0 {
+		t.Errorf("%d messages survived", remaining)
+	}
+
+	// A tombstone per message, so the federated peers that had already seen
+	// them do not resync them.
+	var tombstones int64
+	if err := s.db.Model(&model.DeletedMessage{}).Where("chat_id = ?", chat.ID).Count(&tombstones).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if tombstones != messageCount {
+		t.Errorf("tombstones = %d, want %d", tombstones, messageCount)
+	}
+}
