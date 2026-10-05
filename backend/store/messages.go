@@ -23,6 +23,10 @@ const (
 var (
 	ErrMessageNotFound = errors.New("message not found")
 	ErrNotYourMessage  = errors.New("not your message")
+	// ErrMessageIDConflict is returned when a client-supplied message id is
+	// already taken by a message in a different chat or thread. The id is the
+	// primary key, so it is unique table-wide, not per chat.
+	ErrMessageIDConflict = errors.New("message id already used by another message")
 )
 
 func (s *Store) GetMessage(ctx context.Context, chatID, messageID string) (model.Message, error) {
@@ -170,13 +174,21 @@ func (s *Store) SetMessageFiles(ctx context.Context, messageID string, fileIDs [
 	})
 }
 
+// AddMessage persists a message and reports whether this call created it.
+//
+// A retried send carries the same client-supplied id, so the insert can hit
+// the primary key. That case returns the stored message with created=false:
+// the caller must answer with the row that actually exists and must not fan
+// out a second event, or the members would see text that was never stored.
+// A collision with a message in a different container is refused instead —
+// returning that row would hand one chat a message from another.
 func (s *Store) AddMessage(
 	ctx context.Context,
 	chatID, threadID, fromID, fromNick, text, messageID, replyToID string,
 	location *model.Location,
 	encrypted bool,
 	encryptedPayload string,
-) (*model.Message, error) {
+) (*model.Message, bool, error) {
 
 	// The thread must exist and belong to this chat, so a thread id from
 	// another chat cannot be used to write into it.
@@ -186,11 +198,11 @@ func (s *Store) AddMessage(
 		var thread model.Thread
 
 		if err := s.db.WithContext(ctx).First(&thread, "id = ?", threadID).Error; err != nil {
-			return nil, ErrThreadNotFound
+			return nil, false, ErrThreadNotFound
 		}
 
 		if thread.ChatID != chatID {
-			return nil, ErrThreadNotFound
+			return nil, false, ErrThreadNotFound
 		}
 
 		scope = threadScope(threadID)
@@ -199,7 +211,7 @@ func (s *Store) AddMessage(
 		s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Count(&chatCount)
 
 		if chatCount == 0 {
-			return nil, ErrChatNotFound
+			return nil, false, ErrChatNotFound
 		}
 	}
 
@@ -211,7 +223,7 @@ func (s *Store) AddMessage(
 		target := scope.and("id = ?", replyToID)
 
 		if err := s.db.WithContext(ctx).Where(target.where, target.args...).First(&replyMsg).Error; err != nil {
-			return nil, ErrMessageNotFound
+			return nil, false, ErrMessageNotFound
 		}
 
 		replyTo = &model.ReplyToInfo{
@@ -244,13 +256,19 @@ func (s *Store) AddMessage(
 		Location:         location,
 	}
 
-	// Idempotent insert: if a row with the same primary key already
-	// exists (e.g. a retried send from the offline outbox), silently
-	// succeed rather than failing the whole request.
-	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&msg).Error; err != nil {
-		return nil, err
+	// Idempotent insert: a retry from the offline outbox hits the primary key,
+	// so the row that already exists is returned rather than the attempt.
+	result := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&msg)
+	if result.Error != nil {
+		return nil, false, result.Error
 	}
 
+	if result.RowsAffected == 0 {
+		return s.existingMessage(ctx, chatID, threadID, id)
+	}
+
+	// Only count a message that was really added: a retry would otherwise
+	// inflate the thread's client-visible counter on every replay.
 	if threadID != "" {
 		if err := s.db.WithContext(ctx).Model(&model.Thread{}).Where("id = ?", threadID).
 			UpdateColumn("message_count", gorm.Expr("message_count + 1")).Error; err != nil {
@@ -258,7 +276,24 @@ func (s *Store) AddMessage(
 		}
 	}
 
-	return &msg, nil
+	return &msg, true, nil
+}
+
+// existingMessage resolves a message id that is already taken. The id is
+// unique across the whole table, so it has to be checked against the container
+// it was addressed to before it can be returned.
+func (s *Store) existingMessage(ctx context.Context, chatID, threadID, messageID string) (*model.Message, bool, error) {
+	var stored model.Message
+
+	if err := s.db.WithContext(ctx).First(&stored, "id = ?", messageID).Error; err != nil {
+		return nil, false, ErrMessageNotFound
+	}
+
+	if stored.ChatID != chatID || stored.ThreadID != threadID {
+		return nil, false, ErrMessageIDConflict
+	}
+
+	return &stored, false, nil
 }
 
 // AddRawMessage inserts a message the caller built itself. It is the write

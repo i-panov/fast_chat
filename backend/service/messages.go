@@ -32,6 +32,7 @@ var (
 	ErrThreadAlreadyExists = errors.New("thread already exists")
 	ErrReadInputRequired   = errors.New("messageIds and chatId are required")
 	ErrTooManyReadIDs      = errors.New("too many message IDs")
+	ErrMessageIDConflict   = errors.New("message id already used by another message")
 )
 
 // E2E payload validation errors. The server does not decrypt messages but
@@ -443,12 +444,20 @@ func (s *Service) SendMessage(
 		return nil, ErrTooManyFiles
 	}
 
-	msg, err := s.store.AddMessage(
+	msg, created, err := s.store.AddMessage(
 		ctx, chat.ID, threadID, fromID, fromNick, input.Text,
 		input.ID, input.ReplyToID, input.Location, input.Encrypted, input.EncryptedPayload,
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	// A retry from the offline outbox reuses the id it already got. The stored
+	// row comes back as the answer, but the members already received this event
+	// the first time, so broadcasting it again would repeat a message they have
+	// already seen under the same id.
+	if !created {
+		return msg, nil
 	}
 
 	if len(input.FileIDs) > 0 {

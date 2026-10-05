@@ -8,6 +8,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"fast_chat/service"
+	"fast_chat/store"
 )
 
 // statusError implements huma.StatusError using the pre-migration error
@@ -240,6 +241,10 @@ var sentinelErrors = []sentinelErrPair{
 	{
 		sentinel: service.ErrNotYourMessage,
 		target:   &statusError{ErrorMessage: "not your message", code: http.StatusForbidden},
+	},
+	{
+		sentinel: store.ErrMessageIDConflict,
+		target:   &statusError{ErrorMessage: "message id already used", code: http.StatusConflict},
 	},
 	{
 		sentinel: service.ErrEditingNotAllowed,

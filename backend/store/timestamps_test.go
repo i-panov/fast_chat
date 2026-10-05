@@ -191,7 +191,7 @@ func TestPersistedTimestampsAreUTC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.AddMessage(ctx, chat.ID, "", user.ID, user.Nick, "hi", "", "", nil, false, ""); err != nil {
+	if _, _, err := s.AddMessage(ctx, chat.ID, "", user.ID, user.Nick, "hi", "", "", nil, false, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -268,7 +268,7 @@ func TestNormalizeTimestampsToUTCIsIdempotent(t *testing.T) {
 
 	insertLegacyRow(t, s.DB(), chat.ID, "legacy", time.Now().In(time.FixedZone("JST", 9*60*60)))
 
-	if _, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "fresh", "", "", nil, false, ""); err != nil {
+	if _, _, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "fresh", "", "", nil, false, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -308,7 +308,7 @@ func TestRepairFrozenUpdatedAt(t *testing.T) {
 	}
 
 	// A healthy row that must not be touched.
-	if _, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "healthy", "", "", nil, false, ""); err != nil {
+	if _, _, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "healthy", "", "", nil, false, ""); err != nil {
 		t.Fatal(err)
 	}
 

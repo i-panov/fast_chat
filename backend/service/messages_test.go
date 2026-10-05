@@ -1,9 +1,14 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
+
+	"fast_chat/sse"
+	"fast_chat/store"
 )
 
 func TestValidCoords(t *testing.T) {
@@ -56,5 +61,149 @@ func TestParseLocationPatch(t *testing.T) {
 	// Malformed JSON.
 	if _, _, err := parseLocationPatch(json.RawMessage(`{bad`)); !errors.Is(err, ErrInvalidCoordinates) {
 		t.Fatalf("malformed: expected ErrInvalidCoordinates, got %v", err)
+	}
+}
+
+// newHubbedTestService returns a service with a live SSE hub so a test can
+// observe what the fan-out actually published.
+func newHubbedTestService(t *testing.T) (*Service, *sse.Hub) {
+	t.Helper()
+
+	svc := newTestService(t)
+	hub := sse.NewHub(time.Minute)
+
+	t.Cleanup(hub.Close)
+
+	svc.hub = hub
+
+	return svc, hub
+}
+
+// subscribe registers an authorized SSE connection for userID and returns the
+// channel its events arrive on.
+func subscribe(t *testing.T, hub *sse.Hub, userID string) chan sse.Event {
+	t.Helper()
+
+	connID := "conn-" + userID
+	hub.Register(connID)
+
+	if err := hub.Authenticate(connID, userID, "token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("Authenticate(%s): %v", userID, err)
+	}
+
+	return hub.GetConnection(connID).Channel
+}
+
+// drain returns the queued event names, skipping the delivery receipts that
+// SendMessage emits after the new_message fan-out.
+func drainEvents(events chan sse.Event) []string {
+	var names []string
+
+	for {
+		select {
+		case evt := <-events:
+			if evt.Event != eventMessageDelivered {
+				names = append(names, evt.Event)
+			}
+		default:
+			return names
+		}
+	}
+}
+
+// TestSendMessageRetryDoesNotResendOrFabricate covers the retried send from the
+// offline outbox, which reuses the id the client already has. The insert hits
+// the primary key, so the row that exists is what the caller must get back: the
+// old code answered 201 with the attempt and broadcast that attempt, so the
+// members saw text that was never stored and got it again on every retry.
+func TestSendMessageRetryDoesNotResendOrFabricate(t *testing.T) {
+	svc, hub := newHubbedTestService(t)
+
+	ctx := context.Background()
+	alice := "alice:test"
+	bob := "bob:test"
+
+	for _, nick := range []string{"alice", "bob"} {
+		if _, err := svc.store.CreateUser(ctx, nick+"@example.com", nick, "test", time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	chat, err := svc.store.CreateChat(ctx, alice, bob, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bobEvents := subscribe(t, hub, bob)
+
+	const original = "the original text"
+
+	if _, err := svc.SendMessage(ctx, chat, "", alice, "alice", &SendMessageInput{ID: "msg-1", Text: original}); err != nil {
+		t.Fatalf("first SendMessage: %v", err)
+	}
+
+	if got := drainEvents(bobEvents); len(got) != 1 {
+		t.Fatalf("expected one new_message event, got %v", got)
+	}
+
+	// Retry the same id with different text: what an outbox that was flushed
+	// from a stale local copy looks like.
+	second, err := svc.SendMessage(ctx, chat, "", alice, "alice", &SendMessageInput{ID: "msg-1", Text: "REPLACED text"})
+	if err != nil {
+		t.Fatalf("retry SendMessage: %v", err)
+	}
+
+	if second.Text != original {
+		t.Errorf("retry answered with unattached text %q; stored row is %q", second.Text, original)
+	}
+
+	if got := drainEvents(bobEvents); len(got) != 0 {
+		t.Errorf("retry re-broadcast %v; members already received this message", got)
+	}
+
+	stored, err := svc.store.GetMessage(ctx, chat.ID, "msg-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stored.Text != original {
+		t.Errorf("stored text = %q, want %q", stored.Text, original)
+	}
+}
+
+// TestSendMessageRejectsIDUsedByAnotherChat covers the id being a table-wide
+// primary key rather than a per-chat one. A collision with a message in a
+// different chat must be refused, not answered with that other message.
+func TestSendMessageRejectsIDUsedByAnotherChat(t *testing.T) {
+	svc, _ := newHubbedTestService(t)
+
+	ctx := context.Background()
+	alice := "alice:test"
+	bob := "bob:test"
+	carol := "carol:test"
+
+	for _, nick := range []string{"alice", "bob", "carol"} {
+		if _, err := svc.store.CreateUser(ctx, nick+"@example.com", nick, "test", time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	chatOne, err := svc.store.CreateChat(ctx, alice, bob, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	chatTwo, err := svc.store.CreateChat(ctx, alice, carol, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.SendMessage(ctx, chatOne, "", alice, "alice", &SendMessageInput{ID: "shared-id", Text: "in chat one"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.SendMessage(ctx, chatTwo, "", alice, "alice", &SendMessageInput{ID: "shared-id", Text: "in chat two"})
+	if !errors.Is(err, store.ErrMessageIDConflict) {
+		t.Fatalf("err = %v, want store.ErrMessageIDConflict", err)
 	}
 }

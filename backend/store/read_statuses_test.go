@@ -32,7 +32,7 @@ func seedMessages(t *testing.T, s *Store, chatID string, msgs ...string) []model
 
 	out := make([]model.Message, 0, len(msgs))
 	for _, text := range msgs {
-		m, err := s.AddMessage(context.Background(), chatID, "", "alice:test", "alice", text, "", "", nil, false, "")
+		m, _, err := s.AddMessage(context.Background(), chatID, "", "alice:test", "alice", text, "", "", nil, false, "")
 		if err != nil {
 			t.Fatalf("add message %q: %v", text, err)
 		}

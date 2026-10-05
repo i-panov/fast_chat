@@ -31,7 +31,7 @@ func threadFixture(t *testing.T, s *Store) threadSetup {
 		t.Fatal(err)
 	}
 
-	parent, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "parent", "", "", nil, false, "")
+	parent, _, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "parent", "", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,12 +41,12 @@ func threadFixture(t *testing.T, s *Store) threadSetup {
 		t.Fatal(err)
 	}
 
-	first, err := s.AddMessage(ctx, chat.ID, thread.ID, testAlice, "alice", "in thread", "", "", nil, false, "")
+	first, _, err := s.AddMessage(ctx, chat.ID, thread.ID, testAlice, "alice", "in thread", "", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	second, err := s.AddMessage(ctx, chat.ID, thread.ID, testBob, "bob", "also in thread", "", "", nil, false, "")
+	second, _, err := s.AddMessage(ctx, chat.ID, thread.ID, testBob, "bob", "also in thread", "", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestThreadMessagesCarryBothIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	parent, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "parent", "", "", nil, false, "")
+	parent, _, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "parent", "", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestThreadMessagesCarryBothIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reply, err := s.AddMessage(ctx, chat.ID, thread.ID, testAlice, "alice", "reply", "", "", nil, false, "")
+	reply, _, err := s.AddMessage(ctx, chat.ID, thread.ID, testAlice, "alice", "reply", "", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestThreadMessagesCarryBothIDs(t *testing.T) {
 		t.Errorf("thread message thread_id = %q, want %q", reply.ThreadID, thread.ID)
 	}
 
-	top, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "top level", "", "", nil, false, "")
+	top, _, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "top level", "", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestDeleteChatRemovesThreadMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	parent, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "parent", "", "", nil, false, "")
+	parent, _, err := s.AddMessage(ctx, chat.ID, "", testAlice, "alice", "parent", "", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,12 +236,12 @@ func TestDeleteChatRemovesThreadMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first, err := s.AddMessage(ctx, chat.ID, thread.ID, testAlice, "alice", "in thread", "", "", nil, false, "")
+	first, _, err := s.AddMessage(ctx, chat.ID, thread.ID, testAlice, "alice", "in thread", "", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	second, err := s.AddMessage(ctx, chat.ID, thread.ID, testBob, "bob", "also in thread", "", "", nil, false, "")
+	second, _, err := s.AddMessage(ctx, chat.ID, thread.ID, testBob, "bob", "also in thread", "", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestAddMessageRejectsThreadFromAnotherChat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	parent, err := s.AddMessage(ctx, chatA.ID, "", testAlice, "alice", "parent", "", "", nil, false, "")
+	parent, _, err := s.AddMessage(ctx, chatA.ID, "", testAlice, "alice", "parent", "", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestAddMessageRejectsThreadFromAnotherChat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.AddMessage(ctx, "other-chat", thread.ID, testAlice, "alice", "x", "", "", nil, false, ""); err == nil {
+	if _, _, err := s.AddMessage(ctx, "other-chat", thread.ID, testAlice, "alice", "x", "", "", nil, false, ""); err == nil {
 		t.Error("a thread from another chat was accepted")
 	}
 
@@ -477,11 +477,11 @@ func TestReplyInsideThreadResolvesWithinThread(t *testing.T) {
 
 	fx := threadFixture(t, s)
 
-	if _, err := s.AddMessage(ctx, fx.chat.ID, fx.thread.ID, testBob, "bob", "re", "", fx.first, nil, false, ""); err != nil {
+	if _, _, err := s.AddMessage(ctx, fx.chat.ID, fx.thread.ID, testBob, "bob", "re", "", fx.first, nil, false, ""); err != nil {
 		t.Fatalf("reply to a thread message failed: %v", err)
 	}
 
-	if _, err := s.AddMessage(ctx, fx.chat.ID, fx.thread.ID, testBob, "bob", "re", "", "parent", nil, false, ""); err == nil {
+	if _, _, err := s.AddMessage(ctx, fx.chat.ID, fx.thread.ID, testBob, "bob", "re", "", "parent", nil, false, ""); err == nil {
 		t.Error("a thread reply resolved a chat-level message")
 	}
 }
