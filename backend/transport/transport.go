@@ -462,6 +462,11 @@ const federationScheme = "federationSignature"
 // matching the pre-migration transport.
 const federationTimestampToleranceSec = 300
 
+// maxFederatedBody caps the request body read while verifying an inbound
+// federation signature, which happens before the signature is known to be
+// valid and before any credential is presented.
+const maxFederatedBody = 1 << 20
+
 // requestContextKey stores the raw *http.Request/*http.ResponseWriter for
 // operations that need direct request access (multipart uploads).
 type (
@@ -555,7 +560,12 @@ func verifyFederatedRequest(fm *federation.Manager, w http.ResponseWriter, r *ht
 		return false, false
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+	// This read happens before the signature is checked, so the cap is what
+	// bounds memory for an anonymous request naming any host. A federated
+	// message carries at most MaxMessageLen of text plus MaxEncryptedPayloadLen
+	// of ciphertext, so 1 MiB — the same cap Huma applies to these routes
+	// afterwards — leaves an order of magnitude of headroom.
+	r.Body = http.MaxBytesReader(w, r.Body, maxFederatedBody)
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		return false, true
