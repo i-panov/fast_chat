@@ -58,7 +58,7 @@ func (m *mockPushService) PublicKey() string { return "pk" }
 func TestSendPushForMessageNilServiceIsNoop(t *testing.T) {
 	s := newPushTestService(t)
 	// push is nil by default: must not panic.
-	s.SendPushForMessage(context.Background(), "c1", nil, "", "alice:localhost:8080")
+	s.SendPushForMessage(context.Background(), &model.Chat{ID: "c1"}, nil, "", "alice:localhost:8080")
 }
 
 func TestSendPushForMessageOnlineRecipientSkipped(t *testing.T) {
@@ -73,7 +73,7 @@ func TestSendPushForMessageOnlineRecipientSkipped(t *testing.T) {
 	s.store.AddConnection(alice.ID)
 
 	msg := &model.Message{ID: "m1", ChatID: "c1", FromID: alice.ID, FromNick: "alice"}
-	s.SendPushForMessage(context.Background(), "c1", msg, "", alice.ID)
+	s.SendPushForMessage(context.Background(), &model.Chat{ID: "c1"}, msg, "", alice.ID)
 
 	select {
 	case <-svc.sent:
@@ -96,7 +96,7 @@ func TestSendPushForMessageOfflineWithSubscriptions(t *testing.T) {
 	}
 
 	msg := &model.Message{ID: "m1", ChatID: "c1", FromID: alice.ID, FromNick: "alice"}
-	s.SendPushForMessage(context.Background(), "c1", msg, "", alice.ID)
+	s.SendPushForMessage(context.Background(), &model.Chat{ID: "c1"}, msg, "", alice.ID)
 
 	select {
 	case payload := <-mock.sent:

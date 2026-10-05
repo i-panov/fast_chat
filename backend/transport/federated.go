@@ -262,12 +262,17 @@ func federatedEdit(
 		return nil, err
 	}
 
-	lookupID := chatID
+	// The message is addressed by (chat, id); a thread only narrows the
+	// container. Without this check a peer that knew a foreign thread id
+	// could aim the edit at a thread of another chat.
 	if threadID != "" {
-		lookupID = threadID
+		thread, ok := st.GetThread(ctx, threadID)
+		if !ok || thread.ChatID != chatID {
+			return nil, errThreadNotFound
+		}
 	}
 
-	updated, err := svc.EditFederatedMessage(ctx, chat, lookupID, messageID, threadID, req, cfg.MessageEditTTL)
+	updated, err := svc.EditFederatedMessage(ctx, chat, messageID, threadID, req, cfg.MessageEditTTL)
 	if err != nil {
 		return nil, federatedOrInternalError(err)
 	}

@@ -118,8 +118,19 @@ func (f *File) ToFileInfo() FileInfo {
 // AutoMigrate run and then fails the `updated_at >= since` filter of the sync
 // delta. See store.repairFrozenUpdatedAt.
 type Message struct {
-	ID               string       `gorm:"primaryKey"             json:"id"`
-	ChatID           string       `gorm:"index;not null"         json:"chatId"`
+	ID string `gorm:"primaryKey" json:"id"`
+	// ChatID is always the chat the message belongs to, including for thread
+	// messages; ThreadID carries the thread and is empty for chat messages.
+	// Overloading ChatID with the thread id would hide thread messages from
+	// every chat-scoped query (deletion, read receipts, file access).
+	ChatID string `gorm:"index;not null" json:"chatId"`
+	// ThreadID stays nullable on purpose. AutoMigrate adds a new column as
+	// NULL for existing rows, and the pass that normalises those NULLs to the
+	// empty string runs after it; declaring NOT NULL would fail on the rows
+	// that exist at that moment. Queries therefore use threadIDIsEmpty, which
+	// treats NULL as chat level. No index tag is needed because
+	// idx_messages_thread_created already leads with this column.
+	ThreadID         string       `json:"-"`
 	FromID           string       `gorm:"not null"               json:"fromId"`
 	FromNick         string       `gorm:"not null"               json:"fromNick"`
 	Text             string       `gorm:"not null"               json:"text"`

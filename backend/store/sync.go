@@ -52,16 +52,22 @@ func (s *Store) ChatChangedSince(ctx context.Context, userID string, since time.
 	return chats
 }
 
-// MessagesChangedSince returns all messages in the given chats whose
-// `updated_at` is >= `since`, plus their attached files. This includes
+// MessagesChangedSince returns all top-level messages in the given chats
+// whose `updated_at` is >= `since`, plus their attached files. This includes
 // newly created messages and edits.
+//
+// Thread messages are deliberately excluded: the client stores them in a
+// separate IDB object and the delta applier writes everything it receives into
+// the chat message store, so including them would duplicate a thread into the
+// chat feed. Delivering them on reconnect needs a dedicated delta key plus
+// client-side routing and is not implemented yet.
 func (s *Store) MessagesChangedSince(ctx context.Context, chatIDs []string, since time.Time) []model.Message {
 	if len(chatIDs) == 0 {
 		return nil
 	}
 
 	var msgs []model.Message
-	s.db.WithContext(ctx).Where("chat_id IN ? AND updated_at >= ?", chatIDs, since).
+	s.db.WithContext(ctx).Where("chat_id IN ? AND "+threadIDIsEmpty+" AND updated_at >= ?", chatIDs, since).
 		Order("created_at ASC, id ASC").
 		Find(&msgs)
 

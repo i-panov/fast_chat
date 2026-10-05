@@ -55,6 +55,11 @@ func createIndexes(db *gorm.DB) error {
 		// serves both the WHERE and the ORDER BY.
 		"CREATE INDEX IF NOT EXISTS idx_messages_chat_created ON messages(chat_id, created_at, id)",
 
+		// Threads: every thread-scoped read (list messages, resolve the
+		// parent) filters by thread_id and orders by created_at, so it needs
+		// the same composite shape as the chat index.
+		"CREATE INDEX IF NOT EXISTS idx_messages_thread_created ON messages(thread_id, created_at, id)",
+
 		// ChatMember: GetUserChats looks up chats by user_id, and
 		// enrichChat looks up members by chat_id. Both columns are
 		// needed for the N+1 batch fix to stay cheap as the table grows.
@@ -95,6 +100,71 @@ func createIndexes(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+// backfillMessageThreadID splits the overloaded messages.chat_id into the real
+// chat id and a dedicated thread_id.
+//
+// chat_id used to hold the thread id for thread messages, which hid those rows
+// from every chat-scoped query: deleting a chat left them behind with no
+// tombstone, read receipts could never resolve them, and file access checks
+// looked up a chat that did not exist. This moves each such row to
+// (chat_id = the thread's chat, thread_id = the old chat_id value).
+//
+// Both statements are idempotent and self-limiting: after the first pass
+// chat_id names a real chat, and a chat id is never also a thread id.
+//
+// deleted_messages needs no matching migration: the old delete path could not
+// write a tombstone for a thread message at all. The client addressed the
+// thread by its id, and requireChatMember resolves a chat by id, so the
+// request failed with 404 before any row was written. A thread message deleted
+// together with its chat got no tombstone either, because the chat deletion
+// only selected rows whose chat_id matched the chat. So no tombstone ever
+// carries a thread id, and there is nothing to rewrite. Thread tombstones
+// written from now on name the real chat, so the delta does deliver them; the
+// remaining gap is client-side routing into the thread store, which is why
+// store.MessagesChangedSince still excludes thread messages.
+//
+// Cost of the two statements below: unlike repairFrozenUpdatedAt and the
+// normalize pass, they are index-driven rather than scans. SQLite drives them
+// from the small side (threads and chats) and probes messages through
+// idx_messages_chat_updated and idx_messages_thread_created.
+//
+// That is the exception, not the rule. InitDB performs about thirteen full
+// scans per boot: one per column in utcTimestampColumns (three of them on
+// messages) plus repairFrozenUpdatedAt. The normalize probe filters on
+// substr(col, -6) <> '+00:00', a function of the column, so no index can serve
+// it and SQLite reads the table through whichever covering index it prefers;
+// switching the probe to EXISTS does not change that (measured 23ms against
+// 26ms for count(*)). Each scan only walks a narrow text column, which is why
+// the total stays cheap: roughly 0.3s on 200k messages. Note that the scan
+// count is the number of columns in utcTimestampColumns, so adding one there
+// adds a scan on every boot.
+func backfillMessageThreadID(db *gorm.DB) error {
+	// AutoMigrate adds thread_id as NULL for existing rows. Normalise first so
+	// every comparison below can rely on the empty string, and so the column
+	// needs no default (a `default:` tag would be resolved by GORM into a
+	// frozen literal on every insert, see model.Message).
+	if err := db.Exec("UPDATE messages SET thread_id = '' WHERE thread_id IS NULL").Error; err != nil {
+		return err
+	}
+
+	// SQLite evaluates every SET expression against the original row, so
+	// thread_id captures chat_id before chat_id is rewritten.
+	if err := db.Exec(`UPDATE messages
+		SET thread_id = chat_id,
+		    chat_id = (SELECT t.chat_id FROM threads t WHERE t.id = messages.chat_id)
+		WHERE chat_id IN (SELECT id FROM threads)`).Error; err != nil {
+		return err
+	}
+
+	// Rows whose thread was already deleted (a chat deletion used to remove
+	// threads but leave their messages) point at neither a chat nor a live
+	// thread. Mark them as thread rows so they stop masquerading as chat
+	// messages and stay out of the chat feed and delta.
+	return db.Exec(`UPDATE messages
+		SET thread_id = chat_id
+		WHERE thread_id = '' AND chat_id NOT IN (SELECT id FROM chats)`).Error
 }
 
 // repairFrozenUpdatedAt fixes messages poisoned by the `default:0` tag that

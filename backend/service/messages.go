@@ -411,13 +411,13 @@ func (s *Service) GetThreadMessages(ctx context.Context, threadID string, limit 
 	return messages, nextCursor
 }
 
-// SendMessage validates and persists a message, resolves file hashes, links
-// the attached files and notifies all members over the realtime hub.
+// SendMessage persists a message in a chat. The chat is authoritative: a
+// thread id only selects the container, so the chat a message is written under
+// is always chat.ID.
 func (s *Service) SendMessage(
 	ctx context.Context,
 	chat *model.Chat,
 	threadID string,
-	chatID string,
 	fromID string,
 	fromNick string,
 	input *SendMessageInput,
@@ -444,7 +444,7 @@ func (s *Service) SendMessage(
 	}
 
 	msg, err := s.store.AddMessage(
-		ctx, chatID, threadID, fromID, fromNick, input.Text,
+		ctx, chat.ID, threadID, fromID, fromNick, input.Text,
 		input.ID, input.ReplyToID, input.Location, input.Encrypted, input.EncryptedPayload,
 	)
 	if err != nil {
@@ -460,14 +460,14 @@ func (s *Service) SendMessage(
 		msg.Files = files
 	}
 
-	s.notifyMessageSent(ctx, chat, msg, threadID, chatID, fromID)
+	s.notifyMessageSent(ctx, chat, msg, threadID, fromID)
 
 	return msg, nil
 }
 
 // notifyMessageSent broadcasts a new message to all chat members and marks it
 // delivered for the non-sender recipients. Delivery tracking is best-effort.
-func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *model.Message, threadID, chatID, senderID string) {
+func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *model.Message, threadID, senderID string) {
 	eventName := eventNewMessage
 	eventData := map[string]any{keyMessage: msg}
 	if threadID != "" {
@@ -489,7 +489,7 @@ func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *
 			Event: eventMessageDelivered,
 			Data: map[string]any{
 				keyMessageID: msg.ID,
-				keyChatID:    chatID,
+				keyChatID:    chat.ID,
 			},
 		})
 	}
@@ -507,15 +507,10 @@ func (s *Service) EditMessage(
 	req *DecodedEditRequest,
 	editTTL int,
 ) (model.Message, EditPayload, error) {
-	// For thread messages the transport has already resolved ChatID from the
-	// thread; the store looks the message up in the thread bucket when a
-	// threadID is present.
-	lookupID := chatID
-	if threadID != "" {
-		lookupID = threadID
-	}
-
-	msg, err := s.store.GetMessage(ctx, lookupID, messageID)
+	// chatID is always the real chat: the store resolves the container from
+	// threadID itself, so a thread id from another chat cannot be used to
+	// address a message in this one.
+	msg, err := s.store.GetMessage(ctx, chatID, messageID)
 	if err != nil {
 		return model.Message{}, EditPayload{}, ErrMessageNotFound
 	}
@@ -590,9 +585,9 @@ func (s *Service) BroadcastMessageUpdated(_ context.Context, chat *model.Chat, t
 }
 
 // DeleteMessage loads, authorizes and deletes a message, broadcasting the
-// tombstones to every member.
-func (s *Service) DeleteMessage(ctx context.Context, chat *model.Chat, chatID, messageID, userID string, deleteTTL int) error {
-	msg, err := s.store.GetMessage(ctx, chatID, messageID)
+// tombstones to every member. The chat is authoritative, as in SendMessage.
+func (s *Service) DeleteMessage(ctx context.Context, chat *model.Chat, messageID, userID string, deleteTTL int) error {
+	msg, err := s.store.GetMessage(ctx, chat.ID, messageID)
 	if err != nil {
 		return ErrMessageNotFound
 	}
@@ -609,12 +604,12 @@ func (s *Service) DeleteMessage(ctx context.Context, chat *model.Chat, chatID, m
 		return ErrDeleteWindowExpired
 	}
 
-	if err := s.store.DeleteMessage(ctx, chatID, messageID, userID); err != nil {
+	if err := s.store.DeleteMessage(ctx, chat.ID, messageID, userID); err != nil {
 		return ErrDeleteForbidden
 	}
 
 	for _, memberID := range chat.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{keyChatID: chatID, keyMessageID: messageID}})
+		s.hub.Send(memberID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{keyChatID: chat.ID, keyMessageID: messageID}})
 	}
 
 	return nil

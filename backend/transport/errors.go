@@ -123,6 +123,10 @@ type sentinelErrPair struct {
 	target   *statusError
 }
 
+// errThreadNotFound is shared by the sentinel mapping and the handlers that
+// reject a thread id directly, so the wire message stays identical.
+var errThreadNotFound = &statusError{ErrorMessage: "thread not found", code: http.StatusNotFound}
+
 var sentinelErrors = []sentinelErrPair{
 	// Auth domain.
 	{
@@ -211,7 +215,7 @@ var sentinelErrors = []sentinelErrPair{
 	// Message domain.
 	{
 		sentinel: service.ErrThreadNotFound,
-		target:   &statusError{ErrorMessage: "thread not found", code: http.StatusNotFound},
+		target:   errThreadNotFound,
 	},
 	{
 		sentinel: service.ErrMessageNotFound,

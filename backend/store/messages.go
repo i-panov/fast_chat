@@ -44,8 +44,6 @@ func (s *Store) EditMessage(
 	encryptedPayload *string,
 ) (model.Message, error) {
 
-	lookupID := chatID
-
 	if threadID != "" {
 		var thread model.Thread
 
@@ -53,12 +51,14 @@ func (s *Store) EditMessage(
 			return model.Message{}, ErrThreadNotFound
 		}
 
-		lookupID = threadID
+		if thread.ChatID != chatID {
+			return model.Message{}, ErrThreadNotFound
+		}
 	}
 
 	var msg model.Message
 
-	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", lookupID, messageID).First(&msg).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
 		return model.Message{}, ErrMessageNotFound
 	}
 
@@ -104,11 +104,51 @@ func (s *Store) EditMessage(
 		msg.Location = location
 	}
 
-	if err := s.db.WithContext(ctx).Model(&model.Message{}).Where("chat_id = ? AND id = ?", lookupID, messageID).Updates(updates).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates).Error; err != nil {
 		return model.Message{}, err
 	}
 
 	return msg, nil
+}
+
+// threadIDIsEmpty matches rows that are not thread messages.
+//
+// NULL counts as chat level on purpose: a row whose thread_id was never
+// populated must still appear in the chat feed and in the sync delta, so
+// comparing against the empty string alone is not safe here.
+const threadIDIsEmpty = "(thread_id = '' OR thread_id IS NULL)"
+
+// messageScope is the predicate selecting the messages of one container: a
+// chat's top-level messages, or the messages of a single thread.
+type messageScope struct {
+	where string
+	args  []any
+}
+
+// chatScope selects the top-level messages of a chat.
+//
+// thread_id must be excluded explicitly: chat_id now always names the chat,
+// so without this filter every thread message would also show up in the chat
+// feed and in the chat message list.
+func chatScope(chatID string) messageScope {
+	return messageScope{where: "chat_id = ? AND " + threadIDIsEmpty, args: []any{chatID}}
+}
+
+// threadScope selects the messages of one thread.
+func threadScope(threadID string) messageScope {
+	return messageScope{where: "thread_id = ?", args: []any{threadID}}
+}
+
+// and returns a new scope narrowed by an extra condition. args is copied so a
+// later append can never write into an array another query is still reading
+// from, which a bare append(scope.args, ...) would allow whenever the backing
+// array had spare capacity.
+func (s messageScope) and(cond string, args ...any) messageScope {
+	nested := make([]any, 0, len(s.args)+len(args))
+	nested = append(nested, s.args...)
+	nested = append(nested, args...)
+
+	return messageScope{where: s.where + " AND " + cond, args: nested}
 }
 
 func (s *Store) SetMessageFiles(ctx context.Context, messageID string, fileIDs []string) error {
@@ -138,7 +178,9 @@ func (s *Store) AddMessage(
 	encryptedPayload string,
 ) (*model.Message, error) {
 
-	lookupID := chatID
+	// The thread must exist and belong to this chat, so a thread id from
+	// another chat cannot be used to write into it.
+	scope := chatScope(chatID)
 
 	if threadID != "" {
 		var thread model.Thread
@@ -147,7 +189,11 @@ func (s *Store) AddMessage(
 			return nil, ErrThreadNotFound
 		}
 
-		lookupID = threadID
+		if thread.ChatID != chatID {
+			return nil, ErrThreadNotFound
+		}
+
+		scope = threadScope(threadID)
 	} else {
 		var chatCount int64
 		s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Count(&chatCount)
@@ -162,7 +208,9 @@ func (s *Store) AddMessage(
 	if replyToID != "" {
 		var replyMsg model.Message
 
-		if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", lookupID, replyToID).First(&replyMsg).Error; err != nil {
+		target := scope.and("id = ?", replyToID)
+
+		if err := s.db.WithContext(ctx).Where(target.where, target.args...).First(&replyMsg).Error; err != nil {
 			return nil, ErrMessageNotFound
 		}
 
@@ -183,7 +231,8 @@ func (s *Store) AddMessage(
 	now := time.Now().UTC()
 	msg := model.Message{
 		ID:               id,
-		ChatID:           lookupID,
+		ChatID:           chatID,
+		ThreadID:         threadID,
 		FromID:           fromID,
 		FromNick:         fromNick,
 		Text:             text,
@@ -212,12 +261,29 @@ func (s *Store) AddMessage(
 	return &msg, nil
 }
 
+// AddRawMessage inserts a message the caller built itself. It is the write
+// path used by the federation receiver, which assembles the row from the wire
+// payload; the only fields it may not choose freely are the ones this store
+// owns, so the chat and the thread are validated here rather than trusted.
+// A non-empty ThreadID must exist and belong to ChatID.
 func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
 	var count int64
 	s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", msg.ChatID).Count(&count)
 
 	if count == 0 {
 		return ErrChatNotFound
+	}
+
+	if msg.ThreadID != "" {
+		var thread model.Thread
+
+		if err := s.db.WithContext(ctx).First(&thread, "id = ?", msg.ThreadID).Error; err != nil {
+			return ErrThreadNotFound
+		}
+
+		if thread.ChatID != msg.ChatID {
+			return ErrThreadNotFound
+		}
 	}
 
 	// Callers on the federation path build the message themselves, leaving the
@@ -241,7 +307,7 @@ func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
 }
 
 func (s *Store) GetMessagesPaginated(ctx context.Context, chatID string, limit int, before string) ([]model.Message, string, bool) {
-	return s.paginateMessages(ctx, chatID, limit, before)
+	return s.paginateMessages(ctx, chatScope(chatID), limit, before)
 }
 
 func (s *Store) DeleteMessage(ctx context.Context, chatID, messageID, userID string) error {
@@ -336,17 +402,21 @@ func (s *Store) DeleteRawMessage(ctx context.Context, chatID, messageID string) 
 	})
 }
 
-func (s *Store) paginateMessages(ctx context.Context, chatID string, limit int, before string) ([]model.Message, string, bool) {
-	query := s.db.WithContext(ctx).Where("chat_id = ?", chatID)
+func (s *Store) paginateMessages(ctx context.Context, scope messageScope, limit int, before string) ([]model.Message, string, bool) {
+	query := s.db.WithContext(ctx).Where(scope.where, scope.args...)
 
 	if before != "" {
 		var beforeMsg struct {
 			CreatedAt time.Time
 		}
 
+		// The cursor row must belong to the same container, otherwise a
+		// client could page past the end of a chat using an id from elsewhere.
+		cursorScope := scope.and("id = ?", before)
+
 		if err := s.db.WithContext(ctx).Model(&model.Message{}).
 			Select(fieldCreatedAt).
-			Where("id = ?", before).
+			Where(cursorScope.where, cursorScope.args...).
 			First(&beforeMsg).Error; err != nil {
 			return nil, "", false
 		}

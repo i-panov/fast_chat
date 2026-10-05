@@ -102,7 +102,7 @@ func registerMessageMutations(api huma.API, svc *service.Service, st *store.Stor
 			return nil, err
 		}
 
-		out, err := sendMessage(ctx, svc, fed, chat, input.ID, threadID, user, &service.SendMessageInput{
+		out, err := sendMessage(ctx, svc, fed, chat, threadID, user, &service.SendMessageInput{
 			ID:               input.Body.ID,
 			Text:             input.Body.Text,
 			ReplyToID:        input.Body.ReplyToID,
@@ -151,11 +151,11 @@ func registerMessageMutations(api huma.API, svc *service.Service, st *store.Stor
 			return nil, err
 		}
 
-		if err := svc.DeleteMessage(ctx, chat, input.ID, input.MessageID, user.ID, cfg.MessageDeleteTTL); err != nil {
+		if err := svc.DeleteMessage(ctx, chat, input.MessageID, user.ID, cfg.MessageDeleteTTL); err != nil {
 			return nil, messageOrInternalError(err)
 		}
 
-		fed.Delete(ctx, chat.RemoteServer, "/api/federated/chats/"+input.ID+"/messages/"+input.MessageID)
+		fed.Delete(ctx, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages/"+input.MessageID)
 
 		return deletedStatus(), nil
 	})
@@ -302,7 +302,7 @@ func registerThreadMessages(api huma.API, svc *service.Service, st *store.Store,
 			return nil, err
 		}
 
-		out, err := sendMessage(ctx, svc, fed, chat, input.ID, threadID, user, &service.SendMessageInput{
+		out, err := sendMessage(ctx, svc, fed, chat, threadID, user, &service.SendMessageInput{
 			ID:               input.Body.ID,
 			Text:             input.Body.Text,
 			ReplyToID:        input.Body.ReplyToID,
@@ -396,8 +396,10 @@ func messageLimit(limit int) int {
 	return limit
 }
 
-// resolveMessageTarget loads the chat for a message operation: direct chat ID
-// or via a thread. Mirrors the pre-migration SendMessage/EditMessage resolution.
+// resolveMessageTarget loads the chat a request addresses. For a thread the
+// chat comes from the thread, so callers must use chat.ID rather than the {id}
+// path parameter: a thread reached through a foreign chat id would otherwise
+// be written under a chat the caller was never authorised for.
 func resolveMessageTarget(ctx context.Context, svc *service.Service, st *store.Store, chatID, threadID, userID string) (*model.Chat, string, error) {
 	if threadID != "" {
 		thread, threadErr := requireThread(ctx, st, threadID)
@@ -425,7 +427,7 @@ func resolveMessageTarget(ctx context.Context, svc *service.Service, st *store.S
 func requireThread(ctx context.Context, st *store.Store, threadID string) (*model.Thread, error) {
 	thread, ok := st.GetThread(ctx, threadID)
 	if !ok {
-		return nil, &statusError{ErrorMessage: "thread not found", code: http.StatusNotFound}
+		return nil, errThreadNotFound
 	}
 
 	return &thread, nil
@@ -438,18 +440,18 @@ func sendMessage(
 	svc *service.Service,
 	fed *federation.Client,
 	chat *model.Chat,
-	chatID, threadID string,
+	threadID string,
 	user *authUser,
 	input *service.SendMessageInput,
 ) (*model.Message, error) {
 
-	msg, err := svc.SendMessage(ctx, chat, threadID, chatID, user.ID, user.Nick, input)
+	msg, err := svc.SendMessage(ctx, chat, threadID, user.ID, user.Nick, input)
 	if err != nil {
 		return nil, messageOrInternalError(err)
 	}
 
 	if threadID == "" {
-		fed.Post(ctx, chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages", map[string]any{
+		fed.Post(ctx, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages", map[string]any{
 			"id":               msg.ID,
 			"fromId":           msg.FromID,
 			"fromNick":         msg.FromNick,
@@ -466,7 +468,7 @@ func sendMessage(
 			continue
 		}
 
-		svc.SendPushForMessage(ctx, chatID, msg, threadID, memberID)
+		svc.SendPushForMessage(ctx, chat, msg, threadID, memberID)
 	}
 
 	return msg, nil
@@ -504,7 +506,7 @@ func editMessage(
 		}
 	}
 
-	updated, edit, err := svc.EditMessage(ctx, chatID, threadID, messageID, user.ID, req, cfg.MessageEditTTL)
+	updated, edit, err := svc.EditMessage(ctx, chat.ID, threadID, messageID, user.ID, req, cfg.MessageEditTTL)
 	if err != nil {
 		return nil, messageOrInternalError(err)
 	}
@@ -518,9 +520,9 @@ func editMessage(
 	}
 
 	if threadID != "" {
-		fed.Patch(ctx, chat.RemoteServer, "/api/federated/chats/"+chatID+"/threads/"+threadID+"/messages/"+messageID, payload)
+		fed.Patch(ctx, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/threads/"+threadID+"/messages/"+messageID, payload)
 	} else {
-		fed.Patch(ctx, chat.RemoteServer, "/api/federated/chats/"+chatID+"/messages/"+messageID, payload)
+		fed.Patch(ctx, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages/"+messageID, payload)
 	}
 
 	svc.BroadcastMessageUpdated(ctx, chat, threadID, &updated)

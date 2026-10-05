@@ -64,6 +64,12 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		slog.Warn("failed to migrate legacy tokens", "err", err)
 	}
 
+	// Split the overloaded messages.chat_id into chat_id + thread_id before
+	// anything queries messages by chat.
+	if err := backfillMessageThreadID(db); err != nil {
+		slog.Warn("failed to backfill message thread ids", "err", err)
+	}
+
 	// Repair messages whose updated_at was frozen to the table creation
 	// instant by the old column default, then pin every stored timestamp to
 	// UTC. Both must run before the server serves traffic: without them a

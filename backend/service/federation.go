@@ -231,14 +231,13 @@ func (s *Service) SendFederatedMessage(
 func (s *Service) EditFederatedMessage(
 	ctx context.Context,
 	chat *model.Chat,
-	lookupID,
 	messageID,
 	threadID string,
 	editReq *DecodedEditRequest,
 	editTTL int,
 ) (*model.Message, error) {
 
-	stored, err := s.store.GetMessage(ctx, lookupID, messageID)
+	stored, err := s.store.GetMessage(ctx, chat.ID, messageID)
 	if err != nil {
 		return nil, ErrMessageNotFound
 	}
@@ -263,7 +262,7 @@ func (s *Service) EditFederatedMessage(
 	now := time.Now().UTC()
 
 	if err := s.store.EditRawMessage(
-		ctx, lookupID, messageID, edit.Text, now,
+		ctx, chat.ID, messageID, edit.Text, now,
 		edit.Location, edit.ClearLocation, edit.EncryptedPtr, edit.EncryptedPayloadPtr,
 	); err != nil {
 		return nil, err
@@ -304,7 +303,7 @@ func (s *Service) EditFederatedMessage(
 		} else {
 			updated.Location = edit.Location
 		}
-	} else if fresher, gerr := s.store.GetMessage(ctx, lookupID, messageID); gerr == nil {
+	} else if fresher, gerr := s.store.GetMessage(ctx, chat.ID, messageID); gerr == nil {
 		updated.Location = fresher.Location
 	}
 

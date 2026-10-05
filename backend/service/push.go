@@ -46,7 +46,7 @@ func IsValidPushEndpoint(endpoint string) bool {
 // recipient. It is a no-op when push is disabled or the recipient is online.
 func (s *Service) SendPushForMessage(
 	ctx context.Context,
-	chatID string,
+	chat *model.Chat,
 	msg *model.Message,
 	threadID,
 	recipientID string,
@@ -61,9 +61,9 @@ func (s *Service) SendPushForMessage(
 		// The server does not know the recipient's language and the
 		// message content is E2E-encrypted anyway; keep the body empty
 		// so the notification is just the sender's nickname.
-		Tag: "chat-" + chatID,
+		Tag: "chat-" + chat.ID,
 		Data: PushPayloadData{
-			ChatID:    chatID,
+			ChatID:    chat.ID,
 			MessageID: msg.ID,
 			ThreadID:  threadID,
 		},

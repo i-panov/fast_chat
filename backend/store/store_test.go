@@ -289,9 +289,9 @@ func TestEditThreadMessage(t *testing.T) {
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 	parent, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "parent", "", "", nil, false, "")
 	thread, _ := s.CreateThread(context.Background(), chat.ID, parent.ID, parent.Text, parent.FromNick)
-	msg, _ := s.AddMessage(context.Background(), "", thread.ID, testAlice, "alice", "Hello", "", "", nil, false, "")
+	msg, _ := s.AddMessage(context.Background(), chat.ID, thread.ID, testAlice, "alice", "Hello", "", "", nil, false, "")
 
-	updated, err := s.EditMessage(context.Background(), "", thread.ID, msg.ID, testAlice, testEdited, nil, false, nil, nil)
+	updated, err := s.EditMessage(context.Background(), chat.ID, thread.ID, msg.ID, testAlice, testEdited, nil, false, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestEditThreadMessage(t *testing.T) {
 		t.Error("expected EditedAt to be set")
 	}
 
-	_, err = s.EditMessage(context.Background(), "", thread.ID, msg.ID, testBob, "Hacked!", nil, false, nil, nil)
+	_, err = s.EditMessage(context.Background(), chat.ID, thread.ID, msg.ID, testBob, "Hacked!", nil, false, nil, nil)
 	if err == nil {
 		t.Error("expected error when bob edits alice's thread message")
 	}
@@ -869,7 +869,7 @@ func TestDeleteChatCascade(t *testing.T) {
 	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob, testCarol}, "")
 	msg, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "hi", "", "", nil, false, "")
 	thread, _ := s.CreateThread(context.Background(), chat.ID, msg.ID, "hi", "alice")
-	s.AddMessage(context.Background(), "", thread.ID, testBob, "bob", "reply", "", "", nil, false, "")
+	s.AddMessage(context.Background(), chat.ID, thread.ID, testBob, "bob", "reply", "", "", nil, false, "")
 	f, _ := s.SaveFile(context.Background(), "h", "image/png", 1, "a.png", "a.png")
 	s.AddMessageFiles(context.Background(), msg.ID, []string{f.ID})
 
@@ -950,7 +950,7 @@ func TestAddThreadMessage(t *testing.T) {
 	s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Parent", "parent-1", "", nil, false, "")
 	thread, _ := s.CreateThread(context.Background(), chat.ID, "parent-1", "Parent", "alice")
 
-	msg, err := s.AddMessage(context.Background(), "", thread.ID, testBob, "bob", "Reply", "", "", nil, false, "")
+	msg, err := s.AddMessage(context.Background(), chat.ID, thread.ID, testBob, "bob", "Reply", "", "", nil, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

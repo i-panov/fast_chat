@@ -76,5 +76,5 @@ func (s *Store) GetThreadsForChat(ctx context.Context, chatID string) []model.Th
 }
 
 func (s *Store) GetThreadMessagesPaginated(ctx context.Context, threadID string, limit int, before string) ([]model.Message, string, bool) {
-	return s.paginateMessages(ctx, threadID, limit, before)
+	return s.paginateMessages(ctx, threadScope(threadID), limit, before)
 }
