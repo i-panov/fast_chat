@@ -3,6 +3,7 @@ package store
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -19,6 +20,12 @@ type ChatMember struct {
 func InitDB(dsn string) (*gorm.DB, error) {
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
+		// GORM defaults to time.Now().Local() for fields it fills in itself
+		// (autoCreateTime/autoUpdateTime). Stored timestamps are compared as
+		// text against a UTC sync cursor, so a local-zone value would be
+		// ordered by wall-clock digits instead of by instant. Explicitly
+		// assigned timestamps still have to be converted by the caller.
+		NowFunc: func() time.Time { return time.Now().UTC() },
 	})
 	if err != nil {
 		return nil, err
@@ -35,6 +42,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&model.DeletedMessage{},
 		&model.DeletedChat{},
 		&model.MessageReadStatus{},
+		&model.PushSubscription{},
 	); err != nil {
 		return nil, err
 	}
@@ -54,6 +62,19 @@ func InitDB(dsn string) (*gorm.DB, error) {
 	// in place so existing sessions survive the switch to hashed storage.
 	if err := migrateLegacyTokens(db); err != nil {
 		slog.Warn("failed to migrate legacy tokens", "err", err)
+	}
+
+	// Repair messages whose updated_at was frozen to the table creation
+	// instant by the old column default, then pin every stored timestamp to
+	// UTC. Both must run before the server serves traffic: without them a
+	// catch-up sync silently omits messages on hosts that are not at or east
+	// of UTC.
+	if err := repairFrozenUpdatedAt(db); err != nil {
+		slog.Warn("failed to repair frozen message timestamps", "err", err)
+	}
+
+	if err := normalizeTimestampsToUTC(db); err != nil {
+		slog.Warn("failed to normalize timestamps to UTC", "err", err)
 	}
 
 	sqlDB, err := db.DB()

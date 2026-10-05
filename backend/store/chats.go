@@ -69,7 +69,7 @@ func (s *Store) CreateChat(ctx context.Context, member1, member2, remoteServer s
 		ID:           id,
 		Type:         chatTypePrivate,
 		RemoteServer: remoteServer,
-		CreatedAt:    time.Now(),
+		CreatedAt:    time.Now().UTC(),
 	}
 
 	if err := s.db.WithContext(ctx).Create(chat).Error; err != nil {
@@ -123,7 +123,7 @@ func (s *Store) CreateGroupChat(ctx context.Context, name, ownerID string, membe
 		Name:         name,
 		OwnerID:      ownerID,
 		RemoteServer: remoteServer,
-		CreatedAt:    time.Now(),
+		CreatedAt:    time.Now().UTC(),
 	}
 
 	if err := s.db.WithContext(ctx).Create(chat).Error; err != nil {
@@ -154,7 +154,7 @@ func (s *Store) EnsureSelfChat(ctx context.Context, userID string) (*model.Chat,
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).
-			Create(&model.Chat{ID: chatID, Type: chatTypeSelf, CreatedAt: time.Now()}).Error; err != nil {
+			Create(&model.Chat{ID: chatID, Type: chatTypeSelf, CreatedAt: time.Now().UTC()}).Error; err != nil {
 			return err
 		}
 
@@ -318,7 +318,7 @@ func (s *Store) DeleteChat(ctx context.Context, chatID string) error {
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		now := time.Now()
+		now := time.Now().UTC()
 
 		if err := writeChatDeleteTombs(tx, chatID, chat.Members, now); err != nil {
 			return err

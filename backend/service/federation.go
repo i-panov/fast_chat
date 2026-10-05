@@ -110,7 +110,7 @@ func (s *Service) CreateFederatedChat(
 	chat := &model.Chat{
 		ID:           chatID,
 		Members:      members,
-		CreatedAt:    time.Now(),
+		CreatedAt:    time.Now().UTC(),
 		RemoteServer: remoteServer,
 	}
 
@@ -199,7 +199,7 @@ func (s *Service) SendFederatedMessage(
 		Text:             in.Text,
 		Encrypted:        in.Encrypted,
 		EncryptedPayload: in.EncryptedPayload,
-		CreatedAt:        time.Now(),
+		CreatedAt:        time.Now().UTC(),
 		Location:         in.Location,
 	}
 
@@ -260,7 +260,7 @@ func (s *Service) EditFederatedMessage(
 		return nil, err
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 
 	if err := s.store.EditRawMessage(
 		ctx, lookupID, messageID, edit.Text, now,

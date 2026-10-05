@@ -12,6 +12,11 @@ import (
 	"fast_chat/model"
 )
 
+const (
+	fieldKeyBackup   = "key_backup"
+	fieldKeyBackupAt = "key_backup_at"
+)
+
 var (
 	ErrNicknameTaken = errors.New("nickname already taken")
 	ErrEmailTaken    = errors.New("email already taken")
@@ -49,7 +54,7 @@ func escapeLike(value string) string {
 
 func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string, tokenExpiry time.Duration) (*model.User, error) {
 	fullID := nick + ":" + serverDomain
-	now := time.Now()
+	now := time.Now().UTC()
 	token := GenerateID()
 
 	user := &model.User{
@@ -127,16 +132,16 @@ func (s *Store) GetUserPublicKey(ctx context.Context, userID string) (string, bo
 // SetKeyBackup stores the client-encrypted private key backup blob for a
 // user. The server never decrypts it; it only stores and returns it.
 func (s *Store) SetKeyBackup(ctx context.Context, userID, blob string) error {
-	now := time.Now()
+	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
-		Updates(map[string]any{"key_backup": blob, "key_backup_at": now}).Error
+		Updates(map[string]any{fieldKeyBackup: blob, fieldKeyBackupAt: now}).Error
 }
 
 // GetKeyBackup returns the stored backup blob; ok=false when none exists.
 func (s *Store) GetKeyBackup(ctx context.Context, userID string) (string, bool) {
 	var blob string
 	if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
-		Select("key_backup").Scan(&blob).Error; err != nil || blob == "" {
+		Select(fieldKeyBackup).Scan(&blob).Error; err != nil || blob == "" {
 		return "", false
 	}
 
@@ -146,7 +151,7 @@ func (s *Store) GetKeyBackup(ctx context.Context, userID string) (string, bool) 
 // DeleteKeyBackup removes a user's backup blob (key revocation).
 func (s *Store) DeleteKeyBackup(ctx context.Context, userID string) error {
 	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
-		Updates(map[string]any{"key_backup": "", "key_backup_at": nil}).Error
+		Updates(map[string]any{fieldKeyBackup: "", fieldKeyBackupAt: nil}).Error
 }
 
 func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry time.Duration) (*model.User, error) {
@@ -157,7 +162,7 @@ func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry
 
 	token := GenerateID()
 	user.Token = hashToken(token)
-	user.TokenExpiresAt = time.Now().Add(tokenExpiry)
+	user.TokenExpiresAt = time.Now().UTC().Add(tokenExpiry)
 
 	if err := s.db.WithContext(ctx).Save(user).Error; err != nil {
 		return nil, err

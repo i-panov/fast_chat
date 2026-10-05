@@ -178,7 +178,7 @@ func TestSendFederatedMessage_Success(t *testing.T) {
 		ID:           "c1",
 		Members:      []string{"a:loc", "b:rem"},
 		RemoteServer: "rem",
-		CreatedAt:    time.Now(),
+		CreatedAt:    time.Now().UTC(),
 	}
 	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestSendFederatedMessage_Success(t *testing.T) {
 	}
 
 	// Reply enrichment.
-	parent := &model.Message{ID: "p1", ChatID: "c1", FromID: "a:loc", FromNick: "local", Text: "parent", CreatedAt: time.Now()}
+	parent := &model.Message{ID: "p1", ChatID: "c1", FromID: "a:loc", FromNick: "local", Text: "parent", CreatedAt: time.Now().UTC()}
 	if err := s.store.AddRawMessage(ctx, parent); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestSendFederatedMessage_Validation(t *testing.T) {
 	s := newFedTestService(t)
 	ctx := context.Background()
 
-	chat := &model.Chat{ID: "c1", Members: []string{"a:loc", "b:rem"}, RemoteServer: "rem", CreatedAt: time.Now()}
+	chat := &model.Chat{ID: "c1", Members: []string{"a:loc", "b:rem"}, RemoteServer: "rem", CreatedAt: time.Now().UTC()}
 	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
 		t.Fatal(err)
 	}
@@ -253,12 +253,12 @@ func TestDeleteFederatedMessage_Success(t *testing.T) {
 	s := newFedTestService(t)
 	ctx := context.Background()
 
-	chat := &model.Chat{ID: "c1", Members: []string{"a:loc", "b:rem"}, RemoteServer: "rem", CreatedAt: time.Now()}
+	chat := &model.Chat{ID: "c1", Members: []string{"a:loc", "b:rem"}, RemoteServer: "rem", CreatedAt: time.Now().UTC()}
 	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
 		t.Fatal(err)
 	}
 
-	msg := &model.Message{ID: "m1", ChatID: "c1", FromID: "b:rem", FromNick: "remote", Text: "hi", CreatedAt: time.Now()}
+	msg := &model.Message{ID: "m1", ChatID: "c1", FromID: "b:rem", FromNick: "remote", Text: "hi", CreatedAt: time.Now().UTC()}
 	if err := s.store.AddRawMessage(ctx, msg); err != nil {
 		t.Fatal(err)
 	}
@@ -276,12 +276,12 @@ func TestDeleteFederatedMessage_AuthorNotRemote(t *testing.T) {
 	s := newFedTestService(t)
 	ctx := context.Background()
 
-	chat := &model.Chat{ID: "c1", Members: []string{"a:loc", "b:rem"}, RemoteServer: "rem", CreatedAt: time.Now()}
+	chat := &model.Chat{ID: "c1", Members: []string{"a:loc", "b:rem"}, RemoteServer: "rem", CreatedAt: time.Now().UTC()}
 	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
 		t.Fatal(err)
 	}
 
-	msg := &model.Message{ID: "m1", ChatID: "c1", FromID: "a:loc", FromNick: "local", Text: "hi", CreatedAt: time.Now()}
+	msg := &model.Message{ID: "m1", ChatID: "c1", FromID: "a:loc", FromNick: "local", Text: "hi", CreatedAt: time.Now().UTC()}
 	if err := s.store.AddRawMessage(ctx, msg); err != nil {
 		t.Fatal(err)
 	}
@@ -295,12 +295,12 @@ func TestSyncFederated(t *testing.T) {
 	s := newFedTestService(t)
 	ctx := context.Background()
 
-	chat := &model.Chat{ID: "c1", Members: []string{"a:loc", "b:rem"}, RemoteServer: "rem", CreatedAt: time.Now()}
+	chat := &model.Chat{ID: "c1", Members: []string{"a:loc", "b:rem"}, RemoteServer: "rem", CreatedAt: time.Now().UTC()}
 	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
 		t.Fatal(err)
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	msg := &model.Message{ID: "m1", ChatID: "c1", FromID: "b:rem", FromNick: "remote", Text: "hi", CreatedAt: now, UpdatedAt: now}
 	if err := s.store.AddRawMessage(ctx, msg); err != nil {
 		t.Fatal(err)
@@ -378,5 +378,42 @@ func TestCreateFederatedChatBroadcastsChatCreated(t *testing.T) {
 	case evt := <-channels[0]:
 		t.Fatalf("unexpected event after idempotent call: %v", evt)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// TestSyncIncludesFederatedMessage is the end-to-end regression for inbound
+// peer messages never reaching a catch-up sync: such rows were stored with a
+// frozen updated_at and failed the delta's `updated_at >= since` filter, so a
+// client that was offline at the time only ever saw them live over SSE.
+func TestSyncIncludesFederatedMessage(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+
+	if _, err := s.store.CreateUser(ctx, "a@t.local", "a", "loc", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	chat := &model.Chat{
+		ID:           "c1",
+		Members:      []string{"a:loc", "b:rem"},
+		RemoteServer: "rem",
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.SendFederatedMessage(ctx, chat, &FederatedInboundMessage{
+		ID:       "m1",
+		FromID:   "b:rem",
+		FromNick: "remote",
+		Text:     "hello",
+	}, MaxMessageLen); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := s.Sync(ctx, "a:loc", time.Now().UTC().Add(-time.Hour))
+	if len(resp.Messages) != 1 || resp.Messages[0].ID != "m1" {
+		t.Fatalf("sync delta omitted the federated message, got %d messages", len(resp.Messages))
 	}
 }

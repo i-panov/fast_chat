@@ -9,10 +9,6 @@ import (
 	"fast_chat/model"
 )
 
-func (s *Store) AutoMigratePush() error {
-	return s.db.AutoMigrate(&model.PushSubscription{})
-}
-
 func (s *Store) AddPushSubscription(ctx context.Context, userID, endpoint, p256dh, auth string) (*model.PushSubscription, error) {
 	sub := &model.PushSubscription{
 		ID:        GenerateID(),
@@ -20,7 +16,7 @@ func (s *Store) AddPushSubscription(ctx context.Context, userID, endpoint, p256d
 		Endpoint:  endpoint,
 		P256DH:    p256dh,
 		Auth:      auth,
-		CreatedAt: time.Now(),
+		CreatedAt: time.Now().UTC(),
 	}
 
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{

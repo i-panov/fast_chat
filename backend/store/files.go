@@ -25,7 +25,7 @@ func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64,
 		Size:         size,
 		OriginalName: originalName,
 		StoragePath:  storagePath,
-		CreatedAt:    time.Now(),
+		CreatedAt:    time.Now().UTC(),
 	}
 
 	if err := s.db.WithContext(ctx).Create(file).Error; err != nil {

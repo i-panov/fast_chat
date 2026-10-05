@@ -26,7 +26,7 @@ func (s *Store) MarkMessagesRead(ctx context.Context, messageIDs []string, userI
 		return nil
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	statuses := make([]model.MessageReadStatus, 0, len(messageIDs))
 
 	for _, msgID := range messageIDs {
@@ -51,7 +51,7 @@ func (s *Store) MarkMessagesDelivered(ctx context.Context, messageIDs []string, 
 		return nil
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	statuses := make([]model.MessageReadStatus, 0, len(messageIDs))
 
 	for _, msgID := range messageIDs {

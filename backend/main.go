@@ -290,11 +290,6 @@ func main() {
 	st := store.New(db)
 	st.Codes().StartCleanup(context.Background(), time.Minute)
 
-	if err := st.AutoMigratePush(); err != nil {
-		slog.Error("failed to auto-migrate push subscriptions", "err", err)
-		os.Exit(1)
-	}
-
 	onPushExpired := func(endpoint string) {
 		slog.Info("removing expired push subscription", "endpoint", endpoint)
 
@@ -456,9 +451,12 @@ func spaFallbackMiddleware(staticDir string) func(http.Handler) http.Handler {
 				return
 			}
 
+			// filepath.Clean on a rooted path collapses every ".." against the
+			// virtual root, so the result can never escape staticDir and Join
+			// keeps it contained.
 			fullPath := filepath.Join(staticDir, filepath.Clean("/"+path))
-			if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
-				http.ServeFile(w, r, fullPath)
+			if info, err := os.Stat(fullPath); err == nil && !info.IsDir() { //nolint:gosec // path is cleaned against "/" above, so it stays inside staticDir
+				http.ServeFile(w, r, fullPath) //nolint:gosec // same containment argument as the os.Stat call above
 
 				return
 			}

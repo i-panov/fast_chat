@@ -15,6 +15,7 @@ import (
 
 const (
 	fieldText      = "text"
+	fieldCreatedAt = "created_at"
 	fieldEditedAt  = "edited_at"
 	fieldUpdatedAt = "updated_at"
 )
@@ -65,7 +66,7 @@ func (s *Store) EditMessage(
 		return model.Message{}, ErrNotYourMessage
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	msg.Text = newText
 	msg.EditedAt = &now
 	msg.UpdatedAt = now
@@ -179,7 +180,7 @@ func (s *Store) AddMessage(
 		id = GenerateID()
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	msg := model.Message{
 		ID:               id,
 		ChatID:           lookupID,
@@ -219,6 +220,20 @@ func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
 		return ErrChatNotFound
 	}
 
+	// Callers on the federation path build the message themselves, leaving the
+	// timestamps to be auto-filled. Stamp them explicitly anyway: GORM's
+	// auto-tracking is bypassed as soon as the field carries a `default:` tag
+	// (see model.Message), which would store a frozen instant and hide the
+	// message from the sync delta.
+	now := time.Now().UTC()
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = now
+	}
+
+	if msg.UpdatedAt.IsZero() {
+		msg.UpdatedAt = msg.CreatedAt
+	}
+
 	// Idempotent insert: if a row with the same primary key already
 	// exists (e.g. a federated message replayed by a retrying client),
 	// silently succeed rather than failing the whole request.
@@ -251,7 +266,7 @@ func (s *Store) DeleteMessage(ctx context.Context, chatID, messageID, userID str
 		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.DeletedMessage{
 			ChatID:    chatID,
 			MessageID: messageID,
-			DeletedAt: time.Now(),
+			DeletedAt: time.Now().UTC(),
 		}).Error
 	})
 }
@@ -301,7 +316,7 @@ func (s *Store) EditRawMessage(
 }
 
 func (s *Store) DeleteRawMessage(ctx context.Context, chatID, messageID string) error {
-	now := time.Now()
+	now := time.Now().UTC()
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
@@ -330,7 +345,7 @@ func (s *Store) paginateMessages(ctx context.Context, chatID string, limit int, 
 		}
 
 		if err := s.db.WithContext(ctx).Model(&model.Message{}).
-			Select("created_at").
+			Select(fieldCreatedAt).
 			Where("id = ?", before).
 			First(&beforeMsg).Error; err != nil {
 			return nil, "", false

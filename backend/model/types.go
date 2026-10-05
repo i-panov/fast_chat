@@ -107,6 +107,16 @@ func (f *File) ToFileInfo() FileInfo {
 	}
 }
 
+// Message is a single chat message.
+//
+// CreatedAt and UpdatedAt deliberately carry no column default. GORM resolves
+// a `default:` tag into a concrete time.Time while parsing the schema and
+// renders it as a literal column DEFAULT. Because that resolved value is
+// non-nil, the create callback substitutes it into every INSERT that omits
+// the field, in preference to GORM's own autoCreateTime/autoUpdateTime
+// tracking. An insert that omits them therefore stores midnight of the first
+// AutoMigrate run and then fails the `updated_at >= since` filter of the sync
+// delta. See store.repairFrozenUpdatedAt.
 type Message struct {
 	ID               string       `gorm:"primaryKey"             json:"id"`
 	ChatID           string       `gorm:"index;not null"         json:"chatId"`
@@ -115,8 +125,8 @@ type Message struct {
 	Text             string       `gorm:"not null"               json:"text"`
 	Encrypted        bool         `gorm:"not null;default:false" json:"encrypted"`
 	EncryptedPayload string       `gorm:"not null;default:''"    json:"encryptedPayload"`
-	CreatedAt        time.Time    `gorm:"not null;default:0"     json:"createdAt"`
-	UpdatedAt        time.Time    `gorm:"not null;default:0"     json:"-"`
+	CreatedAt        time.Time    `gorm:"not null"               json:"createdAt"`
+	UpdatedAt        time.Time    `gorm:"not null"               json:"-"`
 	EditedAt         *time.Time   `json:"editedAt,omitempty"`
 	ReplyTo          *ReplyToInfo `gorm:"serializer:json"        json:"replyTo,omitempty"`
 	Location         *Location    `gorm:"serializer:json"        json:"location,omitempty"`

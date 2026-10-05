@@ -37,7 +37,7 @@ func (s *Store) CreateThread(ctx context.Context, chatID, parentMessageID, paren
 		ParentMessageID:   parentMessageID,
 		ParentMessageText: parentText,
 		ParentMessageFrom: parentFrom,
-		CreatedAt:         time.Now(),
+		CreatedAt:         time.Now().UTC(),
 	}
 
 	if err := s.db.WithContext(ctx).Create(thread).Error; err != nil {
