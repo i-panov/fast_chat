@@ -463,7 +463,7 @@ func TestShutdownDrainsWithAnOpenSSEStream(t *testing.T) {
 // while nothing answered on it.
 func TestServeUntilSignalFailsFastOnABindConflict(t *testing.T) {
 	// Occupy a port so the bind below cannot succeed.
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	occupied, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +525,7 @@ func TestServeUntilSignalFailsFastOnABindConflict(t *testing.T) {
 // must not look like a failure, or the process would exit non-zero on every
 // deploy.
 func TestServeUntilSignalReturnsNilOnShutdown(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +557,7 @@ func TestServeUntilSignalReturnsNilOnShutdown(t *testing.T) {
 	// Wait for the listener to come up, then stop it the way a signal would.
 	go func() {
 		for range 100 {
-			if conn, err := net.Dial("tcp", listener.Addr().String()); err == nil {
+			if conn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", listener.Addr().String()); err == nil {
 				_ = conn.Close()
 
 				break

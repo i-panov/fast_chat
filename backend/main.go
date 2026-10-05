@@ -344,8 +344,17 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	if err := runServer(server, hub, fedManager, fedClient, st, rl); err != nil {
-		fmt.Fprintf(os.Stderr, "FATAL: %v\n", err)
+	serveErr := runServer(shutdownDeps{
+		server:     server,
+		hub:        hub,
+		fedManager: fedManager,
+		fedClient:  fedClient,
+		store:      st,
+		limiters:   rl,
+		budget:     30 * time.Second,
+	})
+	if serveErr != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: %v\n", serveErr)
 		os.Exit(1)
 	}
 }
@@ -400,26 +409,11 @@ type shutdownDeps struct {
 // running, holding the SQLite file and reporting a live PID to whatever
 // supervises it. Signalling is what ends this, and a container that gets
 // SIGTERM on a failed deploy would otherwise look like a healthy start.
-func runServer(
-	server *http.Server,
-	hub *sse.Hub,
-	fedManager *federation.Manager,
-	fedClient *federation.Client,
-	st *store.Store,
-	rl *limiters,
-) error {
+func runServer(deps shutdownDeps) error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	return serveUntilSignal(server.ListenAndServe, shutdownDeps{
-		server:     server,
-		hub:        hub,
-		fedManager: fedManager,
-		fedClient:  fedClient,
-		store:      st,
-		limiters:   rl,
-		budget:     30 * time.Second,
-	}, quit)
+	return serveUntilSignal(deps.server.ListenAndServe, deps, quit)
 }
 
 // serveUntilSignal runs the listener and returns once a signal arrives or the

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -23,6 +24,9 @@ func initTestDB(t *testing.T) *Store {
 
 	return New(db)
 }
+
+// errExpectedMiss reports a read that unexpectedly found a row.
+var errExpectedMiss = errors.New("expected a miss")
 
 // concurrentRecorder collects failures from the goroutines below.
 type concurrentRecorder struct {
@@ -95,7 +99,7 @@ func TestConcurrentWritesDoNotHitSQLiteBusy(t *testing.T) {
 
 			for i := range messagesPerRun {
 				if _, err := s.GetMessage(ctx, chatID, "nonexistent"); err == nil {
-					rec.add(fmt.Errorf("reader %d/%d: expected a miss", w, i))
+					rec.add(fmt.Errorf("reader %d/%d: %w", w, i, errExpectedMiss))
 				}
 
 				if _, _, err := s.AddMessage(ctx, chatID, "", users[w%len(users)], "n",
@@ -160,10 +164,10 @@ func TestReadThenWriteTransactionSurvivesAConcurrentCommit(t *testing.T) {
 		rec concurrentRecorder
 	)
 
-	for i, userID := range users {
+	for _, userID := range users {
 		wg.Add(1)
 
-		go func(i int, userID string) {
+		go func(userID string) {
 			defer wg.Done()
 
 			// A few rounds so the joins interleave with the commits repeatedly
@@ -173,7 +177,7 @@ func TestReadThenWriteTransactionSurvivesAConcurrentCommit(t *testing.T) {
 					rec.add(fmt.Errorf("AddChatMember %s round %d: %w", userID, round, err))
 				}
 			}
-		}(i, userID)
+		}(userID)
 	}
 
 	for c := range committers {
