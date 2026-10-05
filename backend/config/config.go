@@ -33,10 +33,18 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host           string   `yaml:"host"`
-	Port           int      `yaml:"port"`
-	Domain         string   `yaml:"-"` // computed from Host + Port
-	StaticDir      string   `yaml:"static_dir"`
+	Host      string `yaml:"host"`
+	Port      int    `yaml:"port"`
+	Domain    string `yaml:"-"` // computed from Host + Port
+	StaticDir string `yaml:"static_dir"`
+	// TrustedProxies lists the IPs/CIDRs of reverse proxies in front of this
+	// server, so the client address can be recovered from X-Forwarded-For.
+	//
+	// List proxy hops only, never the address space of real clients. The
+	// resolver walks the forwarding chain from the right and skips every entry
+	// that falls inside a trusted range, so a client connecting from a trusted
+	// range is indistinguishable from a proxy: it gets skipped and the address
+	// it forged to its left becomes the rate limit key.
 	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 

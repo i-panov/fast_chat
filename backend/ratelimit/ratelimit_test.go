@@ -1,52 +1,94 @@
 package ratelimit
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestForwardedClientIP(t *testing.T) {
+	// A single proxy that appends the peer it saw.
+	direct := NewClientIPExtractor(nil)
+
+	// Two hops: 10.0.0.0/8 is the proxy network, so both proxy entries are
+	// trusted and only the client entry survives.
+	chained := NewClientIPExtractor([]string{"10.0.0.0/8"})
+
 	t.Run("single X-Forwarded-For", func(t *testing.T) {
 		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
 		r.Header.Set("X-Forwarded-For", "203.0.113.7")
 
-		got, ok := forwardedClientIP(r)
+		got, ok := direct.forwardedClientIP(r)
 		if !ok || got != "203.0.113.7" {
 			t.Fatalf("got %q, %v; want 203.0.113.7, true", got, ok)
 		}
 	})
 
-	t.Run("X-Forwarded-For chain picks first", func(t *testing.T) {
+	t.Run("chain yields the rightmost untrusted hop", func(t *testing.T) {
 		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
-		r.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.9 ,10.0.0.1")
+		// nginx appends the peer it saw; 10.0.0.1 is the trusted inner proxy.
+		r.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
 
-		got, ok := forwardedClientIP(r)
+		got, ok := chained.forwardedClientIP(r)
 		if !ok || got != "203.0.113.7" {
-			t.Fatalf("got %q, %v; want 203.0.113.7, true", got, ok)
+			t.Fatalf("got %q, %v; want the client 203.0.113.7, not a proxy", got, ok)
 		}
 	})
 
-	t.Run("invalid first XFF value yields no forwarded IP", func(t *testing.T) {
+	t.Run("spoofed prefix is ignored", func(t *testing.T) {
+		// Whatever the client prepends must not be able to become the key.
 		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
-		r.Header.Set("X-Forwarded-For", "garbage, 203.0.113.7")
+		r.Header.Set("X-Forwarded-For", "1.2.3.4, 5.6.7.8, 10.0.0.1")
 
-		// Only the first XFF entry is considered; garbage there means the
-		// proxy chain is untrustworthy and the IP is ignored entirely.
-		if got, ok := forwardedClientIP(r); ok {
+		got, ok := chained.forwardedClientIP(r)
+		if !ok || got != "5.6.7.8" {
+			t.Fatalf("got %q, %v; want the rightmost untrusted hop 5.6.7.8", got, ok)
+		}
+	})
+
+	t.Run("garbage in the client-supplied prefix is ignored", func(t *testing.T) {
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
+		r.Header.Set("X-Forwarded-For", "garbage, 203.0.113.7, 10.0.0.1")
+
+		got, ok := chained.forwardedClientIP(r)
+		if !ok || got != "203.0.113.7" {
+			t.Fatalf("got %q, %v; want 203.0.113.7", got, ok)
+		}
+	})
+
+	t.Run("chain of only trusted proxies yields nothing", func(t *testing.T) {
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
+		r.Header.Set("X-Forwarded-For", "10.0.0.1, 10.0.0.2")
+
+		if got, ok := chained.forwardedClientIP(r); ok {
 			t.Fatalf("got %q, true; want zero value", got)
 		}
 	})
 
-	t.Run("invalid XFF falls back to X-Real-IP", func(t *testing.T) {
+	t.Run("malformed trailing entry yields no forwarded IP", func(t *testing.T) {
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
+		r.Header.Set("X-Forwarded-For", "203.0.113.7, not-an-ip")
+
+		// The chain is walked from the right, so a malformed entry is only
+		// reached before a usable one; here it is, and the chain is untrusted.
+		if got, ok := chained.forwardedClientIP(r); ok {
+			t.Fatalf("got %q, true; want zero value", got)
+		}
+	})
+
+	t.Run("malformed XFF falls back to X-Real-IP", func(t *testing.T) {
 		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
 		r.Header.Set("X-Forwarded-For", "not-an-ip")
 		r.Header.Set("X-Real-IP", "198.51.100.42")
 
-		got, ok := forwardedClientIP(r)
+		got, ok := chained.forwardedClientIP(r)
 		if !ok || got != "198.51.100.42" {
 			t.Fatalf("got %q, %v; want 198.51.100.42, true", got, ok)
 		}
@@ -56,7 +98,7 @@ func TestForwardedClientIP(t *testing.T) {
 		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
 		r.Header.Set("X-Forwarded-For", "2001:db8::1")
 
-		got, ok := forwardedClientIP(r)
+		got, ok := direct.forwardedClientIP(r)
 		if !ok || got != "2001:db8::1" {
 			t.Fatalf("got %q, %v; want 2001:db8::1, true", got, ok)
 		}
@@ -65,7 +107,7 @@ func TestForwardedClientIP(t *testing.T) {
 	t.Run("no proxy headers", func(t *testing.T) {
 		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
 
-		if got, ok := forwardedClientIP(r); ok {
+		if got, ok := direct.forwardedClientIP(r); ok {
 			t.Fatalf("got %q, true; want zero value", got)
 		}
 	})
@@ -75,7 +117,7 @@ func TestForwardedClientIP(t *testing.T) {
 		r.Header.Set("X-Forwarded-For", "   ")
 		r.Header.Set("X-Real-IP", "   ")
 
-		if got, ok := forwardedClientIP(r); ok {
+		if got, ok := direct.forwardedClientIP(r); ok {
 			t.Fatalf("got %q, true; want zero value", got)
 		}
 	})
@@ -246,4 +288,85 @@ func TestRateLimiterAllow(t *testing.T) {
 			t.Fatal("two: stale entry should be evicted to make room")
 		}
 	})
+}
+
+// TestRotatingForwardedForCannotBypassTheLimiter is the regression for taking
+// the leftmost X-Forwarded-For entry. A proxy appends the peer it saw, so
+// everything in front of that is client-supplied; reading it gave an attacker
+// a fresh bucket per request and disabled the limit entirely.
+func TestRotatingForwardedForCannotBypassTheLimiter(t *testing.T) {
+	ext := NewClientIPExtractor([]string{"10.0.0.0/8"})
+
+	const limit = 5
+
+	limiter := New(limit, time.Minute, 1000)
+
+	// A trusted proxy peer, 10.0.0.1, and a client that rotates the prefix it
+	// prepends. The real client address (198.51.100.7) sits where the proxy put
+	// it, at the end.
+	//
+	// Every request must land in the same bucket, so exactly `limit` of them
+	// are allowed and the rest are rejected. Before the fix each request got
+	// its own key and all twenty passed.
+	for i := range 20 {
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
+		r.RemoteAddr = "10.0.0.1:3128"
+		r.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d, 198.51.100.7", i))
+
+		allowed := limiter.Allow(ext.ClientIP(r))
+
+		switch {
+		case i < limit && !allowed:
+			t.Fatalf("request %d rejected inside the limit of %d", i, limit)
+		case i >= limit && allowed:
+			t.Fatalf("request %d allowed past the limit of %d; the rotating XFF prefix created a new bucket", i, limit)
+		}
+	}
+}
+
+// TestClientInsideTrustedRangeIsSkipped pins the documented limitation of the
+// right-to-left walk: a real client connecting from an address inside a trusted
+// range is indistinguishable from a proxy hop, so it is skipped and the address
+// the client forged to its left becomes the key.
+//
+// This is why config.ServerConfig.TrustedProxies must list proxy hops only. It
+// is a property of the approach (gin and Express trust-proxy behave the same),
+// so the test fixes the behaviour rather than the behaviour being a bug.
+func TestClientInsideTrustedRangeIsSkipped(t *testing.T) {
+	ext := NewClientIPExtractor([]string{"10.0.0.0/8"})
+
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
+	r.RemoteAddr = "10.0.0.1:3128"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.55")
+
+	got := ext.ClientIP(r)
+	if got != "1.2.3.4" {
+		t.Fatalf("got %q, want 1.2.3.4: a client inside a trusted range is skipped as a proxy", got)
+	}
+}
+
+// TestMalformedTrustedProxyIsReported covers the silent downgrade: an entry
+// that can never match leaves the extractor falling back to the direct peer
+// while the operator believes client IPs are resolved per client.
+func TestMalformedTrustedProxyIsReported(t *testing.T) {
+	var buf bytes.Buffer
+
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	defer slog.SetDefault(previous)
+
+	NewClientIPExtractor([]string{"10.0.0.1", "not-an-ip", "10.0.0.0/33", "10.0.0.0/8"})
+
+	out := buf.String()
+	for _, want := range []string{"not-an-ip", "10.0.0.0/33"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("malformed entry %q was not reported; got: %s", want, out)
+		}
+	}
+
+	// The valid entries must not produce noise.
+	if strings.Contains(out, "10.0.0.1 ") || strings.Contains(out, "10.0.0.0/8") {
+		t.Errorf("valid entries were reported as malformed: %s", out)
+	}
 }

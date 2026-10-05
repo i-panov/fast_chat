@@ -17,7 +17,14 @@ server:
     port: 8080
     # Path to the built frontend assets (output of `make build:frontend`).
     static_dir: ../frontend/dist
-    # Optional: list of trusted proxy IPs/CIDRs for correct client IP extraction.
+    # Optional: list the reverse proxies in front of this server, so the client
+    # IP can be recovered from X-Forwarded-For for rate limiting.
+    #
+    # Two rules. List proxy hops ONLY, never the address space of real clients:
+    # a client connecting from a listed range is skipped as if it were a proxy
+    # and a forged address becomes its rate limit key. And the proxy must
+    # OVERWRITE X-Real-IP (nginx: `proxy_set_header X-Real-IP $remote_addr`),
+    # not forward the client's copy, or the limiter can be bypassed again.
     # trusted_proxies:
     #     - "10.0.0.0/8"
 
