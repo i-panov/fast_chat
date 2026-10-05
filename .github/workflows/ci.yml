@@ -8,8 +8,16 @@ on:
 
 jobs:
   backend:
-    name: Backend (Go)
+    name: Backend (Go, TZ=${{ matrix.tz }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Stored timestamps are compared as text against a UTC sync cursor, so
+        # a local-zone value is only detectable outside UTC. The suite passes
+        # trivially with TZ=UTC, which is why at least one non-UTC zone is
+        # mandatory here.
+        tz: ["UTC", "America/New_York", "Asia/Tokyo"]
     steps:
       - uses: actions/checkout@v4
 
@@ -20,13 +28,23 @@ jobs:
           cache: true
           cache-dependency-path: backend/go.sum
 
+      # Built from source with the same toolchain that compiles the backend: a
+      # prebuilt binary from an older Go cannot parse a newer stdlib. Only the
+      # UTC leg needs it, since linting does not depend on the time zone.
+      - name: Install golangci-lint
+        if: matrix.tz == 'UTC'
+        run: make backend:lint:install
+
       - name: Lint
+        if: matrix.tz == 'UTC'
         run: make backend:lint
         working-directory: .
 
       - name: Test
         run: make backend:test
         working-directory: .
+        env:
+          TEST_TZ: ${{ matrix.tz }}
 
   frontend:
     name: Frontend (Node)

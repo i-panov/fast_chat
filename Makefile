@@ -3,14 +3,37 @@ SERVER_DOMAIN ?= localhost:$(BACKEND_PORT)
 FRONTEND_PORT ?= 5173
 API_PROXY ?= http://localhost:$(BACKEND_PORT)
 
+# golangci-lint собирается из исходников тем же тулчейном, что и бэкенд.
+# Готовый бинарник, собранный более старым Go, не парсит stdlib новой версии
+# и падает с "file requires newer Go version" — поэтому ставим через go install.
+GOLANGCI_LINT_VERSION ?= v2.14.0
+GOLANGCI_LINT := $(shell go env GOPATH)/bin/golangci-lint
+
 backend\:run:
 	cd backend && go run . --config=../config/dev.yaml
 
 backend\:lint:
-	cd backend && ~/go/bin/golangci-lint run ./...
+	@if [ ! -x "$(GOLANGCI_LINT)" ]; then \
+		echo "golangci-lint not found at $(GOLANGCI_LINT)"; \
+		echo "Install it with: make backend:lint:install"; \
+		exit 1; \
+	fi
+	cd backend && $(GOLANGCI_LINT) run ./...
+
+# Обновление линтера: поднять GOLANGCI_LINT_VERSION и выполнить эту цель.
+# Перепроверять после каждого обновления тулчейна Go.
+backend\:lint\:install:
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+# Таймзона для тестов. Хранимые timestamps сравниваются как текст с курсором
+# синка в UTC, поэтому дефект ловится только вне UTC: на TZ=UTC набор проходит
+# тривиально. Имя TEST_TZ, а не TZ, потому что make импортирует переменные
+# окружения как make-переменные — `TZ ?=` молча перекрылся бы экспортом TZ=UTC.
+# Зона по умолчанию — западнее UTC. Переопределение: make backend:test TEST_TZ=Asia/Tokyo
+TEST_TZ ?= America/New_York
 
 backend\:test:
-	cd backend && go test -race -count=1 ./...
+	cd backend && TZ=$(TEST_TZ) go test -race -count=1 ./...
 
 frontend\:test:
 	cd frontend && npx vitest run
