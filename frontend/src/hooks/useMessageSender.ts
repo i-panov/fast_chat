@@ -10,7 +10,7 @@ import {
 	encryptFileStream,
 	type FileKey,
 	generateFileKey,
-} from "../e2ee/index.ts";
+} from "../e2ee/file-crypto.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
 import type {
 	FileInfo,

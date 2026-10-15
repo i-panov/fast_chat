@@ -3,7 +3,7 @@ import { chatsRepo } from "../db/chatsRepo.ts";
 import i18n from "../i18n.ts";
 import type { Location } from "../types/api.ts";
 import { emitNotification } from "../utils/notify.ts";
-import { encryptContent, sealMessageKey } from "./crypto.ts";
+import { encryptContent, ensureSodium, sealMessageKey } from "./crypto.ts";
 import type { FileKey } from "./file-crypto.ts";
 import { ensureAccountKeys, getRecipientPublicKeys } from "./keys.ts";
 
@@ -62,6 +62,7 @@ export async function encryptForChat(
 			return null;
 		}
 
+		await ensureSodium();
 		const msgKey = sodium.randombytes_buf(
 			sodium.crypto_aead_xchacha20poly1305_ietf_KEYBYTES,
 		);

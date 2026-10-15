@@ -62,7 +62,7 @@ export async function decryptMessageText(
 // decryptMessageContent decrypts the full content (text, location, file keys)
 // from the message's encrypted payload. Returns null if the message uses the
 // legacy v1 format (text-only encryption) or if decryption fails.
-export async function decryptMessageContent(
+async function decryptMessageContent(
 	msg: Pick<Message, "text" | "encryptedPayload" | "location">,
 	userId: string,
 	key: KeyPair,
