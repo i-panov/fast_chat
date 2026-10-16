@@ -150,4 +150,81 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 		expect(out.location).toBeUndefined();
 		expect(out.fileKeys).toEqual({});
 	});
+
+	it("returns null without a token or chat", async () => {
+		await expect(
+			encryptForChat(undefined, "chat-v2", { text: "x" }, {}),
+		).resolves.toBeNull();
+		await expect(
+			encryptForChat("token", "missing-chat", { text: "x" }, {}),
+		).resolves.toBeNull();
+	});
+
+	it("returns null for a memberless chat", async () => {
+		await chatsRepo.upsert({
+			id: "chat-empty",
+			type: "group",
+			name: "empty",
+			ownerId: "alice:test",
+			members: [],
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+
+		await expect(
+			encryptForChat("token", "chat-empty", { text: "x" }, {}),
+		).resolves.toBeNull();
+	});
+
+	it("returns null when a member has no key", async () => {
+		await chatsRepo.upsert({
+			id: "chat-missing",
+			type: "group",
+			name: "missing",
+			ownerId: "alice:test",
+			members: [
+				{ id: "alice:test", nick: "alice" },
+				{ id: "carol:test", nick: "carol" },
+			],
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+
+		await expect(
+			encryptForChat("token", "chat-missing", { text: "x" }, {}),
+		).resolves.toBeNull();
+	});
+
+	it("returns null when no recipient keys exist at all", async () => {
+		await chatsRepo.upsert({
+			id: "chat-nokeys",
+			type: "group",
+			name: "nokeys",
+			ownerId: "alice:test",
+			members: [{ id: "carol:test", nick: "carol" }],
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+
+		await expect(
+			encryptForChat("token", "chat-nokeys", { text: "x" }, {}),
+		).resolves.toBeNull();
+	});
+
+	it("returns null when key lookup fails", async () => {
+		const { getPublicKey } = await import("../api.ts");
+		vi.mocked(getPublicKey).mockRejectedValueOnce(new Error("down"));
+
+		await expect(
+			encryptForChat("token", "chat-v2", { text: "x" }, {}),
+		).resolves.toBeNull();
+	});
+
+	it("returns null when key recovery is required", async () => {
+		// Fresh scope: no local keys, so the server backup is consulted.
+		setActiveAccountKey("scope-recovery:test");
+		const { getKeyBackup } = await import("../api.ts");
+		vi.mocked(getKeyBackup).mockResolvedValueOnce({ backup: "opaque-blob" });
+
+		await expect(
+			encryptForChat("token", "chat-v2", { text: "x" }, {}),
+		).resolves.toBeNull();
+	});
 });

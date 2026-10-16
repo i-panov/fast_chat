@@ -174,6 +174,46 @@ describe("useMessageSender", () => {
 		expect(ops.map((o) => o.kind)).toContain("delete");
 	});
 
+	it("retries a failed send", async () => {
+		const { result } = renderHook(() => useMessageSender({ token: "tok" }));
+
+		await result.current.sendMessage({ chatId: "c1", text: "x" });
+		const [first] = await messagesRepo.getByChat("c1");
+		const [op] = await outboxRepo.list();
+		await outboxRepo.update({ ...op, status: "failed", attempts: 3 });
+		await messagesRepo.markStatus("c1", first.id, "failed");
+
+		await result.current.retryMessage("c1", first.id);
+
+		const stored = await messagesRepo.getById("c1", first.id);
+		expect(stored?.status).toBe("queued");
+		const [retried] = await outboxRepo.list();
+		expect(retried.attempts).toBe(0);
+		expect(retried.status).toBeUndefined();
+	});
+
+	it("deletes a failed message outright", async () => {
+		const { result } = renderHook(() => useMessageSender({ token: "tok" }));
+
+		await result.current.sendMessage({
+			chatId: "c1",
+			text: "oops",
+			pendingFiles: [pendingFile()],
+		});
+		const [first] = await messagesRepo.getByChat("c1");
+		const [op] = await outboxRepo.list();
+		await outboxRepo.update({ ...op, status: "failed", attempts: 1 });
+		await messagesRepo.markStatus("c1", first.id, "failed");
+		const [blobId] = op.kind === "send" ? op.pendingFileClientIds : [];
+		expect(await pendingBlobsRepo.get(blobId)).not.toBeUndefined();
+
+		await result.current.deleteMessage("c1", first.id);
+
+		expect(await messagesRepo.getByChat("c1")).toEqual([]);
+		expect(await outboxRepo.list()).toEqual([]);
+		expect(await pendingBlobsRepo.get(blobId)).toBeUndefined();
+	});
+
 	it("cancels a queued send and drops its blobs", async () => {
 		const { result } = renderHook(() => useMessageSender({ token: "tok" }));
 
