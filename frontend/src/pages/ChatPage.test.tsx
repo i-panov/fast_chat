@@ -24,6 +24,7 @@ vi.mock("../api.ts", () => ({
 	getMessages: vi.fn(() => Promise.resolve({ messages: [] })),
 	searchUsers: vi.fn(() => Promise.resolve({ users: [] })),
 	createChat: vi.fn(),
+	refreshToken: vi.fn(),
 	uploadPublicKey: vi.fn(),
 	getPublicKey: vi.fn(),
 	getKeyBackup: vi.fn(() => {
@@ -56,8 +57,22 @@ vi.mock("../components/chat/AudioPlayerBar.tsx", () => ({
 }));
 
 const { useSse } = await import("../useSse.ts");
+const { refreshToken } = await import("../api.ts");
+const { retryFailedOps, setTokenProvider } = await import(
+	"../sync/syncEngine.ts"
+);
+
+type SseHandler = (event: string, data: unknown) => Promise<void> | void;
+
+function sseHandler(): SseHandler {
+	const calls = vi.mocked(useSse).mock.calls;
+	if (calls.length === 0) throw new Error("useSse was not called");
+
+	return calls[calls.length - 1][1];
+}
 
 const SELECT_PROMPT = /selectPrompt|Select/;
+const FIND_OPTIONS = { timeout: 5000 };
 const MEMBER_COUNT = /chat\.membersCount|member/;
 const SETTINGS_LABEL = /Settings|chat\.settings/;
 
@@ -234,6 +249,55 @@ describe("chat page", () => {
 			if (!headers.some((h) => h.textContent?.includes("@carol"))) {
 				throw new Error("pending header missing");
 			}
+		});
+	});
+
+	it("provides the session token to sync", async () => {
+		seedAccount();
+		renderPage();
+
+		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
+		expect(vi.mocked(setTokenProvider)).toHaveBeenCalled();
+	});
+
+	it("refreshes an expiring token", async () => {
+		seedAccount();
+		vi.mocked(refreshToken).mockResolvedValue({
+			token: "new-tok",
+			expiresAt: "2028-01-01T00:00:00Z",
+		});
+		renderPage();
+
+		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
+		await sseHandler()("token_expiring", {});
+
+		await waitFor(() => {
+			expect(localStorage.getItem("accounts")).toContain("new-tok");
+		});
+	});
+
+	it("logs out when refresh fails or the token expires", async () => {
+		seedAccount();
+		vi.mocked(refreshToken).mockRejectedValueOnce(new Error("401"));
+		renderPage();
+
+		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
+		await sseHandler()("token_expiring", {});
+
+		await waitFor(() => {
+			expect(localStorage.getItem("accounts")).toBe("[]");
+		});
+	});
+
+	it("retries failed ops when back online", async () => {
+		seedAccount();
+		renderPage();
+
+		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
+		window.dispatchEvent(new Event("online"));
+
+		await waitFor(() => {
+			expect(vi.mocked(retryFailedOps)).toHaveBeenCalled();
 		});
 	});
 
