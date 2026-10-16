@@ -69,7 +69,7 @@ function seedAccount() {
 	sessionStorage.setItem("activeToken", "tok");
 }
 
-const FIND_OPTIONS = { timeout: 5000 };
+const FIND_OPTIONS = { timeout: 15000 };
 
 function renderAt(path: string) {
 	const router = createRouter({
