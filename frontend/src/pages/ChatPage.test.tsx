@@ -1,8 +1,10 @@
 import { MantineProvider } from "@mantine/core";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type * as React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { setActiveAccountKey } from "../db/init.ts";
+import { messagesRepo } from "../db/messagesRepo.ts";
 import type { Chat } from "../types/api.ts";
 import { AuthProvider } from "../useAuth.tsx";
 import { ChatPage } from "./ChatPage.tsx";
@@ -47,8 +49,29 @@ vi.mock("../sync/syncEngine.ts", () => ({
 }));
 
 vi.mock("react-virtuoso", () => ({
-	Virtuoso: ({ data }: { data: unknown[] }) => (
-		<div data-testid="virtuoso">{data.length}</div>
+	Virtuoso: ({
+		data,
+		itemContent,
+	}: {
+		data: unknown[];
+		itemContent: (index: number, entry: unknown) => React.ReactNode;
+	}) => (
+		<div data-testid="virtuoso">
+			{data.map((entry, i) => {
+				const key =
+					typeof entry === "object" &&
+					entry !== null &&
+					"key" in entry &&
+					typeof entry.key === "string"
+						? entry.key
+						: i;
+				return (
+					<div key={key} data-item-index={i}>
+						{itemContent(i, entry)}
+					</div>
+				);
+			})}
+		</div>
 	),
 }));
 
@@ -298,6 +321,62 @@ describe("chat page", () => {
 
 		await waitFor(() => {
 			expect(vi.mocked(retryFailedOps)).toHaveBeenCalled();
+		});
+	});
+
+	it("opens and closes a thread", async () => {
+		seedAccount();
+		await chatsRepo.upsert(groupChat());
+		const { threadsRepo } = await import("../db/threadsRepo.ts");
+		const { threadMessagesRepo } = await import("../db/threadMessagesRepo.ts");
+		await threadsRepo.upsert({
+			id: "th1",
+			chatId: "c1",
+			parentMessageId: "p1",
+			parentMessageText: "parent text",
+			parentMessageFrom: "bob",
+			createdAt: "2026-01-01T00:00:00Z",
+			messageCount: 1,
+		});
+		await messagesRepo.upsert({
+			id: "p1",
+			chatId: "c1",
+			fromId: "bob:test",
+			fromNick: "bob",
+			text: "parent text",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		const { getThreadMessages } = await import("../api.ts");
+		vi.mocked(getThreadMessages).mockResolvedValue({
+			messages: [
+				{
+					id: "tm1",
+					chatId: "c1",
+					fromId: "bob:test",
+					fromNick: "bob",
+					text: "in thread",
+					createdAt: "2026-01-01T00:00:01Z",
+				},
+			],
+		});
+		renderPage();
+
+		await screen.findByText("Team");
+		fireEvent.click(screen.getByText("Team"));
+
+		// Thread link on the parent message.
+		const link = await screen.findByText("1");
+		fireEvent.click(link);
+
+		await screen.findByText("parent text", { selector: "p" });
+		expect(await threadMessagesRepo.getByThread("th1")).not.toEqual([]);
+
+		// Back to the chat.
+		const back = document.querySelectorAll("button")[0];
+		fireEvent.click(back);
+
+		await waitFor(() => {
+			expect(document.body.textContent).toContain("Team");
 		});
 	});
 
