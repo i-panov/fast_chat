@@ -180,4 +180,87 @@ describe("useSse", () => {
 		expect(MockEventSource.instances).toHaveLength(2);
 		expect(MockEventSource.instances[0].closed).toBe(true);
 	});
+
+	it("treats throwing readyState as closed", () => {
+		const onEvent = vi.fn();
+		renderHook(() => useSse("tok", onEvent));
+
+		const source = lastSource();
+		Object.defineProperty(source, "readyState", {
+			get: () => {
+				throw new Error("nope");
+			},
+			configurable: true,
+		});
+		act(() => {
+			source.onerror?.();
+		});
+
+		expect(onEvent).toHaveBeenCalledWith("sse_closed", null);
+	});
+
+	it("surfaces unexpected errors", () => {
+		const onEvent = vi.fn();
+		renderHook(() => useSse("tok", onEvent));
+
+		const source = lastSource();
+		source.readyState = MockEventSource.OPEN;
+		act(() => {
+			source.onerror?.();
+		});
+
+		expect(onEvent).toHaveBeenCalledWith("error", null);
+	});
+
+	it("ignores events from a superseded socket", () => {
+		const onEvent = vi.fn();
+		renderHook(() => useSse("tok", onEvent));
+
+		const first = lastSource();
+		first.readyState = MockEventSource.CLOSED;
+		act(() => {
+			first.onerror?.();
+		});
+		act(() => {
+			vi.advanceTimersByTime(31_000);
+		});
+		expect(MockEventSource.instances).toHaveLength(2);
+
+		onEvent.mockClear();
+		act(() => {
+			first.emitRaw("connected", "{}");
+			first.onerror?.();
+		});
+
+		expect(onEvent).not.toHaveBeenCalled();
+	});
+
+	it("keeps the stream when auth fails", async () => {
+		mockSseAuth().mockRejectedValueOnce(new Error("down"));
+		const onEvent = vi.fn();
+		renderHook(() => useSse("tok", onEvent));
+
+		act(() => {
+			lastSource().onopen?.();
+		});
+		await act(async () => {});
+
+		expect(MockEventSource.instances).toHaveLength(1);
+		expect(onEvent).not.toHaveBeenCalled();
+	});
+
+	it("ignores errors after teardown", () => {
+		const onEvent = vi.fn();
+		const { unmount } = renderHook(() => useSse("tok", onEvent));
+
+		const source = lastSource();
+		unmount();
+		source.readyState = MockEventSource.CLOSED;
+		act(() => {
+			source.onerror?.();
+		});
+
+		expect(onEvent).not.toHaveBeenCalled();
+		expect(MockEventSource.instances).toHaveLength(1);
+	});
 });

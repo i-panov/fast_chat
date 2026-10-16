@@ -152,6 +152,113 @@ describe("decryptMessage", () => {
 		const out = await decryptMessage(msg, "alice:test", null);
 		expect(out.text).not.toBe("top secret");
 	});
+
+	it("passes unencrypted payloads through decryptMessageText", async () => {
+		const alice = await keyPair();
+		const out = await decryptMessage(
+			{
+				id: "m9",
+				chatId: "c1",
+				fromId: "bob:test",
+				fromNick: "bob",
+				text: "plain",
+				createdAt: "2026-01-01T00:00:00Z",
+			},
+			"alice:test",
+			alice,
+		);
+		expect(out.text).toBe("plain");
+		expect(out.undecryptable).toBeUndefined();
+	});
+
+	it("marks undecryptable content with a placeholder", async () => {
+		setActiveAccountKey("alice:test");
+		const alice = await keyPair();
+		const bob = await keyPair();
+		const enc = await encryptMessageText("for bob only", [
+			{ keyId: "bob:test", publicKey: bob.publicKey },
+		]);
+
+		// No envelope for alice: content v2 lookup fails, v1 text decrypt
+		// throws, and the message is marked undecryptable.
+		const out = await decryptMessage(
+			{
+				id: "m9",
+				chatId: "c1",
+				fromId: "bob:test",
+				fromNick: "bob",
+				text: enc.text,
+				encrypted: true,
+				encryptedPayload: enc.encryptedPayload,
+				createdAt: "2026-01-01T00:00:00Z",
+			},
+			"alice:test",
+			alice,
+		);
+		expect(out.undecryptable).toBe(true);
+		expect(out.text).not.toBe("for bob only");
+	});
+
+	it("leaves unknown reply parents blank", async () => {
+		setActiveAccountKey("alice:test");
+		const alice = await keyPair();
+
+		const out = await decryptMessage(
+			{
+				id: "m9",
+				chatId: "c1",
+				fromId: "alice:test",
+				fromNick: "alice",
+				text: "child",
+				encrypted: true,
+				createdAt: "2026-01-01T00:00:00Z",
+				replyTo: { messageId: "ghost", text: "?", fromNick: "bob" },
+			},
+			"alice:test",
+			alice,
+		);
+		expect(out.replyTo?.text).toBe("");
+	});
+
+	it("masks an undecryptable parent preview", async () => {
+		setActiveAccountKey("alice:test");
+		const alice = await keyPair();
+		const bob = await keyPair();
+		const parentEnc = await encryptMessageText("parent secret", [
+			{ keyId: "bob:test", publicKey: bob.publicKey },
+		]);
+		await messagesRepo.upsertMany([
+			{
+				id: "parent-x",
+				chatId: "c1",
+				fromId: "bob:test",
+				fromNick: "bob",
+				text: parentEnc.text,
+				encrypted: true,
+				encryptedPayload: parentEnc.encryptedPayload,
+				createdAt: "2026-01-01T00:00:00Z",
+			},
+		]);
+
+		const out = await decryptMessage(
+			{
+				id: "m9",
+				chatId: "c1",
+				fromId: "alice:test",
+				fromNick: "alice",
+				text: "child",
+				createdAt: "2026-01-01T00:00:01Z",
+				replyTo: {
+					messageId: "parent-x",
+					text: parentEnc.text,
+					fromNick: "bob",
+				},
+			},
+			"alice:test",
+			alice,
+		);
+		expect(out.replyTo?.text).not.toBe("parent secret");
+	});
 });
 
 describe("messagesRepo stores ciphertext verbatim", () => {
