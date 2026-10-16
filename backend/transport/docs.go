@@ -77,6 +77,10 @@ func registerDocs(mux *chi.Mux) {
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// Static-asset response: data comes from the embedded docs bundle
+		// (allowlisted file names only), never from user input; Content-Type
+		// is explicit with nosniff. Not an XSS sink.
+		// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter
 		_, _ = w.Write(data) //nolint:errcheck // best-effort: static asset
 	})
 }
