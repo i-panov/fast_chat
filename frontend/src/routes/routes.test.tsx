@@ -96,13 +96,17 @@ describe("routes", () => {
 	it("redirects anonymous visitors to login", async () => {
 		renderAt("/chat");
 
-		expect(await screen.findByDisplayValue("", undefined, FIND_OPTIONS)).toBeTruthy();
+		expect(
+			await screen.findByDisplayValue("", undefined, FIND_OPTIONS),
+		).toBeTruthy();
 	});
 
 	it("serves the login page directly", async () => {
 		renderAt("/login");
 
-		expect(await screen.findByDisplayValue("", undefined, FIND_OPTIONS)).toBeTruthy();
+		expect(
+			await screen.findByDisplayValue("", undefined, FIND_OPTIONS),
+		).toBeTruthy();
 	});
 
 	it("sends logged-in users from index to chat", async () => {
