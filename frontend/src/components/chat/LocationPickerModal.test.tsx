@@ -123,7 +123,8 @@ describe("location picker modal", () => {
 		renderModal({ onConfirm });
 
 		act(() => {
-			for (const cb of clickHandlers) cb({ latlng: { lat: 48, lng: 2 } });
+			// Snapshot: each render registers another handler.
+			for (const cb of [...clickHandlers]) cb({ latlng: { lat: 48, lng: 2 } });
 		});
 		clickSend();
 
