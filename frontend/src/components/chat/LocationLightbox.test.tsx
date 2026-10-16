@@ -12,7 +12,18 @@ vi.mock("react-leaflet", () => ({
 	MapContainer: ({ children }: { children: React.ReactNode }) => (
 		<div data-testid="map">{children}</div>
 	),
-	Marker: () => null,
+	Marker: (props: {
+		eventHandlers?: { dragend?: () => void };
+		ref?: { current: { getLatLng: () => { lat: number; lng: number } } | null };
+	}) => {
+		markerHolder.current = props;
+		if (props.ref) {
+			props.ref.current = {
+				getLatLng: () => ({ lat: 7, lng: 8 }),
+			};
+		}
+		return null;
+	},
 	TileLayer: () => null,
 	useMap: () => ({ setView: () => {}, getZoom: () => 15 }),
 	useMapEvents: (events: {
@@ -21,6 +32,12 @@ vi.mock("react-leaflet", () => ({
 		clickHandlers.push((e) => events.click(e));
 	},
 }));
+
+const markerHolder: {
+	current: {
+		eventHandlers?: { dragend?: () => void };
+	};
+} = { current: {} };
 
 const SAVE_BUTTON = /Save|input\.save/;
 const CLEAR_BUTTON = /Remove location|input\.locationClear/;
@@ -74,6 +91,18 @@ describe("location lightbox", () => {
 		fireEvent.click(screen.getByText(SAVE_BUTTON));
 
 		expect(onChange).toHaveBeenCalledWith({ lat: 48, lng: 2 });
+	});
+
+	it("saves the dragged pin position", () => {
+		const onChange = vi.fn();
+		renderLightbox({ editable: true, onChange });
+
+		act(() => {
+			markerHolder.current.eventHandlers?.dragend?.();
+		});
+		fireEvent.click(screen.getByText(SAVE_BUTTON));
+
+		expect(onChange).toHaveBeenCalledWith({ lat: 7, lng: 8 });
 	});
 
 	it("removes the location", () => {
