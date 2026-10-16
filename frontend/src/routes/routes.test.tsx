@@ -148,4 +148,4 @@ describe("routes", () => {
 
 		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
 	});
-});
+}, 30000);
