@@ -7,6 +7,7 @@ import type { SyncResponse } from "../types/api.ts";
 import {
 	retryFailedOps,
 	runSync,
+	scheduleSync,
 	setTokenProvider,
 	subscribeSyncState,
 } from "./syncEngine.ts";
@@ -145,6 +146,85 @@ describe("runSync", () => {
 		expect((await import("./syncEngine.ts")).getLastSyncError()).toBeNull();
 		expect((await import("./syncEngine.ts")).getSyncState()).toBe("idle");
 	});
+
+	it("treats unauthorized as a terminal error", async () => {
+		getSyncMock.mockRejectedValue(new Error("unauthorized"));
+
+		await runSync();
+
+		expect((await import("./syncEngine.ts")).getSyncState()).toBe("error");
+		expect((await import("./syncEngine.ts")).getLastSyncError()).toBeTruthy();
+	});
+
+	it("treats network failures as transient", async () => {
+		const originalSetTimeout = globalThis.setTimeout;
+		let retryScheduled = 0;
+		vi.spyOn(globalThis, "setTimeout").mockImplementation((cb, ms) => {
+			if (typeof cb === "function" && ms === 5000) retryScheduled += 1;
+			return originalSetTimeout(cb, ms);
+		});
+
+		getSyncMock.mockRejectedValue(new Error("fetch failed"));
+
+		await runSync();
+
+		expect((await import("./syncEngine.ts")).getSyncState()).toBe("idle");
+		expect(retryScheduled).toBeGreaterThan(0);
+	});
+
+	it("honours Retry-After on 429", async () => {
+		const originalSetTimeout = globalThis.setTimeout;
+		const scheduled: number[] = [];
+		vi.spyOn(globalThis, "setTimeout").mockImplementation((cb, ms) => {
+			if (typeof cb === "function" && typeof ms === "number") {
+				scheduled.push(ms);
+			}
+			return originalSetTimeout(cb, ms);
+		});
+
+		getSyncMock.mockRejectedValue(new Error("http 429: slow retry-after:1"));
+
+		await runSync();
+
+		expect(scheduled).toContain(1000);
+	});
+
+	it("coalesces concurrent runs into one rerun", async () => {
+		let resolveFirst!: (v: SyncResponse) => void;
+		getSyncMock.mockReturnValueOnce(
+			new Promise<SyncResponse>((resolve) => {
+				resolveFirst = resolve;
+			}),
+		);
+
+		const first = runSync();
+		await runSync();
+		resolveFirst(syncResponse());
+		await first;
+		// Let the scheduled rerun fire.
+		await Promise.resolve();
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(getSyncMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("debounces scheduled syncs", async () => {
+		const originalClearTimeout = globalThis.clearTimeout;
+		const cleared: unknown[] = [];
+		vi.spyOn(globalThis, "clearTimeout").mockImplementation((id) => {
+			cleared.push(id);
+			return originalClearTimeout(id);
+		});
+
+		scheduleSync();
+		scheduleSync();
+		scheduleSync();
+
+		// The first call arms the timer; the next two cancel and re-arm it.
+		expect(cleared).toHaveLength(2);
+		// Let the debounced run finish for cleanliness.
+		await new Promise((r) => setTimeout(r, 1200));
+	});
 });
 
 describe("retryFailedOps", () => {
@@ -210,5 +290,39 @@ describe("retryFailedOps", () => {
 		expect(ops).toHaveLength(2);
 		expect(ops.find((o) => o.opId === "failed-del")?.status).toBe("failed");
 		expect(ops.find((o) => o.opId === "pending-send")?.status).toBeUndefined();
+	});
+
+	it("resets failed thread ops to pending and marks them queued", async () => {
+		const { threadMessagesRepo } = await import("../db/threadMessagesRepo.ts");
+		await threadMessagesRepo.upsert(
+			{
+				id: "tm1",
+				chatId: "chat-1",
+				fromId: "alice:test",
+				fromNick: "alice",
+				text: "hello",
+				createdAt: "2026-08-30T09:00:00.000Z",
+			},
+			"th1",
+			"failed",
+		);
+		await outboxRepo.enqueue({
+			kind: "send",
+			opId: "failed-thread-send",
+			chatId: "chat-1",
+			msgId: "tm1",
+			threadId: "th1",
+			text: "hello",
+			pendingFileClientIds: [],
+			createdAt: "2026-08-30T09:00:00.000Z",
+			attempts: 2,
+			status: "failed",
+		});
+
+		await retryFailedOps();
+
+		expect((await threadMessagesRepo.getById("th1", "tm1"))?.status).toBe(
+			"queued",
+		);
 	});
 });
