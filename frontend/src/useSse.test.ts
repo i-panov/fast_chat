@@ -10,6 +10,8 @@ const { useSse } = await import("./useSse.ts");
 
 type Listener = (e: { data: string }) => void;
 
+const EVENTS_URL_PATTERN = /^\/api\/events\?connectionId=.+/;
+
 class MockEventSource {
 	static instances: MockEventSource[] = [];
 	static CONNECTING = 0;
@@ -85,7 +87,7 @@ describe("useSse", () => {
 		renderHook(() => useSse("tok", onEvent));
 
 		const source = lastSource();
-		expect(source.url).toMatch(/^\/api\/events\?connectionId=.+/);
+		expect(source.url).toMatch(EVENTS_URL_PATTERN);
 
 		act(() => {
 			source.onopen?.();

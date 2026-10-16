@@ -1,9 +1,9 @@
 import { renderHook } from "@testing-library/react";
 import type { FormEvent } from "react";
-import type { Chat } from "../types/api.ts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { setActiveAccountKey } from "../db/init.ts";
+import type { Chat } from "../types/api.ts";
 
 vi.mock("../api.ts", () => ({
 	createChat: vi.fn(),

@@ -61,8 +61,8 @@ describe("useDecryptedFileUrl", () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(() =>
-			Promise.resolve(new Response(ciphertext.buffer as ArrayBuffer)),
-		),
+				Promise.resolve(new Response(ciphertext.buffer as ArrayBuffer)),
+			),
 		);
 
 		const { result } = renderHook(() =>

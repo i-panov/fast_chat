@@ -98,9 +98,7 @@ describe("useTyping", () => {
 			result.current.clearTyping("c1", "a");
 		});
 
-		expect(result.current.typingUsers["c1"].map((t) => t.userId)).toEqual([
-			"b",
-		]);
+		expect(result.current.typingUsers.c1.map((t) => t.userId)).toEqual(["b"]);
 
 		// The pending auto-clear for "a" was cancelled: advancing must not
 		// drop "b" through a stale timer.

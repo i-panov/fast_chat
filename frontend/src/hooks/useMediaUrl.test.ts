@@ -94,31 +94,29 @@ class StubMediaSource {
 
 let urlCounter = 0;
 const revokeObjectURL = vi.fn();
-const requests: Array<{ method: string; headers: Record<string, string> }> = [];
+const RANGE_PATTERN = /bytes=(\d+)-(\d+)/;
+
+const requests: Array<{ method: string; headers: Headers }> = [];
 let headHeaders = { "Content-Length": "100", "Content-Type": "video/mp4" };
 let headFails = false;
 let getFails = false;
 
 function mockFetch() {
 	return vi.fn((_url: string, init?: RequestInit) => {
-		const headers = Object.fromEntries(
-			new Headers(init?.headers).entries(),
-		) as Record<string, string>;
+		const headers = new Headers(init?.headers);
 		requests.push({ method: init?.method ?? "GET", headers });
 		if ((init?.method ?? "GET") === "HEAD") {
 			if (headFails) return Promise.reject(new Error("head down"));
 			return Promise.resolve(new Response(null, { headers: headHeaders }));
 		}
 		if (getFails) return Promise.reject(new Error("get down"));
-		const range = headers["range"] ?? headers["Range"];
+		const range = headers.get("range");
 		if (range) {
-			const m = /bytes=(\d+)-(\d+)/.exec(range);
+			const m = RANGE_PATTERN.exec(range);
 			const start = Number(m?.[1] ?? 0);
 			const end = Number(m?.[2] ?? MEDIA_BYTES.length - 1);
 			const slice = MEDIA_BYTES.slice(start, end + 1);
-			return Promise.resolve(
-				new Response(slice.buffer, { status: 206 }),
-			);
+			return Promise.resolve(new Response(slice.buffer, { status: 206 }));
 		}
 		return Promise.resolve(new Response(new Blob([MEDIA_BYTES])));
 	});
@@ -176,7 +174,7 @@ describe("useMediaUrl", () => {
 		expect(result.current.error).toBeNull();
 
 		const head = requests.find((r) => r.method === "HEAD");
-		expect(head?.headers["authorization"]).toBe("Bearer tok");
+		expect(head?.headers.get("authorization")).toBe("Bearer tok");
 	});
 
 	it("falls back to blob when HEAD fails", async () => {
@@ -221,12 +219,8 @@ describe("useMediaUrl", () => {
 		expect(source.buffers[0].appended[0].byteLength).toBe(100);
 		expect(source.endOfStreamCalls).toBe(1);
 
-		const range = requests.find(
-			(r) => r.headers["Range"] ?? r.headers["range"],
-		);
-		expect(range?.headers["Range"] ?? range?.headers["range"]).toBe(
-			"bytes=0-99",
-		);
+		const range = requests.find((r) => r.headers.has("range"));
+		expect(range?.headers.get("range")).toBe("bytes=0-99");
 	});
 
 	it("resolves codec variants for MSE", async () => {
