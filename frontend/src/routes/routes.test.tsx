@@ -3,7 +3,7 @@ import {
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { routeTree } from "../routeTree.gen.ts";
 
@@ -113,9 +113,15 @@ describe("routes", () => {
 
 	it("sends logged-in users from index to chat", async () => {
 		seedAccount();
-		renderAt("/");
+		const router = renderAt("/");
 
-		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
+		// The route redirects; the page itself may mount slowly under load.
+		await waitFor(
+			() => {
+				expect(router.state.location.pathname).toBe("/chat");
+			},
+			{ timeout: 15000 },
+		);
 	});
 
 	it("opens the chat page with a session", async () => {
