@@ -1,20 +1,38 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	addChatMember,
+	completeRegistration,
+	createChat,
 	createThread,
 	deleteChat,
+	deleteKeyBackup,
 	deleteMessage,
 	editMessage,
+	fileExistsByHash,
+	getChatInfo,
 	getConfig,
+	getKeyBackup,
 	getMessages,
+	getPublicKey,
 	getSync,
 	getThreadMessages,
+	getThreads,
+	getVapidPublicKey,
+	markMessagesRead,
 	refreshToken,
+	removeChatMember,
 	searchUsers,
 	sendCode,
 	sendMessage,
 	sendTyping,
+	setKeyBackup,
+	sseAuth,
+	subscribePush,
+	updateChat,
 	uploadChatAvatar,
 	uploadFile,
+	uploadPublicKey,
+	verifyCode,
 } from "./api.ts";
 import { onUnauthorized } from "./utils/authEvents.ts";
 
@@ -316,5 +334,174 @@ describe("endpoint helpers", () => {
 
 		const result = await sendCode("a@b.c");
 		expect(result.debugCode).toBe("123456");
+	});
+
+	it("reports the status without a Retry-After suffix", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(500, { error: "boom" }));
+
+		await expect(refreshToken("tok")).rejects.toThrow("http 500: boom");
+	});
+
+	it("tolerates a non-JSON error body", async () => {
+		fetchMock.mockResolvedValue({
+			status: 500,
+			ok: false,
+			json: () => Promise.reject(new Error("not json")),
+			headers: { get: () => null },
+		});
+
+		await expect(refreshToken("tok")).rejects.toThrow("http 500: ");
+	});
+
+	it("verifies codes for new and existing accounts", async () => {
+		fetchMock.mockResolvedValue(
+			jsonResponse(200, { isNew: true, setupToken: "st" }),
+		);
+		expect(await verifyCode("a@b.c", "123456")).toEqual({
+			isNew: true,
+			setupToken: "st",
+		});
+
+		fetchMock.mockResolvedValue(
+			jsonResponse(200, {
+				isNew: false,
+				user: { id: "u", nick: "n", online: true },
+				token: "t",
+				expiresAt: "e",
+			}),
+		);
+		const existing = await verifyCode("a@b.c", "123456");
+		expect(existing).toEqual({
+			isNew: false,
+			user: { id: "u", nick: "n", online: true },
+			token: "t",
+			expiresAt: "e",
+		});
+	});
+
+	it("completes registration and authenticates streams", async () => {
+		fetchMock.mockResolvedValue(
+			jsonResponse(200, { user: {}, token: "t", expiresAt: "e" }),
+		);
+
+		await completeRegistration("setup", "nick");
+		const [, regInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(parseBody(regInit)).toEqual({ setupToken: "setup", nick: "nick" });
+
+		await sseAuth("conn-1", "tok");
+		const [authPath, authInit] = fetchMock.mock.calls[1] as [
+			string,
+			RequestInit,
+		];
+		expect(authPath).toBe("/api/auth/sse-auth");
+		expect(parseBody(authInit)).toEqual({
+			connectionId: "conn-1",
+			token: "tok",
+		});
+	});
+
+	it("creates private and group chats", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { chat: {} }));
+
+		await createChat("tok", { type: "private", withUserId: "u1" });
+		await createChat("tok", { type: "group", name: "g", memberIds: ["u1"] });
+
+		const [, privInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(parseBody(privInit)).toEqual({ type: "private", withUserId: "u1" });
+		const [, groupInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+		expect(parseBody(groupInit)).toEqual({
+			type: "group",
+			name: "g",
+			memberIds: ["u1"],
+		});
+	});
+
+	it("reads and mutates chats and members", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { chat: { id: "c1" } }));
+
+		await getChatInfo("tok", "c1");
+		await updateChat("tok", "c1", { name: "new" });
+		await addChatMember("tok", "c1", "u2");
+		await removeChatMember("tok", "c1", "u2");
+
+		const calls = fetchMock.mock.calls as Array<[string, RequestInit]>;
+		expect(calls[0][0]).toBe("/api/chats/c1");
+		expect(calls[0][1].method).toBeUndefined();
+		expect(calls[1][0]).toBe("/api/chats/c1");
+		expect(calls[1][1].method).toBe("PATCH");
+		expect(parseBody(calls[1][1])).toEqual({ name: "new" });
+		expect(calls[2][0]).toBe("/api/chats/c1/members");
+		expect(calls[2][1].method).toBe("POST");
+		expect(calls[3][0]).toBe("/api/chats/c1/members/u2");
+		expect(calls[3][1].method).toBe("DELETE");
+	});
+
+	it("manages keys and backups", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { status: "ok" }));
+
+		await uploadPublicKey("tok", "pub");
+		await setKeyBackup("tok", "blob");
+
+		fetchMock.mockResolvedValue(jsonResponse(200, { publicKey: "pub" }));
+		expect(await getPublicKey("tok", "u1")).toEqual({ publicKey: "pub" });
+
+		fetchMock.mockResolvedValue(jsonResponse(200, { backup: "blob" }));
+		expect(await getKeyBackup("tok")).toEqual({ backup: "blob" });
+
+		await deleteKeyBackup("tok");
+		const [delPath, delInit] = fetchMock.mock.calls[4] as [string, RequestInit];
+		expect(delPath).toBe("/api/users/key-backup");
+		expect(delInit.method).toBe("DELETE");
+	});
+
+	it("uploads files with dedup metadata", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { file: {} }));
+
+		await uploadFile("tok", new File(["x"], "a.txt"), "hash-1", true);
+
+		const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		const form = init.body as FormData;
+		expect(form.get("hash")).toBe("hash-1");
+		expect(form.get("encrypted")).toBe("true");
+	});
+
+	it("checks file existence by hash", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { exists: true }));
+		expect(await fileExistsByHash("tok", "a b")).toBe(true);
+
+		const [path] = fetchMock.mock.calls[0] as [string, RequestInit];
+		// biome-ignore lint/security/noSecrets: URL fixture with an encoded hash, not a secret
+		expect(path).toBe("/api/files/exists?hash=a%20b");
+
+		fetchMock.mockResolvedValue(jsonResponse(200, { exists: false }));
+		expect(await fileExistsByHash("tok", "a b")).toBe(false);
+	});
+
+	it("marks messages read", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { status: "ok" }));
+
+		await markMessagesRead("tok", "c1", ["m1", "m2"]);
+
+		const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(path).toBe("/api/messages/read");
+		expect(parseBody(init)).toEqual({ chatId: "c1", messageIDs: ["m1", "m2"] });
+	});
+
+	it("fetches threads and push metadata", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { threads: [] }));
+		await getThreads("tok", "c1");
+		expect(fetchMock.mock.calls[0][0]).toBe("/api/chats/c1/threads");
+
+		fetchMock.mockResolvedValue(jsonResponse(200, { publicKey: "vapid" }));
+		expect(await getVapidPublicKey()).toEqual({ publicKey: "vapid" });
+
+		fetchMock.mockResolvedValue(jsonResponse(200, { subscription: {} }));
+		await subscribePush("tok", "ep", "p256", "auth");
+		const [, subInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+		expect(parseBody(subInit)).toEqual({
+			endpoint: "ep",
+			p256dh: "p256",
+			auth: "auth",
+		});
 	});
 });
