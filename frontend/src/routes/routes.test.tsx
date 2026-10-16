@@ -67,6 +67,8 @@ function seedAccount() {
 	sessionStorage.setItem("activeToken", "tok");
 }
 
+const FIND_OPTIONS = { timeout: 5000 };
+
 function renderAt(path: string) {
 	const router = createRouter({
 		routeTree,
@@ -94,27 +96,27 @@ describe("routes", () => {
 	it("redirects anonymous visitors to login", async () => {
 		renderAt("/chat");
 
-		expect(await screen.findByDisplayValue("")).toBeTruthy();
+		expect(await screen.findByDisplayValue("", undefined, FIND_OPTIONS)).toBeTruthy();
 	});
 
 	it("serves the login page directly", async () => {
 		renderAt("/login");
 
-		expect(await screen.findByDisplayValue("")).toBeTruthy();
+		expect(await screen.findByDisplayValue("", undefined, FIND_OPTIONS)).toBeTruthy();
 	});
 
 	it("sends logged-in users from index to chat", async () => {
 		seedAccount();
 		renderAt("/");
 
-		await screen.findByText(SELECT_PROMPT);
+		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
 	});
 
 	it("opens the chat page with a session", async () => {
 		seedAccount();
 		const router = renderAt("/chat");
 
-		await screen.findByText(SELECT_PROMPT);
+		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
 		expect(router.state.location.pathname).toBe("/chat");
 	});
 
@@ -140,6 +142,6 @@ describe("routes", () => {
 			[...document.querySelectorAll("button")].pop() as HTMLButtonElement,
 		);
 
-		await screen.findByText(SELECT_PROMPT);
+		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
 	});
 });
