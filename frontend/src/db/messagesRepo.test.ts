@@ -61,3 +61,87 @@ describe("messagesRepo.getByChat ordering", () => {
 		expect(await messagesRepo.getByChat("chat-1")).toEqual([]);
 	});
 });
+
+describe("messagesRepo lookups", () => {
+	it("finds by id and respects the chat boundary", async () => {
+		await messagesRepo.upsertMany([msg("m1", "2026-08-26T14:45:09Z", "one")]);
+
+		expect((await messagesRepo.getById("chat-1", "m1"))?.text).toBe("one");
+		expect(await messagesRepo.getById("chat-1", "missing")).toBeUndefined();
+		expect(await messagesRepo.getById("other-chat", "m1")).toBeUndefined();
+		expect((await messagesRepo.getByIdAny("m1"))?.text).toBe("one");
+		expect(await messagesRepo.getByIdAny("missing")).toBeUndefined();
+	});
+});
+
+describe("messagesRepo mutations", () => {
+	it("preserves queued status and read state on re-upsert", async () => {
+		await messagesRepo.upsert(
+			{ ...msg("m1", "2026-08-26T14:45:09Z", "one") },
+			"queued",
+		);
+		await messagesRepo.upsert(msg("m1", "2026-08-26T14:45:09Z", "one"));
+
+		expect((await messagesRepo.getById("chat-1", "m1"))?.status).toBe("queued");
+
+		await messagesRepo.updateDeliveryStatus("m1", "read", ["bob:test"]);
+		await messagesRepo.upsert({
+			...msg("m1", "2026-08-26T14:45:09Z", "one"),
+			deliveryStatus: "delivered",
+		});
+
+		const stored = await messagesRepo.getById("chat-1", "m1");
+		expect(stored?.deliveryStatus).toBe("read");
+		expect(stored?.readBy).toEqual(["bob:test"]);
+	});
+
+	it("applies and removes deletes within the chat", async () => {
+		await messagesRepo.upsertMany([msg("m1", "2026-08-26T14:45:09Z", "one")]);
+
+		await messagesRepo.applyDelete("chat-1", "missing");
+		await messagesRepo.applyDelete("other-chat", "m1");
+		expect((await messagesRepo.getById("chat-1", "m1"))?.status).toBe("sent");
+
+		await messagesRepo.applyDelete("chat-1", "m1");
+		expect((await messagesRepo.getById("chat-1", "m1"))?.status).toBe(
+			"deleted",
+		);
+
+		await messagesRepo.remove("other-chat", "m1");
+		expect(await messagesRepo.getById("chat-1", "m1")).toBeTruthy();
+		await messagesRepo.remove("chat-1", "missing");
+		await messagesRepo.remove("chat-1", "m1");
+		expect(await messagesRepo.getById("chat-1", "m1")).toBeUndefined();
+	});
+
+	it("marks statuses within the chat", async () => {
+		await messagesRepo.upsertMany([msg("m1", "2026-08-26T14:45:09Z", "one")]);
+
+		await messagesRepo.markStatus("chat-1", "missing", "failed");
+		await messagesRepo.markStatus("other-chat", "m1", "failed");
+		expect((await messagesRepo.getById("chat-1", "m1"))?.status).toBe("sent");
+
+		await messagesRepo.markStatus("chat-1", "m1", "failed");
+		expect((await messagesRepo.getById("chat-1", "m1"))?.status).toBe("failed");
+	});
+
+	it("tracks pending, delivery and read ids", async () => {
+		await messagesRepo.upsertMany([
+			msg("m1", "2026-08-26T14:45:09Z", "one"),
+			msg("m2", "2026-08-26T14:45:10Z", "two"),
+		]);
+		await messagesRepo.markStatus("chat-1", "m1", "queued");
+
+		expect((await messagesRepo.getPending()).map((m) => m.id)).toEqual(["m1"]);
+
+		await messagesRepo.updateDeliveryStatus("missing", "delivered");
+		await messagesRepo.updateDeliveryStatus("m2", "delivered");
+		expect((await messagesRepo.getById("chat-1", "m2"))?.deliveryStatus).toBe(
+			"delivered",
+		);
+
+		await messagesRepo.markAsRead([]);
+		await messagesRepo.markAsRead(["m1", "missing"]);
+		expect(await messagesRepo.getReadMessageIds()).toEqual(["m1"]);
+	});
+});
