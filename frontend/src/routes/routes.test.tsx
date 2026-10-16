@@ -52,6 +52,8 @@ vi.mock("../components/chat/AudioPlayerBar.tsx", () => ({
 
 const SELECT_PROMPT = /selectPrompt|Select/;
 
+vi.setConfig({ testTimeout: 30000 });
+
 function seedAccount() {
 	localStorage.setItem(
 		"accounts",
@@ -148,4 +150,4 @@ describe("routes", () => {
 
 		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
 	});
-}, 30000);
+});

@@ -177,5 +177,10 @@ describe("RecoveryModal", () => {
 		await waitFor(() => {
 			expect(backupOnServer).toBeNull();
 		});
+		// Let the post-recovery UI settle (key save + reload) inside the
+		// test lifetime so no setState outlives the jsdom teardown.
+		await waitFor(() => {
+			expect(footerButtons()[0].disabled).toBe(false);
+		});
 	});
 });
