@@ -59,13 +59,20 @@ type Location struct {
 }
 
 type File struct {
-	ID           string    `gorm:"primaryKey;not null" json:"id"`
-	Hash         string    `gorm:"not null"            json:"hash"`
-	MimeType     string    `gorm:"not null"            json:"mimeType"`
-	Size         int64     `gorm:"not null"            json:"size"`
-	OriginalName string    `gorm:"not null"            json:"originalName"`
-	StoragePath  string    `gorm:"not null"            json:"-"`
-	CreatedAt    time.Time `gorm:"not null"            json:"createdAt"`
+	ID           string `gorm:"primaryKey;not null" json:"id"`
+	Hash         string `gorm:"not null"            json:"hash"`
+	MimeType     string `gorm:"not null"            json:"mimeType"`
+	Size         int64  `gorm:"not null"            json:"size"`
+	OriginalName string `gorm:"not null"            json:"originalName"`
+	StoragePath  string `gorm:"not null"            json:"-"`
+	// UploadedBy is the user who uploaded the file. Attachment rights are
+	// derived from it: only the uploader may attach the file to a message.
+	// Without that rule a leaked file id (or a content hash) would let
+	// anyone re-attach a file and keep access to it after leaving a chat.
+	//
+	// An empty value marks a record written before the column existed.
+	UploadedBy string    `gorm:"index;not null;default:''" json:"-"`
+	CreatedAt  time.Time `gorm:"not null"                  json:"createdAt"`
 }
 
 type MessageFile struct {
@@ -86,6 +93,12 @@ type FileInfo struct {
 	Hash string `json:"hash"`
 }
 
+// ToFileInfo describes a file for the client.
+//
+// The classification follows the MIME type. The client applies the same rule
+// (fileTypeForMime in frontend/src/utils/fileType.ts) to the files whose real
+// type only the sender knows: the server only sees the ciphertext of an
+// encrypted upload.
 func (f *File) ToFileInfo() FileInfo {
 	ft := "file"
 	if len(f.MimeType) >= 6 && f.MimeType[:6] == "image/" {
@@ -130,7 +143,7 @@ type Message struct {
 	// that exist at that moment. Queries therefore use threadIDIsEmpty, which
 	// treats NULL as chat level. No index tag is needed because
 	// idx_messages_thread_created already leads with this column.
-	ThreadID         string       `json:"-"`
+	ThreadID         string       `json:"threadId,omitempty"`
 	FromID           string       `gorm:"not null"               json:"fromId"`
 	FromNick         string       `gorm:"not null"               json:"fromNick"`
 	Text             string       `gorm:"not null"               json:"text"`
@@ -180,4 +193,27 @@ type MessageReadStatus struct {
 	UserID    string    `gorm:"primaryKey"          json:"userId"`
 	Status    string    `gorm:"default:'delivered'" json:"status"` // delivered | read
 	ReadAt    time.Time `gorm:"not null"            json:"readAt"`
+}
+
+// FederationOp is a server-to-server operation waiting to be delivered to a
+// peer. The queue is what makes the delivery durable: an operation survives a
+// restart of the process and is retried until the peer accepts it, so a peer
+// that is down for a minute does not lose the message.
+type FederationOp struct {
+	ID            string    `gorm:"primaryKey"          json:"id"`
+	RemoteServer  string    `gorm:"index;not null"      json:"remoteServer"`
+	Method        string    `gorm:"not null"            json:"method"`
+	Path          string    `gorm:"not null"            json:"path"`
+	Body          string    `gorm:"not null;default:''" json:"body"`
+	Attempts      int       `gorm:"not null;default:0"  json:"attempts"`
+	NextAttemptAt time.Time `gorm:"index;not null"      json:"nextAttemptAt"`
+	LastError     string    `gorm:"not null;default:''" json:"lastError"`
+	CreatedAt     time.Time `gorm:"not null"            json:"createdAt"`
+}
+
+// FederationCursor is the catch-up position of a peer: the moment of the last
+// delta that was taken from it.
+type FederationCursor struct {
+	RemoteServer string    `gorm:"primaryKey" json:"remoteServer"`
+	LastSyncAt   time.Time `gorm:"not null"   json:"lastSyncAt"`
 }

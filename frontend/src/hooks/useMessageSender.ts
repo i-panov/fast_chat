@@ -5,6 +5,7 @@ import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { type EncryptResult, encryptForChat } from "../e2ee/chat-encrypt.ts";
+import type { FileMeta } from "../e2ee/crypto.ts";
 import {
 	computePlaintextHash,
 	encryptFileStream,
@@ -88,16 +89,21 @@ interface PreparedFile {
 	clientId: string;
 	fileKey?: FileKey;
 	plaintextHash: string;
-	// onServer indicates the file already exists on the server (matched by
-	// plaintext hash). No upload is needed; the message only needs the hash.
+	// onServer indicates the file already exists in the account's own files on
+	// the server (matched by plaintext hash). No upload is needed; the message
+	// only needs the hash.
 	onServer?: boolean;
+	// fileMeta carries the client-side metadata of the file. It travels inside
+	// the encrypted message content, because the server cannot know the type
+	// of a file whose content it never sees.
+	fileMeta?: FileMeta;
 }
 
 // prepareFiles prepares each pending file for sending. It first checks whether
-// the file already exists on the server (by plaintext hash) to skip the upload
-// entirely. Files that exist on the server are recorded hash-only. Remaining
-// files are encrypted (unless opted out) and stored as pending blobs for
-// outbox upload.
+// the account already uploaded this content (by plaintext hash) to skip the
+// upload entirely. Files that exist on the server are recorded hash-only.
+// Remaining files are encrypted (unless opted out) and stored as pending blobs
+// for outbox upload.
 async function prepareFiles(
 	pending: PendingFile[],
 	token: string | undefined,
@@ -107,12 +113,21 @@ async function prepareFiles(
 	for (const pf of pending) {
 		const clientId = genId();
 		const plaintextHash = await computePlaintextHash(pf.file);
+		const fileMeta: FileMeta = {
+			mimeType: pf.mimeType,
+			name: pf.originalName,
+			size: pf.size,
+		};
 
-		// Check if the server already has this file to skip uploading.
-		if (token !== undefined) {
+		// Only an unencrypted file can skip the upload: its bytes on the server
+		// are the bytes of the original file, so a stored copy is
+		// interchangeable. An encrypted file uses a fresh key per upload, and
+		// the stored ciphertext belongs to the key of the upload that created
+		// it, so it is always uploaded again.
+		if (pf.encrypted === false && token !== undefined) {
 			try {
 				if (await fileExistsByHash(token, plaintextHash)) {
-					out.push({ clientId, plaintextHash, onServer: true });
+					out.push({ clientId, plaintextHash, onServer: true, fileMeta });
 					continue;
 				}
 			} catch {
@@ -131,7 +146,7 @@ async function prepareFiles(
 				plaintextHash,
 				encrypted: false,
 			});
-			out.push({ clientId, plaintextHash });
+			out.push({ clientId, plaintextHash, fileMeta });
 			continue;
 		}
 
@@ -165,6 +180,7 @@ interface SenderDeps {
 		chatId: string,
 		content: { text: string; location?: Location },
 		fileKeys: Record<string, FileKey>,
+		fileMeta?: Record<string, FileMeta>,
 	) => Promise<EncryptResult | null>;
 	token: string | undefined;
 }
@@ -192,10 +208,16 @@ async function doSendMessage(params: SendMessageParams, deps: SenderDeps) {
 	// Keyed by hash (not file ID) because the server assigns different IDs to
 	// the same content, but the hash stays the same for sender and receiver.
 	const fileKeys: Record<string, FileKey> = {};
+	const fileMeta: Record<string, FileMeta> = {};
 	for (let i = 0; i < prepared.length; i++) {
 		const key = prepared[i].fileKey;
 		if (key !== undefined) {
 			fileKeys[prepared[i].plaintextHash] = key;
+		}
+
+		const meta = prepared[i].fileMeta;
+		if (meta !== undefined) {
+			fileMeta[prepared[i].plaintextHash] = meta;
 		}
 	}
 
@@ -204,6 +226,7 @@ async function doSendMessage(params: SendMessageParams, deps: SenderDeps) {
 		chatId,
 		{ text, location },
 		fileKeys,
+		fileMeta,
 	);
 	if (encrypted === null) return;
 
@@ -285,10 +308,16 @@ async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
 
 	// Build fileKeys map for new files: plaintextHash → key.
 	const fileKeys: Record<string, FileKey> = {};
+	const fileMeta: Record<string, FileMeta> = {};
 	for (let i = 0; i < blobIds.length; i++) {
 		const key = blobIds[i].fileKey;
 		if (key !== undefined) {
 			fileKeys[blobIds[i].plaintextHash] = key;
+		}
+
+		const meta = blobIds[i].fileMeta;
+		if (meta !== undefined) {
+			fileMeta[blobIds[i].plaintextHash] = meta;
 		}
 	}
 
@@ -322,6 +351,7 @@ async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
 		chatId,
 		{ text, location: nextLocation },
 		fileKeys,
+		fileMeta,
 	);
 	if (encrypted === null) return;
 

@@ -92,6 +92,8 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&model.DeletedChat{},
 		&model.MessageReadStatus{},
 		&model.PushSubscription{},
+		&model.FederationOp{},
+		&model.FederationCursor{},
 	); err != nil {
 		return nil, err
 	}

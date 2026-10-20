@@ -59,7 +59,7 @@ func TestIsUnsafeIP(t *testing.T) {
 }
 
 func TestSafeClientRefusesUnsafeHosts(t *testing.T) {
-	client := NewSafeHTTPClient(2 * time.Second)
+	client := NewSafeHTTPClient(2*time.Second, false)
 
 	cases := []string{
 		"http://127.0.0.1:1/",
@@ -102,7 +102,7 @@ func TestSafeClientRefusesLoopbackListener(t *testing.T) {
 	}()
 	defer srv.Close()
 
-	client := NewSafeHTTPClient(time.Second)
+	client := NewSafeHTTPClient(time.Second, false)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+ln.Addr().String()+"/", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestPublicKeyPEMRoundtripLoad(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 
-	m := New(key, "local.test", "http", 5)
+	m := New(key, "local.test", "http", 5, false)
 	t.Cleanup(m.Close)
 
 	pemStr, err := m.PublicKeyPEM()
@@ -187,7 +187,7 @@ func TestGetPublicKeyFetchesAndCaches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	remote := New(remoteKey, "remote.test", "http", 5)
+	remote := New(remoteKey, "remote.test", "http", 5, false)
 	t.Cleanup(remote.Close)
 
 	var hits int

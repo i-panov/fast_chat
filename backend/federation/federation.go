@@ -38,6 +38,10 @@ var (
 )
 
 const (
+	// NonceHeader carries the random value that makes every signed request
+	// unique.
+	NonceHeader = "X-Federation-Nonce"
+
 	wellKnownPath      = "/.well-known/fast-chat"
 	privFileName       = "federation.priv"
 	pubFileName        = "federation.pub"
@@ -90,13 +94,13 @@ func (m *Manager) SetHTTPClient(c *http.Client) {
 }
 
 // New creates a new federation manager.
-func New(privateKey *rsa.PrivateKey, serverDomain, scheme string, timeoutSec int) *Manager {
+func New(privateKey *rsa.PrivateKey, serverDomain, scheme string, timeoutSec int, allowPrivate bool) *Manager {
 	mgr := &Manager{
 		privateKey:    privateKey,
 		publicKey:     &privateKey.PublicKey,
 		serverDomain:  serverDomain,
 		scheme:        scheme,
-		client:        NewSafeHTTPClient(time.Duration(timeoutSec) * time.Second),
+		client:        NewSafeHTTPClient(time.Duration(timeoutSec)*time.Second, allowPrivate),
 		pubKeyCache:   make(map[string]*cacheEntry),
 		cacheDuration: cacheTTL,
 		closeCh:       make(chan struct{}),
@@ -112,7 +116,11 @@ func New(privateKey *rsa.PrivateKey, serverDomain, scheme string, timeoutSec int
 // addresses. This closes the DNS-rebinding SSRF hole: the hostname is
 // resolved once, and the connection is dialed to the verified IP
 // directly, so a second DNS resolution cannot redirect it.
-func NewSafeHTTPClient(timeout time.Duration) *http.Client {
+//
+// allowPrivate lifts the restriction. It exists for the local setup, where
+// the peers run on the loopback interface and the federation would otherwise
+// not work at all. It must stay off in production.
+func NewSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 	dialer := &net.Dialer{
 		Timeout:   timeout,
 		KeepAlive: 30 * time.Second,
@@ -128,7 +136,7 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 
 			// IP literal: validate and dial directly.
 			if ip := net.ParseIP(host); ip != nil {
-				if isUnsafeIP(ip) {
+				if !allowPrivate && isUnsafeIP(ip) {
 					return nil, fmt.Errorf("%w: %s", ErrUnsafeAddress, ip)
 				}
 
@@ -144,7 +152,7 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 			// the verified IP (not the hostname) prevents a second DNS
 			// lookup from returning a different, unsafe address.
 			for _, ip := range ips {
-				if isUnsafeIP(ip.IP) {
+				if !allowPrivate && isUnsafeIP(ip.IP) {
 					continue
 				}
 
@@ -217,8 +225,12 @@ func LoadOrGenerateKeys(keyDir string) (*rsa.PrivateKey, error) {
 // B over the same request.
 //
 // serverDomain is the caller's own server domain (e.g. "chat.example.com").
-func (m *Manager) Sign(method, requestURI string, body []byte, timestamp int64) (string, error) {
-	data := signedPayload(m.serverDomain, method, requestURI, body, timestamp)
+//
+// nonce makes every request unique: without it two identical requests within
+// the same second would share a signature, and the second one would be
+// refused as a replay of the first.
+func (m *Manager) Sign(method, requestURI string, body []byte, timestamp int64, nonce string) (string, error) {
+	data := signedPayload(m.serverDomain, method, requestURI, body, timestamp, nonce)
 	hash := sha256.Sum256([]byte(data))
 
 	sig, err := rsa.SignPKCS1v15(rand.Reader, m.privateKey, crypto.SHA256, hash[:])
@@ -233,7 +245,7 @@ func (m *Manager) Sign(method, requestURI string, body []byte, timestamp int64) 
 // and rejects replays. serverDomain is the asserted sender identity (the
 // value of the X-Federation-Server header) and must match the domain the
 // signature was minted for.
-func (m *Manager) Verify(ctx context.Context, serverDomain, signature, method, requestURI string, body []byte, timestamp int64) bool {
+func (m *Manager) Verify(ctx context.Context, serverDomain, signature, method, requestURI string, body []byte, timestamp int64, nonce string) bool {
 	if !m.timestampFresh(timestamp) {
 		return false
 	}
@@ -248,7 +260,7 @@ func (m *Manager) Verify(ctx context.Context, serverDomain, signature, method, r
 		return false
 	}
 
-	data := signedPayload(serverDomain, method, requestURI, body, timestamp)
+	data := signedPayload(serverDomain, method, requestURI, body, timestamp, nonce)
 	hash := sha256.Sum256([]byte(data))
 
 	if rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hash[:], sigBytes) != nil {
@@ -261,9 +273,12 @@ func (m *Manager) Verify(ctx context.Context, serverDomain, signature, method, r
 // signedPayload builds the byte string that is hashed and signed. The
 // pipe-separated layout makes accidental collisions between (method, path,
 // body) tuples vanishingly unlikely and is unambiguous to reconstruct.
-func signedPayload(serverDomain, method, requestURI string, body []byte, timestamp int64) string {
+//
+// The nonce is part of the payload, so it cannot be swapped after the fact:
+// the signature only verifies for the nonce that was sent with it.
+func signedPayload(serverDomain, method, requestURI string, body []byte, timestamp int64, nonce string) string {
 	var buf strings.Builder
-	buf.Grow(len(serverDomain) + len(method) + len(requestURI) + len(body) + 32)
+	buf.Grow(len(serverDomain) + len(method) + len(requestURI) + len(body) + len(nonce) + 32)
 	buf.WriteString(serverDomain)
 	buf.WriteByte('|')
 	buf.WriteString(method)
@@ -273,6 +288,8 @@ func signedPayload(serverDomain, method, requestURI string, body []byte, timesta
 	buf.Write(body)
 	buf.WriteByte('|')
 	buf.WriteString(strconv.FormatInt(timestamp, 10))
+	buf.WriteByte('|')
+	buf.WriteString(nonce)
 
 	return buf.String()
 }

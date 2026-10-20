@@ -75,6 +75,10 @@ export type MessageDeliveryStatus = "sent" | "delivered" | "read";
 export interface Message {
 	id: string;
 	chatId: string;
+	// threadId is set on the messages of a thread. The chat of such a
+	// message is the real chat, so the thread is what says where the
+	// message belongs.
+	threadId?: string;
 	fromId: string;
 	fromNick: string;
 	text: string;
@@ -157,6 +161,9 @@ export interface SyncResponse {
 	chats: Chat[];
 	deletedChats: SyncDeletedChat[];
 	messages: Message[];
+	// threadMessages are the messages of the threads of the chats. They are
+	// delivered apart from the chat messages: they live in their own store.
+	threadMessages?: Message[];
 	deletedMessages: SyncDeletedMessage[];
 	onlineStatus?: Record<string, boolean>;
 }

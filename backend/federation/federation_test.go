@@ -22,16 +22,19 @@ func newTestManager(t *testing.T, serverDomain string) *Manager {
 		t.Fatal(err)
 	}
 
-	m := New(key, serverDomain, "http", 5)
+	m := New(key, serverDomain, "http", 5, false)
 	t.Cleanup(m.Close)
 
 	return m
 }
 
+// testNonce is the nonce the tests sign their requests with.
+const testNonce = "test-nonce"
+
 func mustSign(t *testing.T, m *Manager, method, requestURI string, body []byte, ts int64) string {
 	t.Helper()
 
-	sig, err := m.Sign(method, requestURI, body, ts)
+	sig, err := m.Sign(method, requestURI, body, ts, testNonce)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -59,7 +62,7 @@ func TestSignVerifyRoundtrip(t *testing.T) {
 	body := []byte(`{"hello":"world"}`)
 	sig := mustSign(t, other, http.MethodPost, "/api/federated/messages", body, ts)
 
-	if !m.Verify(context.Background(), remote, sig, http.MethodPost, "/api/federated/messages", body, ts) {
+	if !m.Verify(context.Background(), remote, sig, http.MethodPost, "/api/federated/messages", body, ts, testNonce) {
 		t.Fatal("Verify returned false for a freshly signed payload")
 	}
 }
@@ -81,7 +84,7 @@ func TestVerifyRejectsWrongServer(t *testing.T) {
 	body := []byte("payload")
 	sig := mustSign(t, other, http.MethodPost, "/x", body, ts)
 
-	if m.Verify(context.Background(), "remote-b.test", sig, http.MethodPost, "/x", body, ts) {
+	if m.Verify(context.Background(), "remote-b.test", sig, http.MethodPost, "/x", body, ts, testNonce) {
 		t.Fatal("Verify accepted a signature minted for a different server")
 	}
 }
@@ -95,7 +98,7 @@ func TestVerifyRejectsTamperedBody(t *testing.T) {
 	ts := time.Now().Unix()
 	sig := mustSign(t, other, http.MethodPost, "/x", []byte("original"), ts)
 
-	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", []byte("tampered"), ts) {
+	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", []byte("tampered"), ts, testNonce) {
 		t.Fatal("Verify accepted a signature over a tampered body")
 	}
 }
@@ -109,7 +112,7 @@ func TestVerifyRejectsExpiredTimestamp(t *testing.T) {
 	old := time.Now().Add(-2 * time.Hour).Unix()
 	sig := mustSign(t, other, http.MethodPost, "/x", nil, old)
 
-	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", nil, old) {
+	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", nil, old, testNonce) {
 		t.Fatal("Verify accepted a signature with an old timestamp")
 	}
 }
@@ -123,7 +126,7 @@ func TestVerifyRejectsFutureTimestamp(t *testing.T) {
 	future := time.Now().Add(2 * time.Hour).Unix()
 	sig := mustSign(t, other, http.MethodPost, "/x", nil, future)
 
-	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", nil, future) {
+	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", nil, future, testNonce) {
 		t.Fatal("Verify accepted a signature with a future timestamp")
 	}
 }
@@ -138,11 +141,11 @@ func TestVerifyRejectsReplay(t *testing.T) {
 	body := []byte("hello")
 	sig := mustSign(t, other, http.MethodPost, "/x", body, ts)
 
-	if !m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", body, ts) {
+	if !m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", body, ts, testNonce) {
 		t.Fatal("first Verify call should succeed")
 	}
 
-	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", body, ts) {
+	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", body, ts, testNonce) {
 		t.Fatal("Verify accepted the exact same signature twice (replay)")
 	}
 }
@@ -153,7 +156,7 @@ func TestVerifyRejectsUnknownServer(t *testing.T) {
 	ts := time.Now().Unix()
 	sig := "not-a-real-signature"
 
-	if m.Verify(context.Background(), "unknown.test", sig, http.MethodPost, "/x", nil, ts) {
+	if m.Verify(context.Background(), "unknown.test", sig, http.MethodPost, "/x", nil, ts, testNonce) {
 		t.Fatal("Verify succeeded for an unknown server with garbage signature")
 	}
 }
@@ -165,7 +168,7 @@ func TestVerifyRejectsMalformedSignature(t *testing.T) {
 	m.cachePublicKey("remote.test", other.publicKey, time.Hour)
 
 	ts := time.Now().Unix()
-	if m.Verify(context.Background(), "remote.test", "not-base64!@#$", http.MethodPost, "/x", nil, ts) {
+	if m.Verify(context.Background(), "remote.test", "not-base64!@#$", http.MethodPost, "/x", nil, ts, testNonce) {
 		t.Fatal("Verify accepted a malformed base64 signature")
 	}
 }
@@ -232,7 +235,7 @@ func TestWellKnownHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := New(key, "local.test", "http", 5)
+	m := New(key, "local.test", "http", 5, false)
 	t.Cleanup(m.Close)
 
 	pemStr, err := m.PublicKeyPEM()

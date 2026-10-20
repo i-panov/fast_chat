@@ -4,6 +4,8 @@ import { messagesRepo } from "../db/messagesRepo.ts";
 import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
+import type { OutboxOp } from "../db/schema.ts";
+import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import type { Message, SyncResponse } from "../types/api.ts";
 
 const DEFAULT_SINCE = "1970-01-01T00:00:00.000Z";
@@ -19,7 +21,15 @@ export async function applyDelta(delta: SyncResponse): Promise<void> {
 	const chats = delta.chats ?? [];
 	const deletedChats = delta.deletedChats ?? [];
 	const messages = delta.messages ?? [];
+	const threadMessages = delta.threadMessages ?? [];
 	const deletedMessages = delta.deletedMessages ?? [];
+
+	// The removals are applied before the chat list: a member who left a
+	// group and came back is in the list again, and the chat must survive the
+	// tombstone of the earlier removal.
+	if (deletedChats.length > 0) {
+		await chatsRepo.removeMany(deletedChats.map((d) => d.chatId));
+	}
 
 	if (chats.length > 0) {
 		await chatsRepo.upsertMany(chats);
@@ -31,58 +41,84 @@ export async function applyDelta(delta: SyncResponse): Promise<void> {
 		}
 	}
 
-	if (deletedChats.length > 0) {
-		await chatsRepo.removeMany(deletedChats.map((d) => d.chatId));
+	await applyMessages(messages, outbox);
+
+	// The messages of the threads go into their own store: the chat feed
+	// holds the top-level messages only.
+	for (const msg of threadMessages) {
+		if (msg.threadId === undefined) continue;
+
+		await threadMessagesRepo.upsert(msg, msg.threadId, "sent");
 	}
 
-	if (messages.length > 0) {
-		const stored: Message[] = [];
-		for (const msg of delta.messages) {
-			const local = await messagesRepo.getById(msg.chatId, msg.id);
+	await applyDeletions(deletedMessages, outbox);
 
-			// If we have a queued send-op for this id, keep the local
-			// copy (which contains our pending file references) and
-			// let the outbox finish uploading/inserting. The server
-			// will then resend the canonical record with status sent.
-			if (local?.status === "queued" || local?.status === "failed") {
-				continue;
-			}
+	await metaRepo.setLastSyncedAt(delta.serverNow);
+}
 
-			// LWW: if a queued edit was beaten by a fresher server
-			// edit, drop the local outbox op and accept the server
-			// record.
-			const editOp = outbox.find(
-				(o) => o.kind === "edit" && o.messageId === msg.id,
-			);
-			const serverEditedAt =
-				msg.editedAt !== undefined ? new Date(msg.editedAt).getTime() : NaN;
-			const localEditedAt =
-				editOp !== undefined && editOp.kind === "edit"
-					? new Date(editOp.clientEditedAt).getTime()
-					: NaN;
-			// NaN comparisons are always false, so a malformed/empty
-			// timestamp never wins the conflict — the server record is
-			// accepted as-is.
-			if (
-				editOp !== undefined &&
-				editOp.kind === "edit" &&
-				!Number.isNaN(serverEditedAt) &&
-				!Number.isNaN(localEditedAt) &&
-				serverEditedAt > localEditedAt
-			) {
-				await outboxRepo.remove(editOp.opId);
-				if (editOp.pendingFileClientIds.length > 0) {
-					await pendingBlobsRepo.deleteMany(editOp.pendingFileClientIds);
-				}
-			}
+// applyMessages stores the chat messages of the delta, resolving the
+// conflicts with the local outbox.
+async function applyMessages(
+	messages: Message[],
+	outbox: OutboxOp[],
+): Promise<void> {
+	if (messages.length === 0) return;
 
-			stored.push(msg);
+	const stored: Message[] = [];
+
+	for (const msg of messages) {
+		const local = await messagesRepo.getById(msg.chatId, msg.id);
+
+		// If we have a queued send-op for this id, keep the local
+		// copy (which contains our pending file references) and
+		// let the outbox finish uploading/inserting. The server
+		// will then resend the canonical record with status sent.
+		if (local?.status === "queued" || local?.status === "failed") {
+			continue;
 		}
-		if (stored.length > 0) {
-			await messagesRepo.upsertMany(stored);
+
+		// LWW: if a queued edit was beaten by a fresher server
+		// edit, drop the local outbox op and accept the server
+		// record.
+		const editOp = outbox.find(
+			(o) => o.kind === "edit" && o.messageId === msg.id,
+		);
+		const serverEditedAt =
+			msg.editedAt !== undefined ? new Date(msg.editedAt).getTime() : NaN;
+		const localEditedAt =
+			editOp !== undefined && editOp.kind === "edit"
+				? new Date(editOp.clientEditedAt).getTime()
+				: NaN;
+		// NaN comparisons are always false, so a malformed/empty
+		// timestamp never wins the conflict — the server record is
+		// accepted as-is.
+		if (
+			editOp !== undefined &&
+			editOp.kind === "edit" &&
+			!Number.isNaN(serverEditedAt) &&
+			!Number.isNaN(localEditedAt) &&
+			serverEditedAt > localEditedAt
+		) {
+			await outboxRepo.remove(editOp.opId);
+			if (editOp.pendingFileClientIds.length > 0) {
+				await pendingBlobsRepo.deleteMany(editOp.pendingFileClientIds);
+			}
 		}
+
+		stored.push(msg);
 	}
 
+	if (stored.length > 0) {
+		await messagesRepo.upsertMany(stored);
+	}
+}
+
+// applyDeletions marks the deleted messages of the delta and cleans up the
+// outbox operations that became redundant.
+async function applyDeletions(
+	deletedMessages: SyncResponse["deletedMessages"],
+	outbox: OutboxOp[],
+): Promise<void> {
 	for (const d of deletedMessages) {
 		// If we have a queued send-op for this id, the user's send is
 		// still pending. The server will replay the delete once the
@@ -102,9 +138,15 @@ export async function applyDelta(delta: SyncResponse): Promise<void> {
 		}
 
 		await messagesRepo.applyDelete(d.chatId, d.messageId);
-	}
 
-	await metaRepo.setLastSyncedAt(delta.serverNow);
+		// The same tombstone covers the messages of the threads: they live in
+		// their own store, and a deleted thread message has to disappear from
+		// it as well.
+		const threadMessage = await threadMessagesRepo.getByIdAny(d.messageId);
+		if (threadMessage !== undefined) {
+			await threadMessagesRepo.applyDelete(threadMessage.threadId, d.messageId);
+		}
+	}
 }
 
 export function pullDelta(

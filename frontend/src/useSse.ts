@@ -7,6 +7,16 @@ const RECONNECT_BASE_MS = 3000;
 const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_JITTER_MS = 1000;
 
+// The stream is authenticated by a separate request. A failure of that
+// request leaves the stream open but unauthorized, and an unauthorized stream
+// delivers no events without ever reporting an error — so the request is
+// retried a few times before the stream is dropped and reopened.
+const AUTH_RETRY_DELAYS_MS = [0, 200, 500, 1000, 2000];
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function isClosed(source: EventSource): boolean {
 	try {
 		return source.readyState === EventSource.CLOSED;
@@ -124,22 +134,53 @@ export function useSse(token: string, onEvent: EventHandler) {
 				// closed by a manual reconnect while a queued event was still
 				// being delivered).
 				if (source !== currentSource) return;
-				// "connected" is emitted by the server only after sseAuth
-				// succeeded on this connection, so resetting the backoff here
-				// is safe.
+				// The server sends "connected" as soon as the stream is
+				// registered, before the authentication request is answered.
+				// The backoff is reset anyway: the stream itself is up.
 				reconnectAttempt = 0;
 				void onEventRef.current("connected", null);
 			});
 
 			source.onopen = () => {
 				if (source !== currentSource) return;
-				sseAuth(connectionId, token).catch(() => {
-					// Keep the EventSource open: the browser will retry the
-					// connection on its own and fire onopen again, which
-					// re-runs sseAuth. Closing here would require a manual
-					// reconnect loop, but EventSource already has one.
-				});
+				void authenticate(source);
 			};
+
+			// authenticate makes the stream usable. A failed attempt is
+			// retried a few times: the connection can be established before the
+			// server has registered it, and a stream that stays open without
+			// authorization delivers nothing and reports no error.
+			async function authenticate(source: EventSource) {
+				for (const delay of AUTH_RETRY_DELAYS_MS) {
+					if (closed || source !== currentSource) return;
+
+					if (delay > 0) {
+						await sleep(delay);
+					}
+
+					if (closed || source !== currentSource) return;
+
+					try {
+						await sseAuth(connectionId, token);
+						return;
+					} catch (err) {
+						if (err instanceof Error && err.message === "unauthorized") {
+							// The session is gone: the app logs out through the
+							// unauthorized event, retrying would not help.
+							break;
+						}
+					}
+				}
+
+				if (closed || source !== currentSource) return;
+
+				// Give up on this stream: close it and let the reconnect logic
+				// open a new one. close() fires no error event, so the
+				// reconnect is started here.
+				source.close();
+				void onEventRef.current("sse_closed", null);
+				scheduleReconnect();
+			}
 
 			source.onerror = () => {
 				if (source !== currentSource) return;

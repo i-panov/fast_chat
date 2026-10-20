@@ -33,20 +33,31 @@ type SyncDeletedChatDTO struct {
 	DeletedAt time.Time `json:"deletedAt"`
 }
 
-// SyncResponse is the delta of chats, messages, and tombstones that have
-// changed for the user since the given timestamp.
+// SyncResponse is the state of the account as the server sees it.
+//
+// The chat list is complete, not a delta: a chat the user joined, a renamed
+// group or a changed membership does not change the creation date of the
+// chat, so a "changed since" query would lose exactly the changes that
+// matter while the client was offline. The messages and the tombstones are
+// deltas since the cursor of the client.
+//
+// The messages of the threads travel in their own list: the client keeps them
+// in a separate store, and a single list would put every thread message back
+// into the chat feed.
 type SyncResponse struct {
 	ServerNow       time.Time               `json:"serverNow"`
 	Chats           []SyncChatDTO           `json:"chats"`
 	DeletedChats    []SyncDeletedChatDTO    `json:"deletedChats"`
 	Messages        []model.Message         `json:"messages"`
+	ThreadMessages  []model.Message         `json:"threadMessages"`
 	DeletedMessages []SyncDeletedMessageDTO `json:"deletedMessages"`
 	OnlineStatus    map[string]bool         `json:"onlineStatus,omitempty"`
 }
 
-// Sync returns the delta of chats, messages, and tombstones that have changed
-// for the user since the given RFC3339 timestamp. The client uses this to
-// bring its local cache up to date after a period of being offline.
+// Sync returns the state of the account: the full list of its chats and the
+// messages and tombstones that changed since the given RFC3339 timestamp.
+// The client uses this to bring its local cache up to date after a period of
+// being offline.
 func (s *Service) Sync(ctx context.Context, userID string, since time.Time) SyncResponse {
 	if _, err := s.store.EnsureSelfChat(ctx, userID); err != nil {
 		log().Error("failed to ensure self-chat", "err", err)
@@ -65,8 +76,9 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time) Sync
 
 	return SyncResponse{
 		ServerNow:       time.Now().UTC(),
-		Chats:           s.buildChangedChats(ctx, userID, since, nicks),
+		Chats:           s.buildChats(ctx, chats, nicks),
 		Messages:        s.store.MessagesChangedSince(ctx, chatIDs, since),
+		ThreadMessages:  s.store.ThreadMessagesChangedSince(ctx, chatIDs, since),
 		DeletedMessages: s.buildDeletedMessages(ctx, chatIDs, since),
 		DeletedChats:    s.buildDeletedChats(ctx, userID, since),
 		OnlineStatus:    onlineStatus,
@@ -83,21 +95,21 @@ func ParseSince(sinceStr string) (time.Time, error) {
 	return time.Parse(time.RFC3339, sinceStr)
 }
 
-func (s *Service) buildChangedChats(
-	ctx context.Context,
-	userID string,
-	since time.Time,
-	nicks map[string]string,
-) []SyncChatDTO {
-
-	changed := s.store.ChatChangedSince(ctx, userID, since)
-	if len(changed) == 0 {
+// buildChats returns the full list of the user's chats.
+//
+// The list is deliberately not a delta. A "changed since" query cannot see
+// the changes that matter most offline: a group the user joined, a group that
+// was renamed, a member that was added or removed — none of them change the
+// creation date of the chat. The list holds only the chats the user belongs
+// to, so sending it whole is cheap and leaves no gap.
+func (s *Service) buildChats(ctx context.Context, chats []*model.Chat, nicks map[string]string) []SyncChatDTO {
+	if len(chats) == 0 {
 		return nil
 	}
 
-	out := make([]SyncChatDTO, 0, len(changed))
+	out := make([]SyncChatDTO, 0, len(chats))
 
-	for _, chat := range changed {
+	for _, chat := range chats {
 		dto := SyncChatDTO{
 			ID:        chat.ID,
 			Type:      chat.Type,

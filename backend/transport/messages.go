@@ -451,6 +451,11 @@ func sendMessage(
 	}
 
 	if threadID == "" {
+		// The attachments are not federated: the peer does not have the
+		// file, and there is no endpoint that would hand it over. A message
+		// with an attachment therefore reaches the peer without it. Sending
+		// the file is a separate feature: it needs an endpoint, a size
+		// policy and a transfer of the encrypted content.
 		fed.Post(ctx, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages", map[string]any{
 			"id":               msg.ID,
 			"fromId":           msg.FromID,

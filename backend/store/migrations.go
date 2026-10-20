@@ -91,6 +91,17 @@ func createIndexes(db *gorm.DB) error {
 		// read statuses; user lookups for sync queries.
 		"CREATE INDEX IF NOT EXISTS idx_message_read_statuses_message ON message_read_statuses(message_id)",
 		"CREATE INDEX IF NOT EXISTS idx_message_read_statuses_user ON message_read_statuses(user_id)",
+
+		// Chats: the federation lists the peers of this server and the chats
+		// it shares with them. Both filter by remote_server, which would
+		// otherwise mean a full scan of the chats table every poll.
+		"CREATE INDEX IF NOT EXISTS idx_chats_remote_server ON chats(remote_server)",
+
+		// FederationOp: the outbox picks the operations that are due and
+		// checks, for every peer, that no earlier operation of that peer is
+		// still waiting. The composite index serves both the barrier and the
+		// ordering.
+		"CREATE INDEX IF NOT EXISTS idx_federation_ops_peer_created ON federation_ops(remote_server, created_at, id)",
 	}
 
 	for _, stmt := range statements {
@@ -202,6 +213,10 @@ var utcTimestampColumns = map[string][]string{
 	"message_read_statuses": {"read_at"},
 	"push_subscriptions":    {fieldCreatedAt},
 	"users":                 {"token_expires_at", fieldKeyBackupAt},
+	// The outbox filters by next_attempt_at and orders by created_at, so
+	// both columns are compared in SQL like the ones above. The cursor of
+	// the catch-up is only compared in Go and stays out of the list.
+	"federation_ops": {fieldCreatedAt, "next_attempt_at"},
 }
 
 // normalizeTimestampsToUTC rewrites stored timestamps that carry a non-zero

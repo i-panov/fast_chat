@@ -45,9 +45,9 @@ func newDomainTestServer(t *testing.T) *domainTestServer {
 		t.Fatal(err)
 	}
 
-	fm := federation.New(key, cfg.Server.Domain, "http", 5)
+	fm := federation.New(key, cfg.Server.Domain, "http", 5, false)
 	svc := service.New(st, cfg, hub, nil)
-	fed := federation.NewClient(fm, cfg.Server.Domain, "http", 5)
+	fed := federation.NewClient(fm, cfg.Server.Domain, "http", 5, false)
 	transport := New(&Deps{
 		Hub:           hub,
 		Store:         st,
@@ -527,7 +527,7 @@ func TestFederatedSignedRequestFlow(t *testing.T) {
 	uri := "/api/federated/users/search?q=alice"
 	ownDomain := fm.ServerDomain()
 
-	signature, err := fm.Sign(http.MethodGet, uri, nil, timestamp)
+	signature, err := fm.Sign(http.MethodGet, uri, nil, timestamp, "test-nonce")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,6 +536,7 @@ func TestFederatedSignedRequestFlow(t *testing.T) {
 	req.Header.Set("X-Federation-Server", ownDomain)
 	req.Header.Set("X-Federation-Signature", signature)
 	req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
+	req.Header.Set(federation.NonceHeader, "test-nonce")
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -568,6 +569,7 @@ func TestFederatedSignedRequestFlow(t *testing.T) {
 	req.Header.Set("X-Federation-Server", "remote.example.com")
 	req.Header.Set("X-Federation-Signature", "badsig")
 	req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
+	req.Header.Set(federation.NonceHeader, "test-nonce")
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -634,7 +636,7 @@ func TestOversizedFederatedBodyRejected(t *testing.T) {
 	uri := "/api/federated/chats"
 	big := bytes.Repeat([]byte("a"), (10<<20)+1024)
 
-	signature, err := fm.Sign(http.MethodPost, uri, big, timestamp)
+	signature, err := fm.Sign(http.MethodPost, uri, big, timestamp, "test-nonce")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,6 +646,7 @@ func TestOversizedFederatedBodyRejected(t *testing.T) {
 	req.Header.Set("X-Federation-Server", fm.ServerDomain())
 	req.Header.Set("X-Federation-Signature", signature)
 	req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
+	req.Header.Set(federation.NonceHeader, "test-nonce")
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

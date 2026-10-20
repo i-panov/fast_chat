@@ -34,6 +34,7 @@ vi.mock("../api.ts", () => ({
 	}),
 	setKeyBackup: vi.fn(),
 	deleteKeyBackup: vi.fn(),
+	revokeSession: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("../useSse.ts", () => ({
@@ -80,7 +81,7 @@ vi.mock("../components/chat/AudioPlayerBar.tsx", () => ({
 }));
 
 const { useSse } = await import("../useSse.ts");
-const { refreshToken } = await import("../api.ts");
+const { refreshToken, revokeSession } = await import("../api.ts");
 const { retryFailedOps, setTokenProvider } = await import(
 	"../sync/syncEngine.ts"
 );
@@ -309,6 +310,20 @@ describe("chat page", () => {
 
 		await waitFor(() => {
 			expect(localStorage.getItem("accounts")).toBe("[]");
+		});
+	});
+
+	// The logout revokes the token on the server: a token that only
+	// disappears from the browser stays usable until it expires.
+	it("revokes the session token when logging out", async () => {
+		seedAccount();
+		renderPage();
+
+		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
+		await sseHandler()("token_expired", {});
+
+		await waitFor(() => {
+			expect(vi.mocked(revokeSession)).toHaveBeenCalledWith("tok");
 		});
 	});
 

@@ -84,6 +84,32 @@ func (s *Service) ValidFileIDs(ctx context.Context, fileIDs []string) []string {
 	return valid
 }
 
+// validFileIDsForMembers filters fileIDs down to the files uploaded by one of
+// the given members. A federated peer may only reference files that belong to
+// the conversation: an id that leaked from another chat must not turn into a
+// way to attach somebody else's upload to a federated message.
+func (s *Service) validFileIDsForMembers(ctx context.Context, members, fileIDs []string) []string {
+	owners := make(map[string]struct{}, len(members))
+	for _, member := range members {
+		owners[member] = struct{}{}
+	}
+
+	valid := make([]string, 0, len(fileIDs))
+
+	for _, fid := range fileIDs {
+		file, err := s.store.GetFile(ctx, fid)
+		if err != nil {
+			continue
+		}
+
+		if _, ok := owners[file.UploadedBy]; ok {
+			valid = append(valid, fid)
+		}
+	}
+
+	return valid
+}
+
 // CreateFederatedChat creates a chat on behalf of a remote server after
 // validating membership constraints. Returns the enriched view, and true if it
 // already existed (idempotent). When alreadyExists is true the view is zero.
@@ -285,7 +311,7 @@ func (s *Service) EditFederatedMessage(
 		// supported for federated edits. Remote servers send explicit fileIDs
 		// via ValidFileIDs. This is intentional: federation trust boundaries
 		// require explicit file references, not hash-based dedup.
-		validIDs := s.ValidFileIDs(ctx, edit.FileIDs)
+		validIDs := s.validFileIDsForMembers(ctx, chat.Members, edit.FileIDs)
 
 		if len(validIDs) > 0 {
 			if err := s.store.SetMessageFiles(ctx, messageID, validIDs); err != nil {
@@ -378,8 +404,21 @@ func (s *Service) HandleFederatedTyping(
 // SyncFederatedResponse is the shape of the federation catchup response.
 type SyncFederatedResponse struct {
 	ServerNow       time.Time              `json:"serverNow"`
+	Chats           []FederatedChatDTO     `json:"chats"`
 	Messages        []model.Message        `json:"messages"`
 	DeletedMessages []model.DeletedMessage `json:"deletedMessages"`
+}
+
+// FederatedChatDTO describes a chat that a peer shares with this server. The
+// peer is authoritative for it, so a server that missed the creation of the
+// chat can rebuild it from the catch-up response.
+type FederatedChatDTO struct {
+	ID        string    `json:"id"`
+	Type      string    `json:"type"`
+	Name      string    `json:"name"`
+	OwnerID   string    `json:"ownerId"`
+	Members   []string  `json:"members"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // SyncFederated returns the messages and deleted messages changed since the
@@ -405,7 +444,35 @@ func (s *Service) SyncFederated(
 
 	return SyncFederatedResponse{
 		ServerNow:       time.Now().UTC(),
+		Chats:           s.federatedChats(ctx, fedChatIDs),
 		Messages:        msgs,
 		DeletedMessages: deleted,
 	}
+}
+
+// federatedChats describes the chats a peer shares with this server.
+func (s *Service) federatedChats(ctx context.Context, chatIDs []string) []FederatedChatDTO {
+	if len(chatIDs) == 0 {
+		return nil
+	}
+
+	chats, err := s.store.GetChatsByIDs(ctx, chatIDs)
+	if err != nil {
+		log().Warn("federated chats could not be loaded", "err", err)
+		return nil
+	}
+
+	out := make([]FederatedChatDTO, 0, len(chats))
+	for idx := range chats {
+		out = append(out, FederatedChatDTO{
+			ID:        chats[idx].ID,
+			Type:      chats[idx].Type,
+			Name:      chats[idx].Name,
+			OwnerID:   chats[idx].OwnerID,
+			Members:   chats[idx].Members,
+			CreatedAt: chats[idx].CreatedAt,
+		})
+	}
+
+	return out
 }

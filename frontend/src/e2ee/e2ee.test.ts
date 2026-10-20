@@ -7,6 +7,7 @@ import {
 	encryptContent,
 	generateKeyPair,
 	type KeyPair,
+	sealMessageKey,
 } from "./crypto.ts";
 import {
 	computePlaintextHash,
@@ -307,6 +308,63 @@ describe("MessageContent encryption (text + location)", () => {
 		expect(decrypted.text).toBe("with files");
 		expect(decrypted.location).toEqual({ lat: 10, lng: 20 });
 		expect(decrypted.fileKeys).toEqual({ "file-1": key1, "file-2": key2 });
+	});
+
+	// The server only ever sees the ciphertext of an encrypted upload, so the
+	// type of the file travels inside the encrypted content.
+	it("restores the type of an encrypted attachment", async () => {
+		const alice = await keyPair();
+		const fileKey = await generateFileKey();
+		const hash = "a".repeat(64);
+
+		const msgKey = crypto.getRandomValues(new Uint8Array(32));
+		const encrypted = await encryptContent(
+			{
+				text: "look at this",
+				fileKeys: { [hash]: fileKey },
+				fileMeta: {
+					[hash]: { mimeType: "image/png", name: "photo.png", size: 42 },
+				},
+			},
+			msgKey,
+		);
+
+		const envelopes = await sealMessageKey(msgKey, [
+			{ keyId: "alice:test", publicKey: alice.publicKey },
+		]);
+
+		const msg: Message = {
+			id: "m1",
+			chatId: "c1",
+			fromId: "bob:test",
+			fromNick: "bob",
+			text: encrypted.ciphertext,
+			encrypted: true,
+			encryptedPayload: JSON.stringify({
+				v: 1,
+				nonce: encrypted.nonce,
+				envelopes,
+			}),
+			createdAt: "2026-01-01T00:00:00Z",
+			files: [
+				{
+					id: "f1",
+					mimeType: "application/octet-stream",
+					size: 42,
+					originalName: "f1",
+					fileType: "file",
+					url: "/api/files/f1",
+					hash,
+				},
+			],
+		};
+
+		const out = await decryptMessage(msg, "alice:test", alice);
+
+		expect(out.text).toBe("look at this");
+		expect(out.files?.[0].mimeType).toBe("image/png");
+		expect(out.files?.[0].fileType).toBe("photo");
+		expect(out.files?.[0].originalName).toBe("photo.png");
 	});
 
 	it("handles missing file keys (plaintext files)", async () => {

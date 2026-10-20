@@ -274,6 +274,13 @@ func registerChatMembership(api huma.API, svc *service.Service) {
 			return nil, err
 		}
 
+		// The avatar is served to every member of the group, so only a file
+		// the owner uploaded may become one: an id that leaked from another
+		// chat would otherwise hand that content to the whole group.
+		if !svc.CanAttachFile(ctx, user.ID, input.Body.FileID) {
+			return nil, &statusError{ErrorMessage: "invalid avatar file", code: http.StatusBadRequest}
+		}
+
 		updatedView, err := svc.UpdateChatAvatar(ctx, input.ID, input.Body.FileID)
 		if err != nil {
 			return nil, chatOrInternalError(err)

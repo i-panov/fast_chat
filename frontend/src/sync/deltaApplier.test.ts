@@ -133,6 +133,38 @@ describe("applyDelta", () => {
 		expect(stored[0].status).toBe("deleted");
 	});
 
+	// A member that left a group and came back is in the chat list again.
+	// The tombstone of the earlier removal must not delete it.
+	it("keeps a chat that was removed and added again", async () => {
+		await applyDelta(
+			delta({
+				chats: [chat("chat-1", "room", ["alice:test"])],
+				deletedChats: [{ chatId: "chat-1", deletedAt: "2026-08-30T10:00:00Z" }],
+			}),
+		);
+
+		expect(await chatsRepo.getById("chat-1")).toMatchObject({ name: "room" });
+	});
+
+	// The messages of the threads live in their own store: they must not end
+	// up in the chat feed.
+	it("stores the thread messages in the thread store", async () => {
+		const { threadMessagesRepo } = await import("../db/threadMessagesRepo.ts");
+
+		await applyDelta(
+			delta({
+				messages: [msg("m1", "hello")],
+				threadMessages: [{ ...msg("tm1", "in the thread"), threadId: "th1" }],
+			}),
+		);
+
+		const chatMessages = await messagesRepo.getByChat("chat-1");
+		expect(chatMessages.map((m) => m.id)).toEqual(["m1"]);
+
+		const threadMessage = await threadMessagesRepo.getById("th1", "tm1");
+		expect(threadMessage?.text).toBe("in the thread");
+	});
+
 	it("patches online status of chat members", async () => {
 		await applyDelta(
 			delta({

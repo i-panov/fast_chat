@@ -16,6 +16,24 @@ interface UseSseEventsParams {
 	onTokenExpired: () => void;
 }
 
+// chatFromEvent extracts the chat from an SSE payload. The membership events
+// carry it wrapped ("{ chatId, userId, chat }"), the other chat events send
+// the chat itself.
+function chatFromEvent(data: unknown): Chat | null {
+	const payload = data as { chat?: Chat; id?: string } | null;
+	if (payload === null || typeof payload !== "object") return null;
+
+	if (payload.chat !== undefined && payload.chat !== null) {
+		return payload.chat;
+	}
+
+	if (typeof payload.id === "string") {
+		return payload as unknown as Chat;
+	}
+
+	return null;
+}
+
 export function useSseEvents({
 	token,
 	knownThreadIdsRef,
@@ -86,8 +104,11 @@ export function useSseEvents({
 				event === "chat_member_added" ||
 				event === "chat_member_removed"
 			) {
-				const chat = data as Chat;
-				void chatsRepo.upsert(chat);
+				const chat = chatFromEvent(data);
+				if (chat !== null) {
+					void chatsRepo.upsert(chat);
+				}
+
 				return;
 			}
 			if (event === "chat_deleted") {

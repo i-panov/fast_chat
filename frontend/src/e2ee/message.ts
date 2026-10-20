@@ -2,13 +2,15 @@ import sodium from "libsodium-wrappers";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import i18n from "../i18n.ts";
-import type { Message } from "../types/api.ts";
+import type { FileInfo, Message } from "../types/api.ts";
+import { fileTypeForMime } from "../utils/fileType.ts";
 import {
 	decryptContent,
 	decryptText,
 	type EncryptedPayload,
 	encryptText,
 	ensureSodium,
+	type FileMeta,
 	type KeyPair,
 	openMessageKey,
 	sealMessageKey,
@@ -70,6 +72,7 @@ async function decryptMessageContent(
 	text: string;
 	location?: { lat: number; lng: number };
 	fileKeys: Record<string, FileKey>;
+	fileMeta: Record<string, FileMeta>;
 } | null> {
 	if (!msg.encryptedPayload) return null;
 
@@ -92,10 +95,37 @@ async function decryptMessageContent(
 			text: content.text,
 			location: content.location,
 			fileKeys: content.fileKeys ?? {},
+			fileMeta: content.fileMeta ?? {},
 		};
 	} catch {
 		return null;
 	}
+}
+
+// applyFileMeta restores the type of the files the server could not classify.
+// An encrypted upload reaches the server as ciphertext, so its sniffed MIME
+// type is "application/octet-stream"; the sender knows the real one and
+// carries it inside the encrypted content.
+function applyFileMeta(
+	files: FileInfo[] | undefined,
+	fileMeta: Record<string, FileMeta>,
+): FileInfo[] | undefined {
+	if (files === undefined || Object.keys(fileMeta).length === 0) {
+		return files;
+	}
+
+	return files.map((file) => {
+		const meta = file.hash !== undefined ? fileMeta[file.hash] : undefined;
+		if (meta === undefined) return file;
+
+		return {
+			...file,
+			mimeType: meta.mimeType,
+			originalName: meta.name !== "" ? meta.name : file.originalName,
+			size: meta.size,
+			fileType: fileTypeForMime(meta.mimeType),
+		};
+	});
 }
 
 // decryptMessage returns a copy of the message with the plaintext text,
@@ -111,6 +141,7 @@ function toMessage(m: EncryptedMessageLike): Message {
 	return {
 		id: m.id,
 		chatId: m.chatId,
+		threadId: m.threadId,
 		fromId: m.fromId,
 		fromNick: m.fromNick,
 		text: m.text,
@@ -155,6 +186,7 @@ export async function decryptMessage(
 			out.text = content.text;
 			out.location = content.location;
 			out.fileKeys = content.fileKeys;
+			out.files = applyFileMeta(out.files, content.fileMeta);
 		} else {
 			// Fall back to legacy v1 (text-only encryption).
 			out.text = await decryptMessageText(message, userId, key);

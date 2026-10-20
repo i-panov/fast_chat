@@ -40,6 +40,10 @@ type Service struct {
 	cfg   *config.Config
 	email email.Sender
 	push  pushSender
+	// fed is the signed server-to-server client. It is optional: without it
+	// the federation catch-up does not run, and only the local server talks
+	// to its peers.
+	fed federationSender
 }
 
 // New builds a Service bound to the given store, hub and config. The email

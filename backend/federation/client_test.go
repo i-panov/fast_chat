@@ -151,7 +151,7 @@ func verifyRecorded(t *testing.T, verifier *Manager, req recordedRequest) {
 		t.Fatalf("parse federation timestamp: %v", err)
 	}
 
-	if !verifier.Verify(context.Background(), "local.test", sig, req.method, req.path, req.body, ts) {
+	if !verifier.Verify(context.Background(), "local.test", sig, req.method, req.path, req.body, ts, req.header.Get(NonceHeader)) {
 		t.Errorf("%s %s: signature does not verify", req.method, req.path)
 	}
 }
@@ -163,7 +163,7 @@ func TestClientPatchAndDelete(t *testing.T) {
 
 	srv, rec := newRecordingServer(t)
 
-	c := NewClient(m, "local.test", "http", 5)
+	c := NewClient(m, "local.test", "http", 5, false)
 	c.SetHTTPClient(srv.Client())
 
 	peer := peerHost(t, srv)
@@ -200,7 +200,7 @@ func TestClientPostEmptyServerIsNoop(t *testing.T) {
 	m := newTestManager(t, "local.test")
 	srv, rec := newRecordingServer(t)
 
-	c := NewClient(m, "local.test", "http", 5)
+	c := NewClient(m, "local.test", "http", 5, false)
 	c.SetHTTPClient(srv.Client())
 
 	c.Post(context.Background(), "", "/api/federated/chats", map[string]string{"op": "create"})
@@ -217,7 +217,7 @@ func TestClientDropsWhenPoolSaturated(t *testing.T) {
 	m := newTestManager(t, "local.test")
 	srv, rec := newRecordingServer(t)
 
-	c := NewClient(m, "local.test", "http", 5)
+	c := NewClient(m, "local.test", "http", 5, false)
 	c.SetHTTPClient(srv.Client())
 
 	for range maxConcurrentRequests {
@@ -234,7 +234,7 @@ func TestClientDropsWhenPoolSaturated(t *testing.T) {
 
 func TestClientRequestErrors(t *testing.T) {
 	m := newTestManager(t, "local.test")
-	c := NewClient(m, "local.test", "http", 5)
+	c := NewClient(m, "local.test", "http", 5, false)
 
 	if _, err := c.Request(context.Background(), http.MethodPost, "http://peer.test/x", func() {}); err == nil {
 		t.Error("unmarshalable body: expected error, got nil")
@@ -253,7 +253,7 @@ func TestClientRetriesTransportError(t *testing.T) {
 	m := newTestManager(t, "local.test")
 	srv, rec := newRecordingServer(t)
 
-	c := NewClient(m, "local.test", "http", 5)
+	c := NewClient(m, "local.test", "http", 5, false)
 	flaky := &flakyRoundTripper{remaining: 1, next: srv.Client().Transport}
 	c.SetHTTPClient(&http.Client{Transport: flaky})
 
@@ -280,7 +280,7 @@ func TestClientRetryExhaustion(t *testing.T) {
 	m := newTestManager(t, "local.test")
 	srv, _ := newRecordingServer(t)
 
-	c := NewClient(m, "local.test", "http", 30)
+	c := NewClient(m, "local.test", "http", 30, false)
 	c.SetHTTPClient(&http.Client{
 		Transport: &flakyRoundTripper{remaining: 100, next: srv.Client().Transport},
 	})
@@ -299,7 +299,7 @@ func TestClientCloseWaitContext(t *testing.T) {
 	m := newTestManager(t, "local.test")
 
 	t.Run("idle returns nil", func(t *testing.T) {
-		c := NewClient(m, "local.test", "http", 5)
+		c := NewClient(m, "local.test", "http", 5, false)
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -320,7 +320,7 @@ func TestClientCloseWaitContext(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		c := NewClient(m, "local.test", "http", 30)
+		c := NewClient(m, "local.test", "http", 30, false)
 		c.SetHTTPClient(srv.Client())
 		c.Post(context.Background(), peerHost(t, srv), "/block", nil)
 
@@ -448,7 +448,7 @@ func TestLoadOrGenerateKeysBadDir(t *testing.T) {
 }
 
 func TestSafeDialerMalformedAddress(t *testing.T) {
-	client := NewSafeHTTPClient(time.Second)
+	client := NewSafeHTTPClient(time.Second, false)
 
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
@@ -461,7 +461,7 @@ func TestSafeDialerMalformedAddress(t *testing.T) {
 }
 
 func TestSafeDialerRefusesLoopbackByName(t *testing.T) {
-	client := NewSafeHTTPClient(2 * time.Second)
+	client := NewSafeHTTPClient(2*time.Second, false)
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost:80/", http.NoBody)
 	if err != nil {
@@ -479,7 +479,7 @@ func TestSafeDialerRefusesLoopbackByName(t *testing.T) {
 }
 
 func TestSafeDialerDialsSafeLiteral(t *testing.T) {
-	client := NewSafeHTTPClient(time.Second)
+	client := NewSafeHTTPClient(time.Second, false)
 
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {

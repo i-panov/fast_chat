@@ -174,6 +174,17 @@ func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry
 	return user, nil
 }
 
+// RevokeUserToken invalidates the session of the user. The stored token is
+// replaced with the hash of a fresh random value, so the token the client
+// holds stops working immediately instead of at the end of its lifetime.
+func (s *Store) RevokeUserToken(ctx context.Context, userID string) error {
+	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+		Updates(map[string]any{
+			"token":            hashToken(GenerateID()),
+			"token_expires_at": time.Now().UTC(),
+		}).Error
+}
+
 func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) map[string]string {
 	out := make(map[string]string, len(ids))
 	if len(ids) == 0 {

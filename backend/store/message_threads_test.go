@@ -286,7 +286,7 @@ func TestThreadAttachmentResolvesRealChat(t *testing.T) {
 
 	fx := threadFixture(t, s)
 
-	file, err := s.SaveFile(ctx, "hash-1", "image/png", 4, "a.png", "a.png")
+	file, err := s.SaveFile(ctx, "hash-1", "image/png", 4, "a.png", "a.png", "alice:local")
 	if err != nil {
 		t.Fatal(err)
 	}

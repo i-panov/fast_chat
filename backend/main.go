@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +24,15 @@ import (
 	"fast_chat/sse"
 	"fast_chat/store"
 	"fast_chat/transport"
+)
+
+const (
+	// federationOutboxInterval is how often the queued federation operations
+	// are delivered to their peers.
+	federationOutboxInterval = 5 * time.Second
+	// federationCatchupInterval is how often the peers are polled for the
+	// messages they have for this server.
+	federationCatchupInterval = 30 * time.Second
 )
 
 func corsMiddleware(origin string) func(http.Handler) http.Handler {
@@ -43,14 +53,68 @@ func corsMiddleware(origin string) func(http.Handler) http.Handler {
 	}
 }
 
-func securityHeadersMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("X-XSS-Protection", "0")
-		next.ServeHTTP(w, r)
-	})
+// contentSecurityPolicy is the policy of the served interface.
+//
+// The script and the style sources stay on the server: the interface is a
+// bundled application, it loads no third-party code. The style attribute is
+// allowed because the component library sets inline styles. The map tiles
+// come from the OpenStreetMap servers, and blob:/data: cover the object
+// URLs of the decrypted attachments and the inline images.
+const contentSecurityPolicy = "default-src 'self'; " +
+	"script-src 'self'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: blob: https://*.tile.openstreetmap.org; " +
+	"font-src 'self' data:; " +
+	"connect-src 'self'; " +
+	"worker-src 'self' blob:; " +
+	"manifest-src 'self'; " +
+	"object-src 'none'; " +
+	"base-uri 'self'; " +
+	"form-action 'self'; " +
+	"frame-ancestors 'none'"
+
+func securityHeadersMiddleware(ipExtractor *ratelimit.ClientIPExtractor) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			w.Header().Set("X-XSS-Protection", "0")
+			w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
+
+			// The header is only meaningful on a secure connection. The
+			// typical deployment terminates TLS at a reverse proxy, so the
+			// scheme is taken from the header of a trusted proxy.
+			if requestIsHTTPS(r, ipExtractor) {
+				w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// requestIsHTTPS reports whether the request reached the server over TLS.
+//
+// Behind a reverse proxy the TLS connection ends at the proxy and the server
+// sees plain HTTP, so the scheme comes from X-Forwarded-Proto. The header is
+// only believed when the direct peer is a configured proxy: otherwise a client
+// could claim a secure connection it does not have.
+func requestIsHTTPS(r *http.Request, ipExtractor *ratelimit.ClientIPExtractor) bool {
+	if r.TLS != nil {
+		return true
+	}
+
+	if !ipExtractor.IsTrustedProxy(r) {
+		return false
+	}
+
+	proto := r.Header.Get("X-Forwarded-Proto")
+	if idx := strings.Index(proto, ","); idx >= 0 {
+		proto = proto[:idx]
+	}
+
+	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
 func rateLimitMiddleware(rl *ratelimit.RateLimiter, ipExtractor *ratelimit.ClientIPExtractor) func(http.Handler) http.Handler {
@@ -285,7 +349,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fedManager := federation.New(fedKey, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout)
+	fedManager := federation.New(fedKey, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout, cfg.Federation.AllowPrivateAddresses)
 
 	st := store.New(db)
 	st.Codes().StartCleanup(context.Background(), time.Minute)
@@ -306,7 +370,25 @@ func main() {
 
 	hub := sse.NewHub(service.TypingThrottleInterval * 5)
 	svc := service.New(st, cfg, hub, pushService)
-	fedClient := federation.NewClient(fedManager, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout)
+	fedClient := federation.NewClient(fedManager, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout, cfg.Federation.AllowPrivateAddresses)
+
+	// The federation operations are queued in the database and delivered by a
+	// worker: an operation that cannot be delivered right now is retried
+	// until the peer accepts it, instead of being lost with the request.
+	fedClient.SetOutbox(st)
+	svc.SetFederationClient(fedClient)
+
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+
+	var workers sync.WaitGroup
+
+	workers.Go(func() {
+		fedClient.RunOutbox(workerCtx, federationOutboxInterval)
+	})
+
+	workers.Go(func() {
+		svc.RunFederationCatchup(workerCtx, federationCatchupInterval)
+	})
 
 	ipExtractor := ratelimit.NewClientIPExtractor(cfg.Server.TrustedProxies)
 
@@ -323,16 +405,44 @@ func main() {
 	// Static file serving for production frontend build
 	absStaticDir := resolveStaticDir(cfg.Server.StaticDir)
 
-	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	server := newHTTPServer(cfg, humaAPI, absStaticDir, rl.general, ipExtractor)
 
-	server := &http.Server{
-		Addr: addr,
+	serveErr := runServer(shutdownDeps{
+		server:      server,
+		hub:         hub,
+		fedManager:  fedManager,
+		fedClient:   fedClient,
+		store:       st,
+		limiters:    rl,
+		budget:      30 * time.Second,
+		stopWorkers: stopWorkers,
+		workers:     &workers,
+	})
+	if serveErr != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: %v\n", serveErr)
+		os.Exit(1)
+	}
+}
+
+// newHTTPServer builds the server with the middleware chain: the request id
+// and the access log on the outside, then the security headers, the CORS
+// answer, the global rate limit and the application itself.
+func newHTTPServer(
+	cfg *config.Config,
+	handler http.Handler,
+	staticDir string,
+	generalLimiter *ratelimit.RateLimiter,
+	ipExtractor *ratelimit.ClientIPExtractor,
+) *http.Server {
+
+	return &http.Server{
+		Addr: fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler: httputil.RequestIDMiddleware(
 			requestLogMiddleware(
-				securityHeadersMiddleware(
+				securityHeadersMiddleware(ipExtractor)(
 					corsMiddleware(cfg.CORS.Origin)(
-						rateLimitMiddleware(rl.general, ipExtractor)(
-							spaFallbackMiddleware(absStaticDir)(humaAPI),
+						rateLimitMiddleware(generalLimiter, ipExtractor)(
+							spaFallbackMiddleware(staticDir)(handler),
 						),
 					),
 				),
@@ -342,20 +452,6 @@ func main() {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
-	}
-
-	serveErr := runServer(shutdownDeps{
-		server:     server,
-		hub:        hub,
-		fedManager: fedManager,
-		fedClient:  fedClient,
-		store:      st,
-		limiters:   rl,
-		budget:     30 * time.Second,
-	})
-	if serveErr != nil {
-		fmt.Fprintf(os.Stderr, "FATAL: %v\n", serveErr)
-		os.Exit(1)
 	}
 }
 
@@ -400,6 +496,11 @@ type shutdownDeps struct {
 	store      *store.Store
 	limiters   *limiters
 	budget     time.Duration
+	// stopWorkers cancels the background workers, workers waits for them to
+	// finish. They touch the database, so they have to be stopped before the
+	// store is closed.
+	stopWorkers context.CancelFunc
+	workers     *sync.WaitGroup
 }
 
 // runServer blocks until SIGINT/SIGTERM, then tears everything down.
@@ -483,6 +584,24 @@ func shutdown(deps shutdownDeps, ctx context.Context) {
 	// background federation requests to finish below.
 	drainErr := deps.server.Shutdown(drainCtx)
 
+	// The background workers touch the database, so they have to be stopped
+	// before the store is closed. The wait is bounded by the drain budget.
+	if deps.stopWorkers != nil {
+		deps.stopWorkers()
+	}
+
+	workersDone := make(chan struct{})
+
+	go func() {
+		if deps.workers != nil {
+			deps.workers.Wait()
+		}
+
+		close(workersDone)
+	}()
+
+	workersErr := waitFor(workersDone, drainCtx)
+
 	deps.fedManager.Close()
 
 	waitErr := deps.fedClient.CloseWaitContext(drainCtx)
@@ -493,11 +612,25 @@ func shutdown(deps shutdownDeps, ctx context.Context) {
 		slog.Error("server forced to shutdown with requests still in flight", "err", drainErr)
 	}
 
+	if workersErr != nil {
+		slog.Warn("background workers still running at shutdown", "err", workersErr)
+	}
+
 	if waitErr != nil {
 		slog.Warn("federated requests still running at shutdown", "err", waitErr)
 	}
 
 	slog.Info("server stopped")
+}
+
+// waitFor waits for a channel to be closed, or for the context to be done.
+func waitFor(done <-chan struct{}, ctx context.Context) error {
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func resolveStaticDir(staticDir string) string {

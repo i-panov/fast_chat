@@ -131,8 +131,8 @@ func newFedInstance(t *testing.T, domain string) *fedInstance {
 	st := store.New(db)
 	hub := sse.NewHub(time.Minute)
 	cfg := fedTestConfig(t, domain)
-	mgr := federation.New(key, domain, "http", fedTestTimeoutSec)
-	cli := federation.NewClient(mgr, domain, "http", fedTestTimeoutSec)
+	mgr := federation.New(key, domain, "http", fedTestTimeoutSec, false)
+	cli := federation.NewClient(mgr, domain, "http", fedTestTimeoutSec, false)
 
 	return &fedInstance{
 		domain:  domain,
@@ -581,7 +581,7 @@ func TestFederationPairTamperedSignatureRejected(t *testing.T) {
 
 	// Sign the request body with B's key.
 	timestamp := time.Now().Unix()
-	signature, err := pair.b.manager.Sign(http.MethodGet, path, nil, timestamp)
+	signature, err := pair.b.manager.Sign(http.MethodGet, path, nil, timestamp, "test-nonce")
 	if err != nil {
 		t.Fatalf("sign request: %v", err)
 	}

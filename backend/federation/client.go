@@ -3,6 +3,8 @@ package federation
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +37,51 @@ const (
 // errFederatedStatus marks unexpected HTTP statuses from remote servers.
 var errFederatedStatus = errors.New("federated request returned unexpected status")
 
+// StatusError is the answer of a peer that refused the request. It carries
+// the status code, so the caller can tell a permanent rejection from a
+// failure that is worth retrying.
+type StatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("%s: %d", errFederatedStatus, e.Status)
+	}
+
+	return fmt.Sprintf("%s: %d: %s", errFederatedStatus, e.Status, e.Body)
+}
+
+// Unwrap keeps the sentinel reachable with errors.Is.
+func (e *StatusError) Unwrap() error {
+	return errFederatedStatus
+}
+
+// IsPermanentError reports whether the peer will refuse the operation the
+// same way next time: a 4xx answer that is not a timeout, a rate limit or a
+// refused signature.
+//
+// Such an operation must not be retried forever: with the per-peer order of
+// the outbox it would block every later operation of that peer.
+//
+// A refused signature (401) is not permanent: it also happens when the clock
+// of the peer is off or when it rotated its key and the cached one is stale.
+// The attempt limit of the outbox is what bounds that case.
+func IsPermanentError(err error) bool {
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+
+	switch statusErr.Status {
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	}
+
+	return statusErr.Status >= 400 && statusErr.Status < 500
+}
+
 // Client performs signed server-to-server requests against federation peers.
 type Client struct {
 	manager *Manager
@@ -42,20 +89,41 @@ type Client struct {
 	scheme  string
 	domain  string
 
+	// outbox is the durable queue of the operations waiting to be delivered.
+	// Without it the operations are sent in the background and lost when the
+	// peer is unreachable.
+	outbox Outbox
+
+	// wake tells the outbox worker that a new operation is waiting. The
+	// signal is buffered and never blocks the caller: a missed signal only
+	// delays the delivery to the next tick.
+	wake chan struct{}
+
 	sem chan struct{}
 	wg  sync.WaitGroup
 }
 
 // NewClient builds a client that signs requests with the manager's key and
 // identifies itself as domain.
-func NewClient(m *Manager, domain, scheme string, timeoutSec int) *Client {
+func NewClient(m *Manager, domain, scheme string, timeoutSec int, allowPrivate bool) *Client {
 	return &Client{
 		manager: m,
-		http:    NewSafeHTTPClient(time.Duration(timeoutSec) * time.Second),
+		http:    NewSafeHTTPClient(time.Duration(timeoutSec)*time.Second, allowPrivate),
 		scheme:  scheme,
 		domain:  domain,
+		wake:    make(chan struct{}, 1),
 		sem:     make(chan struct{}, maxConcurrentRequests),
 	}
+}
+
+// randomNonce returns a random value that makes a request unique.
+func randomNonce() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(buf), nil
 }
 
 // URL builds a federation URL using the configured scheme.
@@ -65,6 +133,10 @@ func (c *Client) URL(remoteServer, path string) string {
 
 // Request performs a signed request with retries and returns the response
 // body. The incoming request ID (if any) is propagated for log correlation.
+//
+// Every attempt is signed on its own: the peer rejects a replayed signature,
+// so a retry that reuses the signature of the first attempt would be refused
+// as a replay even though the request itself is legitimate.
 func (c *Client) Request(ctx context.Context, method, urlStr string, body any) ([]byte, error) {
 	var bodyBytes []byte
 
@@ -82,13 +154,6 @@ func (c *Client) Request(ctx context.Context, method, urlStr string, body any) (
 		return nil, fmt.Errorf("invalid federated URL: %w", err)
 	}
 
-	timestamp := time.Now().Unix()
-
-	signature, err := c.manager.Sign(method, parsedURL.RequestURI(), bodyBytes, timestamp)
-	if err != nil {
-		return nil, fmt.Errorf("federation sign: %w", err)
-	}
-
 	var lastErr error
 
 	for attempt := range retryCount {
@@ -102,10 +167,26 @@ func (c *Client) Request(ctx context.Context, method, urlStr string, body any) (
 			return nil, reqErr
 		}
 
+		timestamp := time.Now().Unix()
+
+		// Every attempt gets its own nonce: two identical requests within the
+		// same second would otherwise share a signature, and the second one
+		// would be refused as a replay of the first.
+		nonce, nonceErr := randomNonce()
+		if nonceErr != nil {
+			return nil, fmt.Errorf("federation nonce: %w", nonceErr)
+		}
+
+		signature, signErr := c.manager.Sign(method, parsedURL.RequestURI(), bodyBytes, timestamp, nonce)
+		if signErr != nil {
+			return nil, fmt.Errorf("federation sign: %w", signErr)
+		}
+
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Federation-Server", c.domain)
 		req.Header.Set("X-Federation-Signature", signature)
 		req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
+		req.Header.Set(NonceHeader, nonce)
 
 		// Propagate the incoming request ID so the upstream server can
 		// correlate logs with the originating request.
@@ -132,11 +213,16 @@ func (c *Client) Request(ctx context.Context, method, urlStr string, body any) (
 		}
 
 		if resp.StatusCode >= 400 {
-			if readErr != nil {
-				return nil, fmt.Errorf("%w: %d", errFederatedStatus, resp.StatusCode)
+			// The status travels in a typed error: the caller has to tell a
+			// rejection that will repeat (the peer refuses the operation for
+			// good) from a failure that is worth retrying.
+			statusErr := &StatusError{Status: resp.StatusCode}
+
+			if readErr == nil {
+				statusErr.Body = strings.TrimSpace(string(body))
 			}
 
-			return nil, fmt.Errorf("%w: %d: %s", errFederatedStatus, resp.StatusCode, strings.TrimSpace(string(body)))
+			return nil, statusErr
 		}
 
 		if readErr != nil {
@@ -160,17 +246,17 @@ func (c *Client) SetHTTPClient(h *http.Client) {
 // Post queues a fire-and-forget signed POST to remoteServer. Empty remote
 // servers are a no-op.
 func (c *Client) Post(ctx context.Context, remoteServer, path string, body any) {
-	c.background(ctx, remoteServer, path, http.MethodPost, body)
+	c.enqueue(ctx, remoteServer, http.MethodPost, path, body)
 }
 
 // Patch queues a fire-and-forget signed PATCH.
 func (c *Client) Patch(ctx context.Context, remoteServer, path string, body any) {
-	c.background(ctx, remoteServer, path, http.MethodPatch, body)
+	c.enqueue(ctx, remoteServer, http.MethodPatch, path, body)
 }
 
 // Delete queues a fire-and-forget signed DELETE.
 func (c *Client) Delete(ctx context.Context, remoteServer, path string) {
-	c.background(ctx, remoteServer, path, http.MethodDelete, nil)
+	c.enqueue(ctx, remoteServer, http.MethodDelete, path, nil)
 }
 
 // CloseWait blocks until all in-flight background requests have finished so

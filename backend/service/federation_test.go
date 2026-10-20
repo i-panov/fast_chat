@@ -27,8 +27,8 @@ func newFedTestService(t *testing.T) *Service {
 		&model.User{}, &model.Chat{}, &store.ChatMember{},
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
-		&model.DeletedChat{}, &model.PushSubscription{},
-		&model.MessageReadStatus{},
+		&model.DeletedChat{}, &model.PushSubscription{}, &model.FederationOp{}, &model.FederationCursor{},
+		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -93,12 +93,12 @@ func TestValidFileIDs(t *testing.T) {
 	s := newFedTestService(t)
 	ctx := context.Background()
 
-	f1, err := s.store.SaveFile(ctx, "h1", "text/plain", 10, "a.txt", "/tmp/a.txt")
+	f1, err := s.store.SaveFile(ctx, "h1", "text/plain", 10, "a.txt", "/tmp/a.txt", "alice:local")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	f2, err := s.store.SaveFile(ctx, "h2", "text/plain", 20, "b.txt", "/tmp/b.txt")
+	f2, err := s.store.SaveFile(ctx, "h2", "text/plain", 20, "b.txt", "/tmp/b.txt", "alice:local")
 	if err != nil {
 		t.Fatal(err)
 	}

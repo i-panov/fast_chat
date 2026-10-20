@@ -27,7 +27,7 @@ func newTestStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 
-	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &ChatMember{}, &model.Message{}, &model.Thread{}, &model.File{}, &model.MessageFile{}, &model.DeletedMessage{}, &model.DeletedChat{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &ChatMember{}, &model.Message{}, &model.Thread{}, &model.File{}, &model.MessageFile{}, &model.DeletedMessage{}, &model.DeletedChat{}, &model.FederationOp{}, &model.FederationCursor{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,9 +251,9 @@ func TestSetMessageFiles(t *testing.T) {
 	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
 	msg, _, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello", "", "", nil, false, "")
 
-	f1, _ := s.SaveFile(context.Background(), "hash1", "image/png", 100, "a.png", "a.png")
-	f2, _ := s.SaveFile(context.Background(), "hash2", "application/pdf", 200, "b.pdf", "b.pdf")
-	f3, _ := s.SaveFile(context.Background(), "hash3", "text/plain", 50, "c.txt", "c.txt")
+	f1, _ := s.SaveFile(context.Background(), "hash1", "image/png", 100, "a.png", "a.png", "alice:local")
+	f2, _ := s.SaveFile(context.Background(), "hash2", "application/pdf", 200, "b.pdf", "b.pdf", "alice:local")
+	f3, _ := s.SaveFile(context.Background(), "hash3", "text/plain", 50, "c.txt", "c.txt", "alice:local")
 
 	if err := s.AddMessageFiles(context.Background(), msg.ID, []string{f1.ID, f2.ID}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -847,7 +847,7 @@ func TestUpdateChatAvatar(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
-	f, _ := s.SaveFile(context.Background(), "hash", "image/png", 100, "a.png", "a.png")
+	f, _ := s.SaveFile(context.Background(), "hash", "image/png", 100, "a.png", "a.png", "alice:local")
 
 	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob, testCarol}, "")
 
@@ -870,7 +870,7 @@ func TestDeleteChatCascade(t *testing.T) {
 	msg, _, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "hi", "", "", nil, false, "")
 	thread, _ := s.CreateThread(context.Background(), chat.ID, msg.ID, "hi", "alice")
 	s.AddMessage(context.Background(), chat.ID, thread.ID, testBob, "bob", "reply", "", "", nil, false, "")
-	f, _ := s.SaveFile(context.Background(), "h", "image/png", 1, "a.png", "a.png")
+	f, _ := s.SaveFile(context.Background(), "h", "image/png", 1, "a.png", "a.png", "alice:local")
 	s.AddMessageFiles(context.Background(), msg.ID, []string{f.ID})
 
 	if err := s.DeleteChat(context.Background(), chat.ID); err != nil {
@@ -918,7 +918,7 @@ func TestGetChatsByAvatarFileID(t *testing.T) {
 	createTestUser(t, s, "alice")
 	createTestUser(t, s, "bob")
 	createTestUser(t, s, "carol")
-	f, _ := s.SaveFile(context.Background(), "avatar-hash", "image/png", 100, "a.png", "a.png")
+	f, _ := s.SaveFile(context.Background(), "avatar-hash", "image/png", 100, "a.png", "a.png", "alice:local")
 
 	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob, testCarol}, "")
 	if _, err := s.UpdateChatAvatar(context.Background(), chat.ID, f.ID); err != nil {
@@ -1128,8 +1128,8 @@ func TestGetMessageFilesBatch(t *testing.T) {
 	m2, _, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "with two files", "m-2", "", nil, false, "")
 	m3, _, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "no file", "m-3", "", nil, false, "")
 
-	f1, _ := s.SaveFile(context.Background(), "h1", "text/plain", 10, "a.txt", "a.txt")
-	f2, _ := s.SaveFile(context.Background(), "h2", "text/plain", 20, "b.txt", "b.txt")
+	f1, _ := s.SaveFile(context.Background(), "h1", "text/plain", 10, "a.txt", "a.txt", "alice:local")
+	f2, _ := s.SaveFile(context.Background(), "h2", "text/plain", 20, "b.txt", "b.txt", "alice:local")
 
 	if err := s.AddMessageFiles(context.Background(), m1.ID, []string{f1.ID}); err != nil {
 		t.Fatal(err)
@@ -1266,5 +1266,87 @@ func TestDeleteChatHandlesMoreMessagesThanSQLiteHasVariables(t *testing.T) {
 
 	if tombstones != messageCount {
 		t.Errorf("tombstones = %d, want %d", tombstones, messageCount)
+	}
+}
+
+// A member that was removed has to learn about it through the sync delta:
+// without a tombstone the chat would stay in the local list forever.
+func TestRemoveChatMemberLeavesATombstone(t *testing.T) {
+	s := newTestStore(t)
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+
+	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob}, "")
+
+	if err := s.RemoveChatMember(context.Background(), chat.ID, testBob); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tombs := s.DeletedChatsSince(context.Background(), testBob, time.Now().UTC().Add(-time.Hour))
+	if len(tombs) != 1 || tombs[0].ChatID != chat.ID {
+		t.Fatalf("expected a tombstone for the removed member, got %+v", tombs)
+	}
+
+	// The other members keep the chat.
+	if tombs := s.DeletedChatsSince(context.Background(), testAlice, time.Now().UTC().Add(-time.Hour)); len(tombs) != 0 {
+		t.Fatalf("expected no tombstone for a member that stayed, got %+v", tombs)
+	}
+}
+
+// A member that leaves and comes back leaves a fresh tombstone: the second
+// removal has to reach a client whose cursor is past the first one.
+func TestRemoveChatMemberRefreshesTheTombstone(t *testing.T) {
+	s := newTestStore(t)
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+
+	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob}, "")
+
+	if err := s.RemoveChatMember(context.Background(), chat.ID, testBob); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	first := s.DeletedChatsSince(context.Background(), testBob, time.Now().UTC().Add(-time.Hour))
+	if len(first) != 1 {
+		t.Fatalf("expected a tombstone, got %+v", first)
+	}
+
+	if err := s.AddChatMember(context.Background(), chat.ID, testBob, 100); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if err := s.RemoveChatMember(context.Background(), chat.ID, testBob); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	second := s.DeletedChatsSince(context.Background(), testBob, first[0].DeletedAt)
+	if len(second) != 1 {
+		t.Fatalf("expected a fresh tombstone, got %+v", second)
+	}
+}
+
+// The federation replaces the membership of a chat when the peer reports a
+// change. A member that is dropped has to leave a tombstone, the same way a
+// local removal does: without it the chat would stay in the local list of
+// the removed member forever.
+func TestReplaceChatMembersLeavesATombstone(t *testing.T) {
+	s := newTestStore(t)
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+
+	chat, _ := s.CreateGroupChat(context.Background(), "G", testAlice, []string{testBob}, "")
+
+	if err := s.ReplaceChatMembers(context.Background(), chat.ID, []string{testAlice}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, _ := s.GetChat(context.Background(), chat.ID)
+	if len(got.Members) != 1 || got.Members[0] != testAlice {
+		t.Fatalf("members = %v, want only alice", got.Members)
+	}
+
+	tombs := s.DeletedChatsSince(context.Background(), testBob, time.Now().UTC().Add(-time.Hour))
+	if len(tombs) != 1 || tombs[0].ChatID != chat.ID {
+		t.Fatalf("expected a tombstone for the removed member, got %+v", tombs)
 	}
 }

@@ -188,7 +188,7 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{},
-		&model.MessageReadStatus{},
+		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -209,14 +209,14 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fm := federation.New(key, cfg.Server.Domain, "http", 5)
+	fm := federation.New(key, cfg.Server.Domain, "http", 5, false)
 	api := transport.New(&transport.Deps{
 		Hub:           hub,
 		Store:         st,
 		Svc:           svc,
 		Cfg:           cfg,
 		FedManager:    fm,
-		FedClient:     federation.NewClient(fm, cfg.Server.Domain, "http", 5),
+		FedClient:     federation.NewClient(fm, cfg.Server.Domain, "http", 5, false),
 		PushPublicKey: func() (string, bool) { return "", false },
 	})
 
@@ -237,7 +237,7 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 
 	root := httputil.RequestIDMiddleware(
 		requestLogMiddleware(
-			securityHeadersMiddleware(
+			securityHeadersMiddleware(extractor)(
 				corsMiddleware("*")(
 					rateLimitMiddleware(rl, extractor)(
 						spaFallbackMiddleware(staticDir)(api.FallbackHandler(infraMux)),
@@ -332,7 +332,7 @@ func TestShutdownDrainsWithAnOpenSSEStream(t *testing.T) {
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{},
-		&model.MessageReadStatus{},
+		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -353,8 +353,8 @@ func TestShutdownDrainsWithAnOpenSSEStream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fedManager := federation.New(fedKey, "localhost:8080", "http", 1)
-	fedClient := federation.NewClient(fedManager, "localhost:8080", "http", 1)
+	fedManager := federation.New(fedKey, "localhost:8080", "http", 1, false)
+	fedClient := federation.NewClient(fedManager, "localhost:8080", "http", 1, false)
 
 	tr := transport.New(&transport.Deps{
 		Hub: hub, Store: st, Svc: svc, Cfg: cfg,
@@ -608,7 +608,7 @@ func newTestStore(t *testing.T, dir string) *store.Store {
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{},
-		&model.MessageReadStatus{},
+		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -626,6 +626,46 @@ func newTestFederation(t *testing.T, dir string) (*federation.Manager, *federati
 		t.Fatal(err)
 	}
 
-	return federation.New(fedKey, "localhost:8080", "http", 1),
-		federation.NewClient(federation.New(fedKey, "localhost:8080", "http", 1), "localhost:8080", "http", 1)
+	return federation.New(fedKey, "localhost:8080", "http", 1, false),
+		federation.NewClient(federation.New(fedKey, "localhost:8080", "http", 1, false), "localhost:8080", "http", 1, false)
+}
+
+// The strict transport security header is only sent on a secure connection.
+// The typical deployment terminates TLS at a reverse proxy, so the scheme
+// comes from the header of a trusted proxy.
+func TestStrictTransportSecurityFollowsTheForwardedScheme(t *testing.T) {
+	handler := securityHeadersMiddleware(ratelimit.NewClientIPExtractor([]string{"10.0.0.0/8"}))(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+
+	do := func(remoteAddr, forwardedProto string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
+		req.RemoteAddr = remoteAddr
+
+		if forwardedProto != "" {
+			req.Header.Set("X-Forwarded-Proto", forwardedProto)
+		}
+
+		handler.ServeHTTP(rec, req)
+
+		return rec
+	}
+
+	// A trusted proxy that reports https.
+	if got := do("10.1.2.3:1234", "https").Header().Get("Strict-Transport-Security"); got == "" {
+		t.Error("expected the strict transport security header behind a trusted proxy")
+	}
+
+	// A trusted proxy that reports plain http.
+	if got := do("10.1.2.3:1234", "http").Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("strict transport security header on a plain connection: %q", got)
+	}
+
+	// An untrusted peer cannot claim a secure connection.
+	if got := do("203.0.113.7:1234", "https").Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("strict transport security header from an untrusted peer: %q", got)
+	}
 }

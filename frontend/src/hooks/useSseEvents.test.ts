@@ -168,6 +168,23 @@ describe("useSseEvents", () => {
 		});
 	});
 
+	// The membership events carry the chat wrapped: { chatId, userId, chat }.
+	// Reading the whole payload as a chat would write a record without an id.
+	it("stores the chat of a membership event", async () => {
+		renderHook(() => useSseEvents(baseParams()));
+		const h = handler();
+
+		await h("chat_member_added", {
+			chatId: "c1",
+			userId: "carol:test",
+			chat: { ...chat(), name: "with carol" },
+		});
+
+		await waitFor(async () => {
+			expect((await chatsRepo.getById("c1"))?.name).toBe("with carol");
+		});
+	});
+
 	it("stores threads and thread messages", async () => {
 		renderHook(() => useSseEvents(baseParams()));
 		const h = handler();

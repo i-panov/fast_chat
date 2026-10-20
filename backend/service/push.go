@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"net/url"
+	"slices"
 	"strings"
 
 	"fast_chat/model"
@@ -23,18 +25,50 @@ type PushPayloadData struct {
 	ThreadID  string `json:"threadId,omitempty"`
 }
 
+// pushEndpointHosts are the push services a browser subscription may point
+// at.
+var pushEndpointHosts = []string{
+	"fcm.googleapis.com",                // Chrome, Edge on Android
+	"updates.push.services.mozilla.com", // Firefox
+	"push.services.mozilla.com",         // Firefox
+	"web.push.apple.com",                // Safari
+}
+
+// pushEndpointHostSuffixes cover the hosts with a regional prefix, like the
+// Windows push service (wns2-pn1p.notify.windows.com).
+var pushEndpointHostSuffixes = []string{
+	".notify.windows.com",
+}
+
 // IsValidPushEndpoint reports whether the endpoint belongs to a trusted push
 // service. The allowlist blocks an attacker from pointing push subscriptions
 // at an arbitrary URL.
+//
+// The check is on the host of the parsed URL, not on a prefix of the string:
+// a prefix comparison would accept a lookalike host such as
+// "fcm.googleapis.com.attacker.test" and turn the push sender into a request
+// forwarder for arbitrary addresses.
 func IsValidPushEndpoint(endpoint string) bool {
-	prefixes := []string{
-		"https://fcm.googleapis.com/",
-		"https://updates.push.services.mozilla.com/",
-		"https://push.apple.com/",
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return false
 	}
 
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(endpoint, prefix) {
+	if parsed.Scheme != "https" {
+		return false
+	}
+
+	host := parsed.Hostname()
+	if host == "" {
+		return false
+	}
+
+	if slices.Contains(pushEndpointHosts, host) {
+		return true
+	}
+
+	for _, suffix := range pushEndpointHostSuffixes {
+		if strings.HasSuffix(host, suffix) {
 			return true
 		}
 	}

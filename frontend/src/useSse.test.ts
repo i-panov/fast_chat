@@ -235,7 +235,9 @@ describe("useSse", () => {
 		expect(onEvent).not.toHaveBeenCalled();
 	});
 
-	it("keeps the stream when auth fails", async () => {
+	// A stream that is open but not authenticated delivers nothing and
+	// reports no error, so the authentication has to be retried here.
+	it("retries the authentication when the first attempt fails", async () => {
 		mockSseAuth().mockRejectedValueOnce(new Error("down"));
 		const onEvent = vi.fn();
 		renderHook(() => useSse("tok", onEvent));
@@ -243,10 +245,45 @@ describe("useSse", () => {
 		act(() => {
 			lastSource().onopen?.();
 		});
-		await act(async () => {});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(250);
+		});
 
+		expect(mockSseAuth()).toHaveBeenCalledTimes(2);
 		expect(MockEventSource.instances).toHaveLength(1);
 		expect(onEvent).not.toHaveBeenCalled();
+	});
+
+	it("closes the stream when the authentication keeps failing", async () => {
+		mockSseAuth().mockRejectedValue(new Error("down"));
+		const onEvent = vi.fn();
+		renderHook(() => useSse("tok", onEvent));
+
+		const source = lastSource();
+		act(() => {
+			source.onopen?.();
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(4000);
+		});
+
+		expect(source.closed).toBe(true);
+		expect(onEvent).toHaveBeenCalledWith("sse_closed", null);
+	});
+
+	it("does not retry an expired session", async () => {
+		mockSseAuth().mockRejectedValue(new Error("unauthorized"));
+		const onEvent = vi.fn();
+		renderHook(() => useSse("tok", onEvent));
+
+		act(() => {
+			lastSource().onopen?.();
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(4000);
+		});
+
+		expect(mockSseAuth()).toHaveBeenCalledTimes(1);
 	});
 
 	it("ignores errors after teardown", () => {

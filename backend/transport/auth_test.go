@@ -165,3 +165,25 @@ func TestErrorResponseLegacyShape(t *testing.T) {
 		t.Errorf("unexpected $schema field in error body: %q", rec.Body.String())
 	}
 }
+
+// The logout revokes the token on the server: a token that only disappears
+// from the browser stays usable until it expires.
+func TestLogoutRevokesTheToken(t *testing.T) {
+	api, st := newAuthTestServer(t, &APIConfig{DebugEmail: true})
+
+	user := createTestUser(t, st)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/auth/logout", nil)
+	req.Header.Set("Authorization", "Bearer "+user.Token)
+	rec := httptest.NewRecorder()
+
+	api.Adapter().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if _, ok := st.GetUserByToken(context.Background(), user.Token); ok {
+		t.Fatal("the token still works after the logout")
+	}
+}

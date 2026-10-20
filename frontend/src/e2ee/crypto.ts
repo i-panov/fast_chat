@@ -69,6 +69,16 @@ export interface EncryptedText {
 	ciphertext: string;
 }
 
+// FileMeta describes a file without revealing its content. It travels inside
+// the encrypted message content because the server only ever sees the
+// ciphertext of an encrypted upload: without it the type of an encrypted
+// photo would be lost and the attachment would show up as an unknown file.
+export interface FileMeta {
+	mimeType: string;
+	name: string;
+	size: number;
+}
+
 // MessageContent holds every sensitive field of a message. The whole struct
 // is serialised to JSON and encrypted as a single blob, so the server never
 // sees plaintext text, location, file metadata, or reply previews.
@@ -79,6 +89,10 @@ export interface MessageContent {
 	// fileKeys maps file ID to its decryption key. Only encrypted files have
 	// an entry; unencrypted files are absent (download as-is).
 	fileKeys?: Record<string, FileKey>;
+	// fileMeta maps the plaintext hash of a file to its metadata. The hash is
+	// the key because the server assigns a different file id to the same
+	// content for every account.
+	fileMeta?: Record<string, FileMeta>;
 }
 
 // EncryptedContent is what gets stored in the message record and sent over

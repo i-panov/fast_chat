@@ -6,6 +6,7 @@ import {
 	useEffect,
 	useState,
 } from "react";
+import { revokeSession } from "./api.ts";
 import { setActiveAccountKey } from "./db/init.ts";
 import { getRouter } from "./router.tsx";
 import { onUnauthorized } from "./utils/authEvents.ts";
@@ -210,7 +211,14 @@ function useAuthState() {
 	);
 
 	const logout = useCallback(() => {
-		removeAccount(activeToken ?? "");
+		const token = activeToken;
+		removeAccount(token ?? "");
+
+		// The token is revoked on the server as well: a token that only
+		// disappears from this browser stays usable until it expires.
+		if (token !== null) {
+			void revokeSession(token);
+		}
 	}, [activeToken, removeAccount]);
 
 	const activeAccount =

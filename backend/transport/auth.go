@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -186,6 +187,38 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 	})
 
 	registerSSEAuth(api, svc, st, hub)
+	registerLogout(api, st)
+}
+
+// registerLogout adds the logout operation. It revokes the token on the
+// server: without it a token that leaked stays usable until it expires, and
+// logging out of the interface would only hide the session locally.
+//
+// The account has one session: the token belongs to the account, not to the
+// device, so the logout ends the session of the account on every device.
+// Sessions per device would need their own table and are a separate task.
+func registerLogout(api huma.API, st *store.Store) {
+	huma.Register(api, huma.Operation{
+		OperationID: "logout",
+		Method:      http.MethodPost,
+		Path:        "/api/auth/logout",
+		Summary:     "Revoke the session token of the account",
+		Security:    []map[string][]string{{bearerScheme: {}}},
+	}, func(ctx context.Context, _ *struct{}) (*statusOutput, error) {
+		user, ok := userFromContext(ctx)
+		if !ok {
+			return nil, errUnauthorized
+		}
+
+		if err := st.RevokeUserToken(ctx, user.ID); err != nil {
+			slog.Error("failed to revoke token", "err", err)
+			return nil, errInternal
+		}
+
+		return &statusOutput{Body: struct {
+			Status string `example:"ok" json:"status"`
+		}{Status: "ok"}}, nil
+	})
 }
 
 // registerSSEAuth adds the SSE connection-authentication operation. It mirrors

@@ -31,7 +31,8 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 		// MaxBytesReader applies instead of Huma's 1MB default.
 		MaxBodyBytes: filestage.MaxUploadSize,
 	}, func(ctx context.Context, _ *struct{}) (*uploadFileOutput, error) {
-		if _, ok := userFromContext(ctx); !ok {
+		user, ok := userFromContext(ctx)
+		if !ok {
 			return nil, errUnauthorized
 		}
 
@@ -41,7 +42,7 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 			return nil, errInternal
 		}
 
-		return uploadFile(ctx, st, svc, cfg, rawWriter, rawRequest)
+		return uploadFile(ctx, st, svc, cfg, user.ID, rawWriter, rawRequest)
 	})
 
 	huma.Register(api, huma.Operation{
@@ -99,7 +100,7 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 		Summary:     "Check content-hash existence for dedup",
 		Security:    []map[string][]string{{bearerScheme: {}}},
 	}, func(ctx context.Context, input *fileExistsInput) (*fileExistsOutput, error) {
-		_, ok := userFromContext(ctx)
+		user, ok := userFromContext(ctx)
 		if !ok {
 			return nil, errUnauthorized
 		}
@@ -113,7 +114,7 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 		}
 
 		var out fileExistsOutput
-		out.Body.Exists = st.FileExistsByHash(ctx, input.Hash)
+		out.Body.Exists = st.FileExistsByHash(ctx, input.Hash, user.ID)
 
 		return &out, nil
 	})
@@ -123,12 +124,14 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 const mimeCacheMaxAge = 86400
 
 // uploadFile mirrors the pre-migration multipart upload flow: cap, parse, stage,
-// dedup, persist.
+// dedup, persist. uploader is the account that owns the resulting file
+// record: only the owner may attach it to a message later.
 func uploadFile(
 	ctx context.Context,
 	st *store.Store,
 	svc *service.Service,
 	cfg *config.Config,
+	uploader string,
 	w http.ResponseWriter,
 	r *http.Request,
 ) (*uploadFileOutput, error) {
@@ -159,7 +162,14 @@ func uploadFile(
 
 	defer os.Remove(staged.TempPath) //nolint:errcheck // best-effort: failure is not actionable
 
-	check, deduped, err := svc.DedupFileByHash(ctx, staged.Hash, staged.MimeType, staged.Size, header.Filename)
+	check, deduped, err := svc.DedupFileByHash(ctx, &service.FileUpload{
+		Hash:         staged.Hash,
+		MimeType:     staged.MimeType,
+		Size:         staged.Size,
+		OriginalName: header.Filename,
+		Uploader:     uploader,
+		Encrypted:    encrypted,
+	})
 	if err != nil {
 		slog.Error("failed to dedup file", "err", err)
 		return nil, &statusError{ErrorMessage: "failed to save file metadata", code: http.StatusInternalServerError}
@@ -182,7 +192,7 @@ func uploadFile(
 		return nil, &statusError{ErrorMessage: "failed to save file", code: http.StatusInternalServerError}
 	}
 
-	saved, err := st.SaveFile(ctx, staged.Hash, staged.MimeType, staged.Size, header.Filename, staged.RelativePath)
+	saved, err := st.SaveFile(ctx, staged.Hash, staged.MimeType, staged.Size, header.Filename, staged.RelativePath, uploader)
 	if err != nil {
 		return nil, &statusError{ErrorMessage: "failed to save file metadata", code: http.StatusInternalServerError}
 	}

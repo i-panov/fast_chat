@@ -19,6 +19,9 @@ email:
 federation:
     scheme: http
     key_path: ./data/federation
+    # Локальные соседи живут на loopback, а защита от SSRF такие адреса
+    # блокирует. В продакшене флаг остаётся выключенным.
+    allow_private_addresses: true
 
 push:
     vapid_subject: mailto:admin@fastchat.local

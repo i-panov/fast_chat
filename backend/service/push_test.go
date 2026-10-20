@@ -28,7 +28,7 @@ func newPushTestService(t *testing.T) *Service {
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{},
-		&model.MessageReadStatus{},
+		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -121,4 +121,33 @@ func registerPushTestUser(t *testing.T, s *Service, nick string) *model.User {
 	}
 
 	return user
+}
+
+func TestIsValidPushEndpoint(t *testing.T) {
+	cases := []struct {
+		endpoint string
+		want     bool
+	}{
+		{"https://fcm.googleapis.com/wp/Sb2/token", true},
+		{"https://updates.push.services.mozilla.com/wpush/v2/abc", true},
+		{"https://web.push.apple.com/QxY", true},
+		{"https://wns2-pn1p.notify.windows.com/w/?token=abc", true},
+		// A lookalike host must not pass: the endpoint is a request the
+		// server makes on its own.
+		{"https://fcm.googleapis.com.attacker.test/wp/token", false},
+		{"https://web.push.apple.com.attacker.test/QxY", false},
+		// The scheme has to be https, and the address has to be a push
+		// service.
+		{"http://fcm.googleapis.com/wp/token", false},
+		{"https://127.0.0.1:8080/", false},
+		{"https://localhost/", false},
+		{"not a url", false},
+		{"", false},
+	}
+
+	for _, c := range cases {
+		if got := IsValidPushEndpoint(c.endpoint); got != c.want {
+			t.Errorf("IsValidPushEndpoint(%q) = %v, want %v", c.endpoint, got, c.want)
+		}
+	}
 }

@@ -74,6 +74,20 @@ export function refreshToken(token: string) {
 	);
 }
 
+// revokeSession revokes the session token on the server. The local session
+// is removed by the caller; the call is best effort, because a logout that
+// fails on the network must still end the session locally.
+export async function revokeSession(token: string): Promise<void> {
+	try {
+		await request<{ status: string }>("/api/auth/logout", token, {
+			method: "POST",
+		});
+	} catch {
+		// The token stays valid until it expires; the local session is gone
+		// either way.
+	}
+}
+
 export function sseAuth(connectionId: string, token: string) {
 	return request<{ status: string }>("/api/auth/sse-auth", undefined, {
 		method: "POST",

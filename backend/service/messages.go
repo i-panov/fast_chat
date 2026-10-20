@@ -432,15 +432,12 @@ func (s *Service) SendMessage(
 		return nil, err
 	}
 
-	// Resolve file hashes to existing file IDs. The client sends hashes for
-	// files that already exist on server (deduplication) to skip re-uploading.
-	for _, hash := range input.FileHashes {
-		if file, ok := s.store.FindFileByHash(ctx, hash); ok {
-			input.FileIDs = append(input.FileIDs, file.ID)
-		}
-	}
+	// Resolve the attachments the sender is allowed to use. The client sends
+	// file ids for uploads it just made and content hashes for files it
+	// already owns; anything else is dropped rather than attached.
+	fileIDs := s.ResolveMessageFiles(ctx, fromID, input.FileIDs, input.FileHashes)
 
-	if len(input.FileIDs) > MaxMessageFiles {
+	if len(fileIDs) > MaxMessageFiles {
 		return nil, ErrTooManyFiles
 	}
 
@@ -460,8 +457,8 @@ func (s *Service) SendMessage(
 		return msg, nil
 	}
 
-	if len(input.FileIDs) > 0 {
-		if err := s.store.AddMessageFiles(ctx, msg.ID, input.FileIDs); err != nil {
+	if len(fileIDs) > 0 {
+		if err := s.store.AddMessageFiles(ctx, msg.ID, fileIDs); err != nil {
 			log().Info("failed to link files to message", "err", err)
 		}
 
@@ -547,6 +544,15 @@ func (s *Service) EditMessage(
 		return model.Message{}, EditPayload{}, ErrEmptyMessage
 	}
 
+	// Resolve the attachments the editor is allowed to use. Files the editor
+	// does not own are dropped: a file id that leaked from another chat must
+	// not become a way to pull the content into a message.
+	fileIDs := s.ResolveMessageFiles(ctx, userID, edit.FileIDs, edit.FileHashes)
+
+	if len(fileIDs) > MaxMessageFiles {
+		return model.Message{}, EditPayload{}, ErrTooManyFiles
+	}
+
 	updated, err := s.store.EditMessage(
 		ctx, chatID, threadID, messageID, userID, edit.Text,
 		edit.Location, edit.ClearLocation, edit.EncryptedPtr, edit.EncryptedPayloadPtr,
@@ -555,15 +561,11 @@ func (s *Service) EditMessage(
 		return model.Message{}, EditPayload{}, err
 	}
 
-	// Resolve file hashes to existing file IDs (files already on server).
-	for _, hash := range edit.FileHashes {
-		if file, ok := s.store.FindFileByHash(ctx, hash); ok {
-			edit.FileIDs = append(edit.FileIDs, file.ID)
-		}
-	}
-
-	if edit.FileIDs != nil {
-		if err := s.store.SetMessageFiles(ctx, messageID, edit.FileIDs); err != nil {
+	// A client that sends only hashes still replaces the attachments, so the
+	// decision to rewrite them is taken from the request, not from the
+	// resolved list.
+	if edit.FileIDs != nil || len(edit.FileHashes) > 0 {
+		if err := s.store.SetMessageFiles(ctx, messageID, fileIDs); err != nil {
 			log().Info("failed to set message files", "err", err)
 		}
 

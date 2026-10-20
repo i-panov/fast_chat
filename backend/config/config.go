@@ -64,6 +64,11 @@ type FederationConfig struct {
 	Scheme  string `yaml:"scheme"`
 	Timeout int    `yaml:"timeout"`
 	KeyPath string `yaml:"key_path"`
+	// AllowPrivateAddresses lifts the SSRF protection of the federation
+	// client, so peers on the loopback or a private network can be reached.
+	// It exists for the local setup with several instances and must stay off
+	// in production.
+	AllowPrivateAddresses bool `yaml:"allow_private_addresses"`
 }
 
 type EmailConfig struct {
@@ -102,6 +107,38 @@ type RateLimitConfig struct {
 	Window time.Duration `yaml:"window"`
 }
 
+// applyEnvOverrides applies the environment variables on top of the values
+// read from the file. The variables exist so a second local instance can run
+// from the same configuration file: the port, the database and the uploads
+// directory have to differ, and the domain follows from the port.
+func applyEnvOverrides(cfg *Config) {
+	if host := os.Getenv("FASTCHAT_HOST"); host != "" {
+		cfg.Server.Host = host
+	}
+
+	if port := os.Getenv("FASTCHAT_PORT"); port != "" {
+		if parsed, err := strconv.Atoi(port); err == nil && parsed > 0 {
+			cfg.Server.Port = parsed
+		}
+	}
+
+	if path := os.Getenv("FASTCHAT_DB_PATH"); path != "" {
+		cfg.Database.Path = path
+	}
+
+	if dir := os.Getenv("FASTCHAT_UPLOADS_DIR"); dir != "" {
+		cfg.Uploads.Dir = dir
+	}
+
+	if origin := os.Getenv("FASTCHAT_CORS_ORIGIN"); origin != "" {
+		cfg.CORS.Origin = origin
+	}
+
+	if scheme := os.Getenv("FASTCHAT_FEDERATION_SCHEME"); scheme != "" {
+		cfg.Federation.Scheme = scheme
+	}
+}
+
 func Load(configPath string) (*Config, error) {
 	data, err := os.ReadFile(filepath.Clean(configPath))
 	if err != nil {
@@ -124,6 +161,10 @@ func Load(configPath string) (*Config, error) {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
+
+	// The environment overrides the file: it is what makes a second local
+	// instance possible without a second configuration file.
+	applyEnvOverrides(&cfg)
 
 	cfg.Server.Domain = net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
 	if cfg.MessageEditTTL == 0 {

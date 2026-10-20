@@ -100,6 +100,17 @@ func (e *ClientIPExtractor) ClientIP(r *http.Request) string {
 	return remoteIP
 }
 
+// IsTrustedProxy reports whether the request came from a configured proxy.
+// The headers of a request are only believed when the direct peer is such a
+// proxy: otherwise a client could forge them.
+func (e *ClientIPExtractor) IsTrustedProxy(r *http.Request) bool {
+	if e == nil {
+		return false
+	}
+
+	return e.isTrusted(remoteHost(r.RemoteAddr))
+}
+
 // forwardedClientIP resolves the client address from the proxy headers.
 //
 // X-Forwarded-For is appended to, not replaced, by a proxy: nginx's

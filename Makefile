@@ -1,7 +1,22 @@
 BACKEND_PORT ?= 8080
-SERVER_DOMAIN ?= localhost:$(BACKEND_PORT)
+# Домен сервера вычисляется из хоста и порта: SERVER_DOMAIN должен совпадать
+# с ними, иначе федерация не найдёт соседа.
+SERVER_HOST ?= localhost
+SERVER_DOMAIN ?= $(SERVER_HOST):$(BACKEND_PORT)
 FRONTEND_PORT ?= 5173
 API_PROXY ?= http://localhost:$(BACKEND_PORT)
+
+# Пути инстанса выводятся из его порта: второй локальный сервер не должен
+# драться с первым за базу и за каталог загрузок.
+ifeq ($(BACKEND_PORT),8080)
+DB_PATH ?= /tmp/fastchat.db
+UPLOADS_DIR ?= uploads
+else
+DB_PATH ?= /tmp/fastchat-$(BACKEND_PORT).db
+UPLOADS_DIR ?= uploads-$(BACKEND_PORT)
+endif
+
+CORS_ORIGIN ?= http://localhost:$(FRONTEND_PORT)
 
 # golangci-lint собирается из исходников тем же тулчейном, что и бэкенд.
 # Готовый бинарник, собранный более старым Go, не парсит stdlib новой версии
@@ -9,8 +24,16 @@ API_PROXY ?= http://localhost:$(BACKEND_PORT)
 GOLANGCI_LINT_VERSION ?= v2.14.0
 GOLANGCI_LINT := $(shell go env GOPATH)/bin/golangci-lint
 
+# Конфигурация живёт в файле, а значения ниже перекрывают его через
+# окружение: так второй инстанс запускается из того же файла.
 backend\:run:
-	cd backend && go run . --config=../config/dev.yaml
+	cd backend && \
+	FASTCHAT_HOST=$(SERVER_HOST) \
+	FASTCHAT_PORT=$(BACKEND_PORT) \
+	FASTCHAT_DB_PATH=$(DB_PATH) \
+	FASTCHAT_UPLOADS_DIR=$(UPLOADS_DIR) \
+	FASTCHAT_CORS_ORIGIN=$(CORS_ORIGIN) \
+	go run . --config=../config/dev.yaml
 
 backend\:lint:
 	@if [ ! -x "$(GOLANGCI_LINT)" ]; then \
@@ -145,5 +168,5 @@ dev:
 	@echo "  make frontend:run"
 	@echo ""
 	@echo "Second instance (federation test):"
-	@echo "  make backend:run BACKEND_PORT=8081 SERVER_DOMAIN=localhost:8081"
+	@echo "  make backend:run BACKEND_PORT=8081 FRONTEND_PORT=5174"
 	@echo "  make frontend:run FRONTEND_PORT=5174 API_PROXY=http://localhost:8081"

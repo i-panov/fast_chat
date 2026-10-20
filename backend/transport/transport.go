@@ -354,15 +354,11 @@ func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Stor
 		return
 	}
 
-	hctx.SetHeader("Content-Type", "text/event-stream")
-	hctx.SetHeader("Cache-Control", "no-cache")
-	hctx.SetHeader("Connection", "keep-alive")
-	hctx.SetHeader("Access-Control-Allow-Origin", cfg.CORS.Origin)
-	hctx.SetStatus(http.StatusOK)
-
-	// Register the connection BEFORE writing the connected event (pre-migration
-	// parity): the client reacts to connected by calling /api/auth/sse-auth,
-	// which would 404 if the connection is not registered yet.
+	// Register the connection BEFORE the response headers are sent. The
+	// client authenticates the stream with a separate request as soon as the
+	// headers arrive, and that request 404s when the connection is not
+	// registered yet: a stream that stayed open but unauthorized would
+	// silently deliver no events.
 	conn := hub.Register(connectionID)
 	defer func() { //nolint:contextcheck // request context is cancelled by now, need fresh context.Background()
 		hub.Unregister(connectionID, conn)
@@ -374,6 +370,12 @@ func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Stor
 			svc.BroadcastUserStatus(context.Background(), uid, false)
 		}
 	}()
+
+	hctx.SetHeader("Content-Type", "text/event-stream")
+	hctx.SetHeader("Cache-Control", "no-cache")
+	hctx.SetHeader("Connection", "keep-alive")
+	hctx.SetHeader("Access-Control-Allow-Origin", cfg.CORS.Origin)
+	hctx.SetStatus(http.StatusOK)
 
 	writeEvent(writer, flusher, "connected", map[string]string{"status": "ok"})
 
@@ -545,8 +547,9 @@ func verifyFederatedRequest(fm *federation.Manager, w http.ResponseWriter, r *ht
 	serverDomain := r.Header.Get("X-Federation-Server")
 	signature := r.Header.Get("X-Federation-Signature")
 	timestampStr := r.Header.Get("X-Federation-Timestamp")
+	nonce := r.Header.Get(federation.NonceHeader)
 
-	if serverDomain == "" || signature == "" || timestampStr == "" {
+	if serverDomain == "" || signature == "" || timestampStr == "" || nonce == "" {
 		return false, false
 	}
 
@@ -573,7 +576,7 @@ func verifyFederatedRequest(fm *federation.Manager, w http.ResponseWriter, r *ht
 
 	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	if !fm.Verify(r.Context(), serverDomain, signature, r.Method, r.URL.RequestURI(), bodyBytes, timestamp) {
+	if !fm.Verify(r.Context(), serverDomain, signature, r.Method, r.URL.RequestURI(), bodyBytes, timestamp, nonce) {
 		return false, false
 	}
 

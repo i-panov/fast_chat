@@ -209,6 +209,12 @@ func (s *Store) AddChatMember(ctx context.Context, chatID, userID string, maxMem
 	})
 }
 
+// RemoveChatMember drops the membership and leaves a tombstone for the
+// removed user.
+//
+// The tombstone is what tells a client that was offline during the removal
+// that the chat is gone: without it the chat would stay in the local list
+// forever, because the sync delta only carries the chats a user belongs to.
 func (s *Store) RemoveChatMember(ctx context.Context, chatID, userID string) error {
 	chat, ok := s.GetChat(ctx, chatID)
 	if !ok {
@@ -223,7 +229,74 @@ func (s *Store) RemoveChatMember(ctx context.Context, chatID, userID string) err
 		return ErrRemoveLastMember
 	}
 
-	return s.db.WithContext(ctx).Where("chat_id = ? AND user_id = ?", chatID, userID).Delete(&ChatMember{}).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Where("chat_id = ? AND user_id = ?", chatID, userID).Delete(&ChatMember{})
+		if result.Error != nil {
+			return result.Error
+		}
+
+		if result.RowsAffected == 0 {
+			return nil
+		}
+
+		return writeChatDeleteTombs(tx, chatID, []string{userID}, time.Now().UTC())
+	})
+}
+
+// ReplaceChatMembers sets the membership of a chat to exactly the given
+// list. It is used by the federation catch-up, where the peer is
+// authoritative for the chat: a member that joined or left has to be applied
+// even when the change happened while this server was offline.
+//
+// Every member that is dropped leaves a tombstone, the same way a local
+// removal does: without it the chat of a removed member would stay in the
+// local list forever, because the sync delta only carries the chats a user
+// belongs to.
+func (s *Store) ReplaceChatMembers(ctx context.Context, chatID string, members []string) error {
+	wanted := make(map[string]struct{}, len(members))
+	for _, memberID := range members {
+		if memberID == "" {
+			continue
+		}
+
+		wanted[memberID] = struct{}{}
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current []ChatMember
+		if err := tx.Where("chat_id = ?", chatID).Find(&current).Error; err != nil {
+			return err
+		}
+
+		removed := make([]string, 0, len(current))
+
+		for _, member := range current {
+			if _, ok := wanted[member.UserID]; ok {
+				delete(wanted, member.UserID)
+				continue
+			}
+
+			if err := tx.Where("chat_id = ? AND user_id = ?", chatID, member.UserID).
+				Delete(&ChatMember{}).Error; err != nil {
+				return err
+			}
+
+			removed = append(removed, member.UserID)
+		}
+
+		if len(wanted) > 0 {
+			rows := make([]ChatMember, 0, len(wanted))
+			for memberID := range wanted {
+				rows = append(rows, ChatMember{ChatID: chatID, UserID: memberID})
+			}
+
+			if err := tx.Create(&rows).Error; err != nil {
+				return err
+			}
+		}
+
+		return writeChatDeleteTombs(tx, chatID, removed, time.Now().UTC())
+	})
 }
 
 func (s *Store) findGroupChat(ctx context.Context, chatID string) (*model.Chat, error) {
@@ -340,6 +413,11 @@ func (s *Store) DeleteChat(ctx context.Context, chatID string) error {
 	})
 }
 
+// writeChatDeleteTombs records that the given members no longer have the
+// chat. A member can leave and come back, so an existing tombstone is
+// refreshed instead of being kept: the timestamp has to describe the latest
+// removal, otherwise a client whose cursor is past the first removal would
+// never learn about the second one.
 func writeChatDeleteTombs(tx *gorm.DB, chatID string, members []string, at time.Time) error {
 	if len(members) == 0 {
 		return nil
@@ -354,7 +432,7 @@ func writeChatDeleteTombs(tx *gorm.DB, chatID string, members []string, at time.
 		})
 	}
 
-	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&tombs).Error
+	return tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&tombs).Error
 }
 
 // The driver rejects a statement binding more than sqliteMaxVariables

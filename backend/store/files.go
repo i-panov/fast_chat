@@ -13,11 +13,14 @@ var (
 	ErrFileNotFound = errors.New("file not found")
 )
 
-// SaveFile inserts a new file record. The same content can be uploaded
-// under different names: each upload gets its own record (and its own
-// original name), while all records sharing a hash point at the same
+// SaveFile inserts a new file record owned by uploadedBy. The same content
+// can be uploaded under different names: each upload gets its own record (and
+// its own original name), while all records sharing a hash point at the same
 // StoragePath on disk — the physical file is written only once.
-func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64, originalName, storagePath string) (*model.File, error) {
+//
+// uploadedBy is the account that performed the upload. It is what makes the
+// attachment rights checkable later: only the owner may attach the file.
+func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64, originalName, storagePath, uploadedBy string) (*model.File, error) {
 	file := &model.File{
 		ID:           GenerateID(),
 		Hash:         hash,
@@ -25,6 +28,7 @@ func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64,
 		Size:         size,
 		OriginalName: originalName,
 		StoragePath:  storagePath,
+		UploadedBy:   uploadedBy,
 		CreatedAt:    time.Now().UTC(),
 	}
 
@@ -35,6 +39,9 @@ func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64,
 	return file, nil
 }
 
+// FindFileByHash returns any record with the given hash, regardless of owner.
+// It answers "does this content exist on disk", which is what the physical
+// file dedup needs.
 func (s *Store) FindFileByHash(ctx context.Context, hash string) (*model.File, bool) {
 	var f model.File
 	if err := s.db.WithContext(ctx).Where("hash = ?", hash).First(&f).Error; err != nil {
@@ -44,24 +51,50 @@ func (s *Store) FindFileByHash(ctx context.Context, hash string) (*model.File, b
 	return &f, true
 }
 
-// FileExistsByHash reports whether a file with the given plaintext hash is
-// already stored. Used by the client to skip uploading a file that the
-// server already has (deduplication by content hash).
-func (s *Store) FileExistsByHash(ctx context.Context, hash string) bool {
+// FindFileByHashForUploader returns the record the given user owns for the
+// hash. A user may only attach files they uploaded themselves, so resolving
+// a client-supplied hash has to be scoped to the caller.
+func (s *Store) FindFileByHashForUploader(ctx context.Context, hash, uploadedBy string) (*model.File, bool) {
+	var f model.File
+	if err := s.db.WithContext(ctx).Where("hash = ? AND uploaded_by = ?", hash, uploadedBy).First(&f).Error; err != nil {
+		return nil, false
+	}
+
+	return &f, true
+}
+
+// FindLegacyFileByHash returns a record stored before the ownership column
+// existed. Such records have no owner and stay reachable only through the
+// chats that reference them.
+func (s *Store) FindLegacyFileByHash(ctx context.Context, hash string) (*model.File, bool) {
+	var f model.File
+	if err := s.db.WithContext(ctx).Where("hash = ? AND uploaded_by = ''", hash).First(&f).Error; err != nil {
+		return nil, false
+	}
+
+	return &f, true
+}
+
+// FileExistsByHash reports whether the given user already has a file with the
+// hash. The check is scoped to the caller: it is a deduplication hint for
+// their own uploads, not a global oracle over the content of other users.
+func (s *Store) FileExistsByHash(ctx context.Context, hash, uploadedBy string) bool {
 	var count int64
-	if err := s.db.WithContext(ctx).Model(&model.File{}).Where("hash = ?", hash).Count(&count).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.File{}).
+		Where("hash = ? AND uploaded_by = ?", hash, uploadedBy).
+		Count(&count).Error; err != nil {
 		return false
 	}
 
 	return count > 0
 }
 
-// FindFileByHashAndName returns the record for an exact (hash, original
-// name) pair. Used to reuse the existing record when the same content is
-// uploaded again under the same name.
-func (s *Store) FindFileByHashAndName(ctx context.Context, hash, name string) (*model.File, bool) {
+// FindFileByHashAndName returns the record the given user owns for the exact
+// (hash, original name) pair. It is used to reuse the user's own record when
+// the same content is uploaded again under the same name.
+func (s *Store) FindFileByHashAndName(ctx context.Context, hash, name, uploadedBy string) (*model.File, bool) {
 	var f model.File
-	if err := s.db.WithContext(ctx).Where("hash = ? AND original_name = ?", hash, name).First(&f).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("hash = ? AND original_name = ? AND uploaded_by = ?", hash, name, uploadedBy).First(&f).Error; err != nil {
 		return nil, false
 	}
 
@@ -111,8 +144,8 @@ func (s *Store) GetMessageFiles(ctx context.Context, messageID string) ([]model.
 	}
 
 	result := make([]model.FileInfo, len(files))
-	for i, f := range files {
-		result[i] = f.ToFileInfo()
+	for i := range files {
+		result[i] = files[i].ToFileInfo()
 	}
 
 	return result, nil
@@ -147,8 +180,8 @@ func (s *Store) GetMessageFilesBatch(ctx context.Context, messageIDs []string) (
 	}
 
 	filesByID := make(map[string]model.File, len(files))
-	for _, file := range files {
-		filesByID[file.ID] = file
+	for i := range files {
+		filesByID[files[i].ID] = files[i]
 	}
 
 	for _, link := range links {

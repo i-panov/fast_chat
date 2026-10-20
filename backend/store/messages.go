@@ -122,6 +122,9 @@ func (s *Store) EditMessage(
 // comparing against the empty string alone is not safe here.
 const threadIDIsEmpty = "(thread_id = '' OR thread_id IS NULL)"
 
+// threadIDIsNotEmpty matches the messages that belong to a thread.
+const threadIDIsNotEmpty = "(thread_id != '' AND thread_id IS NOT NULL)"
+
 // messageScope is the predicate selecting the messages of one container: a
 // chat's top-level messages, or the messages of a single thread.
 type messageScope struct {

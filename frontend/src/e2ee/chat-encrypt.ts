@@ -3,7 +3,12 @@ import { chatsRepo } from "../db/chatsRepo.ts";
 import i18n from "../i18n.ts";
 import type { Location } from "../types/api.ts";
 import { emitNotification } from "../utils/notify.ts";
-import { encryptContent, ensureSodium, sealMessageKey } from "./crypto.ts";
+import {
+	encryptContent,
+	ensureSodium,
+	type FileMeta,
+	sealMessageKey,
+} from "./crypto.ts";
 import type { FileKey } from "./file-crypto.ts";
 import { ensureAccountKeys, getRecipientPublicKeys } from "./keys.ts";
 
@@ -21,6 +26,7 @@ export async function encryptForChat(
 	chatId: string,
 	content: { text: string; location?: Location },
 	fileKeys: Record<string, FileKey>,
+	fileMeta?: Record<string, FileMeta>,
 ): Promise<EncryptResult | null> {
 	try {
 		const chat = await chatsRepo.getById(chatId);
@@ -70,6 +76,7 @@ export async function encryptForChat(
 			text: content.text,
 			location: content.location,
 			fileKeys,
+			fileMeta,
 		};
 		const encrypted = await encryptContent(contentBlob, msgKey);
 		const envelopes = await sealMessageKey(msgKey, recipients);

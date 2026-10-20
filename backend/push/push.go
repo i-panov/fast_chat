@@ -43,9 +43,9 @@ func NewService(subject, keysDir string, onExpired func(endpoint string)) (*Serv
 		vapidKeys: keys,
 		subject:   subject,
 		// Endpoints are validated against a strict allowlist of push
-		// services (handler.isValidPushEndpoint), so a safe dialer is
-		// not required here.
-		// nosemgrep: fast-chat-inline-http-client
+		// services (service.IsValidPushEndpoint), so a safe dialer is
+		// not required here. The timeout is: a push service that stops
+		// answering must not hold the sending goroutine forever.
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		onExpired:  onExpired,
 	}, nil
@@ -93,6 +93,10 @@ func (s *Service) sendOne(payload []byte, endpoint, p256dh, auth string) error {
 		VAPIDPublicKey:  s.vapidKeys.PublicKey,
 		VAPIDPrivateKey: s.vapidKeys.PrivateKey,
 		TTL:             86400,
+		// The client of the service carries the timeout. Without it the
+		// library falls back to http.DefaultClient, which waits forever for
+		// a push service that stopped answering.
+		HTTPClient: s.httpClient,
 	}
 
 	resp, err := webpush.SendNotification(payload, sub, opts)
