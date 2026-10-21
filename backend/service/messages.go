@@ -482,7 +482,7 @@ func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *
 	}
 
 	for _, memberID := range chat.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventName, Data: eventData})
+		s.sendEvent(memberID, sse.Event{Event: eventName, Data: eventData})
 
 		if memberID == senderID {
 			continue
@@ -491,7 +491,7 @@ func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *
 		// Mark as delivered for other members (ignore errors - best effort).
 		_ = s.store.MarkMessagesDelivered(ctx, []string{msg.ID}, memberID) //nolint:errcheck // best-effort: failure is not actionable
 		// Notify sender about delivery.
-		s.hub.Send(senderID, sse.Event{
+		s.sendEvent(senderID, sse.Event{
 			Event: eventMessageDelivered,
 			Data: map[string]any{
 				keyMessageID: msg.ID,
@@ -584,14 +584,14 @@ func (s *Service) BroadcastMessageUpdated(_ context.Context, chat *model.Chat, t
 			keyMessage:  message,
 		}
 		for _, memberID := range chat.Members {
-			s.hub.Send(memberID, sse.Event{Event: eventThreadMessageUpd, Data: eventData})
+			s.sendEvent(memberID, sse.Event{Event: eventThreadMessageUpd, Data: eventData})
 		}
 
 		return
 	}
 
 	for _, memberID := range chat.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventMessageUpdated, Data: message})
+		s.sendEvent(memberID, sse.Event{Event: eventMessageUpdated, Data: message})
 	}
 }
 
@@ -620,7 +620,7 @@ func (s *Service) DeleteMessage(ctx context.Context, chat *model.Chat, messageID
 	}
 
 	for _, memberID := range chat.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{keyChatID: chat.ID, keyMessageID: messageID}})
+		s.sendEvent(memberID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{keyChatID: chat.ID, keyMessageID: messageID}})
 	}
 
 	return nil
@@ -670,7 +670,7 @@ func (s *Service) MarkMessagesRead(ctx context.Context, chatID, userID string, m
 		}
 
 		for _, msgID := range authorMsgIDs {
-			s.hub.Send(authorID, sse.Event{
+			s.sendEvent(authorID, sse.Event{
 				Event: eventMessageRead,
 				Data: map[string]any{
 					keyMessageID: msgID,
@@ -706,7 +706,7 @@ func (s *Service) CreateThread(ctx context.Context, chat *model.Chat, chatID, me
 	}
 
 	for _, memberID := range chat.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventThreadCreated, Data: thread})
+		s.sendEvent(memberID, sse.Event{Event: eventThreadCreated, Data: thread})
 	}
 
 	return thread, nil

@@ -191,7 +191,7 @@ func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *Feder
 	// learn about a chat the peer created.
 	enriched := s.EnrichChat(ctx, remote)
 	for _, memberID := range remote.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventChatCreated, Data: enriched})
+		s.sendEvent(memberID, sse.Event{Event: eventChatCreated, Data: enriched})
 	}
 }
 
@@ -222,7 +222,7 @@ func (s *Service) syncRemoteChatMembers(ctx context.Context, peer string, existi
 
 	enriched := s.EnrichChat(ctx, updated)
 	for _, memberID := range updated.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventChatUpdated, Data: enriched})
+		s.sendEvent(memberID, sse.Event{Event: eventChatUpdated, Data: enriched})
 	}
 }
 

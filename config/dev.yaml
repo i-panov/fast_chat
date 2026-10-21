@@ -23,6 +23,14 @@ federation:
     # блокирует. В продакшене флаг остаётся выключенным.
     allow_private_addresses: true
 
+ice:
+    # Публичный STUN помогает браузеру найти свой внешний адрес.
+    stun:
+        - "stun:stun.l.google.com:19302"
+    # TURN нужен для сетей, где прямое соединение невозможно. Локально он
+    # не поднимается: без него звонок работает только внутри одной сети.
+    turn: []
+
 push:
     vapid_subject: mailto:admin@fastchat.local
 

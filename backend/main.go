@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"fast_chat/calls"
 	"fast_chat/config"
 	"fast_chat/federation"
 	"fast_chat/internal/httputil"
@@ -33,6 +34,8 @@ const (
 	// federationCatchupInterval is how often the peers are polled for the
 	// messages they have for this server.
 	federationCatchupInterval = 30 * time.Second
+	// callSweepInterval is how often the calls that cannot go on are ended.
+	callSweepInterval = 30 * time.Second
 )
 
 func corsMiddleware(origin string) func(http.Handler) http.Handler {
@@ -310,6 +313,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	warnAboutICE(cfg)
+
 	// Directory mode is deliberate least privilege: 0700/0750 gives the owner
 	// rwx (or r-x for group) on a directory; anything below strips the execute
 	// bit and breaks path traversal. The rule targets file modes.
@@ -372,6 +377,12 @@ func main() {
 	svc := service.New(st, cfg, hub, pushService)
 	fedClient := federation.NewClient(fedManager, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout, cfg.Federation.AllowPrivateAddresses)
 
+	// The calls live in memory: the registry knows the state of the ongoing
+	// conversations, the presence of the participants and when a call has to
+	// end.
+	callManager := calls.NewManager(st.IsOnline)
+	svc.SetCallManager(callManager)
+
 	// The federation operations are queued in the database and delivered by a
 	// worker: an operation that cannot be delivered right now is retried
 	// until the peer accepts it, instead of being lost with the request.
@@ -379,16 +390,7 @@ func main() {
 	svc.SetFederationClient(fedClient)
 
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
-
-	var workers sync.WaitGroup
-
-	workers.Go(func() {
-		fedClient.RunOutbox(workerCtx, federationOutboxInterval)
-	})
-
-	workers.Go(func() {
-		svc.RunFederationCatchup(workerCtx, federationCatchupInterval)
-	})
+	workers := startWorkers(workerCtx, fedClient, svc, callManager)
 
 	ipExtractor := ratelimit.NewClientIPExtractor(cfg.Server.TrustedProxies)
 
@@ -407,16 +409,17 @@ func main() {
 
 	server := newHTTPServer(cfg, humaAPI, absStaticDir, rl.general, ipExtractor)
 
-	serveErr := runServer(shutdownDeps{
+	serveErr := runServer(&shutdownDeps{
 		server:      server,
 		hub:         hub,
 		fedManager:  fedManager,
 		fedClient:   fedClient,
 		store:       st,
 		limiters:    rl,
+		calls:       callManager,
 		budget:      30 * time.Second,
 		stopWorkers: stopWorkers,
-		workers:     &workers,
+		workers:     workers,
 	})
 	if serveErr != nil {
 		fmt.Fprintf(os.Stderr, "FATAL: %v\n", serveErr)
@@ -452,6 +455,49 @@ func newHTTPServer(
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
+	}
+}
+
+// startWorkers launches the background workers and returns the group that
+// waits for them.
+func startWorkers(
+	ctx context.Context,
+	fedClient *federation.Client,
+	svc *service.Service,
+	callManager *calls.Manager,
+) *sync.WaitGroup {
+
+	var workers sync.WaitGroup
+
+	workers.Go(func() {
+		fedClient.RunOutbox(ctx, federationOutboxInterval)
+	})
+
+	workers.Go(func() {
+		svc.RunFederationCatchup(ctx, federationCatchupInterval)
+	})
+
+	workers.Go(func() {
+		callManager.Run(ctx, callSweepInterval)
+	})
+
+	return &workers
+}
+
+// warnAboutICE reports a configuration that limits the calls: without a TURN
+// server a part of the networks cannot connect at all, and a static TURN
+// password makes the relay usable by everyone who can open the site.
+func warnAboutICE(cfg *config.Config) {
+	if len(cfg.ICE.TURN) == 0 {
+		slog.Warn("no TURN server configured: calls will not connect in networks behind a symmetric NAT")
+
+		return
+	}
+
+	for _, turn := range cfg.ICE.TURN {
+		if turn.Credential != "" {
+			slog.Warn("the TURN credentials are static and reach every authorized client: prefer the TURN REST API (coturn use-auth-secret)")
+		}
 	}
 }
 
@@ -495,6 +541,7 @@ type shutdownDeps struct {
 	fedClient  *federation.Client
 	store      *store.Store
 	limiters   *limiters
+	calls      *calls.Manager
 	budget     time.Duration
 	// stopWorkers cancels the background workers, workers waits for them to
 	// finish. They touch the database, so they have to be stopped before the
@@ -510,7 +557,7 @@ type shutdownDeps struct {
 // running, holding the SQLite file and reporting a live PID to whatever
 // supervises it. Signalling is what ends this, and a container that gets
 // SIGTERM on a failed deploy would otherwise look like a healthy start.
-func runServer(deps shutdownDeps) error {
+func runServer(deps *shutdownDeps) error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -523,7 +570,7 @@ func runServer(deps shutdownDeps) error {
 //
 // serve is a parameter so a test can drive a real listener it controls,
 // instead of racing for a free port.
-func serveUntilSignal(serve func() error, deps shutdownDeps, quit <-chan os.Signal) error {
+func serveUntilSignal(serve func() error, deps *shutdownDeps, quit <-chan os.Signal) error {
 	slog.Info("server starting", "addr", deps.server.Addr)
 
 	serveErr := make(chan error, 1)
@@ -568,10 +615,16 @@ func serveUntilSignal(serve func() error, deps shutdownDeps, quit <-chan os.Sign
 // The context is a parameter rather than a field, and the sequence is a
 // separate function so it can be exercised in a test with a real server and a
 // real stream.
-func shutdown(deps shutdownDeps, ctx context.Context) {
+func shutdown(deps *shutdownDeps, ctx context.Context) {
 	slog.Info("shutting down server")
 
 	deps.limiters.closeAll()
+
+	// The calls end before the hub: the clients still have to receive the
+	// final state, and after the hub is closed no event is delivered.
+	if deps.calls != nil {
+		deps.calls.Close()
+	}
 
 	// Closing each connection channel makes runSSE return immediately.
 	deps.hub.Close()
@@ -602,9 +655,14 @@ func shutdown(deps shutdownDeps, ctx context.Context) {
 
 	workersErr := waitFor(workersDone, drainCtx)
 
-	deps.fedManager.Close()
+	if deps.fedManager != nil {
+		deps.fedManager.Close()
+	}
 
-	waitErr := deps.fedClient.CloseWaitContext(drainCtx)
+	var waitErr error
+	if deps.fedClient != nil {
+		waitErr = deps.fedClient.CloseWaitContext(drainCtx)
+	}
 
 	deps.store.Close()
 

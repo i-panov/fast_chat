@@ -161,7 +161,7 @@ func (s *Service) BroadcastUserStatus(ctx context.Context, userID string, online
 	for _, chat := range chats {
 		for _, memberID := range chat.Members {
 			if memberID != userID && !notified[memberID] {
-				s.hub.Send(memberID, sse.Event{
+				s.sendEvent(memberID, sse.Event{
 					Event: eventUserStatusChanged,
 					Data: map[string]any{
 						keyUserID: userID,
@@ -203,10 +203,10 @@ func (s *Service) CreatePrivateChat(ctx context.Context, userID, withUserID stri
 	}
 
 	view := s.EnrichChat(ctx, chat)
-	s.hub.Send(userID, sse.Event{Event: eventChatCreated, Data: view})
+	s.sendEvent(userID, sse.Event{Event: eventChatCreated, Data: view})
 
 	if remoteServer == "" {
-		s.hub.Send(withUserID, sse.Event{Event: eventChatCreated, Data: view})
+		s.sendEvent(withUserID, sse.Event{Event: eventChatCreated, Data: view})
 	}
 
 	return view, nil
@@ -258,7 +258,7 @@ func (s *Service) CreateGroupChat(ctx context.Context, ownerID, name string, mem
 
 	view := s.EnrichChat(ctx, chat)
 	for _, memberID := range chat.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventChatCreated, Data: view})
+		s.sendEvent(memberID, sse.Event{Event: eventChatCreated, Data: view})
 	}
 
 	return view, nil
@@ -279,7 +279,7 @@ func (s *Service) UpdateChatName(ctx context.Context, chatID, name string) (Chat
 
 	view := s.EnrichChat(ctx, updated)
 	for _, memberID := range updated.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventChatUpdated, Data: view})
+		s.sendEvent(memberID, sse.Event{Event: eventChatUpdated, Data: view})
 	}
 
 	return view, nil
@@ -292,7 +292,7 @@ func (s *Service) DeleteChat(ctx context.Context, chat *model.Chat) error {
 	}
 
 	for _, memberID := range chat.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: chat.ID}})
+		s.sendEvent(memberID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: chat.ID}})
 	}
 
 	return nil
@@ -325,7 +325,7 @@ func (s *Service) AddChatMember(ctx context.Context, chatID, userID string) (Cha
 
 	view := s.EnrichChat(ctx, updated)
 	for _, memberID := range updated.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventChatMemberAdded, Data: map[string]any{
+		s.sendEvent(memberID, sse.Event{Event: eventChatMemberAdded, Data: map[string]any{
 			keyChatID: chatID,
 			keyUserID: userID,
 			keyChat:   view,
@@ -349,7 +349,7 @@ func (s *Service) RemoveChatMember(ctx context.Context, chatID, targetUserID, ac
 
 	view := s.EnrichChat(ctx, updated)
 	for _, memberID := range updated.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventChatMemberRemoved, Data: map[string]any{
+		s.sendEvent(memberID, sse.Event{Event: eventChatMemberRemoved, Data: map[string]any{
 			keyChatID: chatID,
 			keyUserID: targetUserID,
 			keyChat:   view,
@@ -357,7 +357,7 @@ func (s *Service) RemoveChatMember(ctx context.Context, chatID, targetUserID, ac
 		}})
 	}
 
-	s.hub.Send(targetUserID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: chatID}})
+	s.sendEvent(targetUserID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: chatID}})
 
 	return view, nil
 }
@@ -380,7 +380,7 @@ func (s *Service) UpdateChatAvatar(ctx context.Context, chatID, fileID string) (
 
 	view := s.EnrichChat(ctx, updated)
 	for _, memberID := range updated.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventChatUpdated, Data: view})
+		s.sendEvent(memberID, sse.Event{Event: eventChatUpdated, Data: view})
 	}
 
 	return view, nil

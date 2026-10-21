@@ -148,7 +148,7 @@ func (s *Service) CreateFederatedChat(
 	// member must learn about the chat over SSE without waiting for a sync.
 	enriched := s.EnrichChat(ctx, chat)
 	for _, memberID := range chat.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventChatCreated, Data: enriched})
+		s.sendEvent(memberID, sse.Event{Event: eventChatCreated, Data: enriched})
 	}
 
 	return enriched, false, nil
@@ -246,7 +246,7 @@ func (s *Service) SendFederatedMessage(
 	}
 
 	for _, memberID := range chat.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventNewMessage, Data: msg})
+		s.sendEvent(memberID, sse.Event{Event: eventNewMessage, Data: msg})
 	}
 
 	return msg, nil
@@ -340,11 +340,11 @@ func (s *Service) EditFederatedMessage(
 		}
 
 		for _, memberID := range chat.Members {
-			s.hub.Send(memberID, sse.Event{Event: eventThreadMessageUpd, Data: eventData})
+			s.sendEvent(memberID, sse.Event{Event: eventThreadMessageUpd, Data: eventData})
 		}
 	} else {
 		for _, memberID := range chat.Members {
-			s.hub.Send(memberID, sse.Event{Event: eventMessageUpdated, Data: updated})
+			s.sendEvent(memberID, sse.Event{Event: eventMessageUpdated, Data: updated})
 		}
 	}
 
@@ -382,7 +382,7 @@ func (s *Service) DeleteFederatedMessage(
 	}
 
 	for _, memberID := range chat.Members {
-		s.hub.Send(memberID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{keyChatID: chat.ID, keyMessageID: messageID}})
+		s.sendEvent(memberID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{keyChatID: chat.ID, keyMessageID: messageID}})
 	}
 
 	return nil

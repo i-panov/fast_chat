@@ -2,13 +2,13 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
 
+	"fast_chat/internal/ids"
 	"fast_chat/model"
 )
 
@@ -23,13 +23,11 @@ var (
 	ErrUserNotFound  = errors.New("user not found")
 )
 
+// GenerateID returns a random 128-bit identifier. It is a wrapper over
+// internal/ids so that packages without a database dependency can generate
+// identifiers too.
 func GenerateID() string {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		panic("crypto/rand.Read failed: " + err.Error())
-	}
-
-	return hex.EncodeToString(buf)
+	return ids.Generate()
 }
 
 // hashToken returns the SHA-256 hex digest of a bearer token. Tokens are
@@ -185,9 +183,9 @@ func (s *Store) RevokeUserToken(ctx context.Context, userID string) error {
 		}).Error
 }
 
-func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) map[string]string {
-	out := make(map[string]string, len(ids))
-	if len(ids) == 0 {
+func (s *Store) GetUsersByIDs(ctx context.Context, userIDs []string) map[string]string {
+	out := make(map[string]string, len(userIDs))
+	if len(userIDs) == 0 {
 		return out
 	}
 
@@ -196,7 +194,7 @@ func (s *Store) GetUsersByIDs(ctx context.Context, ids []string) map[string]stri
 		Nick string
 	}
 
-	s.db.WithContext(ctx).Model(&model.User{}).Where("id IN ?", ids).Select("id, nick").Scan(&rows)
+	s.db.WithContext(ctx).Model(&model.User{}).Where("id IN ?", userIDs).Select("id, nick").Scan(&rows)
 
 	for _, r := range rows {
 		out[r.ID] = r.Nick

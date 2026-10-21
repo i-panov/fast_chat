@@ -75,6 +75,7 @@ func newHubbedTestService(t *testing.T) (*Service, *sse.Hub) {
 	t.Cleanup(hub.Close)
 
 	svc.hub = hub
+	svc.events = hub
 
 	return svc, hub
 }

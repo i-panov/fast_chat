@@ -19,6 +19,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
+	"fast_chat/calls"
 	"fast_chat/config"
 	"fast_chat/federation"
 	"fast_chat/internal/httputil"
@@ -315,6 +316,80 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 	}
 }
 
+// TestShutdownEndsCallsBeforeTheHub covers the order of the shutdown for the
+// calls: the clients have to receive the final state, and after the hub is
+// closed no event is delivered any more.
+func TestShutdownEndsCallsBeforeTheHub(t *testing.T) {
+	dir := t.TempDir()
+
+	db, err := gorm.Open(sqlite.Open(filepath.Join(dir, "t.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AutoMigrate(
+		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.Message{}, &model.Thread{}, &model.File{},
+		&model.MessageFile{}, &model.DeletedMessage{},
+		&model.DeletedChat{}, &model.PushSubscription{},
+		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	st := store.New(db)
+
+	hub := sse.NewHub(time.Minute)
+	cfg := &config.Config{
+		Server: config.ServerConfig{Domain: "localhost:8080", Port: 8080},
+		CORS:   config.CORSConfig{Origin: "*"},
+	}
+	svc := service.New(st, cfg, hub, nil)
+
+	callManager := calls.NewManager(st.IsOnline)
+	svc.SetCallManager(callManager)
+
+	call, err := callManager.CreateCall("alice:localhost:8080", "bob:localhost:8080", "chat-1", "offer")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A connection of one of the participants, so the ending reaches it.
+	conn := hub.Register("conn-1")
+	if err := hub.Authenticate("conn-1", "alice:localhost:8080", "token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := shutdownDeps{
+		server:   &http.Server{Addr: ":0"},
+		hub:      hub,
+		store:    st,
+		limiters: newLimiters(testConfig()),
+		calls:    callManager,
+		budget:   time.Second,
+	}
+
+	shutdown(&deps, context.Background())
+
+	stored, ok := callManager.Get(call.ID)
+	if !ok {
+		t.Fatal("the call is gone")
+	}
+
+	if stored.State != calls.StateEnded {
+		t.Fatalf("state = %q, want ended", stored.State)
+	}
+
+	select {
+	case event := <-conn.Channel:
+		if event.Event != "call_ended" {
+			t.Fatalf("event = %q, want call_ended", event.Event)
+		}
+	default:
+		t.Fatal("the ending did not reach the hub")
+	}
+}
+
 // TestShutdownDrainsWithAnOpenSSEStream covers the shutdown order that broke
 // graceful restarts. An open event stream never becomes idle, so draining with
 // one still attached blocks until the deadline expires. Closing the hub first
@@ -432,7 +507,7 @@ func TestShutdownDrainsWithAnOpenSSEStream(t *testing.T) {
 	go func() {
 		defer close(done)
 
-		shutdown(shutdownDeps{
+		shutdown(&shutdownDeps{
 			server:     srv.Config,
 			hub:        hub,
 			fedManager: fedManager,
@@ -490,7 +565,7 @@ func TestServeUntilSignalFailsFastOnABindConflict(t *testing.T) {
 	go func() {
 		done <- serveUntilSignal(
 			func() error { return http.ListenAndServe(addr, http.NotFoundHandler()) },
-			shutdownDeps{
+			&shutdownDeps{
 				server:     &http.Server{Addr: addr, Handler: http.NotFoundHandler()},
 				hub:        hub,
 				fedManager: fedManager,
@@ -543,7 +618,7 @@ func TestServeUntilSignalReturnsNilOnShutdown(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- serveUntilSignal(func() error { return srv.Serve(listener) }, shutdownDeps{
+		done <- serveUntilSignal(func() error { return srv.Serve(listener) }, &shutdownDeps{
 			server:     srv,
 			hub:        hub,
 			fedManager: fedManager,

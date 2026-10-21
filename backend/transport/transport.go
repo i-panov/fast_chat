@@ -95,6 +95,8 @@ func New(deps *Deps) *Transport {
 	transport.registerSSE(api, deps.Hub, deps.Store, deps.Svc, cfg)
 	RegisterAuth(api, deps.Svc, deps.Store, deps.Hub, apiCfg)
 	RegisterUsers(api, deps.Store, deps.FedClient, cfg, apiCfg)
+	RegisterICE(api, cfg)
+	RegisterCalls(api, deps.Svc)
 	RegisterPush(api, deps.Store, deps.PushPublicKey)
 	RegisterChats(api, deps.Svc, deps.FedClient, cfg)
 	RegisterMessages(api, deps.Svc, deps.Store, deps.FedClient, cfg)

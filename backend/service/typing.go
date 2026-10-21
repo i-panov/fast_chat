@@ -74,7 +74,7 @@ func (s *Service) broadcastTyping(
 
 	for _, memberID := range chat.Members {
 		if memberID != userID {
-			s.hub.Send(memberID, event)
+			s.sendEvent(memberID, event)
 		}
 	}
 }

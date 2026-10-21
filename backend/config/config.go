@@ -30,6 +30,7 @@ type Config struct {
 	Push             PushConfig       `yaml:"push"`
 	Auth             AuthConfig       `yaml:"auth"`
 	RateLimits       RateLimitsConfig `yaml:"rate_limits"`
+	ICE              ICEConfig        `yaml:"ice"`
 }
 
 type ServerConfig struct {
@@ -71,6 +72,21 @@ type FederationConfig struct {
 	AllowPrivateAddresses bool `yaml:"allow_private_addresses"`
 }
 
+// ICEConfig lists the ICE servers a browser may use to reach its peer.
+type ICEConfig struct {
+	STUN []string     `json:"stun" yaml:"stun"`
+	TURN []TURNServer `json:"turn" yaml:"turn"`
+}
+
+// TURNServer is one relay for the media stream. The credentials are handed
+// to every authorized client, so a static password makes the relay usable by
+// anyone who can open the site — the TURN REST API is the safer setup.
+type TURNServer struct {
+	URLs       []string `json:"urls"       yaml:"urls"` //nolint:tagliatelle // the field name is fixed by the WebRTC API
+	Username   string   `json:"username"   yaml:"username"`
+	Credential string   `json:"credential" yaml:"credential"`
+}
+
 type EmailConfig struct {
 	DebugMode     bool       `yaml:"debug_mode"`
 	SMTP          SMTPConfig `yaml:"smtp"`
@@ -105,6 +121,18 @@ type RateLimitsConfig struct {
 type RateLimitConfig struct {
 	Limit  int           `yaml:"limit"`
 	Window time.Duration `yaml:"window"`
+}
+
+// applyICEDefaults fills the ICE lists, so the client never receives null:
+// a configuration without the section would break it.
+func applyICEDefaults(cfg *Config) {
+	if cfg.ICE.STUN == nil {
+		cfg.ICE.STUN = []string{}
+	}
+
+	if cfg.ICE.TURN == nil {
+		cfg.ICE.TURN = []TURNServer{}
+	}
 }
 
 // applyEnvOverrides applies the environment variables on top of the values
@@ -238,6 +266,8 @@ func Load(configPath string) (*Config, error) {
 	if cfg.RateLimits.Register.Window == 0 {
 		cfg.RateLimits.Register.Window = 10 * time.Minute
 	}
+
+	applyICEDefaults(&cfg)
 
 	return &cfg, nil
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"fast_chat/calls"
 	"fast_chat/service"
 	"fast_chat/store"
 )
@@ -309,5 +310,53 @@ var sentinelErrors = []sentinelErrPair{
 	{
 		sentinel: service.ErrInvalidPublicKey,
 		target:   &statusError{ErrorMessage: "invalid public key", code: http.StatusBadRequest},
+	},
+
+	// Call domain.
+	{
+		sentinel: service.ErrCallNotFound,
+		target:   errCallNotFound,
+	},
+	{
+		sentinel: service.ErrNotParticipant,
+		target:   &statusError{ErrorMessage: "not a participant of the call", code: http.StatusForbidden},
+	},
+	{
+		sentinel: service.ErrNotPrivateChat,
+		target:   &statusError{ErrorMessage: "calls are only possible in a private chat", code: http.StatusBadRequest},
+	},
+	{
+		sentinel: service.ErrCallWithSelf,
+		target:   &statusError{ErrorMessage: "cannot call yourself", code: http.StatusBadRequest},
+	},
+	{
+		sentinel: service.ErrRemoteCallee,
+		target:   &statusError{ErrorMessage: "calls between servers are not supported", code: http.StatusForbidden},
+	},
+	{
+		sentinel: service.ErrEmptyOffer,
+		target:   &statusError{ErrorMessage: "the offer of a call is empty", code: http.StatusBadRequest},
+	},
+
+	// Call registry.
+	{
+		sentinel: calls.ErrBusy,
+		target:   &statusError{ErrorMessage: "user is already in a call", code: http.StatusConflict},
+	},
+	{
+		sentinel: calls.ErrNotFound,
+		target:   errCallNotFound,
+	},
+	{
+		sentinel: calls.ErrNotRinging,
+		target:   &statusError{ErrorMessage: "call is not ringing", code: http.StatusConflict},
+	},
+	{
+		sentinel: calls.ErrEnded,
+		target:   &statusError{ErrorMessage: "call is already ended", code: http.StatusConflict},
+	},
+	{
+		sentinel: calls.ErrExpired,
+		target:   &statusError{ErrorMessage: "call was not answered in time", code: http.StatusConflict},
 	},
 }

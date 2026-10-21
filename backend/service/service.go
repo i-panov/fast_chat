@@ -7,6 +7,7 @@ package service
 import (
 	"log/slog"
 
+	"fast_chat/calls"
 	"fast_chat/config"
 	"fast_chat/email"
 	"fast_chat/model"
@@ -34,16 +35,37 @@ type pushSender interface {
 // by New and cannot be swapped afterwards.
 type Service struct {
 	store *store.Store
-	// hub is wired now but unused by the auth domain; it will be consumed by
-	// the realtime fan-out (chat/user-status) work in later migration steps.
-	hub   *sse.Hub
-	cfg   *config.Config
-	email email.Sender
-	push  pushSender
+	// hub is the realtime hub. It stays concrete: the typing state and the
+	// federation tests work with the connections themselves.
+	hub *sse.Hub
+	// events is the fan-out of the service. It is an interface, so the rules
+	// can be tested without a hub: the real one satisfies it unchanged.
+	events eventSender
+	cfg    *config.Config
+	email  email.Sender
+	push   pushSender
 	// fed is the signed server-to-server client. It is optional: without it
 	// the federation catch-up does not run, and only the local server talks
 	// to its peers.
 	fed federationSender
+	// calls is the registry of the ongoing calls. It is optional: without it
+	// the call domain is disabled.
+	calls *calls.Manager
+}
+
+// eventSender is the part of the SSE hub the service uses.
+type eventSender interface {
+	Send(userID string, event sse.Event)
+}
+
+// sendEvent delivers an event to the connections of a user. A service without
+// a fan-out (some of the tests build one by hand) drops the events.
+func (s *Service) sendEvent(userID string, event sse.Event) {
+	if s.events == nil {
+		return
+	}
+
+	s.events.Send(userID, event)
 }
 
 // New builds a Service bound to the given store, hub and config. The email
@@ -51,10 +73,11 @@ type Service struct {
 // have to reason about SMTP vs debug mode.
 func New(s *store.Store, cfg *config.Config, hub *sse.Hub, ps *push.Service) *Service {
 	svc := &Service{
-		store: s,
-		hub:   hub,
-		cfg:   cfg,
-		email: newEmailSender(cfg),
+		store:  s,
+		hub:    hub,
+		events: hub,
+		cfg:    cfg,
+		email:  newEmailSender(cfg),
 	}
 	// Guard against a nil *push.Service being wrapped in a non-nil pushSender
 	// interface, which would defeat the `s.push == nil` check in SendPushForMessage.
