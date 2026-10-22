@@ -1,5 +1,5 @@
-import type { ICEConfig } from "../types/api.ts";
-import type { CallApi, CallPhase, CallRole, CallView } from "./callTypes.ts";
+import type { CallRole, ICEConfig } from "../types/api.ts";
+import type { CallApi, CallPhase, CallView } from "./callTypes.ts";
 
 const MEDIA_CONSTRAINTS: MediaStreamConstraints = {
 	audio: true,
@@ -209,9 +209,21 @@ export function createCallManager(
 		},
 
 		handleEnded(payload: unknown) {
-			const data = payload as { callId?: string; reason?: string };
+			const data = payload as {
+				callId?: string;
+				reason?: string;
+				peerId?: string;
+				role?: CallRole;
+			};
 
-			if (!belongsToCall(ctx, data.callId)) return;
+			// The event of another call must not touch the current one.
+			if (
+				ctx.callId !== undefined &&
+				data.callId !== undefined &&
+				data.callId !== ctx.callId
+			) {
+				return;
+			}
 
 			// The call is over: the media is released, but the phase and
 			// the reason stay, so the interface can report how it ended.
@@ -219,6 +231,8 @@ export function createCallManager(
 			ctx.accepting = false;
 			ctx.pendingAnswer = undefined;
 			releaseMedia(ctx);
+			if (data.peerId !== undefined) ctx.peerId = data.peerId;
+			if (data.role !== undefined) ctx.role = data.role;
 			ctx.reason = data.reason;
 			ctx.phase = "ended";
 			notify();

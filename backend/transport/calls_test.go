@@ -32,7 +32,7 @@ func newCallsTestServerWithHub(t *testing.T) (huma.API, *store.Store, *sse.Hub, 
 	st := newTestStore(t)
 	hub := newTestHub()
 	svc := newTestService(st, hub)
-	svc.SetCallManager(calls.NewManager(func(string) bool { return true }))
+	svc.SetCallManager(calls.NewManager(nil))
 
 	api := newTestAPI(newTestMux())
 	api.UseMiddleware(AuthMiddleware(st))
@@ -155,6 +155,42 @@ func TestCurrentCallAnswers404WithoutACall(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The client tells the two sides of a call apart by the role: the caller
+// waits for an answer, the callee waits for the caller.
+func TestCurrentCallAnswersTheRoleOfTheUser(t *testing.T) {
+	api, st, token := newCallsTestServer(t)
+
+	chatID := createCallChat(t, st, "alice:localhost:8080", "bob:localhost:8080")
+
+	rec := doJSON(t, api, token, http.MethodPost, "/api/calls", `{"chatId":"`+chatID+`","offer":"v=0"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("start call: expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, api, token, http.MethodGet, "/api/calls/current", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("current call: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var out struct {
+		State string `json:"state"`
+		Peer  string `json:"peer"`
+		Role  string `json:"role"`
+	}
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	if out.State != "ringing" || out.Role != "caller" {
+		t.Fatalf("unexpected body: %+v", out)
+	}
+
+	if out.Peer != "bob:localhost:8080" {
+		t.Fatalf("peer = %q, want bob", out.Peer)
 	}
 }
 

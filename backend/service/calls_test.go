@@ -49,7 +49,7 @@ func newCallService(t *testing.T) (*Service, *eventRecorder) {
 
 	recorder := &eventRecorder{}
 	s.events = recorder
-	s.SetCallManager(calls.NewManager(func(string) bool { return true }))
+	s.SetCallManager(calls.NewManager(nil))
 
 	return s, recorder
 }
@@ -99,6 +99,25 @@ func TestStartCallRejectsGroupChat(t *testing.T) {
 	}
 
 	chat, err := s.store.CreateGroupChat(ctx, "G", "alice:localhost:8080", []string{"bob:localhost:8080"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.StartCall(ctx, "alice:localhost:8080", chat.ID, "offer"); !errors.Is(err, ErrNotPrivateChat) {
+		t.Fatalf("expected ErrNotPrivateChat, got %v", err)
+	}
+}
+
+// The Favorites chat holds the user alone: a call there is a call to oneself.
+func TestStartCallRejectsFavoritesChat(t *testing.T) {
+	s, _ := newCallService(t)
+	ctx := context.Background()
+
+	if _, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	chat, err := s.store.EnsureSelfChat(ctx, "alice:localhost:8080")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 func testManager(now func() time.Time) *Manager {
-	m := NewManager(func(string) bool { return true })
+	m := NewManager(nil)
 	m.now = now
 
 	return m
@@ -95,9 +95,15 @@ func TestCurrentReturnsTheLastEndedCall(t *testing.T) {
 	}
 }
 
-func TestSweepEndsCallsWithoutParticipants(t *testing.T) {
+func TestSweepEndsTheCallOfAParticipantThatIsGone(t *testing.T) {
 	now := time.Now()
-	m := NewManager(func(string) bool { return false })
+	m := NewManager(func(userID string) time.Time {
+		if userID == "alice" {
+			return now.Add(-OfflineGrace)
+		}
+
+		return time.Time{}
+	})
 	m.now = func() time.Time { return now }
 
 	call, err := m.CreateCall("alice", "bob", "chat-1", "offer")
@@ -119,12 +125,22 @@ func TestSweepEndsCallsWithoutParticipants(t *testing.T) {
 	if stored.State != StateEnded {
 		t.Fatalf("state = %q, want ended", stored.State)
 	}
+
+	if stored.Reason != ReasonPeerLeft {
+		t.Fatalf("reason = %q, want %q", stored.Reason, ReasonPeerLeft)
+	}
 }
 
-func TestSweepKeepsCallsWithAParticipant(t *testing.T) {
+func TestSweepKeepsTheCallOfAParticipantThatLostTheNetwork(t *testing.T) {
 	now := time.Now()
-	online := map[string]bool{"bob": true}
-	m := NewManager(func(userID string) bool { return online[userID] })
+	var offlineSince time.Time
+	m := NewManager(func(userID string) time.Time {
+		if userID == "alice" {
+			return offlineSince
+		}
+
+		return time.Time{}
+	})
 	m.now = func() time.Time { return now }
 
 	call, err := m.CreateCall("alice", "bob", "chat-1", "offer")
@@ -136,11 +152,23 @@ func TestSweepKeepsCallsWithAParticipant(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The caller lost the network a moment ago: the media does not depend
+	// on the server, so the call goes on while the client reconnects.
+	offlineSince = now.Add(-time.Second)
 	m.Sweep()
 
 	stored, _ := m.Get(call.ID)
 	if stored.State != StateActive {
 		t.Fatalf("state = %q, want active", stored.State)
+	}
+
+	// The client did not come back: the call is over.
+	now = now.Add(OfflineGrace)
+	m.Sweep()
+
+	stored, _ = m.Get(call.ID)
+	if stored.State != StateEnded {
+		t.Fatalf("state = %q, want ended", stored.State)
 	}
 }
 

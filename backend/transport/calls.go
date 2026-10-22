@@ -8,6 +8,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"fast_chat/calls"
 	"fast_chat/service"
 )
 
@@ -154,6 +155,7 @@ func registerCurrentCall(api huma.API, svc *service.Service) {
 		out.Body.Reason = call.Reason
 		out.Body.Offer = call.Offer
 		out.Body.Answer = call.Answer
+		out.Body.Role = callRole(call, user.ID)
 
 		if !call.EndedAt.IsZero() {
 			out.Body.EndedAt = call.EndedAt.Format(time.RFC3339)
@@ -217,5 +219,17 @@ type currentCallOutput struct {
 		EndedAt string `json:"endedAt,omitempty"`
 		Offer   string `json:"offer,omitempty"`
 		Answer  string `json:"answer,omitempty"`
+		// Role tells the client which side of the call the user is on. The
+		// two sides report the end of a call differently.
+		Role string `json:"role"`
 	}
+}
+
+// callRole returns the side of the call the user is on.
+func callRole(call *calls.Call, userID string) string {
+	if call.CallerID == userID {
+		return "caller"
+	}
+
+	return "callee"
 }

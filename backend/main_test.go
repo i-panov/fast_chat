@@ -277,6 +277,14 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 		}
 	}
 
+	// The crypto library of the interface needs the WebAssembly: without
+	// it the browser refuses to compile the module and the client cannot
+	// generate the keys of the account.
+	csp := rec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "script-src 'self' 'wasm-unsafe-eval'") {
+		t.Errorf("Content-Security-Policy = %q, want the WebAssembly allowed", csp)
+	}
+
 	// Legacy mux fallback: health probes stay reachable.
 	rec = do("/healthz")
 	if rec.Code != http.StatusOK {
@@ -346,7 +354,7 @@ func TestShutdownEndsCallsBeforeTheHub(t *testing.T) {
 	}
 	svc := service.New(st, cfg, hub, nil)
 
-	callManager := calls.NewManager(st.IsOnline)
+	callManager := calls.NewManager(st.OfflineSince)
 	svc.SetCallManager(callManager)
 
 	call, err := callManager.CreateCall("alice:localhost:8080", "bob:localhost:8080", "chat-1", "offer")

@@ -39,6 +39,12 @@ const (
 	// EndedTTL is how long an ended call is kept, so a client that returns
 	// later can still learn the final state of the call.
 	EndedTTL = 10 * time.Minute
+	// OfflineGrace is how long a participant may stay offline before the
+	// call ends. A short gap is a network drop: the peer connection does
+	// not depend on the server, so the media keeps flowing and the client
+	// reconnects. A client that is gone for good (a crash, a closed tab)
+	// must not hold the call, and the other side, until ActiveTTL.
+	OfflineGrace = time.Minute
 )
 
 var (
@@ -87,24 +93,25 @@ func (c *Call) Peer(userID string) string {
 // callers read the fields of a call without the lock, and the registry writes
 // them under the lock.
 type Manager struct {
-	mu       sync.Mutex
-	calls    map[string]*Call
-	active   map[string]string // userID -> callID
-	recent   map[string]string // userID -> last ended callID
-	isOnline func(userID string) bool
-	onEnded  func(call Call, reason string)
-	timers   map[string]*time.Timer
-	now      func() time.Time
+	mu           sync.Mutex
+	calls        map[string]*Call
+	active       map[string]string // userID -> callID
+	recent       map[string]string // userID -> last ended callID
+	offlineSince func(userID string) time.Time
+	onEnded      func(call Call, reason string)
+	timers       map[string]*time.Timer
+	now          func() time.Time
 	// ringingTimeout is how long the callee has to answer. It is a field and
 	// not a constant, so the tests do not have to wait for the real window.
 	ringingTimeout time.Duration
 }
 
-// NewManager builds a registry. isOnline reports whether a user is
-// connected; the registry calls it outside its lock, never while holding it.
-func NewManager(isOnline func(userID string) bool) *Manager {
-	if isOnline == nil {
-		isOnline = func(string) bool { return false }
+// NewManager builds a registry. offlineSince reports when a user lost the
+// last connection; the zero time means the user is connected. The registry
+// calls it outside its lock, never while holding it.
+func NewManager(offlineSince func(userID string) time.Time) *Manager {
+	if offlineSince == nil {
+		offlineSince = func(string) time.Time { return time.Time{} }
 	}
 
 	return &Manager{
@@ -112,7 +119,7 @@ func NewManager(isOnline func(userID string) bool) *Manager {
 		active:         make(map[string]string),
 		recent:         make(map[string]string),
 		timers:         make(map[string]*time.Timer),
-		isOnline:       isOnline,
+		offlineSince:   offlineSince,
 		now:            time.Now,
 		ringingTimeout: RingingTimeout,
 	}
@@ -295,8 +302,10 @@ func (m *Manager) Sweep() {
 			continue
 		}
 
-		// Nobody is on the line: the call cannot continue.
-		if !m.isOnline(snapshot.CallerID) && !m.isOnline(snapshot.CalleeID) {
+		// A participant that is gone for good cannot be on the line. The
+		// grace keeps a network drop from ending the call: the client
+		// reconnects and the media goes on.
+		if m.goneForGood(snapshot.CallerID, now) || m.goneForGood(snapshot.CalleeID, now) {
 			if _, err := m.EndCall(id, ReasonPeerLeft); err != nil {
 				continue
 			}
@@ -377,6 +386,18 @@ func (m *Manager) Close() {
 
 		onEnded(*call, ReasonPeerLeft)
 	}
+}
+
+// goneForGood tells whether a participant has been offline long enough for
+// the call to be over: a client that lost the network comes back, a client
+// that crashed does not.
+func (m *Manager) goneForGood(userID string, now time.Time) bool {
+	since := m.offlineSince(userID)
+	if since.IsZero() {
+		return false
+	}
+
+	return now.Sub(since) >= OfflineGrace
 }
 
 // copyOf returns a copy of a call. The registry hands out copies, so the

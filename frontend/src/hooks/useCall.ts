@@ -180,6 +180,20 @@ export function useCall(
 					offer: current.offer,
 					from: { id: current.peer, nick: "" },
 				});
+
+				return;
+			}
+
+			// The call ended while the user was away: the interface reports
+			// the missed call. The other endings stay silent: only the call
+			// that rang out is a missed call.
+			if (current.state === "ended" && current.reason === "timeout") {
+				manager.handleEnded({
+					callId: current.callId,
+					reason: current.reason,
+					peerId: current.peer,
+					role: current.role,
+				});
 			}
 		};
 

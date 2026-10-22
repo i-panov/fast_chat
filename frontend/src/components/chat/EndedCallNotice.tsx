@@ -1,6 +1,6 @@
 import { Button, Group, Paper, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
-import type { CallRole } from "../../calls/callTypes.ts";
+import type { CallRole } from "../../types/api.ts";
 
 interface Props {
 	reason: string | undefined;

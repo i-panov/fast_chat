@@ -35,6 +35,22 @@ describe("callManager endings", () => {
 		expect(manager.state().phase).toBe("ended");
 	});
 
+	it("reports the call that ended while the client was away", () => {
+		const manager = createCallManager(fakeApi());
+
+		manager.handleEnded({
+			callId: "c-9",
+			reason: "timeout",
+			peerId: "bob:test",
+			role: "callee",
+		});
+
+		expect(manager.state().phase).toBe("ended");
+		expect(manager.state().reason).toBe("timeout");
+		expect(manager.state().peerId).toBe("bob:test");
+		expect(manager.state().role).toBe("callee");
+	});
+
 	it("remembers which side of the call the user is on", async () => {
 		const manager = createCallManager(fakeApi());
 

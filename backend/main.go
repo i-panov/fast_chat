@@ -63,8 +63,12 @@ func corsMiddleware(origin string) func(http.Handler) http.Handler {
 // allowed because the component library sets inline styles. The map tiles
 // come from the OpenStreetMap servers, and blob:/data: cover the object
 // URLs of the decrypted attachments and the inline images.
+//
+// The WebAssembly of the crypto library needs its own source: without
+// 'wasm-unsafe-eval' the browser refuses to compile the module and the
+// client cannot generate the keys of the account.
 const contentSecurityPolicy = "default-src 'self'; " +
-	"script-src 'self'; " +
+	"script-src 'self' 'wasm-unsafe-eval'; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data: blob: https://*.tile.openstreetmap.org; " +
 	"font-src 'self' data:; " +
@@ -380,7 +384,7 @@ func main() {
 	// The calls live in memory: the registry knows the state of the ongoing
 	// conversations, the presence of the participants and when a call has to
 	// end.
-	callManager := calls.NewManager(st.IsOnline)
+	callManager := calls.NewManager(st.OfflineSince)
 	svc.SetCallManager(callManager)
 
 	// The federation operations are queued in the database and delivered by a

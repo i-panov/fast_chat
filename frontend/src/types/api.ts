@@ -159,11 +159,16 @@ interface SyncDeletedChat {
 // CallState is the state of a call: it rings, it is answered, or it is over.
 type CallState = "ringing" | "active" | "ended";
 
+// CallRole tells which side of a call the user is on. The two sides report
+// the end of a call differently.
+export type CallRole = "caller" | "callee";
+
 // CallInfo is the call of the user: the one it is in, or the last one.
 export interface CallInfo {
 	callId: string;
 	peer: string;
 	state: CallState;
+	role: CallRole;
 	reason?: string;
 	endedAt?: string;
 	offer?: string;

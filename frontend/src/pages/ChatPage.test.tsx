@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { setActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
+import i18n from "../i18n.ts";
 import type { Chat } from "../types/api.ts";
 import { AuthProvider } from "../useAuth.tsx";
 import { ChatPage } from "./ChatPage.tsx";
@@ -183,6 +184,18 @@ function privateChat(): Chat {
 	};
 }
 
+// favoritesChat is the chat with the user alone: there is nobody to call.
+function favoritesChat(): Chat {
+	return {
+		id: "c3",
+		type: "self",
+		name: "",
+		ownerId: "alice:test",
+		members: [{ id: "alice:test", nick: "alice", online: true }],
+		createdAt: "2026-01-01T00:00:00Z",
+	};
+}
+
 // stubCallMedia gives the manager a camera and a connection: jsdom has
 // neither.
 function stubCallMedia() {
@@ -287,6 +300,26 @@ describe("chat page", () => {
 		await waitFor(() => {
 			expect(startCall).toHaveBeenCalledWith("tok", "c2", "offer-sdp");
 		});
+	});
+
+	it("hides the call button in the Favorites chat", async () => {
+		seedAccount();
+		await chatsRepo.upsert(favoritesChat());
+		renderPage();
+
+		const favorites = i18n.t("chat.favorites");
+		const entries = await screen.findAllByText(favorites);
+		fireEvent.click(entries[0]);
+
+		// The header of the chat is rendered: the chat is open.
+		await waitFor(() => {
+			const headers = [...document.querySelectorAll("header")];
+			if (!headers.some((h) => h.textContent?.includes(favorites))) {
+				throw new Error("active header missing");
+			}
+		});
+
+		expect(screen.queryByRole("button", { name: CALL_LABEL })).toBeNull();
 	});
 
 	it("opens the window of an incoming call", async () => {

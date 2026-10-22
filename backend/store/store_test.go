@@ -1017,6 +1017,40 @@ func TestAddConnectionMultiple(t *testing.T) {
 	}
 }
 
+func TestOfflineSince(t *testing.T) {
+	s := newTestStore(t)
+	createTestUser(t, s, "alice")
+
+	// A user that did not connect is not offline: the zero time says
+	// nothing about it.
+	if since := s.OfflineSince(testAlice); !since.IsZero() {
+		t.Fatalf("offlineSince = %v, want the zero time", since)
+	}
+
+	s.AddConnection(testAlice)
+	s.AddConnection(testAlice)
+	s.RemoveConnection(testAlice)
+
+	// One connection is left: the user is still online.
+	if since := s.OfflineSince(testAlice); !since.IsZero() {
+		t.Fatalf("offlineSince = %v with a connection left, want the zero time", since)
+	}
+
+	before := time.Now()
+	s.RemoveConnection(testAlice)
+
+	since := s.OfflineSince(testAlice)
+	if since.IsZero() || since.Before(before) {
+		t.Fatalf("offlineSince = %v, want the time the user went offline", since)
+	}
+
+	s.AddConnection(testAlice)
+
+	if since := s.OfflineSince(testAlice); !since.IsZero() {
+		t.Fatalf("offlineSince = %v after reconnecting, want the zero time", since)
+	}
+}
+
 func TestGetMessageValue(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")

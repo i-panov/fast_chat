@@ -183,6 +183,7 @@ describe("useCall", () => {
 			callId: "c-9",
 			peer: "bob:test",
 			state: "active",
+			role: "caller",
 		});
 		hangupCallOnLeave.mockClear();
 
@@ -196,6 +197,51 @@ describe("useCall", () => {
 		expect(result.current.state.phase).toBe("idle");
 	});
 
+	it("reports the call that ended while the user was away", async () => {
+		stubMedia();
+		getCurrentCall.mockResolvedValueOnce({
+			callId: "c-9",
+			peer: "bob:test",
+			state: "ended",
+			reason: "timeout",
+			role: "callee",
+		});
+
+		const { result } = renderHook(() => useCall("tok", "alice:test"));
+
+		await waitFor(() => {
+			expect(result.current.state.phase).toBe("ended");
+		});
+
+		expect(result.current.state.reason).toBe("timeout");
+		expect(result.current.state.role).toBe("callee");
+		expect(result.current.state.peerId).toBe("bob:test");
+	});
+
+	it("ignores the call the user ended before the page was opened", async () => {
+		stubMedia();
+		getCurrentCall.mockResolvedValueOnce({
+			callId: "c-9",
+			peer: "bob:test",
+			state: "ended",
+			reason: "hangup",
+			role: "caller",
+		});
+
+		const { result } = renderHook(() => useCall("tok", "alice:test"));
+
+		await waitFor(() => {
+			expect(getCurrentCall).toHaveBeenCalled();
+		});
+
+		// The reconciliation runs in the background: let it finish.
+		await act(async () => {
+			await Promise.resolve();
+		});
+
+		expect(result.current.state.phase).toBe("idle");
+	});
+
 	it("takes the call again that waited for an answer", async () => {
 		stubMedia();
 		getCurrentCall.mockResolvedValueOnce({
@@ -203,6 +249,7 @@ describe("useCall", () => {
 			peer: "bob:test",
 			state: "ringing",
 			offer: "offer-sdp",
+			role: "callee",
 		});
 
 		const { result } = renderHook(() => useCall("tok", "alice:test"));
