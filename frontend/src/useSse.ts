@@ -121,6 +121,10 @@ export function useSse(token: string, onEvent: EventHandler) {
 				"thread_message_new",
 				"typing",
 				"typing_stop",
+				"call_incoming",
+				"call_accepted",
+				"call_ended",
+				"call_ice",
 			];
 
 			for (const event of jsonEvents) {

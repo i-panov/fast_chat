@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
+import type { CallManager } from "../calls/callManager.ts";
+import { handleCallEvent } from "../calls/handleCallEvent.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
@@ -14,6 +16,54 @@ interface UseSseEventsParams {
 	clearTyping: (chatId: string, userId: string) => void;
 	onTokenExpiring: (currentToken: string) => Promise<void>;
 	onTokenExpired: () => void;
+	// callManager receives the signaling events of the call domain. It may be
+	// undefined when the calls are not available.
+	callManager?: CallManager;
+}
+
+// applyReadEvent marks a message as read by a reader. The readers are
+// accumulated instead of overwritten, so two readers do not erase each other.
+async function applyReadEvent(data: { messageId: string; readerId: string }) {
+	const { messageId, readerId } = data;
+
+	const existing = await messagesRepo.getByIdAny(messageId);
+	const currentReadBy = existing?.readBy ?? [];
+	const newReadBy = currentReadBy.includes(readerId)
+		? currentReadBy
+		: [...currentReadBy, readerId];
+	void messagesRepo.updateDeliveryStatus(messageId, "read", newReadBy);
+
+	const existingThread = await threadMessagesRepo.getByIdAny(messageId);
+	const currentThreadReadBy = existingThread?.readBy ?? [];
+	const newThreadReadBy = currentThreadReadBy.includes(readerId)
+		? currentThreadReadBy
+		: [...currentThreadReadBy, readerId];
+	void threadMessagesRepo.updateDeliveryStatus(
+		messageId,
+		"read",
+		newThreadReadBy,
+	);
+}
+
+// routeCallEvent hands a call event to the manager, if there is one.
+function routeCallEvent(
+	callManager: CallManager | undefined,
+	event: string,
+	data: unknown,
+): void {
+	if (callManager === undefined) return;
+
+	handleCallEvent(callManager, event, data);
+}
+
+// isCallEvent reports whether an event belongs to the call domain.
+function isCallEvent(event: string): boolean {
+	return (
+		event === "call_incoming" ||
+		event === "call_accepted" ||
+		event === "call_ended" ||
+		event === "call_ice"
+	);
 }
 
 // chatFromEvent extracts the chat from an SSE payload. The membership events
@@ -41,6 +91,7 @@ export function useSseEvents({
 	clearTyping,
 	onTokenExpiring,
 	onTokenExpired,
+	callManager,
 }: UseSseEventsParams) {
 	const tokenRef = useRef(token);
 	useEffect(() => {
@@ -49,6 +100,10 @@ export function useSseEvents({
 
 	const handler = useCallback(
 		async (event: string, data: unknown) => {
+			if (isCallEvent(event)) {
+				routeCallEvent(callManager, event, data);
+				return;
+			}
 			if (event === "new_message" || event === "message_updated") {
 				const msg = data as Message;
 				void messagesRepo.upsert(msg, "sent");
@@ -73,29 +128,7 @@ export function useSseEvents({
 				return;
 			}
 			if (event === "message_read") {
-				const { messageId, readerId } = data as {
-					messageId: string;
-					readerId: string;
-				};
-				// Accumulate readBy list instead of overwriting
-				const existing = await messagesRepo.getByIdAny(messageId);
-				const currentReadBy = existing?.readBy ?? [];
-				const newReadBy = currentReadBy.includes(readerId)
-					? currentReadBy
-					: [...currentReadBy, readerId];
-				void messagesRepo.updateDeliveryStatus(messageId, "read", newReadBy);
-
-				// Same for thread messages
-				const existingThread = await threadMessagesRepo.getByIdAny(messageId);
-				const currentThreadReadBy = existingThread?.readBy ?? [];
-				const newThreadReadBy = currentThreadReadBy.includes(readerId)
-					? currentThreadReadBy
-					: [...currentThreadReadBy, readerId];
-				void threadMessagesRepo.updateDeliveryStatus(
-					messageId,
-					"read",
-					newThreadReadBy,
-				);
+				await applyReadEvent(data as { messageId: string; readerId: string });
 				return;
 			}
 			if (
@@ -168,6 +201,7 @@ export function useSseEvents({
 			onTokenExpiring,
 			onTokenExpired,
 			knownThreadIdsRef,
+			callManager,
 		],
 	);
 

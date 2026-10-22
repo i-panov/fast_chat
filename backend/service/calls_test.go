@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -290,14 +291,38 @@ func TestSendIceGoesToThePeer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.SendIce(ctx, "alice:localhost:8080", call.ID, "candidate"); err != nil {
+	if err := s.SendIce(ctx, "alice:localhost:8080", call.ID, json.RawMessage(`{"candidate":"c"}`)); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, e := range recorder.all() {
-		if e.Event.Event == "call_ice" && e.UserID == "bob:localhost:8080" {
-			return
+		if e.Event.Event != "call_ice" || e.UserID != "bob:localhost:8080" {
+			continue
 		}
+
+		data, ok := e.Event.Data.(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected data: %+v", e.Event.Data)
+		}
+
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var payload struct {
+			Candidate map[string]any `json:"candidate"`
+		}
+
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatal(err)
+		}
+
+		if payload.Candidate["candidate"] != "c" {
+			t.Fatalf("the candidate is not an object: %s", raw)
+		}
+
+		return
 	}
 
 	t.Fatalf("the candidate did not reach the peer: %+v", recorder.all())

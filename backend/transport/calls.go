@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -193,7 +194,9 @@ type hangupCallInput struct {
 type callICEInput struct {
 	ID   string `path:"id"`
 	Body struct {
-		Candidate string `json:"candidate"`
+		// Candidate is the raw ICE candidate of the browser. It is passed on
+		// unchanged, so the other side can hand it to its own connection.
+		Candidate json.RawMessage `json:"candidate"`
 	}
 }
 

@@ -1,9 +1,11 @@
 import type {
 	AppConfig,
+	CallInfo,
 	Chat,
 	CreateChatOptions,
 	EditMessageOptions,
 	FileInfo,
+	ICEConfig,
 	Message,
 	SyncResponse,
 	Thread,
@@ -411,4 +413,53 @@ export function subscribePush(
 			body: JSON.stringify({ endpoint, p256dh, auth }),
 		},
 	);
+}
+
+export function startCall(token: string, chatId: string, offer: string) {
+	return request<{ callId: string; state: string }>("/api/calls", token, {
+		method: "POST",
+		body: JSON.stringify({ chatId, offer }),
+	});
+}
+
+export function acceptCall(token: string, callId: string, answer: string) {
+	return request<{ callId: string; state: string }>(
+		`/api/calls/${callId}/accept`,
+		token,
+		{ method: "POST", body: JSON.stringify({ answer }) },
+	);
+}
+
+export function rejectCall(token: string, callId: string) {
+	return request<{ status: string }>(`/api/calls/${callId}/reject`, token, {
+		method: "POST",
+	});
+}
+
+export function hangupCall(token: string, callId: string, reason?: string) {
+	return request<{ status: string }>(`/api/calls/${callId}/hangup`, token, {
+		method: "POST",
+		body: JSON.stringify({ reason }),
+	});
+}
+
+// sendCallIce forwards an ICE candidate. The candidate travels as it comes
+// from the browser: the other side hands it to its own connection.
+export function sendCallIce(
+	token: string,
+	callId: string,
+	candidate: RTCIceCandidateInit,
+) {
+	return request<{ status: string }>(`/api/calls/${callId}/ice`, token, {
+		method: "POST",
+		body: JSON.stringify({ candidate }),
+	});
+}
+
+export function getCurrentCall(token: string) {
+	return request<CallInfo>("/api/calls/current", token);
+}
+
+export function getIceServers(token: string) {
+	return request<ICEConfig>("/api/ice", token);
 }

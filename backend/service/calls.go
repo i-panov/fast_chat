@@ -188,8 +188,10 @@ func (s *Service) HangupCall(_ context.Context, userID, callID, reason string) e
 	return nil
 }
 
-// SendIce forwards an ICE candidate to the other side.
-func (s *Service) SendIce(_ context.Context, userID, callID, candidate string) error {
+// SendIce forwards an ICE candidate to the other side. The candidate is
+// passed on unchanged: the browser of the other side adds it to its own
+// connection.
+func (s *Service) SendIce(_ context.Context, userID, callID string, candidate json.RawMessage) error {
 	call, err := s.participantCall(callID, userID)
 	if err != nil {
 		return err

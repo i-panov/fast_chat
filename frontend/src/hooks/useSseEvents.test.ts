@@ -219,6 +219,46 @@ describe("useSseEvents", () => {
 		});
 	});
 
+	it("routes the call events to the call manager", async () => {
+		const callManager = {
+			handleIncoming: vi.fn(),
+			handleAccepted: vi.fn(),
+			handleEnded: vi.fn(),
+			handleIce: vi.fn(),
+		};
+
+		renderHook(() => useSseEvents(baseParams({ callManager })));
+		const h = handler();
+
+		await h("call_incoming", { callId: "c-1" });
+		await h("call_accepted", { callId: "c-1", answer: "a" });
+		await h("call_ended", { callId: "c-1", reason: "hangup" });
+		await h("call_ice", { callId: "c-1", candidate: {} });
+
+		expect(callManager.handleIncoming).toHaveBeenCalledWith({
+			callId: "c-1",
+		});
+		expect(callManager.handleAccepted).toHaveBeenCalledWith({
+			callId: "c-1",
+			answer: "a",
+		});
+		expect(callManager.handleEnded).toHaveBeenCalledWith({
+			callId: "c-1",
+			reason: "hangup",
+		});
+		expect(callManager.handleIce).toHaveBeenCalledWith({
+			callId: "c-1",
+			candidate: {},
+		});
+	});
+
+	it("ignores the call events without a call manager", async () => {
+		renderHook(() => useSseEvents(baseParams()));
+		const h = handler();
+
+		await h("call_incoming", { callId: "c-1" });
+	});
+
 	it("forwards typing events", async () => {
 		const addTypingUser = vi.fn();
 		const clearTyping = vi.fn();

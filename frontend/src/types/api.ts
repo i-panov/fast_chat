@@ -156,6 +156,28 @@ interface SyncDeletedChat {
 	deletedAt: string;
 }
 
+// CallState is the state of a call: it rings, it is answered, or it is over.
+type CallState = "ringing" | "active" | "ended";
+
+// CallInfo is the call of the user: the one it is in, or the last one.
+export interface CallInfo {
+	callId: string;
+	peer: string;
+	state: CallState;
+	reason?: string;
+	endedAt?: string;
+	offer?: string;
+	answer?: string;
+}
+
+// ICEConfig lists the servers a browser may use to reach its peer. The TURN
+// credentials reach every authorized client, so the configuration is only
+// served to them.
+export interface ICEConfig {
+	stun: string[];
+	turn: { urls: string[]; username: string; credential: string }[];
+}
+
 export interface SyncResponse {
 	serverNow: string;
 	chats: Chat[];

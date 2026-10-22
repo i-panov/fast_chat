@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	acceptCall,
 	addChatMember,
 	completeRegistration,
 	createChat,
@@ -11,6 +12,8 @@ import {
 	fileExistsByHash,
 	getChatInfo,
 	getConfig,
+	getCurrentCall,
+	getIceServers,
 	getKeyBackup,
 	getMessages,
 	getPublicKey,
@@ -18,15 +21,19 @@ import {
 	getThreadMessages,
 	getThreads,
 	getVapidPublicKey,
+	hangupCall,
 	markMessagesRead,
 	refreshToken,
+	rejectCall,
 	removeChatMember,
 	searchUsers,
+	sendCallIce,
 	sendCode,
 	sendMessage,
 	sendTyping,
 	setKeyBackup,
 	sseAuth,
+	startCall,
 	subscribePush,
 	updateChat,
 	uploadChatAvatar,
@@ -503,5 +510,88 @@ describe("endpoint helpers", () => {
 			p256dh: "p256",
 			auth: "auth",
 		});
+	});
+});
+
+describe("calls", () => {
+	it("starts a call in a chat", async () => {
+		fetchMock.mockResolvedValue(
+			jsonResponse(201, { callId: "c-1", state: "ringing" }),
+		);
+
+		const result = await startCall("tok", "chat-1", "v=0");
+
+		expect(result.callId).toBe("c-1");
+
+		const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(path).toBe("/api/calls");
+		expect(init.method).toBe("POST");
+		expect(parseBody(init)).toEqual({ chatId: "chat-1", offer: "v=0" });
+	});
+
+	it("accepts a call with the answer", async () => {
+		fetchMock.mockResolvedValue(
+			jsonResponse(200, { callId: "c-1", state: "active" }),
+		);
+
+		await acceptCall("tok", "c-1", "answer-sdp");
+
+		const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(path).toBe("/api/calls/c-1/accept");
+		expect(parseBody(init)).toEqual({ answer: "answer-sdp" });
+	});
+
+	it("rejects a call", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { status: "ok" }));
+
+		await rejectCall("tok", "c-1");
+
+		const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(path).toBe("/api/calls/c-1/reject");
+		expect(init.method).toBe("POST");
+	});
+
+	it("ends a call", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { status: "ok" }));
+
+		await hangupCall("tok", "c-1", "peer-left");
+
+		const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(path).toBe("/api/calls/c-1/hangup");
+		expect(parseBody(init)).toEqual({ reason: "peer-left" });
+	});
+
+	it("forwards an ICE candidate", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { status: "ok" }));
+
+		await sendCallIce("tok", "c-1", { candidate: "candidate-data" });
+
+		const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(path).toBe("/api/calls/c-1/ice");
+		expect(parseBody(init)).toEqual({
+			candidate: { candidate: "candidate-data" },
+		});
+	});
+
+	it("reads the current call", async () => {
+		fetchMock.mockResolvedValue(
+			jsonResponse(200, { callId: "c-1", peer: "bob", state: "active" }),
+		);
+
+		const call = await getCurrentCall("tok");
+
+		expect(call.state).toBe("active");
+		expect(fetchMock.mock.calls[0][0]).toBe("/api/calls/current");
+	});
+
+	it("reads the ICE configuration", async () => {
+		fetchMock.mockResolvedValue(
+			jsonResponse(200, { stun: ["stun:stun.test"], turn: [] }),
+		);
+
+		const config = await getIceServers("tok");
+
+		expect(config.stun).toEqual(["stun:stun.test"]);
+		expect(fetchMock.mock.calls[0][0]).toBe("/api/ice");
 	});
 });
