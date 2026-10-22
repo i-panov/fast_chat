@@ -22,6 +22,7 @@ import {
 	getThreads,
 	getVapidPublicKey,
 	hangupCall,
+	hangupCallOnLeave,
 	markMessagesRead,
 	refreshToken,
 	rejectCall,
@@ -559,6 +560,18 @@ describe("calls", () => {
 		const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
 		expect(path).toBe("/api/calls/c-1/hangup");
 		expect(parseBody(init)).toEqual({ reason: "peer-left" });
+	});
+
+	it("ends a call that outlives the page", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { status: "ok" }));
+
+		await hangupCallOnLeave("tok", "c-1");
+
+		const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(path).toBe("/api/calls/c-1/hangup");
+		expect(parseBody(init)).toEqual({ reason: "peer-left" });
+		// The request must survive the unload of the page.
+		expect(init.keepalive).toBe(true);
 	});
 
 	it("forwards an ICE candidate", async () => {

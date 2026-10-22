@@ -26,6 +26,14 @@ vi.mock("../api.ts", () => ({
 	}),
 	setKeyBackup: vi.fn(),
 	deleteKeyBackup: vi.fn(),
+	getIceServers: vi.fn(() => Promise.resolve({ stun: [], turn: [] })),
+	startCall: vi.fn(() => Promise.resolve({ callId: "c-1", state: "ringing" })),
+	acceptCall: vi.fn(() => Promise.resolve({ callId: "c-1", state: "active" })),
+	rejectCall: vi.fn(() => Promise.resolve({ status: "ok" })),
+	hangupCall: vi.fn(() => Promise.resolve({ status: "ok" })),
+	hangupCallOnLeave: vi.fn(() => Promise.resolve({ status: "ok" })),
+	sendCallIce: vi.fn(() => Promise.resolve({ status: "ok" })),
+	getCurrentCall: vi.fn(() => Promise.reject(new Error("http 404"))),
 }));
 
 vi.mock("../useSse.ts", () => ({

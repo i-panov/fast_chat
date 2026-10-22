@@ -1,5 +1,5 @@
 import type { ICEConfig } from "../types/api.ts";
-import type { CallApi, CallPhase, CallView } from "./callTypes.ts";
+import type { CallApi, CallPhase, CallRole, CallView } from "./callTypes.ts";
 
 const MEDIA_CONSTRAINTS: MediaStreamConstraints = {
 	audio: true,
@@ -34,6 +34,9 @@ export interface CallManager {
 	// connection, but it does not tell the server. Use hangup to end the
 	// call for both sides.
 	end(): void;
+	// dismiss closes the notice of the finished call. The call itself is
+	// over already.
+	dismiss(): void;
 	state(): CallView;
 	subscribe(listener: () => void): () => void;
 }
@@ -42,6 +45,9 @@ export interface CallManager {
 // media and the phase.
 interface CallContext {
 	phase: CallPhase;
+	// role tells which side of the call the user is on. It survives the end
+	// of the call: the two sides report the end differently.
+	role?: CallRole;
 	callId?: string;
 	chatId?: string;
 	peerId?: string;
@@ -173,6 +179,7 @@ export function createCallManager(
 			ctx.peerNick = data.from.nick;
 			ctx.pendingOffer = data.offer;
 			ctx.phase = "incoming";
+			ctx.role = "callee";
 			ctx.pendingCandidates = [];
 			ctx.reason = undefined;
 			notify();
@@ -258,9 +265,21 @@ export function createCallManager(
 
 		end: endCall,
 
+		dismiss() {
+			// Only the notice of the finished call is closed: the call
+			// itself is over.
+			if (ctx.phase !== "ended") return;
+
+			ctx.phase = "idle";
+			ctx.reason = undefined;
+			ctx.callId = undefined;
+			notify();
+		},
+
 		state() {
 			return {
 				phase: ctx.phase,
+				role: ctx.role,
 				callId: ctx.callId,
 				chatId: ctx.chatId,
 				peerId: ctx.peerId,
@@ -363,6 +382,7 @@ async function startCall(
 	// The call starts before the first wait: the interface must see that the
 	// call is on and must not offer a second one.
 	ctx.phase = "outgoing";
+	ctx.role = "caller";
 	notify();
 
 	// The stream and the connection belong to this call only: they are
@@ -537,7 +557,11 @@ function createPeer(
 			return;
 		}
 
-		void api.sendCallIce(api.token, ctx.callId, event.candidate.toJSON());
+		// A candidate that does not reach the other side is not worth an
+		// error: the connection has other candidates.
+		void api
+			.sendCallIce(api.token, ctx.callId, event.candidate.toJSON())
+			.catch(() => undefined);
 	};
 
 	connection.ontrack = (event) => {
@@ -606,7 +630,14 @@ function applyPendingAnswer(ctx: CallContext, notify: () => void) {
 	ctx.pendingAnswer = undefined;
 
 	void (async () => {
-		await applyAnswer(ctx, pending.sdp);
+		try {
+			await applyAnswer(ctx, pending.sdp);
+		} catch {
+			// The connection refused the answer: the call cannot go on. The
+			// server ends it when the window runs out.
+			return;
+		}
+
 		ctx.phase = "active";
 		notify();
 	})();

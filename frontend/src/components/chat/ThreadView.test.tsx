@@ -106,6 +106,14 @@ function state(overrides: Partial<ChatPageState> = {}): ChatPageState {
 		handleUploadGroupAvatar: () => Promise.resolve(),
 		isOnline: true,
 		syncState: "idle",
+		call: { phase: "idle", muted: false, cameraOn: true },
+		startCall: () => Promise.resolve(),
+		acceptCall: () => Promise.resolve(),
+		rejectCall: () => Promise.resolve(),
+		hangupCall: () => Promise.resolve(),
+		toggleCallMute: () => {},
+		toggleCallCamera: () => {},
+		dismissCall: () => {},
 		...overrides,
 	};
 }

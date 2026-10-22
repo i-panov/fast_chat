@@ -4,11 +4,15 @@ import type * as React from "react";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
+import { ActiveCallOverlay } from "../components/chat/ActiveCallOverlay.tsx";
 import { AppHeader } from "../components/chat/AppHeader.tsx";
 import { AudioPlayerBar } from "../components/chat/AudioPlayerBar.tsx";
+import { CallButton } from "../components/chat/CallButton.tsx";
 import { ChatList } from "../components/chat/ChatList.tsx";
 import { CreateGroupModal } from "../components/chat/CreateGroupModal.tsx";
+import { EndedCallNotice } from "../components/chat/EndedCallNotice.tsx";
 import { GroupSettingsModal } from "../components/chat/GroupSettingsModal.tsx";
+import { IncomingCallOverlay } from "../components/chat/IncomingCallOverlay.tsx";
 import { InputBar } from "../components/chat/InputBar.tsx";
 import { LocationPickerModal } from "../components/chat/LocationPickerModal.tsx";
 import { MessageList } from "../components/chat/MessageList.tsx";
@@ -24,12 +28,39 @@ import { chatTitle } from "../utils/chat.ts";
 
 type ChatPageState = ReturnType<typeof useChatPage>;
 
+// The columns of the page share the same colors.
+const PANEL_BACKGROUND = "var(--mantine-color-dark-8)";
+const PANEL_BORDER = "1px solid var(--mantine-color-dark-4)";
+
+// callPanelOpen tells whether the panel of the call is shown: the call is
+// going on, either way round.
+function callPanelOpen(s: ChatPageState): boolean {
+	return s.call.phase === "outgoing" || s.call.phase === "active";
+}
+
+// callPeerNick returns the nick of the other side of the call. The manager
+// knows it for an incoming call; the chat of the call knows it for an
+// outgoing one.
+function callPeerNick(s: ChatPageState): string {
+	if (s.call.peerNick) return s.call.peerNick;
+
+	// The chat of the call knows the other side: the caller knows the chat
+	// of the call, the callee knows the peer of it.
+	const chat =
+		s.chats.find((c) => c.id === s.call.chatId) ??
+		s.chats.find((c) => c.members.some((m) => m.id === s.call.peerId));
+	const peer = chat?.members.find((m) => m.id !== s.user?.id);
+
+	return peer?.nick ?? "";
+}
+
 function ChatHeader({
 	title,
 	subtitle,
 	badge,
 	typingNick,
 	online,
+	callButton,
 	onOpenSettings,
 }: {
 	title: string;
@@ -37,6 +68,7 @@ function ChatHeader({
 	badge?: string;
 	typingNick?: string;
 	online?: boolean;
+	callButton?: React.ReactNode;
 	onOpenSettings?: () => void;
 }) {
 	const { t } = useTranslation();
@@ -47,8 +79,8 @@ function ChatHeader({
 			style={{
 				padding: "12px 16px",
 				borderRadius: 0,
-				background: "var(--mantine-color-dark-8)",
-				borderBottom: "1px solid var(--mantine-color-dark-4)",
+				background: PANEL_BACKGROUND,
+				borderBottom: PANEL_BORDER,
 			}}
 		>
 			<Group justify="space-between" wrap="nowrap">
@@ -75,17 +107,20 @@ function ChatHeader({
 						</Text>
 					)}
 				</div>
-				{onOpenSettings !== undefined && (
-					<ActionIcon
-						variant="subtle"
-						color="gray"
-						size="lg"
-						onClick={onOpenSettings}
-						aria-label={t("chat.settings")}
-					>
-						<Settings size={18} />
-					</ActionIcon>
-				)}
+				<Group gap={4} wrap="nowrap">
+					{callButton}
+					{onOpenSettings !== undefined && (
+						<ActionIcon
+							variant="subtle"
+							color="gray"
+							size="lg"
+							onClick={onOpenSettings}
+							aria-label={t("chat.settings")}
+						>
+							<Settings size={18} />
+						</ActionIcon>
+					)}
+				</Group>
 			</Group>
 		</Paper>
 	);
@@ -126,6 +161,9 @@ function ChatHeaderSlot({
 		isGroup || isSelf
 			? undefined
 			: s.activeChat.members.find((m) => m.id !== userId);
+	// A call that is going on keeps the button out of reach: the manager
+	// refuses a second call anyway.
+	const callBusy = s.call.phase !== "idle" && s.call.phase !== "ended";
 
 	return (
 		<ChatHeader
@@ -133,6 +171,18 @@ function ChatHeaderSlot({
 			subtitle={subtitle}
 			typingNick={typingNick}
 			online={isGroup || isSelf ? undefined : (otherMember?.online ?? false)}
+			callButton={
+				<CallButton
+					peer={otherMember}
+					localUserId={userId}
+					disabled={callBusy}
+					onCall={() => {
+						if (s.activeChatId !== null) {
+							void s.startCall(s.activeChatId);
+						}
+					}}
+				/>
+			}
 			onOpenSettings={
 				isGroup
 					? () => {
@@ -154,8 +204,8 @@ function ChatSidebar({ s, userId }: { s: ChatPageState; userId: string }) {
 				width: "300px",
 				minWidth: "300px",
 				borderRadius: 0,
-				borderRight: "1px solid var(--mantine-color-dark-4)",
-				background: "var(--mantine-color-dark-8)",
+				borderRight: PANEL_BORDER,
+				background: PANEL_BACKGROUND,
 			}}
 		>
 			<Stack h="100%" gap={0}>
@@ -396,7 +446,55 @@ export function ChatPage() {
 							</Stack>
 						)}
 					</Paper>
+					{callPanelOpen(s) && (
+						<Paper
+							component="aside"
+							style={{
+								width: "300px",
+								minWidth: "300px",
+								borderRadius: 0,
+								borderLeft: PANEL_BORDER,
+								background: PANEL_BACKGROUND,
+								padding: 8,
+								overflowY: "auto",
+							}}
+						>
+							<ActiveCallOverlay
+								open={true}
+								peerNick={callPeerNick(s)}
+								localStream={s.call.localStream}
+								remoteStream={s.call.remoteStream}
+								muted={s.call.muted}
+								cameraOn={s.call.cameraOn}
+								onToggleMute={s.toggleCallMute}
+								onToggleCamera={s.toggleCallCamera}
+								onHangup={() => {
+									void s.hangupCall();
+								}}
+							/>
+						</Paper>
+					)}
 				</div>
+				<IncomingCallOverlay
+					open={s.call.phase === "incoming"}
+					peerNick={callPeerNick(s)}
+					onAccept={() => {
+						void s.acceptCall();
+					}}
+					onReject={() => {
+						void s.rejectCall();
+					}}
+				/>
+				{s.call.phase === "ended" && (
+					<div style={{ padding: "8px 16px" }}>
+						<EndedCallNotice
+							reason={s.call.reason}
+							callRole={s.call.role}
+							peerNick={callPeerNick(s)}
+							onDismiss={s.dismissCall}
+						/>
+					</div>
+				)}
 				<CreateGroupModal
 					open={s.createGroupOpen}
 					onClose={() => s.setCreateGroupOpen(false)}

@@ -1,3 +1,4 @@
+import type { CallView } from "../calls/callTypes.ts";
 import type {
 	Chat,
 	FileInfo,
@@ -137,4 +138,13 @@ export interface ChatPageState {
 
 	isOnline: boolean;
 	syncState: "idle" | "syncing" | "error";
+
+	call: CallView;
+	startCall: (chatId: string) => Promise<void>;
+	acceptCall: () => Promise<void>;
+	rejectCall: () => Promise<void>;
+	hangupCall: () => Promise<void>;
+	toggleCallMute: () => void;
+	toggleCallCamera: () => void;
+	dismissCall: () => void;
 }

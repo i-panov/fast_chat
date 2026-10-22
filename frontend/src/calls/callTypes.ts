@@ -3,9 +3,15 @@ import type { ICEConfig } from "../types/api.ts";
 // CallPhase is the phase of the call the user is in.
 export type CallPhase = "idle" | "outgoing" | "incoming" | "active" | "ended";
 
+// CallRole tells which side of the call the user is on. The two sides report
+// the end of a call differently: the caller waits for an answer, the callee
+// waits for the caller.
+export type CallRole = "caller" | "callee";
+
 // CallView is the state of the call the interface renders.
 export interface CallView {
 	phase: CallPhase;
+	role?: CallRole;
 	callId?: string;
 	chatId?: string;
 	peerId?: string;

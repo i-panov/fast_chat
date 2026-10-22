@@ -443,6 +443,16 @@ export function hangupCall(token: string, callId: string, reason?: string) {
 	});
 }
 
+// hangupCallOnLeave ends the call when the page goes away. The request must
+// survive the unload of the page, so it is sent with keepalive.
+export function hangupCallOnLeave(token: string, callId: string) {
+	return request<{ status: string }>(`/api/calls/${callId}/hangup`, token, {
+		method: "POST",
+		body: JSON.stringify({ reason: "peer-left" }),
+		keepalive: true,
+	}).catch(() => undefined);
+}
+
 // sendCallIce forwards an ICE candidate. The candidate travels as it comes
 // from the browser: the other side hands it to its own connection.
 export function sendCallIce(

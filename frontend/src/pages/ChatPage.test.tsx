@@ -1,5 +1,11 @@
 import { MantineProvider } from "@mantine/core";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import type * as React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatsRepo } from "../db/chatsRepo.ts";
@@ -10,6 +16,10 @@ import { AuthProvider } from "../useAuth.tsx";
 import { ChatPage } from "./ChatPage.tsx";
 
 const navigate = vi.hoisted(() => vi.fn());
+
+const startCall = vi.hoisted(() =>
+	vi.fn(() => Promise.resolve({ callId: "c-1", state: "ringing" })),
+);
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual =
@@ -35,6 +45,14 @@ vi.mock("../api.ts", () => ({
 	setKeyBackup: vi.fn(),
 	deleteKeyBackup: vi.fn(),
 	revokeSession: vi.fn(() => Promise.resolve()),
+	getIceServers: vi.fn(() => Promise.resolve({ stun: [], turn: [] })),
+	startCall,
+	acceptCall: vi.fn(() => Promise.resolve({ callId: "c-1", state: "active" })),
+	rejectCall: vi.fn(() => Promise.resolve({ status: "ok" })),
+	hangupCall: vi.fn(() => Promise.resolve({ status: "ok" })),
+	hangupCallOnLeave: vi.fn(() => Promise.resolve({ status: "ok" })),
+	sendCallIce: vi.fn(() => Promise.resolve({ status: "ok" })),
+	getCurrentCall: vi.fn(() => Promise.reject(new Error("http 404"))),
 }));
 
 vi.mock("../useSse.ts", () => ({
@@ -99,6 +117,8 @@ const SELECT_PROMPT = /selectPrompt|Select/;
 const FIND_OPTIONS = { timeout: 5000 };
 const MEMBER_COUNT = /chat\.membersCount|member/;
 const SETTINGS_LABEL = /Settings|chat\.settings/;
+const CALL_LABEL = /call\.start|Call/;
+const ACCEPT_LABEL = /call\.accept|Accept/;
 
 type SwListener = (e: { data: unknown }) => void;
 
@@ -147,6 +167,54 @@ function groupChat(): Chat {
 		],
 		createdAt: "2026-01-01T00:00:00Z",
 	};
+}
+
+function privateChat(): Chat {
+	return {
+		id: "c2",
+		type: "private",
+		name: "",
+		ownerId: "alice:test",
+		members: [
+			{ id: "alice:test", nick: "alice", online: true },
+			{ id: "bob:test", nick: "bob", online: true },
+		],
+		createdAt: "2026-01-01T00:00:00Z",
+	};
+}
+
+// stubCallMedia gives the manager a camera and a connection: jsdom has
+// neither.
+function stubCallMedia() {
+	// Only the media is replaced: the rest of the navigator is used by the
+	// components of the page.
+	Object.defineProperty(navigator, "mediaDevices", {
+		value: {
+			getUserMedia: vi.fn().mockResolvedValue({
+				getTracks: () => [{ stop: vi.fn() }],
+				getAudioTracks: () => [],
+				getVideoTracks: () => [],
+			}),
+		},
+		configurable: true,
+	});
+
+	vi.stubGlobal(
+		"RTCPeerConnection",
+		class {
+			createOffer() {
+				return Promise.resolve({ type: "offer", sdp: "offer-sdp" });
+			}
+
+			setLocalDescription() {
+				return Promise.resolve();
+			}
+
+			addTrack() {}
+
+			close() {}
+		},
+	);
 }
 
 function renderPage() {
@@ -203,6 +271,42 @@ describe("chat page", () => {
 				throw new Error("active header missing");
 			}
 		});
+	});
+
+	it("starts a call from the chat header", async () => {
+		seedAccount();
+		stubCallMedia();
+		await chatsRepo.upsert(privateChat());
+		renderPage();
+
+		await screen.findByText("@bob");
+		fireEvent.click(screen.getByText("@bob"));
+
+		fireEvent.click(await screen.findByRole("button", { name: CALL_LABEL }));
+
+		await waitFor(() => {
+			expect(startCall).toHaveBeenCalledWith("tok", "c2", "offer-sdp");
+		});
+	});
+
+	it("opens the window of an incoming call", async () => {
+		seedAccount();
+		renderPage();
+
+		const handler = sseHandler();
+
+		await act(async () => {
+			await handler("call_incoming", {
+				callId: "c-2",
+				chatId: "chat-2",
+				offer: "offer-sdp",
+				from: { id: "bob:test", nick: "bob" },
+			});
+		});
+
+		expect(
+			await screen.findByRole("button", { name: ACCEPT_LABEL }),
+		).toBeTruthy();
 	});
 
 	it("navigates on service-worker messages", async () => {

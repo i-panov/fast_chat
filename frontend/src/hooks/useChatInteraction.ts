@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { refreshToken } from "../api.ts";
+import type { CallManager } from "../calls/callManager.ts";
 import { ensureAccountKeys, RecoveryRequiredError } from "../e2ee/keys.ts";
 import {
 	retryFailedOps,
@@ -9,6 +10,7 @@ import {
 import type { TypingPayload } from "../types/api.ts";
 import type { ChatPageState } from "../types/chat.ts";
 import { useAuth } from "../useAuth";
+import { useCall } from "./useCall.ts";
 import { useChatList } from "./useChatList";
 import { useChatSubmit } from "./useChatSubmit";
 import { useGroupSettings } from "./useGroupSettings";
@@ -36,6 +38,8 @@ interface ChatLifecycleDeps {
 		newExpiresAt: string,
 	) => void;
 	logout: () => void;
+	// callManager receives the signaling events of the call domain.
+	callManager?: CallManager;
 }
 
 function useChatLifecycle({
@@ -45,6 +49,7 @@ function useChatLifecycle({
 	clearTyping,
 	updateAccountToken,
 	logout,
+	callManager,
 }: ChatLifecycleDeps) {
 	useEffect(() => {
 		setTokenProvider(() => token ?? null);
@@ -83,6 +88,7 @@ function useChatLifecycle({
 		onTokenExpired: () => {
 			logout();
 		},
+		callManager,
 	});
 }
 
@@ -186,6 +192,7 @@ interface ChatPageStateParts {
 	editor: ReturnType<typeof useMessageEditor>;
 	groups: ReturnType<typeof useGroupSettings>;
 	actions: ReturnType<typeof useChatActions>;
+	call: ReturnType<typeof useCall>;
 	status: {
 		isOnline: ChatPageState["isOnline"];
 		syncState: ChatPageState["syncState"];
@@ -247,6 +254,14 @@ function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 		handleRetryThreadMessage: parts.actions.handleRetryThreadMessage,
 		...parts.location,
 		...parts.groups,
+		call: parts.call.state,
+		startCall: parts.call.start,
+		acceptCall: parts.call.accept,
+		rejectCall: parts.call.reject,
+		hangupCall: parts.call.hangup,
+		toggleCallMute: parts.call.toggleMute,
+		toggleCallCamera: parts.call.toggleCamera,
+		dismissCall: parts.call.dismiss,
 		isOnline: parts.status.isOnline,
 		syncState: parts.status.syncState,
 	};
@@ -279,6 +294,7 @@ export function useChatPage(): ChatPageState {
 
 	const isOnline = useNetworkStatus();
 	const syncState = useSyncStatus();
+	const call = useCall(token, user?.id);
 
 	useChatLifecycle({
 		token,
@@ -287,6 +303,7 @@ export function useChatPage(): ChatPageState {
 		clearTyping: typing.clearTyping,
 		updateAccountToken,
 		logout,
+		callManager: call.manager ?? undefined,
 	});
 
 	const {
@@ -357,6 +374,7 @@ export function useChatPage(): ChatPageState {
 		editor,
 		groups,
 		actions,
+		call,
 		status: { isOnline, syncState },
 	});
 }
