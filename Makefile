@@ -61,14 +61,19 @@ backend\:test:
 frontend\:test:
 	cd frontend && npx vitest run
 
+# Звонки проверяются двумя настоящими браузерами: Playwright сам поднимает
+# бэкенд и dev-сервер на отдельных портах (см. frontend/playwright.config.ts).
+frontend\:e2e:
+	cd frontend && npx playwright test
+
 frontend\:run:
 	cd frontend && VITE_API_PROXY=$(API_PROXY) npx vite --host --port $(FRONTEND_PORT)
 
 frontend\:lint:
-	cd frontend && npx biome check src/ && npx eslint .
+	cd frontend && npx biome check && npx eslint .
 
 frontend\:lint\:fix:
-	cd frontend && npx biome check --write src/ && npx eslint . --fix
+	cd frontend && npx biome check --write && npx eslint . --fix
 
 frontend\:lint\:deadcode:
 	cd frontend && npx knip

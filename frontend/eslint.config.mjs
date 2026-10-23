@@ -79,7 +79,11 @@ export default defineConfig([
 	// Test files repeat fixture strings by design; mirror the backend, which
 	// excludes *_test.go from dupl and funlen.
 	{
-		files: ["**/*.{test,spec}.{ts,tsx}", "**/__tests__/**/*.{ts,tsx}"],
+		files: [
+			"**/*.{test,spec}.{ts,tsx}",
+			"**/*.e2e.ts",
+			"**/__tests__/**/*.{ts,tsx}",
+		],
 		rules: {
 			"sonarjs/no-duplicate-string": "off",
 			"max-lines-per-function": "off",
@@ -88,7 +92,12 @@ export default defineConfig([
 
 	// Node-side config/setup files are not part of the browser bundle.
 	{
-		files: ["vite.config.ts", "vitest.setup.ts", "postcss.config.mjs"],
+		files: [
+			"vite.config.ts",
+			"vitest.setup.ts",
+			"postcss.config.mjs",
+			"playwright.config.ts",
+		],
 		languageOptions: {
 			globals: globals.node,
 		},

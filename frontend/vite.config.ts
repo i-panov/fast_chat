@@ -2,7 +2,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
 	plugins: [
@@ -48,6 +48,9 @@ export default defineConfig({
 		environment: "jsdom",
 		globals: true,
 		setupFiles: ["./vitest.setup.ts"],
+		// The end-to-end tests of Playwright run real browsers: they are not
+		// unit tests and the runner of the unit tests must not collect them.
+		exclude: [...configDefaults.exclude, "e2e/**"],
 		coverage: {
 			provider: "v8",
 			reporter: ["text", "html"],

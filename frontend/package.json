@@ -22,6 +22,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "format": "biome format --write",
     "lint": "biome check && eslint .",
     "lint:fix": "biome check --apply",
@@ -59,6 +60,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.4.5",
     "@eslint/js": "^9.39.5",
+    "@playwright/test": "^1.64.1",
     "@size-limit/preset-app": "^13.0.3",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/router-plugin": "^1.132.0",

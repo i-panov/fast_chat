@@ -23,6 +23,10 @@ coverage/
 # Backend build artifacts
 backend/fast_chat
 
+# Playwright artifacts
+frontend/test-results/
+frontend/playwright-report/
+
 
 .idea/
 .gigaide/
