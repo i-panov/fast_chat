@@ -7,34 +7,46 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { routeTree } from "../routeTree.gen.ts";
 
-vi.mock("../api.ts", () => ({
-	sendCode: vi.fn(),
-	verifyCode: vi.fn(),
-	completeRegistration: vi.fn(),
-	getConfig: vi.fn(() =>
-		Promise.resolve({ messageEditTTL: 60, messageDeleteTTL: 120 }),
-	),
-	getThreads: vi.fn(() => Promise.resolve({ threads: [] })),
-	getThreadMessages: vi.fn(() => Promise.resolve({ messages: [] })),
-	getMessages: vi.fn(() => Promise.resolve({ messages: [] })),
-	searchUsers: vi.fn(() => Promise.resolve({ users: [] })),
-	createChat: vi.fn(),
-	uploadPublicKey: vi.fn(),
-	getPublicKey: vi.fn(),
-	getKeyBackup: vi.fn(() => {
-		throw new Error("http 404: no key backup");
-	}),
-	setKeyBackup: vi.fn(),
-	deleteKeyBackup: vi.fn(),
-	getIceServers: vi.fn(() => Promise.resolve({ stun: [], turn: [] })),
-	startCall: vi.fn(() => Promise.resolve({ callId: "c-1", state: "ringing" })),
-	acceptCall: vi.fn(() => Promise.resolve({ callId: "c-1", state: "active" })),
-	rejectCall: vi.fn(() => Promise.resolve({ status: "ok" })),
-	hangupCall: vi.fn(() => Promise.resolve({ status: "ok" })),
-	hangupCallOnLeave: vi.fn(() => Promise.resolve({ status: "ok" })),
-	sendCallIce: vi.fn(() => Promise.resolve({ status: "ok" })),
-	getCurrentCall: vi.fn(() => Promise.reject(new Error("http 404"))),
-}));
+// The real module supplies ApiError: the call hook tells the refusals of the
+// server by the type of the error, and a mock without the class would crash
+// on the check instead of showing the notification.
+vi.mock("../api.ts", async (importOriginal) => {
+	const { ApiError } = await importOriginal<typeof import("../api.ts")>();
+
+	return {
+		ApiError,
+		sendCode: vi.fn(),
+		verifyCode: vi.fn(),
+		completeRegistration: vi.fn(),
+		getConfig: vi.fn(() =>
+			Promise.resolve({ messageEditTTL: 60, messageDeleteTTL: 120 }),
+		),
+		getThreads: vi.fn(() => Promise.resolve({ threads: [] })),
+		getThreadMessages: vi.fn(() => Promise.resolve({ messages: [] })),
+		getMessages: vi.fn(() => Promise.resolve({ messages: [] })),
+		searchUsers: vi.fn(() => Promise.resolve({ users: [] })),
+		createChat: vi.fn(),
+		uploadPublicKey: vi.fn(),
+		getPublicKey: vi.fn(),
+		getKeyBackup: vi.fn(() => {
+			throw new Error("http 404: no key backup");
+		}),
+		setKeyBackup: vi.fn(),
+		deleteKeyBackup: vi.fn(),
+		getIceServers: vi.fn(() => Promise.resolve({ stun: [], turn: [] })),
+		startCall: vi.fn(() =>
+			Promise.resolve({ callId: "c-1", state: "ringing" }),
+		),
+		acceptCall: vi.fn(() =>
+			Promise.resolve({ callId: "c-1", state: "active" }),
+		),
+		rejectCall: vi.fn(() => Promise.resolve({ status: "ok" })),
+		hangupCall: vi.fn(() => Promise.resolve({ status: "ok" })),
+		hangupCallOnLeave: vi.fn(() => Promise.resolve({ status: "ok" })),
+		sendCallIce: vi.fn(() => Promise.resolve({ status: "ok" })),
+		getCurrentCall: vi.fn(() => Promise.reject(new Error("http 404"))),
+	};
+});
 
 vi.mock("../useSse.ts", () => ({
 	useSse: vi.fn(),

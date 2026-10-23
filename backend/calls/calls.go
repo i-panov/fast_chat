@@ -6,6 +6,7 @@ package calls
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -48,7 +49,12 @@ const (
 )
 
 var (
-	ErrBusy       = errors.New("user is already in a call")
+	ErrBusy = errors.New("user is already in a call")
+	// ErrBusyCaller and ErrBusyCallee name the side of the call that is
+	// busy: the client tells its own call from the call of the peer, and a
+	// user cannot be busy in both roles at once.
+	ErrBusyCaller = fmt.Errorf("%w as the caller", ErrBusy)
+	ErrBusyCallee = fmt.Errorf("%w as the callee", ErrBusy)
 	ErrNotFound   = errors.New("call not found")
 	ErrNotRinging = errors.New("call is not ringing")
 	ErrEnded      = errors.New("call is already ended")
@@ -140,13 +146,17 @@ func (m *Manager) SetOnEnded(onEnded func(call Call, reason string)) {
 }
 
 // CreateCall registers a new call. It fails when either side is already in
-// a call.
+// a call, and the error names the side that is busy.
 func (m *Manager) CreateCall(callerID, calleeID, chatID, offer string) (*Call, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.active[callerID] != "" || m.active[calleeID] != "" {
-		return nil, ErrBusy
+	if m.active[callerID] != "" {
+		return nil, ErrBusyCaller
+	}
+
+	if m.active[calleeID] != "" {
+		return nil, ErrBusyCallee
 	}
 
 	now := m.now()

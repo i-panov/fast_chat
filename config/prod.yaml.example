@@ -71,15 +71,20 @@ ice:
     # STUN helps the browser find its public address.
     stun:
         - "stun:stun.l.google.com:19302"
-    # TURN relays the media when a direct connection is impossible. The
-    # credentials reach every authorized client, so a static password makes
-    # the relay usable by anyone who can open the site: prefer the TURN REST
-    # API (coturn use-auth-secret) in production.
+    # TURN relays the media when a direct connection is impossible.
     turn:
+        # The TURN REST API is the recommended setup: coturn runs with
+        # use-auth-secret and the same static-auth-secret, and every client
+        # gets its own short-lived credentials. The key stays on the server.
         - urls:
               - "turn:turn.example.com:3478?transport=udp"
-          username: "fastchat"
-          credential: "<TURN_CREDENTIAL>"
+          secret: "<TURN_SECRET>"
+        # Static credentials work too, but they reach every authorized
+        # client and never expire: the server warns about them at startup.
+        # - urls:
+        #       - "turn:turn.example.com:3478?transport=udp"
+        #   username: "fastchat"
+        #   credential: "<TURN_CREDENTIAL>"
 
 push:
     # VAPID subject for web push notifications (usually a mailto: link).

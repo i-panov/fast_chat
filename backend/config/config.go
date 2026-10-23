@@ -82,9 +82,14 @@ type ICEConfig struct {
 // to every authorized client, so a static password makes the relay usable by
 // anyone who can open the site — the TURN REST API is the safer setup.
 type TURNServer struct {
-	URLs       []string `json:"urls"       yaml:"urls"` //nolint:tagliatelle // the field name is fixed by the WebRTC API
-	Username   string   `json:"username"   yaml:"username"`
-	Credential string   `json:"credential" yaml:"credential"`
+	URLs []string `json:"urls" yaml:"urls"` //nolint:tagliatelle // the field name is fixed by the WebRTC API
+	// Secret is the shared key of the TURN REST API: coturn is started with
+	// use-auth-secret and the same static-auth-secret, and every client gets
+	// its own short-lived password instead of a shared one. The key never
+	// leaves the server, so it has no JSON name at all.
+	Secret     string `json:"-"          yaml:"secret"`
+	Username   string `json:"username"   yaml:"username"`
+	Credential string `json:"credential" yaml:"credential"`
 }
 
 type EmailConfig struct {

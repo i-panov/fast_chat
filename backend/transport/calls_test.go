@@ -95,6 +95,12 @@ func TestStartCallInUnknownChatAnswers404(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
+
+	// Only the errors that share a status carry a machine code: the body of
+	// the others stays as it was.
+	if strings.Contains(rec.Body.String(), `"code"`) {
+		t.Fatalf("the body carries a code: %s", rec.Body.String())
+	}
 }
 
 func TestStartCallWithEmptyOfferAnswers400(t *testing.T) {
@@ -292,4 +298,54 @@ func waitEvent(t *testing.T, conn *sse.Connection) sse.Event {
 		t.Fatal("no event arrived")
 		return sse.Event{}
 	}
+}
+
+// assertBusy checks the refusal of a call and the side it names: the status
+// is the same for both sides, so the code is what the client reads.
+func assertBusy(t *testing.T, rec *httptest.ResponseRecorder, message, code string) {
+	t.Helper()
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+
+	if body.Error != message || body.Code != code {
+		t.Fatalf("body = %+v, want %q and %q", body, message, code)
+	}
+}
+
+// A busy user is told which side of the call is busy: the call of the peer
+// and the call of the user themselves are different answers for the client.
+func TestStartCallNamesTheBusySide(t *testing.T) {
+	api, st, token := newCallsTestServer(t)
+
+	chatID := createCallChat(t, st, "alice:localhost:8080", "bob:localhost:8080")
+
+	rec := doJSON(t, api, token, http.MethodPost, "/api/calls", `{"chatId":"`+chatID+`","offer":"v=0"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("start call: expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	self := doJSON(t, api, token, http.MethodPost, "/api/calls", `{"chatId":"`+chatID+`","offer":"v=0"}`)
+	assertBusy(t, self, "you are already in a call", "busy-caller")
+
+	// Carol is free, but the callee is on the phone with alice.
+	carol, err := st.CreateUser(context.Background(), "carol@test.local", "carol", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	carolChat := createCallChat(t, st, "carol:localhost:8080", "bob:localhost:8080")
+
+	busy := doJSON(t, api, carol.Token, http.MethodPost, "/api/calls", `{"chatId":"`+carolChat+`","offer":"v=0"}`)
+	assertBusy(t, busy, "the callee is already in a call", "busy-callee")
 }

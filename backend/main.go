@@ -489,7 +489,7 @@ func startWorkers(
 }
 
 // warnAboutICE reports a configuration that limits the calls: without a TURN
-// server a part of the networks cannot connect at all, and a static TURN
+// server a part of the networks cannot connect at all, and a shared TURN
 // password makes the relay usable by everyone who can open the site.
 func warnAboutICE(cfg *config.Config) {
 	if len(cfg.ICE.TURN) == 0 {
@@ -498,9 +498,15 @@ func warnAboutICE(cfg *config.Config) {
 		return
 	}
 
-	for _, turn := range cfg.ICE.TURN {
-		if turn.Credential != "" {
+	for _, server := range cfg.ICE.TURN {
+		switch {
+		case server.Secret != "":
+			// The key of the TURN REST API stays on the server: every
+			// client gets its own short-lived password.
+		case server.Credential != "":
 			slog.Warn("the TURN credentials are static and reach every authorized client: prefer the TURN REST API (coturn use-auth-secret)")
+		default:
+			slog.Warn("the TURN server has no credentials: anyone who learns its address can relay the media through it")
 		}
 	}
 }

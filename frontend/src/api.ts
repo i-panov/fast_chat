@@ -17,6 +17,23 @@ import { emitUnauthorized } from "./utils/authEvents.ts";
 const HTTP_UNAUTHORIZED = 401;
 const KEY_BACKUP_ENDPOINT = "/api/users/key-backup";
 
+// ApiError is the refusal of the server with the status the interface needs
+// to tell a peer that is busy (409) from a request that is not allowed (403),
+// and with the machine-readable reason when the status alone is not enough
+// (the two sides of a busy call share the 409). The message keeps the
+// `http <status>: ...` shape the rest of the code reads.
+export class ApiError extends Error {
+	readonly status: number;
+	readonly code: string | undefined;
+
+	constructor(status: number, message: string, code?: string) {
+		super(message);
+		this.name = "ApiError";
+		this.status = status;
+		this.code = code;
+	}
+}
+
 async function request<T>(
 	path: string,
 	token: string | undefined,
@@ -40,7 +57,11 @@ async function request<T>(
 		const body = (await res.json().catch(() => ({}))) as Record<string, string>;
 		const retryAfter = res.headers.get("Retry-After");
 		const suffix = retryAfter !== null ? ` retry-after:${retryAfter}` : "";
-		throw new Error(`http ${res.status}: ${body.error ?? ""}${suffix}`);
+		throw new ApiError(
+			res.status,
+			`http ${res.status}: ${body.error ?? ""}${suffix}`,
+			body.code,
+		);
 	}
 	return res.json() as Promise<T>;
 }

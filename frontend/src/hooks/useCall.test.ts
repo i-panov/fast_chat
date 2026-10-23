@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../api.ts";
 import type { CallInfo } from "../types/api.ts";
 import { useCall } from "./useCall.ts";
 
@@ -20,17 +21,44 @@ const hangupCall = vi.hoisted(() =>
 const hangupCallOnLeave = vi.hoisted(() =>
 	vi.fn(() => Promise.resolve({ status: "ok" })),
 );
+const acceptCall = vi.hoisted(() =>
+	vi.fn(() => Promise.resolve({ callId: "c-1", state: "active" })),
+);
 
-vi.mock("../api.ts", () => ({
-	getIceServers,
-	startCall,
-	acceptCall: vi.fn(() => Promise.resolve({ callId: "c-1", state: "active" })),
-	rejectCall: vi.fn(() => Promise.resolve({ status: "ok" })),
-	hangupCall,
-	hangupCallOnLeave,
-	sendCallIce: vi.fn(() => Promise.resolve({ status: "ok" })),
-	getCurrentCall,
-}));
+// The real module is kept for its error class: the hook tells the status of
+// the refusal, so the test refuses with the same type the server produces.
+vi.mock("../api.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../api.ts")>();
+
+	return {
+		...actual,
+		getIceServers,
+		startCall,
+		acceptCall,
+		rejectCall: vi.fn(() => Promise.resolve({ status: "ok" })),
+		hangupCall,
+		hangupCallOnLeave,
+		sendCallIce: vi.fn(() => Promise.resolve({ status: "ok" })),
+		getCurrentCall,
+	};
+});
+
+// collectNotifications gathers the notifications of the window until stop().
+function collectNotifications() {
+	const list: { message: string; type: string }[] = [];
+	const listener = (event: Event) => {
+		list.push((event as CustomEvent<{ message: string; type: string }>).detail);
+	};
+
+	window.addEventListener("app:notification", listener);
+
+	return {
+		list,
+		stop: () => {
+			window.removeEventListener("app:notification", listener);
+		},
+	};
+}
 
 function stubMedia(stop = vi.fn()) {
 	vi.stubGlobal("navigator", {
@@ -52,6 +80,14 @@ function stubMedia(stop = vi.fn()) {
 
 			setLocalDescription() {
 				return Promise.resolve();
+			}
+
+			setRemoteDescription() {
+				return Promise.resolve();
+			}
+
+			createAnswer() {
+				return Promise.resolve({ type: "answer", sdp: "answer-sdp" });
 			}
 
 			addTrack() {}
@@ -216,6 +252,10 @@ describe("useCall", () => {
 		expect(result.current.state.reason).toBe("timeout");
 		expect(result.current.state.role).toBe("callee");
 		expect(result.current.state.peerId).toBe("bob:test");
+		// The notice is news only once: a reload must not repeat it.
+		await waitFor(() => {
+			expect(sessionStorage.getItem("fastchat.callNotice")).toBe("c-9");
+		});
 	});
 
 	it("ignores the call the user ended before the page was opened", async () => {
@@ -261,27 +301,138 @@ describe("useCall", () => {
 		expect(result.current.state.callId).toBe("c-9");
 	});
 
-	it("reports a refused call", async () => {
+	it("tells a busy peer from a broken call", async () => {
 		stubMedia();
-		startCall.mockRejectedValueOnce(new Error("http 409: busy"));
+		startCall.mockRejectedValueOnce(
+			new ApiError(
+				409,
+				"http 409: the callee is already in a call",
+				"busy-callee",
+			),
+		);
 
-		const notifications: { message: string; type: string }[] = [];
-		const listener = (event: Event) => {
-			notifications.push(
-				(event as CustomEvent<{ message: string; type: string }>).detail,
-			);
-		};
-		window.addEventListener("app:notification", listener);
-
+		const notifications = collectNotifications();
 		const { result } = renderHook(() => useCall("tok", "alice:test"));
 
 		await act(async () => {
 			await result.current.start("chat-1");
 		});
 
-		window.removeEventListener("app:notification", listener);
+		notifications.stop();
 
-		expect(notifications).toEqual([{ message: "call.failed", type: "error" }]);
+		expect(notifications.list).toEqual([
+			{ message: "call.busy", type: "error" },
+		]);
+		expect(result.current.state.phase).toBe("idle");
+	});
+
+	it("tells the call of the user from the call of the peer", async () => {
+		stubMedia();
+		startCall.mockRejectedValueOnce(
+			new ApiError(409, "http 409: you are already in a call", "busy-caller"),
+		);
+
+		const notifications = collectNotifications();
+		const { result } = renderHook(() => useCall("tok", "alice:test"));
+
+		await act(async () => {
+			await result.current.start("chat-1");
+		});
+
+		notifications.stop();
+
+		expect(notifications.list).toEqual([
+			{ message: "call.selfBusy", type: "error" },
+		]);
+	});
+
+	it("tells a peer of another server", async () => {
+		stubMedia();
+		startCall.mockRejectedValueOnce(
+			new ApiError(403, "http 403: the callee is on another server"),
+		);
+
+		const notifications = collectNotifications();
+		const { result } = renderHook(() => useCall("tok", "alice:test"));
+
+		await act(async () => {
+			await result.current.start("chat-1");
+		});
+
+		notifications.stop();
+
+		expect(notifications.list).toEqual([
+			{ message: "call.remote", type: "error" },
+		]);
+	});
+
+	it("reports a broken call", async () => {
+		stubMedia();
+		startCall.mockRejectedValueOnce(new Error("network down"));
+
+		const notifications = collectNotifications();
+		const { result } = renderHook(() => useCall("tok", "alice:test"));
+
+		await act(async () => {
+			await result.current.start("chat-1");
+		});
+
+		notifications.stop();
+
+		expect(notifications.list).toEqual([
+			{ message: "call.failed", type: "error" },
+		]);
+		expect(result.current.state.phase).toBe("idle");
+	});
+
+	it("keeps quiet when another tab takes the call", async () => {
+		stubMedia();
+		acceptCall.mockRejectedValueOnce(
+			new ApiError(409, "http 409: call is not ringing"),
+		);
+
+		const notifications = collectNotifications();
+		const { result } = renderHook(() => useCall("tok", "alice:test"));
+
+		act(() => {
+			result.current.manager?.handleIncoming({
+				callId: "c-4",
+				chatId: "chat-1",
+				offer: "offer-sdp",
+				from: { id: "bob:test", nick: "bob" },
+			});
+		});
+
+		await act(async () => {
+			await result.current.accept();
+		});
+
+		notifications.stop();
+
+		expect(notifications.list).toEqual([]);
+	});
+
+	it("does not report the missed call again after a reload", async () => {
+		stubMedia();
+		sessionStorage.setItem("fastchat.callNotice", "c-9");
+		getCurrentCall.mockResolvedValueOnce({
+			callId: "c-9",
+			peer: "bob:test",
+			state: "ended",
+			reason: "timeout",
+			role: "callee",
+		});
+
+		const { result } = renderHook(() => useCall("tok", "alice:test"));
+
+		await waitFor(() => {
+			expect(getCurrentCall).toHaveBeenCalled();
+		});
+
+		await act(async () => {
+			await Promise.resolve();
+		});
+
 		expect(result.current.state.phase).toBe("idle");
 	});
 });

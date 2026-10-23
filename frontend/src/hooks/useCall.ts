@@ -7,6 +7,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
+	ApiError,
 	acceptCall,
 	getCurrentCall,
 	getIceServers,
@@ -24,12 +25,65 @@ import { emitNotification } from "../utils/notify.ts";
 
 const IDLE_STATE: CallView = { phase: "idle", muted: false, cameraOn: true };
 
+const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
+const HTTP_CONFLICT = 409;
+
 // FAILED_MESSAGE is shown when the server refuses the call.
 const FAILED_MESSAGE = "call.failed";
+
+// BUSY_MESSAGE is shown when the peer is already on the phone.
+const BUSY_MESSAGE = "call.busy";
+
+// SELF_BUSY_MESSAGE is shown when the user is on the phone themselves:
+// another tab or another device holds the call this page does not know about.
+const SELF_BUSY_MESSAGE = "call.selfBusy";
+
+// CALLER_BUSY_CODE is the reason the server names when the user is the busy
+// side: the 409 status is shared with a busy peer, so the code decides.
+const CALLER_BUSY_CODE = "busy-caller";
+
+// REMOTE_MESSAGE is shown when the peer lives on another server: the
+// signaling has no route there.
+const REMOTE_MESSAGE = "call.remote";
 
 // CALL_STORAGE_KEY is the key of the identifier of the call in the session
 // storage of the tab. A reloaded page ends the call it had.
 const CALL_STORAGE_KEY = "fastchat.call";
+
+// CALL_NOTICE_KEY is the key of the call the page has already reported. The
+// server keeps an ended call for ten minutes, so a reload would report the
+// same missed call again.
+const CALL_NOTICE_KEY = "fastchat.callNotice";
+
+// startFailureMessage tells what to report when the server refused to start
+// the call: a peer that is busy or lives on another server is not a broken
+// call, and the user can act on it. The 409 status covers both sides of a
+// busy call, so the reason decides: a call of the user's own device is not a
+// call of the peer.
+function startFailureMessage(error: unknown): string {
+	if (!(error instanceof ApiError)) return FAILED_MESSAGE;
+
+	if (error.code === CALLER_BUSY_CODE) return SELF_BUSY_MESSAGE;
+
+	switch (error.status) {
+		case HTTP_CONFLICT:
+			return BUSY_MESSAGE;
+		case HTTP_FORBIDDEN:
+			return REMOTE_MESSAGE;
+		default:
+			return FAILED_MESSAGE;
+	}
+}
+
+// isCallGone tells whether the call an action concerned is over: the ringing
+// window ran out, or another tab took it. The events of the server tell the
+// interface what happened, so the action itself reports nothing.
+function isCallGone(error: unknown): boolean {
+	if (!(error instanceof ApiError)) return false;
+
+	return error.status === HTTP_NOT_FOUND || error.status === HTTP_CONFLICT;
+}
 
 export interface UseCall {
 	// manager owns the call: the signaling events of the server reach it.
@@ -114,10 +168,15 @@ export function useCall(
 	}, [manager]);
 
 	// The identifier of the call lives in the session storage while the
-	// call is going on.
+	// call is going on, and the call whose ending the page has reported
+	// stays there: the ending is news only once.
 	useEffect(() => {
 		if (state.phase === "idle" || state.phase === "ended") {
 			sessionStorage.removeItem(CALL_STORAGE_KEY);
+
+			if (state.phase === "ended" && state.callId !== undefined) {
+				sessionStorage.setItem(CALL_NOTICE_KEY, state.callId);
+			}
 
 			return;
 		}
@@ -133,10 +192,10 @@ export function useCall(
 		if (manager === null) return;
 
 		const leave = () => {
-			const callId = manager.state().callId;
-			if (callId === undefined) return;
+			const current = manager.state();
+			if (current.callId === undefined || current.phase === "ended") return;
 
-			void hangupCallOnLeave(tokenRef.current ?? "", callId);
+			void hangupCallOnLeave(tokenRef.current ?? "", current.callId);
 		};
 
 		window.addEventListener("pagehide", leave);
@@ -186,8 +245,13 @@ export function useCall(
 
 			// The call ended while the user was away: the interface reports
 			// the missed call. The other endings stay silent: only the call
-			// that rang out is a missed call.
-			if (current.state === "ended" && current.reason === "timeout") {
+			// that rang out is a missed call, and only the first page that
+			// learns about it reports.
+			if (
+				current.state === "ended" &&
+				current.reason === "timeout" &&
+				sessionStorage.getItem(CALL_NOTICE_KEY) !== current.callId
+			) {
 				manager.handleEnded({
 					callId: current.callId,
 					reason: current.reason,
@@ -217,14 +281,26 @@ export function useCall(
 		};
 	}, [ringing]);
 
+	// reportActionFailure reports an action that did not go through. A call
+	// that is already over is not an error: the ringing window ran out, or
+	// another tab took it, and the events of the server close the interface.
+	const reportActionFailure = useCallback(
+		(error: unknown) => {
+			if (isCallGone(error)) return;
+
+			emitNotification(t(FAILED_MESSAGE), "error");
+		},
+		[t],
+	);
+
 	const start = useCallback(
 		async (chatId: string) => {
 			if (manager === null) return;
 
 			try {
 				await manager.start(chatId);
-			} catch {
-				emitNotification(t(FAILED_MESSAGE), "error");
+			} catch (error) {
+				emitNotification(t(startFailureMessage(error)), "error");
 			}
 		},
 		[manager, t],
@@ -235,30 +311,30 @@ export function useCall(
 
 		try {
 			await manager.accept();
-		} catch {
-			emitNotification(t(FAILED_MESSAGE), "error");
+		} catch (error) {
+			reportActionFailure(error);
 		}
-	}, [manager, t]);
+	}, [manager, reportActionFailure]);
 
 	const reject = useCallback(async () => {
 		if (manager === null) return;
 
 		try {
 			await manager.reject();
-		} catch {
-			emitNotification(t(FAILED_MESSAGE), "error");
+		} catch (error) {
+			reportActionFailure(error);
 		}
-	}, [manager, t]);
+	}, [manager, reportActionFailure]);
 
 	const hangup = useCallback(async () => {
 		if (manager === null) return;
 
 		try {
 			await manager.hangup();
-		} catch {
-			emitNotification(t(FAILED_MESSAGE), "error");
+		} catch (error) {
+			reportActionFailure(error);
 		}
-	}, [manager, t]);
+	}, [manager, reportActionFailure]);
 
 	const toggleMute = useCallback(() => {
 		manager?.toggleMute();

@@ -21,12 +21,12 @@ func TestCreateCallRejectsBusyUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := m.CreateCall("carol", "bob", "chat-2", "offer"); !errors.Is(err, ErrBusy) {
-		t.Fatalf("expected ErrBusy, got %v", err)
+	if _, err := m.CreateCall("carol", "bob", "chat-2", "offer"); !errors.Is(err, ErrBusyCallee) {
+		t.Fatalf("expected ErrBusyCallee, got %v", err)
 	}
 
-	if _, err := m.CreateCall("alice", "carol", "chat-3", "offer"); !errors.Is(err, ErrBusy) {
-		t.Fatalf("expected ErrBusy for the busy caller, got %v", err)
+	if _, err := m.CreateCall("alice", "carol", "chat-3", "offer"); !errors.Is(err, ErrBusyCaller) {
+		t.Fatalf("expected ErrBusyCaller, got %v", err)
 	}
 }
 

@@ -17,7 +17,11 @@ import (
 // JSON output is `{"error": "<msg>"}` — matching the old writeError format.
 type statusError struct {
 	ErrorMessage string `doc:"Human-readable error message" json:"error"` //nolint:tagliatelle // pre-migration `error` key required
-	code         int
+	// ErrorCode is the machine-readable reason of the error. It is set only
+	// where the status is not enough to tell two errors apart, and it is
+	// left empty everywhere else, so the other bodies stay as they were.
+	ErrorCode string `doc:"Machine-readable reason" json:"code,omitempty"` //nolint:tagliatelle // the key is the contract with the client
+	code      int
 }
 
 func (e *statusError) Error() string {
@@ -339,6 +343,22 @@ var sentinelErrors = []sentinelErrPair{
 	},
 
 	// Call registry.
+	{
+		sentinel: calls.ErrBusyCaller,
+		target: &statusError{
+			ErrorMessage: "you are already in a call",
+			ErrorCode:    "busy-caller",
+			code:         http.StatusConflict,
+		},
+	},
+	{
+		sentinel: calls.ErrBusyCallee,
+		target: &statusError{
+			ErrorMessage: "the callee is already in a call",
+			ErrorCode:    "busy-callee",
+			code:         http.StatusConflict,
+		},
+	},
 	{
 		sentinel: calls.ErrBusy,
 		target:   &statusError{ErrorMessage: "user is already in a call", code: http.StatusConflict},

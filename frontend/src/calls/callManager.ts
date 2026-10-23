@@ -231,6 +231,10 @@ export function createCallManager(
 			ctx.accepting = false;
 			ctx.pendingAnswer = undefined;
 			releaseMedia(ctx);
+			// The identifier stays with the ending: a page that learns about
+			// a missed call on start reports it once, and the identifier is
+			// what tells the same call from the next one.
+			if (ctx.callId === undefined) ctx.callId = data.callId;
 			if (data.peerId !== undefined) ctx.peerId = data.peerId;
 			if (data.role !== undefined) ctx.role = data.role;
 			ctx.reason = data.reason;
