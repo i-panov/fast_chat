@@ -32,10 +32,28 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 	const searchTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
 		undefined,
 	);
+	const searchSeqRef = useRef(0);
+	const pickedRef = useRef(picked);
+	const accountRef = useRef(activeAccount);
+	useEffect(() => {
+		pickedRef.current = picked;
+		accountRef.current = activeAccount;
+	});
 
 	useEffect(() => {
 		return () => clearTimeout(searchTimerRef.current);
 	}, []);
+
+	useEffect(() => {
+		if (!open) return;
+		setQuery("");
+		setResults([]);
+		setName("");
+		setPicked([]);
+		setSubmitting(false);
+		searchSeqRef.current++;
+		clearTimeout(searchTimerRef.current);
+	}, [open]);
 
 	function handleQueryChange(value: string) {
 		setQuery(value);
@@ -45,19 +63,26 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 			return;
 		}
 		if (activeAccount === null) return;
+		const seq = ++searchSeqRef.current;
+		const token = activeAccount.token;
+		const q = value;
 		searchTimerRef.current = setTimeout(() => {
-			searchUsers(activeAccount.token, value)
+			searchUsers(token, q)
 				.then(({ users }) => {
+					if (searchSeqRef.current !== seq) return;
+					const freshAccount = accountRef.current;
+					if (freshAccount === null) return;
+					const freshPicked = pickedRef.current;
 					setResults(
 						users.filter(
 							(u) =>
-								u.id !== activeAccount.user.id &&
-								!picked.some((p) => p.id === u.id),
+								u.id !== freshAccount.user.id &&
+								!freshPicked.some((p) => p.id === u.id),
 						),
 					);
 				})
 				.catch(() => {
-					setResults([]);
+					if (searchSeqRef.current === seq) setResults([]);
 				});
 		}, 300);
 	}
@@ -165,6 +190,7 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 										color="gray"
 										size="sm"
 										onClick={() => unpick(u.id)}
+										aria-label={t("media.closeMenu")}
 									>
 										<X size={14} />
 									</ActionIcon>

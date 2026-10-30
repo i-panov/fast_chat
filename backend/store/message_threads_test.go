@@ -142,9 +142,12 @@ func TestSyncDeltaExcludesThreadMessages(t *testing.T) {
 
 	since := time.Now().UTC().Add(-time.Hour)
 
-	got := s.MessagesChangedSince(ctx, []string{fx.chat.ID}, since)
-	if len(got) != 1 || got[0].Text != "parent" {
-		t.Errorf("delta returned %d messages, want only the chat message", len(got))
+	got, err := s.MessagesChangedSince(ctx, []string{fx.chat.ID}, since, "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Rows) != 1 || got.Rows[0].Text != "parent" {
+		t.Errorf("delta returned %d messages, want only the chat message", len(got.Rows))
 	}
 }
 
@@ -406,8 +409,10 @@ func TestBackfillMessageThreadIDMarksOrphans(t *testing.T) {
 
 	// It must stay out of the chat feed and the delta.
 	since := time.Now().UTC().Add(-time.Hour)
-	if got := s.MessagesChangedSince(ctx, []string{fx.chat.ID}, since); len(got) != 1 {
-		t.Errorf("delta returned %d messages, want only the chat message", len(got))
+	if page, err := s.MessagesChangedSince(ctx, []string{fx.chat.ID}, since, "", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	} else if len(page.Rows) != 1 {
+		t.Errorf("delta returned %d messages, want only the chat message", len(page.Rows))
 	}
 }
 

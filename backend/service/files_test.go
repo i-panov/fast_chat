@@ -38,7 +38,7 @@ func TestIsHexString(t *testing.T) {
 		in   string
 		want bool
 	}{
-		{"", true},
+		{"", false},
 		{"0123456789abcdef", true},
 		{"ABCDEF", true},
 		{"deadbeef", true},

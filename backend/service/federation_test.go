@@ -306,7 +306,10 @@ func TestSyncFederated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := s.SyncFederated(ctx, "rem", now.Add(-time.Hour))
+	resp, err := s.SyncFederated(ctx, "rem", now.Add(-time.Hour), "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(resp.Messages) != 1 || resp.Messages[0].ID != "m1" {
 		t.Errorf("expected one message m1, got %v", resp.Messages)
 	}
@@ -412,7 +415,10 @@ func TestSyncIncludesFederatedMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := s.Sync(ctx, "a:loc", time.Now().UTC().Add(-time.Hour))
+	resp, err := s.Sync(ctx, "a:loc", time.Now().UTC().Add(-time.Hour), "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(resp.Messages) != 1 || resp.Messages[0].ID != "m1" {
 		t.Fatalf("sync delta omitted the federated message, got %d messages", len(resp.Messages))
 	}

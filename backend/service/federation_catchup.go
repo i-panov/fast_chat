@@ -63,30 +63,72 @@ func (s *Service) catchupOnce(ctx context.Context) {
 	}
 }
 
-// catchupPeer pulls the delta of one peer and applies it.
+// maxCatchupRounds bounds one peer's catch-up: a peer receiving live
+// writes could otherwise keep every page full forever. The cursor below
+// always points at undelivered data, so the remainder arrives next tick.
+const maxCatchupRounds = 50
+
+// catchupPeer pulls the peer's delta page by page and applies it. Pages
+// are applied as they arrive (bounded memory); the cursor advances to
+// ServerNow only on a complete drain, otherwise to the pending NextSince
+// so nothing is skipped.
 func (s *Service) catchupPeer(ctx context.Context, peer string) {
 	since := s.store.GetFederationCursor(ctx, peer)
+	cursor := since
+	cursorID := ""
 
-	syncURL := s.fed.URL(peer, "/api/federated/sync?since="+url.QueryEscape(since.Format(time.RFC3339)))
+	for round := 0; ; round++ {
+		syncURL := s.fed.URL(peer, "/api/federated/sync?since="+url.QueryEscape(cursor.Format(time.RFC3339))+"&sinceId="+url.QueryEscape(cursorID))
 
-	data, err := s.fed.Request(ctx, http.MethodGet, syncURL, nil)
-	if err != nil {
-		log().Info("federation catch-up failed", "peer", peer, "err", err)
-		return
+		data, err := s.fed.Request(ctx, http.MethodGet, syncURL, nil)
+		if err != nil {
+			log().Info("federation catch-up failed", "peer", peer, "err", err)
+			return
+		}
+
+		var delta SyncFederatedResponse
+		if err := json.Unmarshal(data, &delta); err != nil {
+			log().Warn("federation catch-up response could not be parsed", "peer", peer, "err", err)
+			return
+		}
+
+		s.applyFederatedDelta(ctx, peer, &delta)
+
+		if delta.NextSince == "" || round+1 >= maxCatchupRounds {
+			if delta.NextSince != "" {
+				// Drained the round budget with more pending: park the
+				// cursor at the continuation instead of ServerNow so the
+				// remainder is picked up next tick. The id tiebreaker
+				// does not persist across ticks (documented above), so
+				// only the time part carries over.
+				if next, err := time.Parse(time.RFC3339, delta.NextSince); err == nil {
+					cursor = next
+				} else {
+					cursor = delta.ServerNow
+				}
+			} else {
+				cursor = delta.ServerNow
+			}
+			break
+		}
+
+		next, err := time.Parse(time.RFC3339, delta.NextSince)
+		if err != nil {
+			log().Warn("federation catch-up next cursor could not be parsed", "peer", peer, "err", err)
+			cursor = delta.ServerNow
+			break
+		}
+		cursor = next
+		cursorID = delta.NextSinceID
 	}
-
-	var delta SyncFederatedResponse
-	if err := json.Unmarshal(data, &delta); err != nil {
-		log().Warn("federation catch-up response could not be parsed", "peer", peer, "err", err)
-		return
-	}
-
-	s.applyFederatedDelta(ctx, peer, &delta)
 
 	// The cursor only moves forward: a peer whose clock went backwards must
-	// not make this server skip the messages in between.
-	if delta.ServerNow.After(since) {
-		if err := s.store.SetFederationCursor(ctx, peer, delta.ServerNow); err != nil {
+	// not make this server skip the messages in between. The persisted
+	// cursor is time-only (the id tiebreaker lives for one drain): resuming
+	// across ticks may redeliver the boundary tail, which applyFederatedDelta
+	// absorbs idempotently.
+	if cursor.After(since) {
+		if err := s.store.SetFederationCursor(ctx, peer, cursor); err != nil {
 			log().Error("federation cursor could not be stored", "peer", peer, "err", err)
 		}
 	}
@@ -102,41 +144,11 @@ func (s *Service) applyFederatedDelta(ctx context.Context, peer string, delta *S
 	}
 
 	for i := range delta.Messages {
-		msg := &delta.Messages[i]
+		s.applyFederatedMessage(ctx, peer, &delta.Messages[i])
+	}
 
-		// The peer holds the messages of this server too: they are our own
-		// messages, echoed back by the catch-up.
-		if UserIDBelongsToServer(msg.FromID, s.cfg.Server.Domain) {
-			continue
-		}
-
-		chat, ok := s.store.GetChat(ctx, msg.ChatID)
-		if !ok {
-			log().Info("federation message skipped: unknown chat", "peer", peer, "chatID", msg.ChatID)
-			continue
-		}
-
-		maxLen := MaxMessageLen
-		if msg.Encrypted {
-			maxLen = EncryptedMaxLen
-		}
-
-		// The attachments are not part of the delta: the peer does not have
-		// the file, so there is nothing to carry. The message arrives
-		// without them.
-		in := &FederatedInboundMessage{
-			ID:               msg.ID,
-			FromID:           msg.FromID,
-			FromNick:         msg.FromNick,
-			Text:             msg.Text,
-			Location:         msg.Location,
-			Encrypted:        msg.Encrypted,
-			EncryptedPayload: msg.EncryptedPayload,
-		}
-
-		if _, err := s.SendFederatedMessage(ctx, chat, in, maxLen); err != nil {
-			log().Info("federation message could not be applied", "peer", peer, "messageID", msg.ID, "err", err)
-		}
+	for i := range delta.ThreadMessages {
+		s.applyFederatedMessage(ctx, peer, &delta.ThreadMessages[i])
 	}
 
 	for _, deleted := range delta.DeletedMessages {
@@ -151,6 +163,52 @@ func (s *Service) applyFederatedDelta(ctx context.Context, peer string, delta *S
 		if err != nil && !errorsIsMessageNotFound(err) {
 			log().Info("federation deletion could not be applied", "peer", peer, "messageID", deleted.MessageID, "err", err)
 		}
+	}
+}
+
+// applyFederatedMessage applies a single chat or thread message a peer
+// reported. Reply context travels with the delta: SendFederatedMessage
+// re-validates that the parent lives in the same chat.
+func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *model.Message) {
+	// The peer holds the messages of this server too: they are our own
+	// messages, echoed back by the catch-up.
+	if UserIDBelongsToServer(msg.FromID, s.cfg.Server.Domain) {
+		return
+	}
+
+	chat, ok := s.store.GetChat(ctx, msg.ChatID)
+	if !ok {
+		log().Info("federation message skipped: unknown chat", "peer", peer, "chatID", msg.ChatID)
+		return
+	}
+
+	maxLen := MaxMessageLen
+	if msg.Encrypted {
+		maxLen = EncryptedMaxLen
+	}
+
+	var replyToID string
+	if msg.ReplyTo != nil {
+		replyToID = msg.ReplyTo.MessageID
+	}
+
+	// The attachments are not part of the delta: the peer does not have
+	// the file, so there is nothing to carry. The message arrives
+	// without them.
+	in := &FederatedInboundMessage{
+		ID:               msg.ID,
+		FromID:           msg.FromID,
+		FromNick:         msg.FromNick,
+		Text:             msg.Text,
+		ReplyToID:        replyToID,
+		ThreadID:         msg.ThreadID,
+		Location:         msg.Location,
+		Encrypted:        msg.Encrypted,
+		EncryptedPayload: msg.EncryptedPayload,
+	}
+
+	if _, err := s.SendFederatedMessage(ctx, chat, in, maxLen); err != nil {
+		log().Info("federation message could not be applied", "peer", peer, "messageID", msg.ID, "err", err)
 	}
 }
 
@@ -223,6 +281,19 @@ func (s *Service) syncRemoteChatMembers(ctx context.Context, peer string, existi
 	enriched := s.EnrichChat(ctx, updated)
 	for _, memberID := range updated.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventChatUpdated, Data: enriched})
+	}
+
+	// Members the peer dropped learn about it right away instead of seeing a
+	// stale chat until the next resync.
+	reported := make(map[string]struct{}, len(chat.Members))
+	for _, memberID := range chat.Members {
+		reported[memberID] = struct{}{}
+	}
+
+	for _, memberID := range existing.Members {
+		if _, ok := reported[memberID]; !ok {
+			s.sendEvent(memberID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: existing.ID}})
+		}
 	}
 }
 

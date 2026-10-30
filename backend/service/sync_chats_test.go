@@ -37,7 +37,10 @@ func TestSyncReturnsTheWholeChatList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := s.Sync(ctx, alice.ID, time.Now().UTC().Add(-time.Hour))
+	resp, err := s.Sync(ctx, alice.ID, time.Now().UTC().Add(-time.Hour), "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	var found *SyncChatDTO
 
@@ -85,7 +88,10 @@ func TestSyncReportsRemovedChats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := s.Sync(ctx, bob.ID, time.Now().UTC().Add(-time.Hour))
+	resp, err := s.Sync(ctx, bob.ID, time.Now().UTC().Add(-time.Hour), "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if len(resp.DeletedChats) != 1 || resp.DeletedChats[0].ChatID != chat.ID {
 		t.Fatalf("expected the removed chat to be reported, got %+v", resp.DeletedChats)
@@ -134,7 +140,10 @@ func TestSyncReturnsTheThreadMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := s.Sync(ctx, alice.ID, time.Now().UTC().Add(-time.Hour))
+	resp, err := s.Sync(ctx, alice.ID, time.Now().UTC().Add(-time.Hour), "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if len(resp.Messages) != 1 || resp.Messages[0].Text != "parent" {
 		t.Fatalf("expected the chat message in the chat list, got %+v", resp.Messages)

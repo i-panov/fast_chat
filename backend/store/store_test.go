@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -240,6 +241,31 @@ func TestDeleteMessage(t *testing.T) {
 	err = s.DeleteMessage(context.Background(), chat.ID, "nonexistent", testAlice)
 	if err == nil {
 		t.Error("expected error for nonexistent message")
+	}
+}
+
+func TestAddMessageFilesDedupesIDs(t *testing.T) {
+	s := newTestStore(t)
+
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	msg, _, _ := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", "Hello", "", "", nil, false, "")
+
+	f1, _ := s.SaveFile(context.Background(), "duphash1", "image/png", 100, "a.png", "a.png", "alice:local")
+
+	// ["a","a"] with a live "a" attaches once instead of failing the
+	// existence check or the primary key (idempotent retry with dupes).
+	if err := s.AddMessageFiles(context.Background(), msg.ID, []string{f1.ID, f1.ID}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	files, err := s.GetMessageFiles(context.Background(), msg.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 1 || files[0].ID != f1.ID {
+		t.Fatalf("expected exactly [f1], got %v", files)
 	}
 }
 
@@ -1316,13 +1342,18 @@ func TestRemoveChatMemberLeavesATombstone(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	tombs := s.DeletedChatsSince(context.Background(), testBob, time.Now().UTC().Add(-time.Hour))
-	if len(tombs) != 1 || tombs[0].ChatID != chat.ID {
+	tombs, err := s.DeletedChatsSince(context.Background(), testBob, time.Now().UTC().Add(-time.Hour), "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tombs.Rows) != 1 || tombs.Rows[0].ChatID != chat.ID {
 		t.Fatalf("expected a tombstone for the removed member, got %+v", tombs)
 	}
 
 	// The other members keep the chat.
-	if tombs := s.DeletedChatsSince(context.Background(), testAlice, time.Now().UTC().Add(-time.Hour)); len(tombs) != 0 {
+	if tombs, err := s.DeletedChatsSince(context.Background(), testAlice, time.Now().UTC().Add(-time.Hour), "", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	} else if len(tombs.Rows) != 0 {
 		t.Fatalf("expected no tombstone for a member that stayed, got %+v", tombs)
 	}
 }
@@ -1340,8 +1371,11 @@ func TestRemoveChatMemberRefreshesTheTombstone(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	first := s.DeletedChatsSince(context.Background(), testBob, time.Now().UTC().Add(-time.Hour))
-	if len(first) != 1 {
+	first, err := s.DeletedChatsSince(context.Background(), testBob, time.Now().UTC().Add(-time.Hour), "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(first.Rows) != 1 {
 		t.Fatalf("expected a tombstone, got %+v", first)
 	}
 
@@ -1353,8 +1387,11 @@ func TestRemoveChatMemberRefreshesTheTombstone(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	second := s.DeletedChatsSince(context.Background(), testBob, first[0].DeletedAt)
-	if len(second) != 1 {
+	second, err := s.DeletedChatsSince(context.Background(), testBob, first.Rows[0].DeletedAt, "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(second.Rows) != 1 {
 		t.Fatalf("expected a fresh tombstone, got %+v", second)
 	}
 }
@@ -1379,8 +1416,73 @@ func TestReplaceChatMembersLeavesATombstone(t *testing.T) {
 		t.Fatalf("members = %v, want only alice", got.Members)
 	}
 
-	tombs := s.DeletedChatsSince(context.Background(), testBob, time.Now().UTC().Add(-time.Hour))
-	if len(tombs) != 1 || tombs[0].ChatID != chat.ID {
+	tombs, err := s.DeletedChatsSince(context.Background(), testBob, time.Now().UTC().Add(-time.Hour), "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tombs.Rows) != 1 || tombs.Rows[0].ChatID != chat.ID {
 		t.Fatalf("expected a tombstone for the removed member, got %+v", tombs)
+	}
+}
+
+func TestMessagesChangedSincePages(t *testing.T) {
+	s := newTestStore(t)
+
+	createTestUser(t, s, "alice")
+	createTestUser(t, s, "bob")
+	chat, _ := s.CreateChat(context.Background(), testAlice, testBob, "")
+	for _, text := range []string{"one", "two", "three"} {
+		if _, _, err := s.AddMessage(context.Background(), chat.ID, "", testAlice, "alice", text, "", "", nil, false, ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	since := time.Now().UTC().Add(-time.Hour)
+
+	page1, err := s.MessagesChangedSince(context.Background(), []string{chat.ID}, since, "", 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(page1.Rows) != 2 || !page1.HasMore {
+		t.Fatalf("page1 = %d msgs, hasMore=%v, want 2/true", len(page1.Rows), page1.HasMore)
+	}
+
+	// The keyset cursor (time, id) resumes strictly past the page: no row
+	// repeats and none is skipped, even with identical timestamps.
+	page2, err := s.MessagesChangedSince(context.Background(), []string{chat.ID}, page1.NextSince, page1.NextID, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, m := range append(page1.Rows, page2.Rows...) {
+		seen[m.ID] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("union of pages = %d messages, want 3", len(seen))
+	}
+
+	// An exactly-full tail page takes one more round trip to terminate.
+	page3, err := s.MessagesChangedSince(context.Background(), []string{chat.ID}, page2.NextSince, page2.NextID, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(page3.Rows) != 0 || page3.HasMore {
+		t.Fatalf("tail page = %d msgs, hasMore=%v, want 0/false", len(page3.Rows), page3.HasMore)
+	}
+}
+
+func TestMessageFileLinksRejectGhostMessage(t *testing.T) {
+	s := newTestStore(t)
+
+	createTestUser(t, s, "alice")
+	f1, _ := s.SaveFile(context.Background(), "ghosthash1", "image/png", 100, "a.png", "a.png", "alice:local")
+
+	if err := s.AddMessageFiles(context.Background(), "no-such-message", []string{f1.ID}); !errors.Is(err, ErrMessageNotFound) {
+		t.Fatalf("AddMessageFiles ghost: err = %v, want ErrMessageNotFound", err)
+	}
+
+	if err := s.SetMessageFiles(context.Background(), "no-such-message", []string{f1.ID}); !errors.Is(err, ErrMessageNotFound) {
+		t.Fatalf("SetMessageFiles ghost: err = %v, want ErrMessageNotFound", err)
 	}
 }

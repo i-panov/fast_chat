@@ -1,13 +1,15 @@
 import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatsRepo } from "../db/chatsRepo.ts";
-import { setActiveAccountKey } from "../db/init.ts";
+import { getDB, setActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
+import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import type { StoredMessage } from "../db/schema.ts";
 import type { KeyPair } from "../e2ee/crypto.ts";
 import { generateKeyPair } from "../e2ee/crypto.ts";
+import { clearLocalKeys } from "../e2ee/keys.ts";
 import { decryptMessage } from "../e2ee/message.ts";
 import type { PendingFile } from "../types/api.ts";
 
@@ -233,5 +235,110 @@ describe("useMessageSender", () => {
 		expect(await messagesRepo.getByChat("c1")).toEqual([]);
 		expect(await outboxRepo.list()).toEqual([]);
 		expect(await pendingBlobsRepo.get(blobId)).toBeUndefined();
+	});
+
+	it("keeps the old files' keys when editing without new files", async () => {
+		// Seed the local key pair with alice's test key so the edit path can
+		// decrypt the current message and recover its file keys.
+		if (keyStore.alice === null) throw new Error("no alice key");
+		await clearLocalKeys();
+		await metaRepo.setNoNotify("e2ee.publicKey", keyStore.alice.publicKey);
+		await metaRepo.setNoNotify("e2ee.privateKey", keyStore.alice.privateKey);
+		await chatsRepo.upsert({
+			id: "c-kept",
+			type: "group",
+			name: "kept",
+			ownerId: "alice:test",
+			members: [
+				{ id: "alice:test", nick: "alice" },
+				{ id: "bob:test", nick: "bob" },
+			],
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		const { result } = renderHook(() => useMessageSender({ token: "tok" }));
+
+		await result.current.sendMessage({
+			chatId: "c-kept",
+			text: "with file",
+			pendingFiles: [pendingFile()],
+		});
+		const [first] = await messagesRepo.getByChat("c-kept");
+
+		await result.current.editMessage({
+			chatId: "c-kept",
+			messageId: first.id,
+			text: "edited, same file",
+		});
+
+		const [stored] = await messagesRepo.getByChat("c-kept");
+		const out = await decryptAsBob(stored);
+		expect(out.text).toBe("edited, same file");
+		// Without merging the kept files' keys this is empty and the
+		// receiver can no longer decrypt the attachment.
+		expect(Object.keys(out.fileKeys ?? {})).toHaveLength(1);
+	});
+
+	it("passes clearLocation through to the outbox edit op", async () => {
+		await chatsRepo.upsert({
+			id: "c-clearloc",
+			type: "group",
+			name: "clearloc",
+			ownerId: "alice:test",
+			members: [
+				{ id: "alice:test", nick: "alice" },
+				{ id: "bob:test", nick: "bob" },
+			],
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		const { result } = renderHook(() => useMessageSender({ token: "tok" }));
+
+		await result.current.sendMessage({
+			chatId: "c-clearloc",
+			text: "here",
+			location: { lat: 10, lng: 20 },
+		});
+		const [first] = await messagesRepo.getByChat("c-clearloc");
+
+		await result.current.editMessage({
+			chatId: "c-clearloc",
+			messageId: first.id,
+			text: "no longer here",
+			clearLocation: true,
+		});
+
+		const ops = await outboxRepo.list();
+		const edit = ops.find((o) => o.kind === "edit" && o.messageId === first.id);
+		if (edit?.kind !== "edit") throw new Error("expected an edit op");
+		expect(edit.clearLocation).toBe(true);
+	});
+
+	it("drops staged blobs when encryption is skipped", async () => {
+		await chatsRepo.upsert({
+			id: "c-nokey",
+			type: "group",
+			name: "nokey",
+			ownerId: "alice:test",
+			members: [
+				{ id: "alice:test", nick: "alice" },
+				{ id: "carol:test", nick: "carol" },
+			],
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		const db = await getDB();
+		const blobsBefore = await db.getAll("pendingBlobs");
+		const { result } = renderHook(() => useMessageSender({ token: "tok" }));
+
+		// carol has no key: encryptForChat returns null after staging the
+		// attachment blob.
+		const ok = await result.current.sendMessage({
+			chatId: "c-nokey",
+			text: "will not send",
+			pendingFiles: [pendingFile()],
+		});
+
+		expect(ok).toBe(false);
+		expect(await messagesRepo.getByChat("c-nokey")).toEqual([]);
+		// No orphan blobs left behind.
+		expect(await db.getAll("pendingBlobs")).toHaveLength(blobsBefore.length);
 	});
 });

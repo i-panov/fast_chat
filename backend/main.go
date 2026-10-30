@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +21,7 @@ import (
 	"fast_chat/calls"
 	"fast_chat/config"
 	"fast_chat/federation"
+	"fast_chat/internal/filestage"
 	"fast_chat/internal/httputil"
 	"fast_chat/push"
 	"fast_chat/ratelimit"
@@ -41,9 +45,16 @@ const (
 func corsMiddleware(origin string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
+			// "*" is kept for backward compatibility (tests/dev); a missing
+			// or malformed origin sets no header instead of an empty one.
+			// A "*" origin with credentials never works in the browser, so
+			// production must set the exact frontend origin.
+			if origin == "*" || config.IsValidCORSOrigin(origin) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			addVaryOrigin(w)
 
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
@@ -54,6 +65,20 @@ func corsMiddleware(origin string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// addVaryOrigin marks responses as varying by Origin so shared caches do not
+// serve one origin's CORS answer to another.
+func addVaryOrigin(w http.ResponseWriter) {
+	for _, v := range w.Header().Values("Vary") {
+		for part := range strings.SplitSeq(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), "Origin") {
+				return
+			}
+		}
+	}
+
+	w.Header().Add("Vary", "Origin")
 }
 
 // contentSecurityPolicy is the policy of the served interface.
@@ -80,14 +105,31 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"form-action 'self'; " +
 	"frame-ancestors 'none'"
 
-func securityHeadersMiddleware(ipExtractor *ratelimit.ClientIPExtractor) func(http.Handler) http.Handler {
+// contentSecurityPolicyForOrigin extends connect-src with the validated CORS
+// origin so a dev frontend on another port (e.g. :5173 → API :8080) is not
+// cut off by 'self'. An invalid origin yields the base policy unchanged,
+// so a malformed value can never inject into the header.
+func contentSecurityPolicyForOrigin(origin string) string {
+	if origin == "*" || !config.IsValidCORSOrigin(origin) {
+		return contentSecurityPolicy
+	}
+
+	return strings.Replace(contentSecurityPolicy, "connect-src 'self';", "connect-src 'self' "+origin+";", 1)
+}
+
+func securityHeadersMiddleware(ipExtractor *ratelimit.ClientIPExtractor, origins ...string) func(http.Handler) http.Handler {
+	csp := contentSecurityPolicy
+	if len(origins) > 0 {
+		csp = contentSecurityPolicyForOrigin(origins[0])
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("X-Frame-Options", "DENY")
 			w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 			w.Header().Set("X-XSS-Protection", "0")
-			w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
+			w.Header().Set("Content-Security-Policy", csp)
 
 			// The header is only meaningful on a secure connection. The
 			// typical deployment terminates TLS at a reverse proxy, so the
@@ -139,6 +181,10 @@ func rateLimitMiddleware(rl *ratelimit.RateLimiter, ipExtractor *ratelimit.Clien
 	}
 }
 
+// errHijackNotSupported is returned when a handler behind requestLogMiddleware
+// tries to hijack a connection whose writer cannot be hijacked.
+var errHijackNotSupported = errors.New("statusWriter: underlying writer does not support hijacking")
+
 // requestLogMiddleware records method, path, status, duration, and client IP for
 // every request. It logs at Info level for success (status < 400) and Warn for
 // client/server errors, giving operators a complete traffic trail via slog.
@@ -174,6 +220,11 @@ func requestLogMiddleware(next http.Handler) http.Handler {
 
 // statusWriter intercepts WriteHeader calls so the middleware can read the final
 // status code after the handler has finished.
+//
+// It forwards the optional interfaces of the underlying writer (Flusher,
+// Hijacker, Pusher, CloseNotifier, ReaderFrom) so handlers behind the logging
+// middleware keep working: without this the SSE stream would fail its
+// http.Flusher assertion and hijacked transports (websockets) would break.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -208,6 +259,53 @@ func (s *statusWriter) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack forwards websocket-style hijacking to the underlying writer.
+func (s *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := s.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+
+	return nil, nil, errHijackNotSupported
+}
+
+// Push forwards HTTP/2 server push to the underlying writer.
+func (s *statusWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := s.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+
+	return http.ErrNotSupported
+}
+
+// CloseNotify forwards client-close notification to the underlying writer.
+// The CloseNotifier interface is deprecated in favour of Request.Context,
+// but forwarding it is the only way to keep handlers that still assert it
+// working behind the logging middleware.
+//
+//nolint:staticcheck // intentional compat forwarding of a deprecated interface
+func (s *statusWriter) CloseNotify() <-chan bool {
+	if n, ok := s.ResponseWriter.(http.CloseNotifier); ok {
+		return n.CloseNotify()
+	}
+
+	return nil
+}
+
+// ReadFrom forwards sendfile-style copies to the underlying writer when it
+// supports them.
+func (s *statusWriter) ReadFrom(src io.Reader) (int64, error) {
+	if rf, ok := s.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(src)
+	}
+
+	return io.Copy(s.ResponseWriter, src)
+}
+
+// Unwrap returns the underlying writer for http.ResponseController.
+func (s *statusWriter) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
 }
 
 // newHumaTransport mounts the Huma v2 transport (all /api/* domains) in front
@@ -264,8 +362,8 @@ func registerRoutes(
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{keyStatus: "ok"})
 	})
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if err := st.Ping(); err != nil {
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if err := st.Ping(r.Context()); err != nil {
 			slog.Error("readiness check failed", "err", err)
 			httputil.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{
 				keyStatus: "error",
@@ -319,11 +417,10 @@ func main() {
 
 	warnAboutICE(cfg)
 
-	// Directory mode is deliberate least privilege: 0700/0750 gives the owner
-	// rwx (or r-x for group) on a directory; anything below strips the execute
-	// bit and breaks path traversal. The rule targets file modes.
+	// The database holds session tokens (hashed) and message history: only
+	// the owner may list the directory.
 	// nosemgrep: go.lang.correctness.permissions.incorrect-default-permission
-	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o700); err != nil {
 		slog.Error("failed to create data directory", "err", err)
 		os.Exit(1)
 	}
@@ -336,6 +433,10 @@ func main() {
 		slog.Error("failed to create upload directory", "err", err)
 		os.Exit(1)
 	}
+
+	// Abandoned stage files (.upload-*.tmp) are left by crashed uploads;
+	// sweep them at startup so they do not accumulate forever.
+	sweepUploadTempFiles(cfg.Uploads.Dir)
 
 	// Directory mode is deliberate least privilege: 0700/0750 gives the owner
 	// rwx (or r-x for group) on a directory; anything below strips the execute
@@ -434,6 +535,15 @@ func main() {
 // newHTTPServer builds the server with the middleware chain: the request id
 // and the access log on the outside, then the security headers, the CORS
 // answer, the global rate limit and the application itself.
+//
+// WriteTimeout stays 0 because the SSE stream holds its response open for
+// hours: any write deadline would kill every event stream on the first
+// timeout. The trade-off is that ordinary API handlers have no upper bound
+// from the server either; they are bounded instead by ReadTimeout,
+// per-handler body caps (MaxBytesReader/ParseMultipartForm), the Huma
+// MaxBodyBytes limits and client disconnects. If slow-loris on plain API
+// routes becomes a concern, split the SSE endpoint onto a second
+// http.Server with WriteTimeout 0 and give this one a finite WriteTimeout.
 func newHTTPServer(
 	cfg *config.Config,
 	handler http.Handler,
@@ -446,7 +556,7 @@ func newHTTPServer(
 		Addr: fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler: httputil.RequestIDMiddleware(
 			requestLogMiddleware(
-				securityHeadersMiddleware(ipExtractor)(
+				securityHeadersMiddleware(ipExtractor, cfg.CORS.Origin)(
 					corsMiddleware(cfg.CORS.Origin)(
 						rateLimitMiddleware(generalLimiter, ipExtractor)(
 							spaFallbackMiddleware(staticDir)(handler),
@@ -459,6 +569,22 @@ func newHTTPServer(
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
+	}
+}
+
+// sweepUploadTempFiles removes crashed-upload leftovers (.upload-*.tmp)
+// older than a day. Failures are warnings, not fatal: uploads work without
+// the sweep, it only reclaims disk space.
+func sweepUploadTempFiles(uploadsDir string) {
+	removed, err := filestage.SweepStaleTempFiles(uploadsDir, 24*time.Hour)
+	if err != nil {
+		slog.Warn("failed to sweep stale upload temp files", "err", err)
+
+		return
+	}
+
+	if removed > 0 {
+		slog.Info("swept stale upload temp files", "removed", removed)
 	}
 }
 
@@ -533,12 +659,18 @@ func newLimiters(cfg *config.Config) *limiters {
 }
 
 // closeAll stops every limiter's background cleanup. Called once, at shutdown.
+// Nil receivers and nil entries are skipped so tests with partial deps do not
+// panic.
 func (l *limiters) closeAll() {
-	l.general.Close()
-	l.sendCode.Close()
-	l.verifyCode.Close()
-	l.register.Close()
-	l.sseAuth.Close()
+	if l == nil {
+		return
+	}
+
+	for _, rl := range []*ratelimit.RateLimiter{l.general, l.sendCode, l.verifyCode, l.register, l.sseAuth} {
+		if rl != nil {
+			rl.Close()
+		}
+	}
 }
 
 // shutdownDeps carries everything the shutdown sequence needs. The order of
@@ -626,6 +758,10 @@ func serveUntilSignal(serve func() error, deps *shutdownDeps, quit <-chan os.Sig
 // separate function so it can be exercised in a test with a real server and a
 // real stream.
 func shutdown(deps *shutdownDeps, ctx context.Context) {
+	if deps == nil {
+		return
+	}
+
 	slog.Info("shutting down server")
 
 	deps.limiters.closeAll()
@@ -637,7 +773,9 @@ func shutdown(deps *shutdownDeps, ctx context.Context) {
 	}
 
 	// Closing each connection channel makes runSSE return immediately.
-	deps.hub.Close()
+	if deps.hub != nil {
+		deps.hub.Close()
+	}
 
 	drainCtx, cancel := context.WithTimeout(ctx, deps.budget)
 	defer cancel()
@@ -645,7 +783,10 @@ func shutdown(deps *shutdownDeps, ctx context.Context) {
 	// Stop accepting connections and drain in-flight handlers first so no
 	// new federated requests can be queued while we wait for the
 	// background federation requests to finish below.
-	drainErr := deps.server.Shutdown(drainCtx)
+	var drainErr error
+	if deps.server != nil {
+		drainErr = deps.server.Shutdown(drainCtx)
+	}
 
 	// The background workers touch the database, so they have to be stopped
 	// before the store is closed. The wait is bounded by the drain budget.
@@ -674,7 +815,9 @@ func shutdown(deps *shutdownDeps, ctx context.Context) {
 		waitErr = deps.fedClient.CloseWaitContext(drainCtx)
 	}
 
-	deps.store.Close()
+	if deps.store != nil {
+		deps.store.Close()
+	}
 
 	if drainErr != nil {
 		slog.Error("server forced to shutdown with requests still in flight", "err", drainErr)
@@ -738,10 +881,10 @@ func spaFallbackMiddleware(staticDir string) func(http.Handler) http.Handler {
 			// only for client-side routes. This list mirrors the routes owned
 			// by the Huma transport (/api, /docs, /openapi) and the infra mux
 			// (health probes, federation well-known).
-			isBackend := strings.HasPrefix(path, "/api/") ||
+			isBackend := path == "/api" || strings.HasPrefix(path, "/api/") ||
 				strings.HasPrefix(path, "/.well-known/") ||
-				strings.HasPrefix(path, "/docs") ||
-				strings.HasPrefix(path, "/openapi") ||
+				path == "/docs" || strings.HasPrefix(path, "/docs/") ||
+				path == "/openapi" || strings.HasPrefix(path, "/openapi/") ||
 				path == "/healthz" ||
 				path == "/readyz"
 

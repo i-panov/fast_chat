@@ -19,7 +19,7 @@ function renderHeader(onSwitcherToggle: () => void = () => {}) {
 }
 
 function dotWith(container: HTMLElement, color: string) {
-	return [...container.querySelectorAll("div")].find((el) =>
+	return [...container.querySelectorAll("div,output,span")].find((el) =>
 		el.getAttribute("style")?.includes(color),
 	);
 }

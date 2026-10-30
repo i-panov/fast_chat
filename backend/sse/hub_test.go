@@ -216,3 +216,30 @@ func TestRegisterDeduplicatesUserConnsOnReconnect(t *testing.T) {
 		t.Error("old connection channel should be closed")
 	}
 }
+
+func TestCloseExpiredUnauthenticated(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	stale := h.Register("stale")
+	h.Register("fresh")
+	h.Register("auth")
+	h.Authenticate("auth", "u1", "tok", time.Now().Add(time.Hour))
+
+	// Age only the stale connection past the auth deadline.
+	stale.mu.Lock()
+	stale.CreatedAt = time.Now().Add(-hubAuthTimeout - time.Minute)
+	stale.mu.Unlock()
+
+	if got := h.CloseExpiredUnauthenticated(time.Now()); got != 1 {
+		t.Fatalf("reaped = %d, want 1", got)
+	}
+
+	if h.GetConnection("stale") != nil {
+		t.Error("stale unauthenticated connection should be reclaimed")
+	}
+
+	if h.GetConnection("fresh") == nil || h.GetConnection("auth") == nil {
+		t.Error("fresh and authenticated connections must survive the reap")
+	}
+}

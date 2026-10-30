@@ -75,7 +75,7 @@ func registerChatCRUD(api huma.API, svc *service.Service, fed *federation.Client
 			return nil, chatOrInternalError(err)
 		}
 
-		remoteServer := service.RemoteServerFromID(input.Body.WithUserID)
+		remoteServer := service.RemoteServerFromIDFor(input.Body.WithUserID, cfg.Federation.AllowPrivateAddresses)
 		if remoteServer == cfg.Server.Domain {
 			remoteServer = ""
 		}
@@ -85,7 +85,7 @@ func registerChatCRUD(api huma.API, svc *service.Service, fed *federation.Client
 			memberIDs = append(memberIDs, member.ID)
 		}
 
-		fed.Post(ctx, remoteServer, "/api/federated/chats", map[string]any{
+		fedPost(ctx, fed, remoteServer, "/api/federated/chats", map[string]any{
 			"chatId":       view.ID,
 			"members":      memberIDs,
 			"remoteServer": cfg.Server.Domain,

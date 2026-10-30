@@ -276,4 +276,41 @@ describe("useThreads", () => {
 			);
 		});
 	});
+
+	it("fetches on open even with cached messages", async () => {
+		await threadsRepo.upsert(thread("th-cached", "p1"));
+		await threadMessagesRepo.upsert(
+			plainMsg("m-cached", "cached"),
+			"th-cached",
+		);
+		mockApi().getThreadMessages.mockResolvedValueOnce({
+			messages: [plainMsg("m-new", "new")],
+			nextCursor: "cur1",
+		});
+
+		const { result } = renderHook(() =>
+			useThreads({ token: "tok", chatId: "c1" }),
+		);
+
+		act(() => {
+			result.current.openThread("th-cached");
+		});
+
+		// A non-empty IDB cache must not skip the initial fetch: without it
+		// hasMore is set from an unknown cursor and loadMore can never run.
+		await waitFor(() => {
+			expect(mockApi().getThreadMessages).toHaveBeenCalledWith(
+				"tok",
+				"c1",
+				"th-cached",
+				30,
+			);
+		});
+		await waitFor(() => {
+			expect(result.current.threadHasMore).toBe(true);
+		});
+		expect(result.current.activeThreadMessages.map((m) => m.id)).toContain(
+			"m-new",
+		);
+	});
 });

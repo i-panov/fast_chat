@@ -224,10 +224,31 @@ export function GroupSettingsModal({
 	const searchTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
 		undefined,
 	);
+	const searchSeqRef = useRef(0);
+	const chatRef = useRef(chat);
+	const accountRef = useRef(activeAccount);
+	useEffect(() => {
+		chatRef.current = chat;
+		accountRef.current = activeAccount;
+	});
 
 	useEffect(() => {
 		return () => clearTimeout(searchTimerRef.current);
 	}, []);
+
+	const chatId = chat?.id;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset effect intentionally keyed by chat/open switch.
+	useEffect(() => {
+		if (!open) return;
+		setQuery("");
+		setResults([]);
+		setEditingName(false);
+		setNameDraft("");
+		setConfirming(null);
+		setBusy(false);
+		searchSeqRef.current++;
+		clearTimeout(searchTimerRef.current);
+	}, [chatId, open]);
 
 	function startRename() {
 		if (chat === null) return;
@@ -258,18 +279,27 @@ export function GroupSettingsModal({
 			return;
 		}
 		if (activeAccount === null || chat === null) return;
+		const seq = ++searchSeqRef.current;
+		const token = activeAccount.token;
+		const q = value;
 		searchTimerRef.current = setTimeout(() => {
-			searchUsers(activeAccount.token, value)
+			searchUsers(token, q)
 				.then(({ users }) => {
+					if (searchSeqRef.current !== seq) return;
+					const freshChat = chatRef.current;
+					const freshAccount = accountRef.current;
+					if (freshChat === null || freshAccount === null) return;
 					setResults(
 						users.filter(
 							(u) =>
-								u.id !== activeAccount.user.id &&
-								!chat.members.some((m) => m.id === u.id),
+								u.id !== freshAccount.user.id &&
+								!freshChat.members.some((m) => m.id === u.id),
 						),
 					);
 				})
-				.catch(() => setResults([]));
+				.catch(() => {
+					if (searchSeqRef.current === seq) setResults([]);
+				});
 		}, 300);
 	}
 

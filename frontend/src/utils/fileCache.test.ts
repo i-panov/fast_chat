@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fileCacheRepo } from "../db/fileCacheRepo.ts";
-import { acquireFileBlobUrl, releaseFileBlobUrl } from "./fileCache.ts";
+import { setActiveAccountKey } from "../db/init.ts";
+import {
+	acquireFileBlobUrl,
+	clearFileCache,
+	releaseFileBlobUrl,
+} from "./fileCache.ts";
 
 let urlCounter = 0;
 
@@ -15,6 +20,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	clearFileCache();
 	vi.unstubAllGlobals();
 });
 
@@ -97,6 +103,25 @@ describe("fileCache", () => {
 		expect(url).toBe("blob:mock-0");
 
 		releaseFileBlobUrl("https://srv/f/4");
+	});
+
+	it("isolates the in-memory cache per account", async () => {
+		const fetchMock = vi.fn(() => Promise.resolve(okResponse("data")));
+		vi.stubGlobal("fetch", fetchMock);
+
+		setActiveAccountKey("alice");
+		const a = await acquireFileBlobUrl("https://srv/f/acct", "tok-a");
+		setActiveAccountKey("bob");
+		const b = await acquireFileBlobUrl("https://srv/f/acct", "tok-b");
+
+		// Same URL, different accounts: two network fetches, different blobs.
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(a).not.toBe(b);
+
+		releaseFileBlobUrl("https://srv/f/acct");
+		setActiveAccountKey("alice");
+		releaseFileBlobUrl("https://srv/f/acct");
+		setActiveAccountKey(null);
 	});
 
 	it("a failed load poisons the entry until release, then retries", async () => {

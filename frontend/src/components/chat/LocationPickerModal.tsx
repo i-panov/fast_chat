@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MapContainer, Marker, TileLayer, useMap } from "react-leaflet";
 import type { Location } from "../../types/api.ts";
-import { formatCoords } from "../../utils/chat.ts";
+import { formatCoords, isValidLocation } from "../../utils/chat.ts";
 import {
 	getLastCachedLocation,
 	requestGeolocation,
@@ -21,16 +21,44 @@ interface Props {
 
 function MapRecenter({ center }: { center: [number, number] }) {
 	const map = useMap();
-	const lat = center[0];
-	const lng = center[1];
 	useEffect(() => {
-		map.setView([lat, lng], map.getZoom());
-	}, [lat, lng, map]);
+		map.setView(center, map.getZoom());
+	}, [center, map]);
 	return null;
 }
 
 const DEFAULT_CENTER: [number, number] = [55.7558, 37.6173]; // Moscow
 const DEFAULT_ZOOM = 13;
+
+// PickerMarker renders the draggable marker only while the coordinates are
+// valid: Leaflet throws on a NaN position, which the inputs can hold while
+// the user is typing.
+function PickerMarker({
+	position,
+	markerRef,
+	onDragEnd,
+}: {
+	position: Location;
+	markerRef: React.RefObject<L.Marker | null>;
+	onDragEnd: (loc: Location) => void;
+}) {
+	if (!isValidLocation(position)) return null;
+	return (
+		<Marker
+			draggable
+			position={[position.lat, position.lng]}
+			ref={markerRef}
+			eventHandlers={{
+				dragend: () => {
+					const m = markerRef.current;
+					if (m === null) return;
+					const ll = m.getLatLng();
+					onDragEnd({ lat: ll.lat, lng: ll.lng });
+				},
+			}}
+		/>
+	);
+}
 
 export function LocationPickerModal({
 	open,
@@ -177,25 +205,17 @@ export function LocationPickerModal({
 							attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 							url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
 						/>
-						<Marker
-							draggable
-							position={[position.lat, position.lng]}
-							ref={markerRef}
-							eventHandlers={{
-								dragend: () => {
-									const m = markerRef.current;
-									if (m === null) return;
-									const ll = m.getLatLng();
-									handlePositionChange({ lat: ll.lat, lng: ll.lng });
-								},
-							}}
+						<PickerMarker
+							position={position}
+							markerRef={markerRef}
+							onDragEnd={handlePositionChange}
 						/>
 					</MapContainer>
 				</div>
 				<Group grow>
 					<NumberInput
 						label={t("input.locationCoords")}
-						value={position.lat}
+						value={Number.isFinite(position.lat) ? position.lat : ""}
 						onChange={(value) => handleCoordChange("lat", value)}
 						decimalScale={6}
 						min={-90}
@@ -204,7 +224,7 @@ export function LocationPickerModal({
 					/>
 					<NumberInput
 						label="Lng"
-						value={position.lng}
+						value={Number.isFinite(position.lng) ? position.lng : ""}
 						onChange={(value) => handleCoordChange("lng", value)}
 						decimalScale={6}
 						min={-180}

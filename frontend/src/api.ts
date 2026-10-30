@@ -46,7 +46,15 @@ async function request<T>(
 	if (!(init?.body instanceof FormData)) {
 		headers["Content-Type"] = "application/json";
 	}
-	const res = await fetch(path, { ...init, headers });
+	const headersInit = init?.headers;
+	const initHeaders: Record<string, string> =
+		headersInit instanceof Headers
+			? Object.fromEntries(headersInit.entries())
+			: Array.isArray(headersInit)
+				? Object.fromEntries(new Headers(headersInit).entries())
+				: { ...headersInit };
+	const mergedHeaders = { ...initHeaders, ...headers };
+	const res = await fetch(path, { ...init, headers: mergedHeaders });
 	if (res.status === HTTP_UNAUTHORIZED) {
 		if (token !== undefined) {
 			emitUnauthorized(token);
@@ -408,9 +416,19 @@ export function getConfig() {
 	return request<AppConfig>("/api/config", undefined);
 }
 
-export function getSync(token: string, since: string): Promise<SyncResponse> {
+export function getSync(
+	token: string,
+	since: string,
+	signal?: AbortSignal,
+	limit?: number,
+	sinceId?: string,
+): Promise<SyncResponse> {
 	const params = new URLSearchParams({ since });
-	return request<SyncResponse>(`/api/sync?${params.toString()}`, token);
+	if (limit !== undefined) params.set("limit", String(limit));
+	if (sinceId !== undefined && sinceId !== "") params.set("sinceId", sinceId);
+	return request<SyncResponse>(`/api/sync?${params.toString()}`, token, {
+		signal,
+	});
 }
 
 export function getVapidPublicKey() {

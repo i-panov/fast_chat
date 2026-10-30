@@ -51,6 +51,11 @@ const REMOTE_MESSAGE = "call.remote";
 // storage of the tab. A reloaded page ends the call it had.
 const CALL_STORAGE_KEY = "fastchat.call";
 
+// CALL_PENDING_KEY marks an outgoing call that waits for the identifier of
+// the server. A reload in that window leaves no identifier behind, so the
+// reconcile cancels the call on the server when it finds it.
+const CALL_PENDING_KEY = "fastchat.callPending";
+
 // CALL_NOTICE_KEY is the key of the call the page has already reported. The
 // server keeps an ended call for ten minutes, so a reload would report the
 // same missed call again.
@@ -85,6 +90,95 @@ function isCallGone(error: unknown): boolean {
 	return error.status === HTTP_NOT_FOUND || error.status === HTTP_CONFLICT;
 }
 
+// reconcileCall asks the server what call the user has: the events may have
+// been lost while the user was away or the stream was broken. A call the
+// client already tracks is left alone: the client knows more than the
+// server does.
+async function reconcileCall(
+	manager: CallManager,
+	token: string,
+	pendingReloadRef: React.MutableRefObject<boolean>,
+	isCancelled: () => boolean,
+): Promise<void> {
+	const current = await getCurrentCall(token).catch(() => null);
+
+	if (isCancelled() || current === null) return;
+
+	// The client is already in a call: it knows more than the
+	// server does.
+	if (manager.state().callId !== undefined) return;
+
+	// This tab reloaded while it waited for the identifier: the call
+	// the server created for it must not ring until the window runs
+	// out. Only the own outgoing call is cancelled: a ringing call
+	// of another tab is left alone.
+	if (
+		pendingReloadRef.current &&
+		(current.state === "ringing" || current.state === "active") &&
+		(current.role === "caller" || current.offer === undefined)
+	) {
+		pendingReloadRef.current = false;
+
+		try {
+			await hangupCall(token, current.callId);
+		} catch {
+			// The call is already gone.
+		}
+
+		return;
+	}
+
+	// The call waits for an answer and the user was away: it can be
+	// taken again. A call that is going on is not touched: another
+	// tab or another device may be in it.
+	if (current.state === "ringing" && current.offer !== undefined) {
+		const extra = current as unknown as {
+			chatId?: unknown;
+			chat?: unknown;
+			peerNick?: unknown;
+			nick?: unknown;
+		};
+		const chatId =
+			typeof extra.chatId === "string" && extra.chatId !== ""
+				? extra.chatId
+				: typeof extra.chat === "string"
+					? extra.chat
+					: (manager.state().chatId ?? "");
+		const nick =
+			typeof extra.peerNick === "string" && extra.peerNick !== ""
+				? extra.peerNick
+				: typeof extra.nick === "string" && extra.nick !== ""
+					? extra.nick
+					: (current.peer.split(":")[0] ?? "");
+
+		manager.handleIncoming({
+			callId: current.callId,
+			chatId,
+			offer: current.offer,
+			from: { id: current.peer, nick },
+		});
+
+		return;
+	}
+
+	// The call ended while the user was away: the interface reports
+	// the missed call. The other endings stay silent: only the call
+	// that rang out is a missed call, and only the first page that
+	// learns about it reports.
+	if (
+		current.state === "ended" &&
+		current.reason === "timeout" &&
+		sessionStorage.getItem(CALL_NOTICE_KEY) !== current.callId
+	) {
+		manager.handleEnded({
+			callId: current.callId,
+			reason: current.reason,
+			peerId: current.peer,
+			role: current.role,
+		});
+	}
+}
+
 export interface UseCall {
 	// manager owns the call: the signaling events of the server reach it.
 	manager: CallManager | null;
@@ -115,6 +209,11 @@ export function useCall(
 	useEffect(() => {
 		tokenRef.current = token;
 	}, [token]);
+
+	// pendingReload tells whether this tab reloaded while it waited for the
+	// identifier of the server. It is captured before the storage effects
+	// clear the marker.
+	const pendingReloadRef = useRef(false);
 
 	const manager = useMemo(() => {
 		if (userId === undefined) return null;
@@ -160,11 +259,15 @@ export function useCall(
 		if (manager === null) return;
 
 		const callId = sessionStorage.getItem(CALL_STORAGE_KEY);
-		if (callId === null) return;
+		if (callId !== null) {
+			sessionStorage.removeItem(CALL_STORAGE_KEY);
+			void hangupCallOnLeave(tokenRef.current ?? "", callId);
+		}
 
-		sessionStorage.removeItem(CALL_STORAGE_KEY);
-
-		void hangupCallOnLeave(tokenRef.current ?? "", callId);
+		if (sessionStorage.getItem(CALL_PENDING_KEY) !== null) {
+			pendingReloadRef.current = true;
+			sessionStorage.removeItem(CALL_PENDING_KEY);
+		}
 	}, [manager]);
 
 	// The identifier of the call lives in the session storage while the
@@ -173,6 +276,7 @@ export function useCall(
 	useEffect(() => {
 		if (state.phase === "idle" || state.phase === "ended") {
 			sessionStorage.removeItem(CALL_STORAGE_KEY);
+			sessionStorage.removeItem(CALL_PENDING_KEY);
 
 			if (state.phase === "ended" && state.callId !== undefined) {
 				sessionStorage.setItem(CALL_NOTICE_KEY, state.callId);
@@ -183,6 +287,9 @@ export function useCall(
 
 		if (state.callId !== undefined) {
 			sessionStorage.setItem(CALL_STORAGE_KEY, state.callId);
+			sessionStorage.removeItem(CALL_PENDING_KEY);
+		} else if (state.phase === "outgoing") {
+			sessionStorage.setItem(CALL_PENDING_KEY, "1");
 		}
 	}, [state.phase, state.callId]);
 
@@ -214,59 +321,27 @@ export function useCall(
 	// The server may still hold a call that waited for an answer while the
 	// user was away. Such a call is taken again.
 	useEffect(() => {
-		if (manager === null) return;
+		if (manager === null || token === undefined) return;
 
 		let cancelled = false;
 
-		const reconcile = async () => {
-			const current = await getCurrentCall(tokenRef.current ?? "").catch(
-				() => null,
-			);
+		const reconcile = () => {
+			if (cancelled) return;
 
-			if (cancelled || current === null) return;
-
-			// The client is already in a call: it knows more than the
-			// server does.
-			if (manager.state().callId !== undefined) return;
-
-			// The call waits for an answer and the user was away: it can be
-			// taken again. A call that is going on is not touched: another
-			// tab or another device may be in it.
-			if (current.state === "ringing" && current.offer !== undefined) {
-				manager.handleIncoming({
-					callId: current.callId,
-					chatId: "",
-					offer: current.offer,
-					from: { id: current.peer, nick: "" },
-				});
-
-				return;
-			}
-
-			// The call ended while the user was away: the interface reports
-			// the missed call. The other endings stay silent: only the call
-			// that rang out is a missed call, and only the first page that
-			// learns about it reports.
-			if (
-				current.state === "ended" &&
-				current.reason === "timeout" &&
-				sessionStorage.getItem(CALL_NOTICE_KEY) !== current.callId
-			) {
-				manager.handleEnded({
-					callId: current.callId,
-					reason: current.reason,
-					peerId: current.peer,
-					role: current.role,
-				});
-			}
+			void reconcileCall(manager, token, pendingReloadRef, () => cancelled);
 		};
 
-		void reconcile();
+		reconcile();
+
+		// A break in the stream may have lost the events: reconcile again
+		// when the network is back.
+		window.addEventListener("online", reconcile);
 
 		return () => {
 			cancelled = true;
+			window.removeEventListener("online", reconcile);
 		};
-	}, [manager]);
+	}, [manager, token]);
 
 	// The incoming call rings until it is taken or declined.
 	const ringing = state.phase === "incoming";

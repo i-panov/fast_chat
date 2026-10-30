@@ -77,7 +77,11 @@ async function runOp(op: OutboxOp, token: string): Promise<void> {
 }
 
 async function runSend(op: OutboxOpSend, token: string): Promise<void> {
-	const uploadedIDs = await uploadPendingFiles(op.pendingFileClientIds, token);
+	const uploadedIDs = await uploadPendingFiles(
+		op.pendingFileClientIds,
+		token,
+		op,
+	);
 
 	// fileHashes are files already on the server (matched by plaintext hash).
 	// The server resolves them to existing file IDs.
@@ -115,7 +119,7 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 }
 
 async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
-	const uploaded = await uploadPendingFiles(op.pendingFileClientIds, token);
+	const uploaded = await uploadPendingFiles(op.pendingFileClientIds, token, op);
 
 	let fileIDs: string[] | undefined;
 	if (uploaded.length > 0) {
@@ -198,25 +202,35 @@ async function failOp(op: OutboxOp, _err: unknown): Promise<void> {
 			await messagesRepo.markStatus(chatId, messageId, "failed");
 		}
 	}
-	if (op.kind === "delete") {
-		if (op.threadId !== undefined) {
-			await threadMessagesRepo.remove(op.threadId, op.messageId);
-		} else {
-			await messagesRepo.remove(op.chatId, op.messageId);
-		}
-	}
+	// A definitively failed delete keeps the local row: removing it locally
+	// while the server kept it resurrects the message as a ghost on the
+	// next delta. The row disappears only on success or 404 (runDelete).
 	await outboxRepo.update({ ...op, status: "failed" as const });
 }
 
 async function uploadPendingFiles(
 	clientIds: string[],
 	token: string,
+	op: OutboxOpSend | OutboxOpEdit,
 ): Promise<string[]> {
-	const out: string[] = [];
+	// Resume from previously persisted uploads so a retry after a crash
+	// does not re-upload the same blobs and orphan them on the server.
+	// uploadedFileIds holds server ids in upload order, so the resume is
+	// positional; a longer-than-expected list means the op shape changed
+	// under us — fall back to a full upload rather than skipping files.
+	const persisted = op.uploadedFileIds ?? [];
+	const resumable = persisted.length <= clientIds.length;
+	const out: string[] = resumable ? [...persisted] : [];
+	const remaining = resumable ? clientIds.slice(persisted.length) : clientIds;
 
-	for (const cid of clientIds) {
+	for (const cid of remaining) {
 		const pending = await pendingBlobsRepo.get(cid);
-		if (pending === undefined) continue;
+		if (pending === undefined) {
+			// A vanished staged blob would otherwise send the message with
+			// a silently trimmed file set. Fail definitively (400-range,
+			// non-transient) so failOp marks the message failed.
+			throw new Error(`http 400: missing pending blob ${cid}`);
+		}
 
 		const file = new File([pending.blob], pending.name, {
 			type: pending.mimeType,
@@ -231,6 +245,9 @@ async function uploadPendingFiles(
 			pending.encrypted !== false,
 		);
 		out.push(uploaded.id);
+		// Persist after every upload so a crash between uploads resumes
+		// instead of re-uploading.
+		await outboxRepo.update({ ...op, uploadedFileIds: [...out] });
 	}
 
 	return out;
@@ -256,7 +273,12 @@ function isTransient(err: unknown): boolean {
 function isNotFound(err: unknown): boolean {
 	if (err instanceof Error) {
 		const msg = err.message.toLowerCase();
-		return msg === "http 404" || msg === "message not found";
+		// api.ts reports errors as "http <status>: ...", so match the 404
+		// status instead of the whole string. Keep the legacy plain-text
+		// match for older "message not found" errors.
+		const statusMatch = HTTP_STATUS_RE.exec(msg);
+		if (statusMatch !== null) return Number(statusMatch[1]) === 404;
+		return msg.includes("message not found");
 	}
 	return false;
 }

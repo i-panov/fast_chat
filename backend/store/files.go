@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"gorm.io/gorm/clause"
+
 	"fast_chat/model"
 )
 
@@ -111,8 +113,41 @@ func (s *Store) GetFile(ctx context.Context, fileID string) (*model.File, error)
 }
 
 func (s *Store) AddMessageFiles(ctx context.Context, messageID string, fileIDs []string) error {
+	// Deduplicate first: ["a","a"] with a live "a" must attach once, not
+	// fail the existence check (1 != 2) nor hit the primary key.
+	seen := make(map[string]struct{}, len(fileIDs))
+	unique := make([]string, 0, len(fileIDs))
+	for _, fid := range fileIDs {
+		if _, ok := seen[fid]; ok {
+			continue
+		}
+		seen[fid] = struct{}{}
+		unique = append(unique, fid)
+	}
+	fileIDs = unique
 	if len(fileIDs) == 0 {
 		return nil
+	}
+
+	// The message itself must exist: without REFERENCES the link rows
+	// would otherwise dangle on a ghost id.
+	var msgCount int64
+	if err := s.db.WithContext(ctx).Model(&model.Message{}).Where("id = ?", messageID).Count(&msgCount).Error; err != nil {
+		return err
+	}
+	if msgCount == 0 {
+		return ErrMessageNotFound
+	}
+
+	// A retry after an idempotent send must not fail on the primary key,
+	// and a typo must not leave a dangling link.
+	var existing int64
+	if err := s.db.WithContext(ctx).Model(&model.File{}).Where("id IN ?", fileIDs).Count(&existing).Error; err != nil {
+		return err
+	}
+
+	if existing != int64(len(fileIDs)) {
+		return ErrFileNotFound
 	}
 
 	rows := make([]model.MessageFile, 0, len(fileIDs))
@@ -120,7 +155,7 @@ func (s *Store) AddMessageFiles(ctx context.Context, messageID string, fileIDs [
 		rows = append(rows, model.MessageFile{MessageID: messageID, FileID: fid})
 	}
 
-	return s.db.WithContext(ctx).Create(&rows).Error
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }
 
 func (s *Store) GetMessageFiles(ctx context.Context, messageID string) ([]model.FileInfo, error) {
@@ -161,8 +196,15 @@ func (s *Store) GetMessageFilesBatch(ctx context.Context, messageIDs []string) (
 	}
 
 	var links []model.MessageFile
-	if err := s.db.WithContext(ctx).Where("message_id IN ?", messageIDs).Find(&links).Error; err != nil {
-		return nil, err
+	for start := 0; start < len(messageIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(messageIDs))
+
+		var chunk []model.MessageFile
+		if err := s.db.WithContext(ctx).Where("message_id IN ?", messageIDs[start:end]).Find(&chunk).Error; err != nil {
+			return nil, err
+		}
+
+		links = append(links, chunk...)
 	}
 
 	if len(links) == 0 {
@@ -175,8 +217,15 @@ func (s *Store) GetMessageFilesBatch(ctx context.Context, messageIDs []string) (
 	}
 
 	var files []model.File
-	if err := s.db.WithContext(ctx).Where("id IN ?", fileIDs).Find(&files).Error; err != nil {
-		return nil, err
+	for start := 0; start < len(fileIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(fileIDs))
+
+		var chunk []model.File
+		if err := s.db.WithContext(ctx).Where("id IN ?", fileIDs[start:end]).Find(&chunk).Error; err != nil {
+			return nil, err
+		}
+
+		files = append(files, chunk...)
 	}
 
 	filesByID := make(map[string]model.File, len(files))

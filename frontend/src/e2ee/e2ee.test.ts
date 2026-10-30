@@ -133,6 +133,57 @@ describe("decryptMessage", () => {
 		expect(out.replyTo?.text).toBe("parent secret");
 	});
 
+	it("resolves a v2-encrypted reply parent preview", async () => {
+		setActiveAccountKey("alice:test");
+		const alice = await keyPair();
+		const bob = await keyPair();
+
+		// v2 parent: full content (text) encrypted, stored as ciphertext +
+		// envelope payload like encryptForChat produces.
+		const msgKey = crypto.getRandomValues(new Uint8Array(32));
+		const encrypted = await encryptContent({ text: "v2 parent" }, msgKey);
+		const envelopes = await sealMessageKey(msgKey, [
+			{ keyId: "alice:test", publicKey: alice.publicKey },
+			{ keyId: "bob:test", publicKey: bob.publicKey },
+		]);
+		await messagesRepo.upsertMany([
+			{
+				id: "parent-v2",
+				chatId: "c1",
+				fromId: "bob:test",
+				fromNick: "bob",
+				text: encrypted.ciphertext,
+				encrypted: true,
+				encryptedPayload: JSON.stringify({
+					v: 1,
+					nonce: encrypted.nonce,
+					envelopes,
+				}),
+				createdAt: "2026-01-01T00:00:00Z",
+			},
+		]);
+
+		const childEnc = await encryptMessageText("child", [
+			{ keyId: "alice:test", publicKey: alice.publicKey },
+		]);
+		const child: Message = {
+			id: "child-v2",
+			chatId: "c1",
+			fromId: "alice:test",
+			fromNick: "alice",
+			text: childEnc.text,
+			encrypted: true,
+			encryptedPayload: childEnc.encryptedPayload,
+			createdAt: "2026-01-01T00:00:01Z",
+			replyTo: { messageId: "parent-v2", text: "?", fromNick: "bob" },
+		};
+
+		// Without v2-aware preview resolution this returns JSON/ciphertext
+		// instead of "v2 parent".
+		const out = await decryptMessage(child, "alice:test", alice);
+		expect(out.replyTo?.text).toBe("v2 parent");
+	});
+
 	it("shows a placeholder when the private key is unavailable", async () => {
 		const alice = await keyPair();
 		const enc = await encryptMessageText("top secret", [

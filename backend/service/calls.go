@@ -95,8 +95,9 @@ func (s *Service) StartCall(ctx context.Context, callerID, chatID, offer string)
 	// A callee from another server cannot be reached: the signaling has no
 	// route to that server. The domain is taken from the identifier itself:
 	// RemoteServerFromID returns an empty string for a domain the server does
-	// not know, and an unknown domain is a remote one, not a local one.
-	if domain := domainOfUserID(calleeID); domain != s.cfg.Server.Domain {
+	// not know, and an unknown domain is a remote one, not a local one. A
+	// legacy identifier without a domain is local, like in CreatePrivateChat.
+	if domain := domainOfUserID(calleeID); domain != "" && domain != s.cfg.Server.Domain {
 		return nil, ErrRemoteCallee
 	}
 
@@ -190,11 +191,16 @@ func (s *Service) HangupCall(_ context.Context, userID, callID, reason string) e
 
 // SendIce forwards an ICE candidate to the other side. The candidate is
 // passed on unchanged: the browser of the other side adds it to its own
-// connection.
+// connection. Candidates for an ended (or unknown) call are rejected: the
+// peer's connection is closed and would choke on them.
 func (s *Service) SendIce(_ context.Context, userID, callID string, candidate json.RawMessage) error {
 	call, err := s.participantCall(callID, userID)
 	if err != nil {
 		return err
+	}
+
+	if call.State == calls.StateEnded {
+		return ErrCallNotFound
 	}
 
 	s.sendEvent(call.Peer(userID), sse.Event{Event: "call_ice", Data: map[string]any{
@@ -303,5 +309,5 @@ func (s *Service) sendCallPush(ctx context.Context, call *calls.Call) {
 		return
 	}
 
-	go s.push.SendToUser(payload, subs)
+	sendPushBounded(s.push, payload, subs)
 }

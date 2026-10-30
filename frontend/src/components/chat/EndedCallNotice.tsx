@@ -1,4 +1,5 @@
 import { Button, Group, Paper, Text } from "@mantine/core";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { CallRole } from "../../types/api.ts";
 
@@ -22,18 +23,27 @@ export function EndedCallNotice({
 }: Props) {
 	const { t } = useTranslation();
 
-	if (reason === undefined || callRole === undefined) return null;
-
 	let message: string | undefined;
 
-	if (reason === "timeout") {
-		message =
-			callRole === "caller"
-				? t("call.notAnswered")
-				: t("call.missed", { nick: peerNick });
-	} else if (reason === "peer-left" && callRole === "callee") {
-		message = t("call.peerLeft");
+	if (reason !== undefined && callRole !== undefined) {
+		if (reason === "timeout") {
+			message =
+				callRole === "caller"
+					? t("call.notAnswered")
+					: t("call.missed", { nick: peerNick });
+		} else if (reason === "peer-left" && callRole === "callee") {
+			message = t("call.peerLeft");
+		}
 	}
+
+	// A normal ending both sides know about needs no report: it dismisses
+	// itself, so the interface does not keep an empty notice without a
+	// button.
+	const autoDismiss = message === undefined;
+
+	useEffect(() => {
+		if (autoDismiss) onDismiss();
+	}, [autoDismiss, onDismiss]);
 
 	// The end of a call both sides know about needs no report.
 	if (message === undefined) return null;

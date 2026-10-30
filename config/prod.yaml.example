@@ -33,10 +33,12 @@ server:
 
 database:
     # SQLite database file path. Use an absolute path on production.
+    # Relative paths are resolved against the config file directory.
     path: /var/lib/fastchat/fastchat.db
 
 uploads:
     # Directory for uploaded files. Must be writable by the server process.
+    # Relative paths are resolved against the config file directory.
     dir: /var/lib/fastchat/uploads
 
 cors:
@@ -53,6 +55,9 @@ email:
         host: smtp.example.com
         port: 587
         username: <SMTP_USERNAME>
+        # Prefer the environment over this file: set FASTCHAT_SMTP_PASSWORD
+        # directly, or FASTCHAT_SMTP_PASSWORD_FILE to a 0600 file holding it.
+        # A _FILE value wins when both are set.
         password: <SMTP_PASSWORD>
         from: noreply@example.com
 
@@ -76,6 +81,9 @@ ice:
         # The TURN REST API is the recommended setup: coturn runs with
         # use-auth-secret and the same static-auth-secret, and every client
         # gets its own short-lived credentials. The key stays on the server.
+        # Prefer the environment: FASTCHAT_TURN_SECRET or
+        # FASTCHAT_TURN_SECRET_FILE (0600 file, wins when both are set) -->
+        # overrides the secret of every TURN server below.
         - urls:
               - "turn:turn.example.com:3478?transport=udp"
           secret: "<TURN_SECRET>"

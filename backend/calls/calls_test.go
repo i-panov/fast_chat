@@ -439,3 +439,30 @@ func TestCloseEndsEveryCall(t *testing.T) {
 		t.Fatalf("state = %q, want ended", stored.State)
 	}
 }
+
+func TestSignalingSizeLimits(t *testing.T) {
+	m := testManager(time.Now)
+
+	bigOffer := string(make([]byte, MaxOfferLen+1))
+	if _, err := m.CreateCall("alice", "bob", "chat-1", bigOffer); !errors.Is(err, ErrOfferTooLarge) {
+		t.Fatalf("oversized offer: expected ErrOfferTooLarge, got %v", err)
+	}
+
+	call, err := m.CreateCall("alice", "bob", "chat-1", "offer")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bigAnswer := string(make([]byte, MaxAnswerLen+1))
+	if _, err := m.AcceptCall(call.ID, bigAnswer); !errors.Is(err, ErrAnswerTooLarge) {
+		t.Fatalf("oversized answer: expected ErrAnswerTooLarge, got %v", err)
+	}
+
+	if err := ValidateICECandidate(make([]byte, MaxICECandidateLen+1)); !errors.Is(err, ErrICECandidateTooLarge) {
+		t.Fatalf("oversized ICE candidate: expected ErrICECandidateTooLarge, got %v", err)
+	}
+
+	if err := ValidateICECandidate([]byte(`{"candidate":"ok"}`)); err != nil {
+		t.Fatalf("small ICE candidate rejected: %v", err)
+	}
+}

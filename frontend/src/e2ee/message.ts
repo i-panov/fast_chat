@@ -64,7 +64,9 @@ export async function decryptMessageText(
 // decryptMessageContent decrypts the full content (text, location, file keys)
 // from the message's encrypted payload. Returns null if the message uses the
 // legacy v1 format (text-only encryption) or if decryption fails.
-async function decryptMessageContent(
+// Exported so edit flows can recover the kept files' keys without duplicating
+// the v1/v2 detection logic.
+export async function decryptMessageContent(
 	msg: Pick<Message, "text" | "encryptedPayload" | "location">,
 	userId: string,
 	key: KeyPair,
@@ -126,6 +128,31 @@ function applyFileMeta(
 			fileType: fileTypeForMime(meta.mimeType),
 		};
 	});
+}
+
+// recoverKeptFileKeys decrypts the previous revision of an edited message
+// and returns its fileKeys/fileMeta so kept attachments stay decryptable
+// after the edit. Returns empty maps when there is nothing to recover
+// (plaintext message, missing key, or undecryptable content) — never throws,
+// so the edit itself always proceeds with at least the new files' keys.
+export async function recoverKeptFileKeys(
+	msg: Pick<Message, "text" | "encryptedPayload" | "location" | "encrypted">,
+	userId: string,
+	key: KeyPair | null,
+): Promise<{
+	fileKeys: Record<string, FileKey>;
+	fileMeta: Record<string, FileMeta>;
+}> {
+	const empty = { fileKeys: {}, fileMeta: {} };
+	if (msg.encrypted !== true || key === null) return empty;
+
+	try {
+		const content = await decryptMessageContent(msg, userId, key);
+		if (content === null) return empty;
+		return { fileKeys: content.fileKeys, fileMeta: content.fileMeta };
+	} catch {
+		return empty;
+	}
 }
 
 // decryptMessage returns a copy of the message with the plaintext text,
@@ -205,7 +232,14 @@ export async function decryptMessage(
 
 			if (parent !== undefined) {
 				if (parent.encrypted) {
-					parentText = await decryptMessageText(parent, userId, key);
+					// The parent may use the v2 content format (text + location +
+					// file keys) or legacy v1 text-only encryption. Try v2 first,
+					// then fall back to v1 instead of assuming v1 unconditionally.
+					const content = await decryptMessageContent(parent, userId, key);
+					parentText =
+						content !== null
+							? content.text
+							: await decryptMessageText(parent, userId, key);
 				} else {
 					parentText = parent.text;
 				}

@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -59,7 +61,7 @@ func (s *CodeStore) VerifyCode(email, code string) bool {
 		return false
 	}
 
-	if vc.Code != code {
+	if len(vc.Code) != len(code) || subtle.ConstantTimeCompare([]byte(vc.Code), []byte(code)) != 1 {
 		return false
 	}
 
@@ -69,12 +71,26 @@ func (s *CodeStore) VerifyCode(email, code string) bool {
 }
 
 func (s *CodeStore) CreateSetupToken(email string, ttl time.Duration) string {
+	token, err := s.CreateSetupTokenE(email, ttl)
+	if err != nil {
+		slog.Error("failed to generate setup token", "err", err)
+		return ""
+	}
+
+	return token
+}
+
+// CreateSetupTokenE is the error-returning core of CreateSetupToken. The
+// string-only wrapper stays for the existing service callers; new code
+// should use this variant so a CSPRNG failure is distinguishable from an
+// empty token.
+func (s *CodeStore) CreateSetupTokenE(email string, ttl time.Duration) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	token, err := generateSetupToken()
 	if err != nil {
-		return ""
+		return "", err
 	}
 
 	s.setupTokens[token] = &SetupToken{
@@ -83,7 +99,7 @@ func (s *CodeStore) CreateSetupToken(email string, ttl time.Duration) string {
 		ExpiresAt: time.Now().Add(ttl),
 	}
 
-	return token
+	return token, nil
 }
 
 func (s *CodeStore) VerifySetupToken(token string) (string, bool) {

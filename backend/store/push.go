@@ -30,7 +30,15 @@ func (s *Store) AddPushSubscription(ctx context.Context, userID, endpoint, p256d
 		return nil, err
 	}
 
-	return sub, nil
+	// OnConflict keeps the existing row (and its id) on a re-subscribe,
+	// so the fresh GenerateID above is not the stored one. Re-read by the
+	// unique endpoint to return the id the client must use to delete it.
+	var stored model.PushSubscription
+	if err := s.db.WithContext(ctx).Where("endpoint = ?", endpoint).First(&stored).Error; err != nil {
+		return nil, err
+	}
+
+	return &stored, nil
 }
 
 func (s *Store) GetPushSubscriptionsByUser(ctx context.Context, userID string) ([]model.PushSubscription, error) {

@@ -74,6 +74,9 @@ export function useGroupSettings({
 				await chatsRepo.upsert(chat);
 			} catch {
 				setGroupSettingsChatId(null);
+				// Drop the previous chat's settings so a failed open never
+				// shows stale data for another group.
+				setGroupSettings(null);
 			}
 		},
 		[token],

@@ -177,6 +177,7 @@ type FederatedInboundMessage struct {
 	FromNick         string
 	Text             string
 	ReplyToID        string
+	ThreadID         string
 	Location         *model.Location
 	Encrypted        bool
 	EncryptedPayload string
@@ -205,7 +206,10 @@ func (s *Service) SendFederatedMessage(
 	}
 
 	in.Text = strings.TrimSpace(in.Text)
-	if in.Text == "" {
+	// Parity with local sends: an empty text is fine when a location is
+	// attached. Files are not carried over federation (the peer has no way to
+	// fetch them), so location is the only attachment that exempts the text.
+	if in.Text == "" && in.Location == nil {
 		return nil, ErrEmptyMessage
 	}
 
@@ -220,6 +224,7 @@ func (s *Service) SendFederatedMessage(
 	msg := &model.Message{
 		ID:               in.ID,
 		ChatID:           chat.ID,
+		ThreadID:         in.ThreadID,
 		FromID:           in.FromID,
 		FromNick:         in.FromNick,
 		Text:             in.Text,
@@ -245,8 +250,15 @@ func (s *Service) SendFederatedMessage(
 		return nil, err
 	}
 
-	for _, memberID := range chat.Members {
-		s.sendEvent(memberID, sse.Event{Event: eventNewMessage, Data: msg})
+	if msg.ThreadID != "" {
+		eventData := map[string]any{keyThreadID: msg.ThreadID, keyMessage: msg}
+		for _, memberID := range chat.Members {
+			s.sendEvent(memberID, sse.Event{Event: eventThreadMessageNew, Data: eventData})
+		}
+	} else {
+		for _, memberID := range chat.Members {
+			s.sendEvent(memberID, sse.Event{Event: eventNewMessage, Data: msg})
+		}
 	}
 
 	return msg, nil
@@ -294,49 +306,35 @@ func (s *Service) EditFederatedMessage(
 		return nil, err
 	}
 
-	updated := &model.Message{
-		ID:               messageID,
-		ChatID:           chat.ID,
-		FromID:           stored.FromID,
-		FromNick:         stored.FromNick,
-		Text:             edit.Text,
-		Encrypted:        edit.Encrypted,
-		EncryptedPayload: edit.EncryptedPayload,
-		CreatedAt:        stored.CreatedAt,
-		EditedAt:         &now,
-	}
-
 	if edit.FileIDs != nil {
 		// Note: fileHashes (plaintext hash → file ID resolution) is not
 		// supported for federated edits. Remote servers send explicit fileIDs
 		// via ValidFileIDs. This is intentional: federation trust boundaries
 		// require explicit file references, not hash-based dedup.
+		// A non-nil (possibly empty) list replaces the attachments, so an
+		// empty list clears them.
 		validIDs := s.validFileIDsForMembers(ctx, chat.Members, edit.FileIDs)
 
-		if len(validIDs) > 0 {
-			if err := s.store.SetMessageFiles(ctx, messageID, validIDs); err != nil {
-				log().Info("federated edit: failed to set message files", "err", err)
-			}
-
-			files, _ := s.store.GetMessageFiles(ctx, messageID) //nolint:errcheck // best-effort: failure is not actionable
-			updated.Files = files
+		if err := s.store.SetMessageFiles(ctx, messageID, validIDs); err != nil {
+			log().Info("federated edit: failed to set message files", "err", err)
 		}
 	}
 
-	if len(edit.RawLocation) > 0 {
-		if edit.ClearLocation {
-			updated.Location = nil
-		} else {
-			updated.Location = edit.Location
-		}
-	} else if fresher, gerr := s.store.GetMessage(ctx, chat.ID, messageID); gerr == nil {
-		updated.Location = fresher.Location
+	// Re-read the row so the response carries the full state (reply context,
+	// files, thread, location) instead of a hand-built subset that the client
+	// would merge over its cached message.
+	updated, gerr := s.store.GetMessage(ctx, chat.ID, messageID)
+	if gerr != nil {
+		return nil, gerr
 	}
+
+	files, _ := s.store.GetMessageFiles(ctx, messageID) //nolint:errcheck // best-effort: failure is not actionable
+	updated.Files = files
 
 	if threadID != "" {
 		eventData := map[string]any{
 			keyThreadID: threadID,
-			keyMessage:  updated,
+			keyMessage:  &updated,
 		}
 
 		for _, memberID := range chat.Members {
@@ -344,11 +342,11 @@ func (s *Service) EditFederatedMessage(
 		}
 	} else {
 		for _, memberID := range chat.Members {
-			s.sendEvent(memberID, sse.Event{Event: eventMessageUpdated, Data: updated})
+			s.sendEvent(memberID, sse.Event{Event: eventMessageUpdated, Data: &updated})
 		}
 	}
 
-	return updated, nil
+	return &updated, nil
 }
 
 // DeleteFederatedMessage validates and applies an inbound federated deletion,
@@ -406,7 +404,11 @@ type SyncFederatedResponse struct {
 	ServerNow       time.Time              `json:"serverNow"`
 	Chats           []FederatedChatDTO     `json:"chats"`
 	Messages        []model.Message        `json:"messages"`
+	ThreadMessages  []model.Message        `json:"threadMessages"`
 	DeletedMessages []model.DeletedMessage `json:"deletedMessages"`
+	// NextSince continues the delta, same contract as SyncResponse.
+	NextSince   string `json:"nextSince,omitempty"`
+	NextSinceID string `json:"nextSinceId,omitempty"`
 }
 
 // FederatedChatDTO describes a chat that a peer shares with this server. The
@@ -427,39 +429,67 @@ func (s *Service) SyncFederated(
 	ctx context.Context,
 	serverDomain string,
 	since time.Time,
-) SyncFederatedResponse {
+	sinceID string,
+	limit int,
+) (SyncFederatedResponse, error) {
 
 	fedChatIDs := s.store.GetFederatedChatIDs(ctx, serverDomain)
 
-	msgs := s.store.MessagesChangedSince(ctx, fedChatIDs, since)
-	deleted := s.store.DeletedMessagesSince(ctx, fedChatIDs, since)
+	msgPage, err := s.store.MessagesChangedSince(ctx, fedChatIDs, since, sinceID, limit)
+	if err != nil {
+		return SyncFederatedResponse{}, err
+	}
+	threadPage, err := s.store.ThreadMessagesChangedSince(ctx, fedChatIDs, since, sinceID, limit)
+	if err != nil {
+		return SyncFederatedResponse{}, err
+	}
+	deletedPage, err := s.store.DeletedMessagesSince(ctx, fedChatIDs, since, sinceID, limit)
+	if err != nil {
+		return SyncFederatedResponse{}, err
+	}
 
+	msgs := msgPage.Rows
 	if msgs == nil {
 		msgs = []model.Message{}
 	}
 
+	threadMsgs := threadPage.Rows
+	if threadMsgs == nil {
+		threadMsgs = []model.Message{}
+	}
+
+	deleted := deletedPage.Rows
 	if deleted == nil {
 		deleted = []model.DeletedMessage{}
 	}
+
+	nextSince, nextSinceID := nextSyncCursor(
+		cursorPage{msgPage.NextSince, msgPage.NextID, msgPage.HasMore},
+		cursorPage{threadPage.NextSince, threadPage.NextID, threadPage.HasMore},
+		cursorPage{deletedPage.NextSince, deletedPage.NextID, deletedPage.HasMore},
+	)
 
 	return SyncFederatedResponse{
 		ServerNow:       time.Now().UTC(),
 		Chats:           s.federatedChats(ctx, fedChatIDs),
 		Messages:        msgs,
+		ThreadMessages:  threadMsgs,
 		DeletedMessages: deleted,
-	}
+		NextSince:       nextSince,
+		NextSinceID:     nextSinceID,
+	}, nil
 }
 
 // federatedChats describes the chats a peer shares with this server.
 func (s *Service) federatedChats(ctx context.Context, chatIDs []string) []FederatedChatDTO {
 	if len(chatIDs) == 0 {
-		return nil
+		return []FederatedChatDTO{}
 	}
 
 	chats, err := s.store.GetChatsByIDs(ctx, chatIDs)
 	if err != nil {
 		log().Warn("federated chats could not be loaded", "err", err)
-		return nil
+		return []FederatedChatDTO{}
 	}
 
 	out := make([]FederatedChatDTO, 0, len(chats))

@@ -228,3 +228,27 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 		).resolves.toBeNull();
 	});
 });
+
+describe("prepareFiles upload limit", () => {
+	it("rejects files over the server limit without reading them", async () => {
+		const { MaxSendableFileSize, prepareFiles } = await import(
+			"./chat-encrypt.ts"
+		);
+		const arrayBuffer = vi.fn();
+		const big = { size: MaxSendableFileSize + 1, arrayBuffer } as unknown as File;
+		const pending = {
+			id: "p1",
+			file: big,
+			blobUrl: "blob:big",
+			originalName: "big.bin",
+			size: MaxSendableFileSize + 1,
+			mimeType: "application/octet-stream",
+			fileType: "file",
+		} as const;
+
+		await expect(prepareFiles([pending], "tok")).rejects.toThrow(
+			/upload limit/,
+		);
+		expect(arrayBuffer).not.toHaveBeenCalled();
+	});
+});

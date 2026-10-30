@@ -81,7 +81,7 @@ describe("useDecryptedFileUrl", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("falls back to the encrypted URL on decryption failure", async () => {
+	it("surfaces an error on decryption failure instead of ciphertext", async () => {
 		const fileKey = await generateFileKey();
 		vi.stubGlobal(
 			"fetch",
@@ -92,11 +92,13 @@ describe("useDecryptedFileUrl", () => {
 			useDecryptedFileUrl(file(), { h1: fileKey }, "tok"),
 		);
 
-		// Encrypted URL from the fetch layer; the undecryptable blob falls
-		// back to it instead of crashing.
+		// The undecryptable blob must not be handed out as the file (that
+		// would download ciphertext under the original name): blobUrl stays
+		// null and the failure is reported via error.
 		await waitFor(() => {
-			expect(result.current.blobUrl).toBe("blob:mock");
+			expect(result.current.error).toBeTruthy();
 		});
+		expect(result.current.blobUrl).toBeNull();
 		vi.unstubAllGlobals();
 	});
 });

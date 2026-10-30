@@ -33,13 +33,16 @@ func (s *Service) HandleTyping(
 
 	if active {
 		key := chatID + ":" + userID
-		if last, ok := s.hub.LoadLastTyping(key); ok {
-			if t, ok := last.(time.Time); ok && time.Since(t) < TypingThrottleInterval {
-				return true
+		if s.hub != nil {
+			now := nowFunc()
+			if last, ok := s.hub.LoadLastTyping(key); ok {
+				if t, ok := last.(time.Time); ok && now.Sub(t) < TypingThrottleInterval {
+					return true
+				}
 			}
-		}
 
-		s.hub.StoreLastTyping(key, nowFunc())
+			s.hub.StoreLastTyping(key, now)
+		}
 	}
 
 	s.broadcastTyping(chat, userID, nick, active)

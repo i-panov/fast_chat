@@ -1,17 +1,20 @@
 import { useCallback } from "react";
-import { fileExistsByHash } from "../api.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
-import { type EncryptResult, encryptForChat } from "../e2ee/chat-encrypt.ts";
-import type { FileMeta } from "../e2ee/crypto.ts";
 import {
-	computePlaintextHash,
-	encryptFileStream,
-	type FileKey,
-	generateFileKey,
-} from "../e2ee/file-crypto.ts";
+	buildFileMaps,
+	dropPreparedBlobs,
+	type EncryptResult,
+	encryptForChat,
+	type PreparedFile,
+	prepareFiles,
+} from "../e2ee/chat-encrypt.ts";
+import type { FileMeta } from "../e2ee/crypto.ts";
+import type { FileKey } from "../e2ee/file-crypto.ts";
+import { getMyKeyPair } from "../e2ee/keys.ts";
+import { recoverKeptFileKeys } from "../e2ee/message.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
 import type {
 	FileInfo,
@@ -47,8 +50,11 @@ interface EditMessageParams {
 }
 
 interface UseMessageSenderReturn {
-	sendMessage: (params: SendMessageParams) => Promise<void>;
-	editMessage: (params: EditMessageParams) => Promise<void>;
+	// send/edit resolve to true when the op was enqueued and false when
+	// encryption was skipped (e.g. missing keys). They throw only when
+	// encryption itself fails, so the submit form can keep the draft.
+	sendMessage: (params: SendMessageParams) => Promise<boolean>;
+	editMessage: (params: EditMessageParams) => Promise<boolean>;
 	deleteMessage: (
 		chatId: string,
 		messageId: string,
@@ -85,90 +91,6 @@ function buildStoredFile(pf: PendingFile): FileInfo {
 	};
 }
 
-interface PreparedFile {
-	clientId: string;
-	fileKey?: FileKey;
-	plaintextHash: string;
-	// onServer indicates the file already exists in the account's own files on
-	// the server (matched by plaintext hash). No upload is needed; the message
-	// only needs the hash.
-	onServer?: boolean;
-	// fileMeta carries the client-side metadata of the file. It travels inside
-	// the encrypted message content, because the server cannot know the type
-	// of a file whose content it never sees.
-	fileMeta?: FileMeta;
-}
-
-// prepareFiles prepares each pending file for sending. It first checks whether
-// the account already uploaded this content (by plaintext hash) to skip the
-// upload entirely. Files that exist on the server are recorded hash-only.
-// Remaining files are encrypted (unless opted out) and stored as pending blobs
-// for outbox upload.
-async function prepareFiles(
-	pending: PendingFile[],
-	token: string | undefined,
-): Promise<PreparedFile[]> {
-	const out: PreparedFile[] = [];
-
-	for (const pf of pending) {
-		const clientId = genId();
-		const plaintextHash = await computePlaintextHash(pf.file);
-		const fileMeta: FileMeta = {
-			mimeType: pf.mimeType,
-			name: pf.originalName,
-			size: pf.size,
-		};
-
-		// Only an unencrypted file can skip the upload: its bytes on the server
-		// are the bytes of the original file, so a stored copy is
-		// interchangeable. An encrypted file uses a fresh key per upload, and
-		// the stored ciphertext belongs to the key of the upload that created
-		// it, so it is always uploaded again.
-		if (pf.encrypted === false && token !== undefined) {
-			try {
-				if (await fileExistsByHash(token, plaintextHash)) {
-					out.push({ clientId, plaintextHash, onServer: true, fileMeta });
-					continue;
-				}
-			} catch {
-				// On any error, fall through to upload the file.
-			}
-		}
-
-		if (pf.encrypted === false) {
-			// Unencrypted: store plaintext blob, no file key.
-			await pendingBlobsRepo.put({
-				id: clientId,
-				blob: pf.file,
-				name: pf.originalName,
-				mimeType: pf.mimeType,
-				size: pf.size,
-				plaintextHash,
-				encrypted: false,
-			});
-			out.push({ clientId, plaintextHash, fileMeta });
-			continue;
-		}
-
-		// Encrypted: generate file key, encrypt blob, store ciphertext.
-		const fileKey = await generateFileKey();
-		const ciphertext = await encryptFileStream(pf.file, fileKey);
-
-		await pendingBlobsRepo.put({
-			id: clientId,
-			blob: new Blob([ciphertext as unknown as ArrayBuffer]),
-			name: pf.originalName,
-			mimeType: pf.mimeType,
-			size: pf.size,
-			plaintextHash,
-			encrypted: true,
-		});
-		out.push({ clientId, fileKey, plaintextHash });
-	}
-
-	return out;
-}
-
 interface SenderDeps {
 	user: { id: string; nick: string } | null;
 	prepareFiles: (
@@ -185,7 +107,56 @@ interface SenderDeps {
 	token: string | undefined;
 }
 
-async function doSendMessage(params: SendMessageParams, deps: SenderDeps) {
+// removeSendOrEditOp removes the pending send/edit op for a message together
+// with its staged blobs (shared by the failed-delete and cancel paths).
+async function removeSendOrEditOp(
+	chatId: string,
+	messageId: string,
+): Promise<void> {
+	const ops = await outboxRepo.list();
+	const op = ops.find(
+		(o) =>
+			o.chatId === chatId &&
+			((o.kind === "send" && o.msgId === messageId) ||
+				(o.kind === "edit" && o.messageId === messageId)),
+	);
+	if (op !== undefined && op.kind !== "delete") {
+		if (op.pendingFileClientIds.length > 0) {
+			await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
+		}
+		await outboxRepo.remove(op.opId);
+	}
+}
+
+// encryptContentOrCleanup encrypts via deps and, when encryption throws,
+// drops the staged blobs before rethrowing so failures leave no orphans.
+async function encryptContentOrCleanup(
+	deps: SenderDeps,
+	prepared: PreparedFile[],
+	token: string | undefined,
+	chatId: string,
+	content: { text: string; location?: Location },
+	fileKeys: Record<string, FileKey>,
+	fileMeta?: Record<string, FileMeta>,
+): Promise<EncryptResult | null> {
+	try {
+		return await deps.encryptForChat(
+			token,
+			chatId,
+			content,
+			fileKeys,
+			fileMeta,
+		);
+	} catch (err) {
+		await dropPreparedBlobs(prepared);
+		throw err;
+	}
+}
+
+async function doSendMessage(
+	params: SendMessageParams,
+	deps: SenderDeps,
+): Promise<boolean> {
 	const {
 		chatId,
 		text,
@@ -195,55 +166,40 @@ async function doSendMessage(params: SendMessageParams, deps: SenderDeps) {
 		threadId: inThreadId,
 	} = params;
 	const { user, token } = deps;
-	if (user === null) return;
+	if (user === null) return false;
 
 	const msgId = genId();
 	const now = new Date().toISOString();
 
 	// Prepare files: skip upload for files already on server (by hash).
+	// Keys are indexed by plaintext hash (not file ID) because the server
+	// assigns different IDs to the same content on each side.
 	const prepared = await deps.prepareFiles(pendingFiles ?? [], token);
 	const fileInfos: FileInfo[] = (pendingFiles ?? []).map(buildStoredFile);
+	const { fileKeys, fileMeta, fileHashes, uploadClientIds } =
+		buildFileMaps(prepared);
 
-	// Build fileKeys map: plaintextHash → key. Only encrypted files have a key.
-	// Keyed by hash (not file ID) because the server assigns different IDs to
-	// the same content, but the hash stays the same for sender and receiver.
-	const fileKeys: Record<string, FileKey> = {};
-	const fileMeta: Record<string, FileMeta> = {};
-	for (let i = 0; i < prepared.length; i++) {
-		const key = prepared[i].fileKey;
-		if (key !== undefined) {
-			fileKeys[prepared[i].plaintextHash] = key;
-		}
-
-		const meta = prepared[i].fileMeta;
-		if (meta !== undefined) {
-			fileMeta[prepared[i].plaintextHash] = meta;
-		}
-	}
-
-	const encrypted = await deps.encryptForChat(
+	const encrypted = await encryptContentOrCleanup(
+		deps,
+		prepared,
 		token,
 		chatId,
 		{ text, location },
 		fileKeys,
 		fileMeta,
 	);
-	if (encrypted === null) return;
+	if (encrypted === null) {
+		// Encryption did not run (e.g. missing keys): drop the staged blobs
+		// so they do not linger as orphans in IDB.
+		await dropPreparedBlobs(prepared);
+		return false;
+	}
 
 	const payload = JSON.stringify({
 		v: 1,
 		nonce: encrypted.nonce,
 		envelopes: encrypted.envelopes,
 	});
-
-	// Files already on server are sent as hashes; the server resolves them
-	// to existing file IDs. Other files are uploaded via the outbox.
-	const fileHashes = prepared
-		.filter((p) => p.onServer)
-		.map((p) => p.plaintextHash);
-	const uploadClientIds = prepared
-		.filter((p) => !p.onServer)
-		.map((p) => p.clientId);
 
 	const stored: Message = {
 		id: msgId,
@@ -283,9 +239,13 @@ async function doSendMessage(params: SendMessageParams, deps: SenderDeps) {
 	});
 
 	scheduleSync();
+	return true;
 }
 
-async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
+async function doEditMessage(
+	params: EditMessageParams,
+	deps: SenderDeps,
+): Promise<boolean> {
 	const {
 		chatId,
 		messageId,
@@ -296,30 +256,32 @@ async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
 		filesToRemove,
 		threadId: inThreadId,
 	} = params;
-	const { token } = deps;
+	const { token, user } = deps;
 
 	const current = inThreadId
 		? await threadMessagesRepo.getById(inThreadId, messageId)
 		: await messagesRepo.getById(chatId, messageId);
-	if (current === undefined) return;
+	if (current === undefined) return false;
 
 	const blobIds = await deps.prepareFiles(pendingFiles ?? [], token);
 	const newFileInfos: FileInfo[] = (pendingFiles ?? []).map(buildStoredFile);
+	const {
+		fileKeys: newKeys,
+		fileMeta: newMeta,
+		fileHashes,
+		uploadClientIds,
+	} = buildFileMaps(blobIds);
 
-	// Build fileKeys map for new files: plaintextHash → key.
-	const fileKeys: Record<string, FileKey> = {};
-	const fileMeta: Record<string, FileMeta> = {};
-	for (let i = 0; i < blobIds.length; i++) {
-		const key = blobIds[i].fileKey;
-		if (key !== undefined) {
-			fileKeys[blobIds[i].plaintextHash] = key;
-		}
-
-		const meta = blobIds[i].fileMeta;
-		if (meta !== undefined) {
-			fileMeta[blobIds[i].plaintextHash] = meta;
-		}
-	}
+	// Kept files must stay decryptable after the edit: recover the previous
+	// content's fileKeys/fileMeta (keyed by plaintext hash) and merge them
+	// under the new files' entries. Unknown removed hashes simply leave
+	// harmless extra keys behind; missing keys would break recipients.
+	const kept =
+		user !== null
+			? await recoverKeptFileKeys(current, user.id, await getMyKeyPair())
+			: { fileKeys: {}, fileMeta: {} };
+	const fileKeys = { ...kept.fileKeys, ...newKeys };
+	const fileMeta = { ...kept.fileMeta, ...newMeta };
 
 	const removeSet = new Set(filesToRemove ?? []);
 	const keptFileIds: string[] = (current.files ?? [])
@@ -346,29 +308,25 @@ async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
 	void _ignored;
 	void _u;
 
-	const encrypted = await deps.encryptForChat(
+	const encrypted = await encryptContentOrCleanup(
+		deps,
+		blobIds,
 		token,
 		chatId,
 		{ text, location: nextLocation },
 		fileKeys,
 		fileMeta,
 	);
-	if (encrypted === null) return;
+	if (encrypted === null) {
+		await dropPreparedBlobs(blobIds);
+		return false;
+	}
 
 	const payload = JSON.stringify({
 		v: 1,
 		nonce: encrypted.nonce,
 		envelopes: encrypted.envelopes,
 	});
-
-	// Files already on server are sent as hashes; the server resolves them
-	// to existing file IDs. Other files are uploaded via the outbox.
-	const fileHashes = blobIds
-		.filter((p) => p.onServer)
-		.map((p) => p.plaintextHash);
-	const uploadClientIds = blobIds
-		.filter((p) => !p.onServer)
-		.map((p) => p.clientId);
 
 	const updated: Message = {
 		...base,
@@ -398,7 +356,7 @@ async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
 		fileHashes,
 		keptFileIds,
 		filesToRemove: filesToRemove ?? [],
-		clearLocation: false,
+		clearLocation: clearLocation === true,
 		clientEditedAt: now,
 		createdAt: now,
 		attempts: 0,
@@ -406,6 +364,7 @@ async function doEditMessage(params: EditMessageParams, deps: SenderDeps) {
 	});
 
 	scheduleSync();
+	return true;
 }
 
 async function doDeleteMessage(
@@ -418,19 +377,7 @@ async function doDeleteMessage(
 		: await messagesRepo.getById(chatId, messageId);
 
 	if (current?.status === "failed") {
-		const ops = await outboxRepo.list();
-		const op = ops.find(
-			(o) =>
-				o.chatId === chatId &&
-				((o.kind === "send" && o.msgId === messageId) ||
-					(o.kind === "edit" && o.messageId === messageId)),
-		);
-		if (op !== undefined && op.kind !== "delete") {
-			if (op.pendingFileClientIds.length > 0) {
-				await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
-			}
-			await outboxRepo.remove(op.opId);
-		}
+		await removeSendOrEditOp(chatId, messageId);
 		if (threadId !== undefined) {
 			await threadMessagesRepo.remove(threadId, messageId);
 		} else {
@@ -501,19 +448,7 @@ async function doCancelSendMessage(
 	if (current === undefined) return;
 	if (current.status !== "queued" && current.status !== "failed") return;
 
-	const ops = await outboxRepo.list();
-	const op = ops.find(
-		(o) =>
-			o.chatId === chatId &&
-			((o.kind === "send" && o.msgId === messageId) ||
-				(o.kind === "edit" && o.messageId === messageId)),
-	);
-	if (op !== undefined && op.kind !== "delete") {
-		if (op.pendingFileClientIds.length > 0) {
-			await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
-		}
-		await outboxRepo.remove(op.opId);
-	}
+	await removeSendOrEditOp(chatId, messageId);
 
 	if (threadId !== undefined) {
 		await threadMessagesRepo.remove(threadId, messageId);

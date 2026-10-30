@@ -4,7 +4,9 @@ server:
     static_dir: ../frontend/dist
 
 database:
-    path: /tmp/fastchat.db
+    # Local data file. Kept under ./data (mode 0700 at startup) so a reboot
+    # does not wipe it like /tmp and other users cannot read it.
+    path: ./data/fastchat.db
 
 uploads:
     dir: uploads

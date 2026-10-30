@@ -16,6 +16,10 @@ import { useAuth } from "../useAuth.tsx";
 
 type Step = "email" | "code" | "nick";
 
+// Empty chat search: TanStack requires explicit search params on every
+// navigation once validateSearch is defined.
+const CHAT_SEARCH = { chatId: undefined, threadId: undefined };
+
 export function LoginPage() {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
@@ -66,7 +70,7 @@ export function LoginPage() {
 					email.trim().toLowerCase(),
 					result.expiresAt,
 				);
-				void navigate({ to: "/chat" });
+				void navigate({ to: "/chat", search: CHAT_SEARCH });
 			}
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t("error.verifyCode"));
@@ -88,7 +92,7 @@ export function LoginPage() {
 				email.trim().toLowerCase(),
 				result.expiresAt,
 			);
-			void navigate({ to: "/chat" });
+			void navigate({ to: "/chat", search: CHAT_SEARCH });
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t("error.register"));
 		} finally {
@@ -108,7 +112,7 @@ export function LoginPage() {
 							<Button
 								variant="light"
 								onClick={() => {
-									void navigate({ to: "/chat" });
+									void navigate({ to: "/chat", search: CHAT_SEARCH });
 								}}
 							>
 								{t("login.backToChat")}

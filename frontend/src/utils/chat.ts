@@ -46,17 +46,47 @@ export function formatTime(isoStr: string, locale?: string): string {
 }
 
 export function extractCodeText(children: unknown): string {
+	if (children === null || children === undefined) return "";
 	if (typeof children === "string") return children;
-	if (Array.isArray(children)) return children.map(String).join("");
-	return String(children);
+	if (typeof children === "number" || typeof children === "boolean") {
+		return String(children);
+	}
+	if (Array.isArray(children)) return children.map(extractCodeText).join("");
+	if (typeof children === "object") {
+		const withProps = children as { props?: { children?: unknown } };
+		if (withProps.props !== undefined && "children" in withProps.props) {
+			return extractCodeText(withProps.props.children);
+		}
+		if ("children" in children) {
+			return extractCodeText((children as { children?: unknown }).children);
+		}
+	}
+	return "";
+}
+
+export function isValidLocation(loc: unknown): loc is Location {
+	if (typeof loc !== "object" || loc === null) return false;
+	const { lat, lng } = loc as { lat: unknown; lng: unknown };
+	return (
+		typeof lat === "number" &&
+		typeof lng === "number" &&
+		Number.isFinite(lat) &&
+		Number.isFinite(lng) &&
+		lat >= -90 &&
+		lat <= 90 &&
+		lng >= -180 &&
+		lng <= 180
+	);
 }
 
 export function formatCoords(loc: Location): string {
+	if (!isValidLocation(loc)) return "—";
 	const lat = loc.lat.toFixed(6);
 	const lng = loc.lng.toFixed(6);
 	return `${lat}, ${lng}`;
 }
 
 export function openStreetMapURL(loc: Location): string {
+	if (!isValidLocation(loc)) return "#";
 	return `https://www.openstreetmap.org/?mlat=${loc.lat}&mlon=${loc.lng}#map=17/${loc.lat}/${loc.lng}`;
 }

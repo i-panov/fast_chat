@@ -256,18 +256,19 @@ func (rl *RateLimiter) Allow(ip string) bool {
 
 // pruneTimestamps returns the timestamps still inside the window.
 //
-// Timestamps are appended in order, so the live ones are the tail and the first
-// entry at or before the cutoff marks where they start. Reslicing keeps this
-// allocation-free on the request path, and it leaves the spare capacity after
-// the new length for the next append.
+// Timestamps are appended in order, so the live ones are the tail: every
+// entry at or before the cutoff is expired and dropped, the first entry
+// after it starts the live suffix. Reslicing keeps this allocation-free
+// on the request path, and it leaves the spare capacity after the new
+// length for the next append.
 func pruneTimestamps(timestamps []time.Time, cutoff time.Time) []time.Time {
 	for i, t := range timestamps {
-		if !t.After(cutoff) {
-			return timestamps[:i]
+		if t.After(cutoff) {
+			return timestamps[i:]
 		}
 	}
 
-	return timestamps
+	return nil
 }
 
 // Close stops the cleanup goroutine. It is safe to call more than once, so two

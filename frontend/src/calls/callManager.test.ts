@@ -370,4 +370,84 @@ describe("callManager", () => {
 		manager.toggleMute();
 		expect(manager.state().muted).toBe(false);
 	});
+
+	it("ignores an ending without an identifier", async () => {
+		const manager = createCallManager(fakeApi());
+
+		await manager.start("chat-1");
+		manager.handleEnded({ reason: "hangup" });
+
+		expect(manager.state().phase).toBe("outgoing");
+		expect(manager.state().callId).toBe("c-1");
+	});
+
+	it("loads the ICE servers when accepting", async () => {
+		const api = fakeApi({
+			getIceServers: vi.fn().mockResolvedValue({ stun: [], turn: [] }),
+		});
+		const manager = createCallManager(api);
+
+		incoming(manager);
+		await manager.accept();
+
+		expect(api.getIceServers).toHaveBeenCalledWith("tok");
+		expect(manager.state().phase).toBe("active");
+	});
+
+	it("stays incoming when the media is refused", async () => {
+		vi.stubGlobal("navigator", {
+			mediaDevices: {
+				getUserMedia: vi.fn().mockRejectedValue(new Error("denied")),
+			},
+		});
+
+		const manager = createCallManager(fakeApi());
+
+		incoming(manager);
+		await expect(manager.accept()).rejects.toThrow("denied");
+
+		expect(manager.state().phase).toBe("incoming");
+		expect(manager.state().callId).toBe("c-2");
+
+		// The user can try again.
+		stubMedia();
+		await manager.accept();
+
+		expect(manager.state().phase).toBe("active");
+	});
+
+	it("tolerates one broken ICE candidate", async () => {
+		const api = fakeApi();
+		const manager = createCallManager(api);
+
+		incoming(manager);
+		manager.handleIce({ callId: "c-2", candidate: { candidate: "good-1" } });
+		manager.handleIce({ callId: "c-2", candidate: { candidate: "good-2" } });
+
+		const seen: unknown[] = [];
+		// eslint-disable-next-line @typescript-eslint/unbound-method -- saving the prototype method to restore it after the test
+		const original = FakePeerConnection.prototype.addIceCandidate;
+
+		FakePeerConnection.prototype.addIceCandidate = function (
+			this: FakePeerConnection,
+			candidate: unknown,
+		) {
+			seen.push(candidate);
+
+			if (seen.length === 1) return Promise.reject(new Error("broken"));
+
+			this.addedCandidates.push(candidate);
+
+			return Promise.resolve();
+		};
+
+		try {
+			await manager.accept();
+
+			expect(manager.state().phase).toBe("active");
+			expect(seen).toHaveLength(2);
+		} finally {
+			FakePeerConnection.prototype.addIceCandidate = original;
+		}
+	});
 });

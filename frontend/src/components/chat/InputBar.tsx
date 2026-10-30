@@ -111,7 +111,13 @@ function ReplyBanner({
 						)
 					)}
 				</div>
-				<ActionIcon variant="subtle" color="gray" size="sm" onClick={onCancel}>
+				<ActionIcon
+					variant="subtle"
+					color="gray"
+					size="sm"
+					onClick={onCancel}
+					aria-label={t("media.closeMenu")}
+				>
 					<X size={16} />
 				</ActionIcon>
 			</div>
@@ -133,7 +139,13 @@ function EditBanner({ onCancel }: { onCancel: () => void }) {
 			<Text size="sm" c="blue">
 				{t("input.editBanner")}
 			</Text>
-			<ActionIcon variant="subtle" color="gray" size="sm" onClick={onCancel}>
+			<ActionIcon
+				variant="subtle"
+				color="gray"
+				size="sm"
+				onClick={onCancel}
+				aria-label={t("media.closeMenu")}
+			>
 				<X size={16} />
 			</ActionIcon>
 		</Paper>
@@ -272,7 +284,7 @@ function isSendDisabled(
 		text.trim().length === 0 &&
 		(pendingFiles ?? []).length === 0 &&
 		(existingFiles ?? []).length === 0 &&
-		pendingLocation === null &&
+		pendingLocation == null &&
 		!hasExistingLocation
 	);
 }
@@ -378,10 +390,12 @@ function MessageForm({
 				onPaste={(e) => {
 					const files = collectClipboardFiles(e.clipboardData?.items);
 					if (files.length === 0) return;
-					e.preventDefault();
+					// Attach files but keep the default text paste so
+					// clipboard text is not lost when files are present.
 					void onAttachFiles?.(files);
 				}}
 				onKeyDown={(e) => {
+					if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 					if (e.key === "Enter" && !e.shiftKey) {
 						e.preventDefault();
 						e.currentTarget.form?.requestSubmit();

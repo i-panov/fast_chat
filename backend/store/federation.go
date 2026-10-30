@@ -32,6 +32,10 @@ func (s *Store) EnqueueFederationOp(ctx context.Context, op *model.FederationOp)
 	return s.db.WithContext(ctx).Create(&op).Error
 }
 
+// defaultFederationOpsLimit bounds one outbox tick when the caller passes
+// limit<=0. An unbounded tick would load the whole queue into memory.
+const defaultFederationOpsLimit = 100
+
 // DueFederationOps returns the operations that are ready to be sent, oldest
 // first.
 //
@@ -43,7 +47,14 @@ func (s *Store) EnqueueFederationOp(ctx context.Context, op *model.FederationOp)
 // delivered it blocks the queue of its peer — also across the ticks: without
 // that barrier the next tick would send the message of a chat whose creation
 // is still queued, and the peer would answer 404.
+//
+// Ordering by created_at assumes the UTC normalization in InitDB: legacy rows
+// carrying mixed offsets would sort by wall-clock digits instead of instants.
 func (s *Store) DueFederationOps(ctx context.Context, limit int) ([]*model.FederationOp, error) {
+	if limit <= 0 {
+		limit = defaultFederationOpsLimit
+	}
+
 	var ops []*model.FederationOp
 
 	now := time.Now().UTC()
@@ -58,11 +69,8 @@ func (s *Store) DueFederationOps(ctx context.Context, limit int) ([]*model.Feder
 	query := s.db.WithContext(ctx).
 		Where("next_attempt_at <= ?", now).
 		Where(blockedByEarlier, now).
-		Order("created_at ASC, id ASC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
+		Order("created_at ASC, id ASC").
+		Limit(limit)
 
 	if err := query.Find(&ops).Error; err != nil {
 		return nil, err

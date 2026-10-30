@@ -527,7 +527,7 @@ func TestFederatedSignedRequestFlow(t *testing.T) {
 	uri := "/api/federated/users/search?q=alice"
 	ownDomain := fm.ServerDomain()
 
-	signature, err := fm.Sign(http.MethodGet, uri, nil, timestamp, "test-nonce")
+	signature, err := fm.Sign(ownDomain, http.MethodGet, uri, nil, timestamp, "test-nonce")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,13 +630,13 @@ func TestOversizedFederatedBodyRejected(t *testing.T) {
 	ts := newDomainTestServer(t)
 	h, fm := ts.Handler, ts.Fed
 
-	// A signed federated request whose body exceeds the 10 MiB signature cap
+	// A signed federated request whose body exceeds the 1 MiB signature cap
 	// must be rejected with 413 (pre-migration parity), not panic or hang.
 	timestamp := time.Now().Unix()
 	uri := "/api/federated/chats"
-	big := bytes.Repeat([]byte("a"), (10<<20)+1024)
+	big := bytes.Repeat([]byte("a"), (1<<20)+1024)
 
-	signature, err := fm.Sign(http.MethodPost, uri, big, timestamp, "test-nonce")
+	signature, err := fm.Sign(fm.ServerDomain(), http.MethodPost, uri, big, timestamp, "test-nonce")
 	if err != nil {
 		t.Fatal(err)
 	}

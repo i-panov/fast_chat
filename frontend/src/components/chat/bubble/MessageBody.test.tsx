@@ -98,6 +98,58 @@ describe("message body", () => {
 		expect(writeText).toHaveBeenCalledWith("const a = 1;\n");
 	});
 
+	it("blocks javascript: links as plain text", () => {
+		renderBody({ text: "see [x](javascript:alert(1))" });
+
+		expect(screen.getByText("x").closest("a")).toBeNull();
+		expect(screen.getByText("x").tagName).toBe("SPAN");
+	});
+
+	it("blocks data: links as plain text", () => {
+		renderBody({ text: "see [x](data:text/html,<h1>hi</h1>)" });
+
+		expect(screen.getByText("x").closest("a")).toBeNull();
+	});
+
+	it("allows mailto links", () => {
+		renderBody({ text: "see [mail](mailto:a@example.com)" });
+
+		const link = screen.getByText("mail").closest("a");
+		expect(link?.getAttribute("href")).toBe("mailto:a@example.com");
+	});
+
+	it("does not load remote images without a click", () => {
+		const { container } = renderBody({
+			text: "![pixel](https://evil.example/1.png)",
+		});
+
+		expect(container.querySelector("img")).toBeNull();
+		expect(
+			screen.getByText(/Load external image|message\.loadExternalImage/),
+		).toBeTruthy();
+	});
+
+	it("loads a remote image after the placeholder click", () => {
+		const { container } = renderBody({
+			text: "![pixel](https://evil.example/1.png)",
+		});
+
+		fireEvent.click(
+			screen.getByText(/Load external image|message\.loadExternalImage/),
+		);
+
+		const img = container.querySelector("img");
+		expect(img?.getAttribute("src")).toBe("https://evil.example/1.png");
+	});
+
+	it("drops oversized inline images to alt text", () => {
+		const big = `data:image/png;base64,${"A".repeat(200_001)}`;
+		const { container } = renderBody({ text: `![big](${big})` });
+
+		expect(container.querySelector("img")).toBeNull();
+		expect(screen.getByText("big").tagName).toBe("SPAN");
+	});
+
 	it("shows delivery status for own messages", () => {
 		const { container } = renderBody({
 			text: "hi",

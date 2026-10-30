@@ -59,8 +59,8 @@ func (e *StatusError) Unwrap() error {
 }
 
 // IsPermanentError reports whether the peer will refuse the operation the
-// same way next time: a 4xx answer that is not a timeout, a rate limit or a
-// refused signature.
+// same way next time: a 4xx answer that is not a timeout, a rate limit, a
+// refused signature, or a missing resource.
 //
 // Such an operation must not be retried forever: with the per-peer order of
 // the outbox it would block every later operation of that peer.
@@ -68,6 +68,11 @@ func (e *StatusError) Unwrap() error {
 // A refused signature (401) is not permanent: it also happens when the clock
 // of the peer is off or when it rotated its key and the cached one is stale.
 // The attempt limit of the outbox is what bounds that case.
+//
+// A 404 is not permanent either: when the creation of a chat is still queued
+// behind a retry, every message of that chat answers 404 until the creation
+// lands. Dropping them as permanent would cascade one failure into the loss
+// of the whole chat, so 404s ride the same bounded retry queue instead.
 func IsPermanentError(err error) bool {
 	var statusErr *StatusError
 	if !errors.As(err, &statusErr) {
@@ -75,7 +80,7 @@ func IsPermanentError(err error) bool {
 	}
 
 	switch statusErr.Status {
-	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests:
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusNotFound:
 		return false
 	}
 
@@ -85,6 +90,7 @@ func IsPermanentError(err error) bool {
 // Client performs signed server-to-server requests against federation peers.
 type Client struct {
 	manager *Manager
+	mu      sync.RWMutex
 	http    *http.Client
 	scheme  string
 	domain  string
@@ -101,6 +107,13 @@ type Client struct {
 
 	sem chan struct{}
 	wg  sync.WaitGroup
+
+	// deadLetters keeps the operations dropped after a permanent rejection
+	// or the attempt limit, so the loss stays inspectable instead of
+	// vanishing into a log line. Bounded; the oldest entry is evicted first.
+	dlqMu       sync.Mutex
+	deadLetters []DeadLetter
+	dlqDropped  int
 }
 
 // NewClient builds a client that signs requests with the manager's key and
@@ -177,7 +190,7 @@ func (c *Client) Request(ctx context.Context, method, urlStr string, body any) (
 			return nil, fmt.Errorf("federation nonce: %w", nonceErr)
 		}
 
-		signature, signErr := c.manager.Sign(method, parsedURL.RequestURI(), bodyBytes, timestamp, nonce)
+		signature, signErr := c.manager.Sign(parsedURL.Host, method, parsedURL.RequestURI(), bodyBytes, timestamp, nonce)
 		if signErr != nil {
 			return nil, fmt.Errorf("federation sign: %w", signErr)
 		}
@@ -194,12 +207,18 @@ func (c *Client) Request(ctx context.Context, method, urlStr string, body any) (
 			req.Header.Set(httputil.RequestIDHeader, id)
 		}
 
-		resp, err := c.http.Do(req)
+		resp, err := c.httpClient().Do(req)
 		if err != nil {
 			lastErr = err
 
 			if attempt < retryCount-1 {
-				time.Sleep(time.Duration(1<<attempt) * time.Second)
+				backoff := time.Duration(1<<attempt) * time.Second
+
+				select {
+				case <-ctx.Done():
+					return nil, fmt.Errorf("federated request cancelled while backing off: %w", ctx.Err())
+				case <-time.After(backoff):
+				}
 			}
 
 			continue
@@ -237,9 +256,12 @@ func (c *Client) Request(ctx context.Context, method, urlStr string, body any) (
 
 // SetHTTPClient replaces the HTTP client used for signed requests. Same
 // rationale as Manager.SetHTTPClient: tests that run federation peers on
-// loopback httptest servers must bypass the SSRF-safe dialer. Not safe for
-// concurrent use with in-flight requests; call before any traffic starts.
+// loopback httptest servers must bypass the SSRF-safe dialer. The swap is
+// guarded by a mutex so in-flight requests keep the client they started
+// with; prefer calling it before traffic starts.
 func (c *Client) SetHTTPClient(h *http.Client) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.http = h
 }
 
@@ -287,6 +309,15 @@ func (c *Client) CloseWaitContext(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// httpClient returns the HTTP client used for signed requests under a read
+// lock: SetHTTPClient may replace it while requests are in flight.
+func (c *Client) httpClient() *http.Client {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.http
 }
 
 // background runs a federated request in its own goroutine with a timeout

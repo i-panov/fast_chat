@@ -19,6 +19,10 @@ const (
 	colReadAt       = "read_at"
 )
 
+// readStatusBulkChunk bounds one bulk upsert. A status row binds four
+// columns, so this stays far below the driver's variable ceiling.
+const readStatusBulkChunk = 2000
+
 // MarkMessagesRead marks messages as read for a user. Uses upsert to
 // handle the case where a status already exists (e.g. delivered -> read).
 func (s *Store) MarkMessagesRead(ctx context.Context, messageIDs []string, userID string) error {
@@ -27,21 +31,29 @@ func (s *Store) MarkMessagesRead(ctx context.Context, messageIDs []string, userI
 	}
 
 	now := time.Now().UTC()
-	statuses := make([]model.MessageReadStatus, 0, len(messageIDs))
 
-	for _, msgID := range messageIDs {
-		statuses = append(statuses, model.MessageReadStatus{
-			MessageID: msgID,
-			UserID:    userID,
-			Status:    statusRead,
-			ReadAt:    now,
-		})
+	for start := 0; start < len(messageIDs); start += readStatusBulkChunk {
+		end := min(start+readStatusBulkChunk, len(messageIDs))
+
+		statuses := make([]model.MessageReadStatus, 0, end-start)
+		for _, msgID := range messageIDs[start:end] {
+			statuses = append(statuses, model.MessageReadStatus{
+				MessageID: msgID,
+				UserID:    userID,
+				Status:    statusRead,
+				ReadAt:    now,
+			})
+		}
+
+		if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: colMessageID}, {Name: colUserID}},
+			DoUpdates: clause.AssignmentColumns([]string{colStatus, colReadAt}),
+		}).Create(&statuses).Error; err != nil {
+			return err
+		}
 	}
 
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: colMessageID}, {Name: colUserID}},
-		DoUpdates: clause.AssignmentColumns([]string{colStatus, colReadAt}),
-	}).Create(&statuses).Error
+	return nil
 }
 
 // MarkMessagesDelivered marks messages as delivered for a user. Uses upsert
@@ -52,24 +64,32 @@ func (s *Store) MarkMessagesDelivered(ctx context.Context, messageIDs []string, 
 	}
 
 	now := time.Now().UTC()
-	statuses := make([]model.MessageReadStatus, 0, len(messageIDs))
 
-	for _, msgID := range messageIDs {
-		statuses = append(statuses, model.MessageReadStatus{
-			MessageID: msgID,
-			UserID:    userID,
-			Status:    statusDelivered,
-			ReadAt:    now,
-		})
+	for start := 0; start < len(messageIDs); start += readStatusBulkChunk {
+		end := min(start+readStatusBulkChunk, len(messageIDs))
+
+		statuses := make([]model.MessageReadStatus, 0, end-start)
+		for _, msgID := range messageIDs[start:end] {
+			statuses = append(statuses, model.MessageReadStatus{
+				MessageID: msgID,
+				UserID:    userID,
+				Status:    statusDelivered,
+				ReadAt:    now,
+			})
+		}
+
+		if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: colMessageID}, {Name: colUserID}},
+			DoUpdates: clause.Assignments(map[string]any{
+				colStatus: gorm.Expr("CASE WHEN "+colStatus+" = ? THEN ? ELSE ? END", statusRead, statusRead, statusDelivered),
+				colReadAt: gorm.Expr("CASE WHEN "+colStatus+" = ? THEN "+colReadAt+" ELSE ? END", statusRead, now),
+			}),
+		}).Create(&statuses).Error; err != nil {
+			return err
+		}
 	}
 
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: colMessageID}, {Name: colUserID}},
-		DoUpdates: clause.Assignments(map[string]any{
-			colStatus: gorm.Expr("CASE WHEN " + colStatus + " = '" + statusRead + "' THEN '" + statusRead + "' ELSE '" + statusDelivered + "' END"),
-			colReadAt: gorm.Expr("CASE WHEN "+colStatus+" = '"+statusRead+"' THEN "+colReadAt+" ELSE ? END", now),
-		}),
-	}).Create(&statuses).Error
+	return nil
 }
 
 // GetMessageReadStatusesBatch returns read statuses for a user for the given messages.
@@ -80,10 +100,17 @@ func (s *Store) GetMessageReadStatusesBatch(ctx context.Context, messageIDs []st
 	}
 
 	var statuses []model.MessageReadStatus
-	if err := s.db.WithContext(ctx).
-		Where(colMessageID+" IN ? AND "+colUserID+" = ?", messageIDs, userID).
-		Find(&statuses).Error; err != nil {
-		return nil, err
+	for start := 0; start < len(messageIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(messageIDs))
+
+		var chunk []model.MessageReadStatus
+		if err := s.db.WithContext(ctx).
+			Where(colMessageID+" IN ? AND "+colUserID+" = ?", messageIDs[start:end], userID).
+			Find(&chunk).Error; err != nil {
+			return nil, err
+		}
+
+		statuses = append(statuses, chunk...)
 	}
 
 	result := make(map[string]string, len(statuses))
@@ -104,10 +131,17 @@ func (s *Store) GetMessageReadStatusesForSender(ctx context.Context, messageIDs 
 
 	// Find messages sent by the sender
 	var sentMessages []*model.Message
-	if err := s.db.WithContext(ctx).
-		Where("id IN ? AND from_id = ?", messageIDs, senderID).
-		Find(&sentMessages).Error; err != nil {
-		return nil, err
+	for start := 0; start < len(messageIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(messageIDs))
+
+		var chunk []*model.Message
+		if err := s.db.WithContext(ctx).
+			Where("id IN ? AND from_id = ?", messageIDs[start:end], senderID).
+			Find(&chunk).Error; err != nil {
+			return nil, err
+		}
+
+		sentMessages = append(sentMessages, chunk...)
 	}
 
 	if len(sentMessages) == 0 {
@@ -121,10 +155,17 @@ func (s *Store) GetMessageReadStatusesForSender(ctx context.Context, messageIDs 
 
 	// Get read statuses for those messages (excluding the sender themselves)
 	var readStatuses []model.MessageReadStatus
-	if err := s.db.WithContext(ctx).
-		Where(colMessageID+" IN ? AND "+colUserID+" != ? AND "+colStatus+" = '"+statusRead+"'", sentIDs, senderID).
-		Find(&readStatuses).Error; err != nil {
-		return nil, err
+	for start := 0; start < len(sentIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(sentIDs))
+
+		var chunk []model.MessageReadStatus
+		if err := s.db.WithContext(ctx).
+			Where(colMessageID+" IN ? AND "+colUserID+" != ? AND "+colStatus+" = ?", sentIDs[start:end], senderID, statusRead).
+			Find(&chunk).Error; err != nil {
+			return nil, err
+		}
+
+		readStatuses = append(readStatuses, chunk...)
 	}
 
 	result := make(map[string][]string, len(sentMessages))
@@ -148,10 +189,17 @@ func (s *Store) GetMessageDeliveryStatuses(ctx context.Context, messageIDs []str
 
 	// Find messages sent by the sender
 	var sentMessages []*model.Message
-	if err := s.db.WithContext(ctx).
-		Where("id IN ? AND from_id = ?", messageIDs, senderID).
-		Find(&sentMessages).Error; err != nil {
-		return nil, err
+	for start := 0; start < len(messageIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(messageIDs))
+
+		var chunk []*model.Message
+		if err := s.db.WithContext(ctx).
+			Where("id IN ? AND from_id = ?", messageIDs[start:end], senderID).
+			Find(&chunk).Error; err != nil {
+			return nil, err
+		}
+
+		sentMessages = append(sentMessages, chunk...)
 	}
 
 	if len(sentMessages) == 0 {
@@ -165,10 +213,17 @@ func (s *Store) GetMessageDeliveryStatuses(ctx context.Context, messageIDs []str
 
 	// Get all delivery statuses for those messages (excluding the sender)
 	var readStatuses []model.MessageReadStatus
-	if err := s.db.WithContext(ctx).
-		Where(colMessageID+" IN ? AND "+colUserID+" != ?", sentIDs, senderID).
-		Find(&readStatuses).Error; err != nil {
-		return nil, err
+	for start := 0; start < len(sentIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(sentIDs))
+
+		var chunk []model.MessageReadStatus
+		if err := s.db.WithContext(ctx).
+			Where(colMessageID+" IN ? AND "+colUserID+" != ?", sentIDs[start:end], senderID).
+			Find(&chunk).Error; err != nil {
+			return nil, err
+		}
+
+		readStatuses = append(readStatuses, chunk...)
 	}
 
 	// Calculate highest status per message
@@ -198,7 +253,7 @@ func (s *Store) GetMessageReaders(ctx context.Context, messageID string, limit i
 	var readers []string
 	if err := s.db.WithContext(ctx).
 		Model(&model.MessageReadStatus{}).
-		Where(colMessageID+" = ? AND "+colStatus+" = '"+statusRead+"'", messageID).
+		Where(colMessageID+" = ? AND "+colStatus+" = ?", messageID, statusRead).
 		Order(colReadAt+" ASC").
 		Limit(limit).
 		Pluck(colUserID, &readers).Error; err != nil {
@@ -216,10 +271,17 @@ func (s *Store) GetMessagesByIDs(ctx context.Context, messageIDs []string, chatI
 	}
 
 	var messages []model.Message
-	if err := s.db.WithContext(ctx).
-		Where("id IN ? AND chat_id = ?", messageIDs, chatID).
-		Find(&messages).Error; err != nil {
-		return nil, err
+	for start := 0; start < len(messageIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(messageIDs))
+
+		var chunk []model.Message
+		if err := s.db.WithContext(ctx).
+			Where("id IN ? AND chat_id = ?", messageIDs[start:end], chatID).
+			Find(&chunk).Error; err != nil {
+			return nil, err
+		}
+
+		messages = append(messages, chunk...)
 	}
 
 	return messages, nil

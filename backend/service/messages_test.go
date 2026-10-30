@@ -62,6 +62,18 @@ func TestParseLocationPatch(t *testing.T) {
 	if _, _, err := parseLocationPatch(json.RawMessage(`{bad`)); !errors.Is(err, ErrInvalidCoordinates) {
 		t.Fatalf("malformed: expected ErrInvalidCoordinates, got %v", err)
 	}
+
+	// Explicit nulls decode to zero without an error from encoding/json,
+	// which would pin the message to (0,0).
+	for _, raw := range []string{
+		`{"lat":null,"lng":37.6}`,
+		`{"lat":55.7,"lng":null}`,
+		`{"lat":null,"lng":null}`,
+	} {
+		if _, _, err := parseLocationPatch(json.RawMessage(raw)); !errors.Is(err, ErrInvalidCoordinates) {
+			t.Fatalf("%s: expected ErrInvalidCoordinates, got %v", raw, err)
+		}
+	}
 }
 
 // newHubbedTestService returns a service with a live SSE hub so a test can

@@ -22,7 +22,7 @@ interface ChatSubmitDeps {
 		location?: Location | undefined;
 		replyToId?: string;
 		threadId?: string;
-	}) => Promise<void>;
+	}) => Promise<boolean | undefined>;
 	editMessage: (opts: {
 		chatId: string;
 		messageId: string;
@@ -31,7 +31,7 @@ interface ChatSubmitDeps {
 		location?: Location | null;
 		clearLocation?: boolean;
 		threadId?: string;
-	}) => Promise<void>;
+	}) => Promise<boolean | undefined>;
 	selectChat: (id: string) => void;
 	closeThread: () => void;
 	clearAllPendingFiles: () => void;
@@ -87,48 +87,74 @@ export function useChatSubmit(
 						? undefined
 						: editingMessage.location;
 
-				await editMessage({
-					chatId: editingMessage.chatId,
-					messageId: editingMessage.messageId,
-					text,
-					pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
-					location: nextLocation,
-					clearLocation: nextLocation === null,
-					threadId: editingMessage.threadId,
-				});
+				try {
+					const ok = await editMessage({
+						chatId: editingMessage.chatId,
+						messageId: editingMessage.messageId,
+						text,
+						pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
+						location: nextLocation,
+						clearLocation: nextLocation === null,
+						threadId: editingMessage.threadId,
+					});
+					if (ok === false) return;
+				} catch {
+					return;
+				}
 				clearEditing();
+				setInputText("");
+				clearAllPendingFiles();
+				clearReply();
+				clearPendingLocation();
 			} else if (pendingChatWith !== null) {
-				const { chat } = await createChat(token, {
-					type: "private",
-					withUserId: pendingChatWith,
-				});
-				await chatsRepo.upsert(chat);
-				selectChat(chat.id);
-				closeThread();
-				await sendMessage({
-					chatId: chat.id,
-					text,
-					pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
-					location: pendingLocation ?? undefined,
-				});
-				clearPendingChat();
+				try {
+					const { chat } = await createChat(token, {
+						type: "private",
+						withUserId: pendingChatWith,
+					});
+					await chatsRepo.upsert(chat);
+					selectChat(chat.id);
+					closeThread();
+					// Drop the pending state now that the chat exists and is
+					// selected: if the first send fails, the retry must go
+					// through the active-chat path instead of creating yet
+					// another private chat.
+					clearPendingChat();
+					const ok = await sendMessage({
+						chatId: chat.id,
+						text,
+						pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
+						location: pendingLocation ?? undefined,
+					});
+					if (ok === false) return;
+				} catch {
+					return;
+				}
+				setInputText("");
+				clearAllPendingFiles();
+				clearReply();
+				clearPendingLocation();
 			} else if (activeThreadId !== null && activeChatId === null) {
 				return;
 			} else if (activeChatId !== null) {
-				await sendMessage({
-					chatId: activeChatId,
-					text,
-					pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
-					location: pendingLocation ?? undefined,
-					replyToId: replyToMessage?.messageId,
-					threadId: activeThreadId ?? undefined,
-				});
+				try {
+					const ok = await sendMessage({
+						chatId: activeChatId,
+						text,
+						pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
+						location: pendingLocation ?? undefined,
+						replyToId: replyToMessage?.messageId,
+						threadId: activeThreadId ?? undefined,
+					});
+					if (ok === false) return;
+				} catch {
+					return;
+				}
+				setInputText("");
+				clearAllPendingFiles();
+				clearReply();
+				clearPendingLocation();
 			}
-
-			setInputText("");
-			clearAllPendingFiles();
-			clearReply();
-			clearPendingLocation();
 		},
 		[
 			token,

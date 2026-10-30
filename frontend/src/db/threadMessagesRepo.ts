@@ -10,6 +10,23 @@ import type { StoredThreadMessage } from "./schema.ts";
 
 export type StoredThreadStatus = MessageStatus | "deleted";
 
+// unionReadBy merges the readers of the stored row and the incoming
+// record: either side may carry readers the other one missed (delta
+// replay vs SSE event arriving in any order), and picking one side
+// would silently drop read receipts.
+function unionReadBy(
+	existing: string[] | undefined,
+	incoming: string[] | undefined,
+): string[] | undefined {
+	if (
+		(existing === undefined || existing.length === 0) &&
+		(incoming === undefined || incoming.length === 0)
+	) {
+		return incoming;
+	}
+	return [...new Set([...(existing ?? []), ...(incoming ?? [])])];
+}
+
 function stamp(
 	msg: Message,
 	status: StoredThreadStatus,
@@ -68,9 +85,18 @@ export const threadMessagesRepo = {
 			(existing.status === "queued" || existing.status === "failed")
 				? existing.status
 				: "sent");
+		// Preserve delivery/read receipts like messagesRepo: a delta or SSE
+		// replay must not reset an already-"read" message or drop readers.
+		const deliveryStatus =
+			existing?.deliveryStatus === "read"
+				? "read"
+				: (message.deliveryStatus ?? existing?.deliveryStatus);
+		const readBy = unionReadBy(existing?.readBy, message.readBy);
 		await db.put("threadMessages", {
 			...stamp(message, resolvedStatus, threadId),
 			createdAt,
+			deliveryStatus,
+			readBy,
 		});
 		notify();
 	},
@@ -86,7 +112,17 @@ export const threadMessagesRepo = {
 		for (const m of messages) {
 			const existing = await tx.store.get(m.id);
 			const createdAt = existing?.createdAt ?? m.createdAt;
-			await tx.store.put({ ...stamp(m, status, threadId), createdAt });
+			const deliveryStatus =
+				existing?.deliveryStatus === "read"
+					? "read"
+					: (m.deliveryStatus ?? existing?.deliveryStatus);
+			const readBy = unionReadBy(existing?.readBy, m.readBy);
+			await tx.store.put({
+				...stamp(m, status, threadId),
+				createdAt,
+				deliveryStatus,
+				readBy,
+			});
 		}
 		await tx.done;
 		notify();

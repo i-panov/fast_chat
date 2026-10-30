@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -38,13 +39,13 @@ func (s *Store) DB() *gorm.DB {
 }
 
 // Ping verifies the underlying database connection is alive.
-func (s *Store) Ping() error {
+func (s *Store) Ping(ctx context.Context) error {
 	sqlDB, err := s.db.DB()
 	if err != nil {
 		return err
 	}
 
-	return sqlDB.Ping()
+	return sqlDB.PingContext(ctx)
 }
 
 func (s *Store) Codes() *CodeStore {
@@ -69,16 +70,29 @@ func (s *Store) AddConnection(userID string) bool {
 
 func (s *Store) RemoveConnection(userID string) bool {
 	s.connMu.Lock()
-	s.conns[userID]--
-	remaining := s.conns[userID]
+	connCount, ok := s.conns[userID]
+	if !ok || connCount <= 0 {
+		// A disconnect for a stranger (or a duplicate disconnect) is not
+		// an offline transition: report false without stamping offline
+		// and without growing the map.
+		if ok {
+			delete(s.conns, userID)
+		}
+		s.connMu.Unlock()
+		return false
+	}
 
-	if remaining <= 0 {
-		s.conns[userID] = 0
+	connCount--
+	remaining := connCount
+	if connCount == 0 {
+		delete(s.conns, userID)
+	} else {
+		s.conns[userID] = connCount
 	}
 
 	s.connMu.Unlock()
 
-	if remaining <= 0 {
+	if remaining == 0 {
 		s.onlineMu.Lock()
 		delete(s.online, userID)
 		s.offlineSince[userID] = time.Now()
@@ -107,6 +121,10 @@ func (s *Store) OfflineSince(userID string) time.Time {
 }
 
 func (s *Store) Close() {
+	s.connMu.Lock()
+	s.conns = make(map[string]int)
+	s.connMu.Unlock()
+
 	s.onlineMu.Lock()
 	s.online = make(map[string]struct{})
 	s.offlineSince = make(map[string]time.Time)

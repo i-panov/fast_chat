@@ -31,10 +31,10 @@ func newTestManager(t *testing.T, serverDomain string) *Manager {
 // testNonce is the nonce the tests sign their requests with.
 const testNonce = "test-nonce"
 
-func mustSign(t *testing.T, m *Manager, method, requestURI string, body []byte, ts int64) string {
+func mustSign(t *testing.T, m *Manager, audience, method, requestURI string, body []byte, ts int64) string {
 	t.Helper()
 
-	sig, err := m.Sign(method, requestURI, body, ts, testNonce)
+	sig, err := m.Sign(audience, method, requestURI, body, ts, testNonce)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestSignVerifyRoundtrip(t *testing.T) {
 
 	ts := time.Now().Unix()
 	body := []byte(`{"hello":"world"}`)
-	sig := mustSign(t, other, http.MethodPost, "/api/federated/messages", body, ts)
+	sig := mustSign(t, other, "local.test", http.MethodPost, "/api/federated/messages", body, ts)
 
 	if !m.Verify(context.Background(), remote, sig, http.MethodPost, "/api/federated/messages", body, ts, testNonce) {
 		t.Fatal("Verify returned false for a freshly signed payload")
@@ -82,7 +82,7 @@ func TestVerifyRejectsWrongServer(t *testing.T) {
 
 	ts := time.Now().Unix()
 	body := []byte("payload")
-	sig := mustSign(t, other, http.MethodPost, "/x", body, ts)
+	sig := mustSign(t, other, "local.test", http.MethodPost, "/x", body, ts)
 
 	if m.Verify(context.Background(), "remote-b.test", sig, http.MethodPost, "/x", body, ts, testNonce) {
 		t.Fatal("Verify accepted a signature minted for a different server")
@@ -96,7 +96,7 @@ func TestVerifyRejectsTamperedBody(t *testing.T) {
 	m.cachePublicKey("remote.test", other.publicKey, time.Hour)
 
 	ts := time.Now().Unix()
-	sig := mustSign(t, other, http.MethodPost, "/x", []byte("original"), ts)
+	sig := mustSign(t, other, "local.test", http.MethodPost, "/x", []byte("original"), ts)
 
 	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", []byte("tampered"), ts, testNonce) {
 		t.Fatal("Verify accepted a signature over a tampered body")
@@ -110,7 +110,7 @@ func TestVerifyRejectsExpiredTimestamp(t *testing.T) {
 	m.cachePublicKey("remote.test", other.publicKey, time.Hour)
 
 	old := time.Now().Add(-2 * time.Hour).Unix()
-	sig := mustSign(t, other, http.MethodPost, "/x", nil, old)
+	sig := mustSign(t, other, "local.test", http.MethodPost, "/x", nil, old)
 
 	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", nil, old, testNonce) {
 		t.Fatal("Verify accepted a signature with an old timestamp")
@@ -124,7 +124,7 @@ func TestVerifyRejectsFutureTimestamp(t *testing.T) {
 	m.cachePublicKey("remote.test", other.publicKey, time.Hour)
 
 	future := time.Now().Add(2 * time.Hour).Unix()
-	sig := mustSign(t, other, http.MethodPost, "/x", nil, future)
+	sig := mustSign(t, other, "local.test", http.MethodPost, "/x", nil, future)
 
 	if m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", nil, future, testNonce) {
 		t.Fatal("Verify accepted a signature with a future timestamp")
@@ -139,7 +139,7 @@ func TestVerifyRejectsReplay(t *testing.T) {
 
 	ts := time.Now().Unix()
 	body := []byte("hello")
-	sig := mustSign(t, other, http.MethodPost, "/x", body, ts)
+	sig := mustSign(t, other, "local.test", http.MethodPost, "/x", body, ts)
 
 	if !m.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", body, ts, testNonce) {
 		t.Fatal("first Verify call should succeed")
@@ -266,5 +266,110 @@ func TestWellKnownHandler(t *testing.T) {
 
 	if body.PublicKeyPem != pemStr {
 		t.Errorf("publicKeyPem mismatch")
+	}
+}
+
+func TestVerifyRejectsCrossServerReplay(t *testing.T) {
+	sender := newTestManager(t, "remote.test")
+	a := newTestManager(t, "a.test")
+	b := newTestManager(t, "b.test")
+	a.cachePublicKey("remote.test", sender.publicKey, time.Hour)
+	b.cachePublicKey("remote.test", sender.publicKey, time.Hour)
+
+	ts := time.Now().Unix()
+	body := []byte("hello")
+	sig := mustSign(t, sender, "a.test", http.MethodPost, "/x", body, ts)
+
+	if !a.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", body, ts, testNonce) {
+		t.Fatal("Verify at the intended recipient should succeed")
+	}
+
+	// Same bytes, same sender, different recipient: a forward of A's request
+	// to B must not verify.
+	if b.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", body, ts, "other-nonce") {
+		t.Fatal("Verify accepted a signature minted for another recipient")
+	}
+}
+
+func TestIsValidFederationDomain(t *testing.T) {
+	valid := []string{
+		"example.com",
+		"chat.example.com",
+		"example.com:8443",
+		"127.0.0.1:8080",
+		"10.0.0.1:8080",
+		"[::1]:8080",
+		"peer.test",
+	}
+	for _, d := range valid {
+		if !isValidFederationDomain(d) {
+			t.Errorf("isValidFederationDomain(%q) = false, want true", d)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"not a domain",
+		"peer/@evil",
+		"peer?x=1",
+		"peer#frag",
+		"user@peer.test",
+		"peer.test/path",
+		"x:127.0.0.1:9000",
+		"peer.test:99999",
+		"peer.test:",
+		"peer_test.com",
+		"a\r\nb",
+	}
+	for _, d := range invalid {
+		if isValidFederationDomain(d) {
+			t.Errorf("isValidFederationDomain(%q) = true, want false", d)
+		}
+	}
+}
+
+func TestManagerCloseIsIdempotent(t *testing.T) {
+	m := newTestManager(t, "local.test")
+	m.Close()
+	m.Close()
+}
+
+func TestVerifyNegativeCacheShortCircuitsFetch(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	ts := time.Now().Unix()
+	if m.Verify(context.Background(), "missing.invalid", "sig", http.MethodPost, "/x", nil, ts, testNonce) {
+		t.Fatal("Verify with an unresolvable domain should fail")
+	}
+
+	m.mu.RLock()
+	_, negOk := m.negCache["missing.invalid"]
+	m.mu.RUnlock()
+
+	if !negOk {
+		t.Fatal("a failed fetch should populate the negative cache")
+	}
+
+	// Second call must fail without another fetch: point the client at a
+	// transport that panics if used.
+	m.SetHTTPClient(&http.Client{Transport: roundTripPanic{}})
+
+	if m.Verify(context.Background(), "missing.invalid", "sig", http.MethodPost, "/x", nil, ts, "nonce-2") {
+		t.Fatal("negative-cached Verify should fail without fetching")
+	}
+}
+
+type roundTripPanic struct{}
+
+func (roundTripPanic) RoundTrip(_ *http.Request) (*http.Response, error) {
+	panic("negative cache was bypassed: fetch attempted")
+}
+
+func TestNonceMapIsCapped(t *testing.T) {
+	m := newTestManager(t, "local.test")
+	m.nonceCount.Store(maxNonces)
+
+	if m.markNonceFresh("remote.test", "sig") {
+		t.Fatal("markNonceFresh past the cap should refuse")
 	}
 }

@@ -12,12 +12,16 @@ interface Props {
 function Dot({ color, label }: { color: string; label: string }) {
 	return (
 		<Tooltip label={label} withArrow>
-			<div
+			<span
+				role="img"
+				aria-label={label}
+				tabIndex={0}
 				style={{
 					width: 10,
 					height: 10,
 					borderRadius: "50%",
 					background: color,
+					display: "block",
 				}}
 			/>
 		</Tooltip>

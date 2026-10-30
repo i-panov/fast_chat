@@ -143,6 +143,24 @@ describe("request()", () => {
 		expect(unauthSpy).not.toHaveBeenCalled();
 		off();
 	});
+
+	it("forwards an abort signal to fetch", async () => {
+		fetchMock.mockResolvedValue(
+			jsonResponse(200, {
+				serverNow: "2026-01-01T00:00:00Z",
+				chats: [],
+				deletedChats: [],
+				messages: [],
+				deletedMessages: [],
+			}),
+		);
+		const controller = new AbortController();
+
+		await getSync("tok", "2026-08-30T10:00:00.000Z", controller.signal);
+
+		const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(init.signal).toBe(controller.signal);
+	});
 });
 
 describe("endpoint helpers", () => {

@@ -158,7 +158,10 @@ describe("useAuth", () => {
 		});
 
 		expect(result.current.activeAccount).toBeNull();
-		expect(navigate).toHaveBeenCalledWith({ to: "/login" });
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/login",
+			search: { add: undefined },
+		});
 	});
 
 	it("removing an inactive account keeps the session", () => {
@@ -204,7 +207,10 @@ describe("useAuth", () => {
 		});
 
 		expect(result.current.accounts).toEqual([]);
-		expect(navigate).toHaveBeenCalledWith({ to: "/login" });
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/login",
+			search: { add: undefined },
+		});
 	});
 
 	it("rotates tokens and follows the active session", () => {
@@ -288,7 +294,10 @@ describe("useAuth", () => {
 		});
 
 		expect(result.current.accounts).toEqual([]);
-		expect(navigate).toHaveBeenCalledWith({ to: "/login" });
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/login",
+			search: { add: undefined },
+		});
 	});
 
 	it("keeps the session when another account is unauthorized", () => {
@@ -317,5 +326,57 @@ describe("useAuth", () => {
 
 		expect(result.current.activeAccount?.token).toBe("t1");
 		expect(navigate).not.toHaveBeenCalled();
+	});
+
+	it("scrubs the last-active pointer when its account is removed", () => {
+		const { result } = renderHook(() => useAuth(), { wrapper });
+
+		act(() => {
+			result.current.addAccount(
+				"t1",
+				{ id: "a:test", nick: "a" },
+				"a@x",
+				"2027",
+			);
+		});
+		act(() => {
+			result.current.addAccount(
+				"t2",
+				{ id: "b:test", nick: "b" },
+				"b@x",
+				"2027",
+			);
+		});
+		expect(localStorage.getItem("activeToken")).toBe("t2");
+
+		act(() => {
+			result.current.removeAccount("t2");
+		});
+
+		expect(localStorage.getItem("activeToken")).toBeNull();
+	});
+
+	it("merges accounts arriving from another tab without dropping local ones", () => {
+		const { result } = renderHook(() => useAuth(), { wrapper });
+
+		act(() => {
+			result.current.addAccount(
+				"t1",
+				{ id: "a:test", nick: "a" },
+				"a@x",
+				"2027",
+			);
+		});
+
+		// Another tab wrote only its own account on top of an empty list.
+		act(() => {
+			localStorage.setItem("accounts", JSON.stringify([account("t9", "z")]));
+			window.dispatchEvent(new StorageEvent("storage", { key: "accounts" }));
+		});
+
+		expect(result.current.accounts.map((a) => a.token).sort()).toEqual([
+			"t1",
+			"t9",
+		]);
 	});
 });

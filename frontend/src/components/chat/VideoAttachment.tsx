@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/a11y/useMediaCaption: no subtitle tracks exist yet; the placeholder <track> was removed to avoid console warnings. */
 import { Loader, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import type { FileKey } from "../../e2ee/file-crypto.ts";
@@ -18,8 +19,13 @@ export function VideoAttachment({ file, fileKeys }: Props) {
 	const { t } = useTranslation();
 	const { activeAccount } = useAuth();
 
-	// Use streaming for unencrypted files; decrypt-then-load for encrypted.
-	const key = file.hash !== undefined ? fileKeys?.[file.hash] : undefined;
+	// Encrypted iff a decryption key exists (by hash or by file id). A file
+	// without a hash must not fall through to plaintext streaming when a key
+	// is present — that would feed ciphertext into the player.
+	// (useDecryptedFileUrl applies the same hash→id fallback internally.)
+	const key =
+		(file.hash !== undefined ? fileKeys?.[file.hash] : undefined) ??
+		fileKeys?.[file.id];
 	const decrypted = useDecryptedFileUrl(
 		key !== undefined ? file : undefined,
 		fileKeys,
@@ -53,8 +59,6 @@ export function VideoAttachment({ file, fileKeys }: Props) {
 				borderRadius: BORDER_RADIUS_SM,
 				display: "block",
 			}}
-		>
-			<track kind="captions" />
-		</video>
+		/>
 	);
 }

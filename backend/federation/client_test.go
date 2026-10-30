@@ -158,15 +158,18 @@ func verifyRecorded(t *testing.T, verifier *Manager, req recordedRequest) {
 
 func TestClientPatchAndDelete(t *testing.T) {
 	m := newTestManager(t, "local.test")
-	verifier := newTestManager(t, "verify.test")
-	verifier.cachePublicKey("local.test", m.publicKey, time.Hour)
 
 	srv, rec := newRecordingServer(t)
+	peer := peerHost(t, srv)
+
+	// The verifier stands in for the receiving server: its domain must be
+	// the audience the request was signed for (the host it was sent to).
+	verifier := newTestManager(t, peer)
+	verifier.cachePublicKey("local.test", m.publicKey, time.Hour)
 
 	c := NewClient(m, "local.test", "http", 5, false)
 	c.SetHTTPClient(srv.Client())
 
-	peer := peerHost(t, srv)
 	ctx := testContextWithRequestID()
 	c.Patch(ctx, peer, "/api/federated/chats", map[string]string{"op": "edit"})
 	c.Delete(ctx, peer, "/api/federated/messages/m1")

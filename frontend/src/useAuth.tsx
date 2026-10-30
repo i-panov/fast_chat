@@ -10,6 +10,10 @@ import { revokeSession } from "./api.ts";
 import { setActiveAccountKey } from "./db/init.ts";
 import { getRouter } from "./router.tsx";
 import { onUnauthorized } from "./utils/authEvents.ts";
+import {
+	clearAccountSwitchState,
+	deleteAccountDB,
+} from "./utils/clearAllData.ts";
 
 interface StoredUser {
 	id: string;
@@ -45,6 +49,29 @@ interface AuthContextValue {
 const ACCOUNTS_KEY = "accounts";
 const ACTIVE_TOKEN_KEY = "activeToken";
 
+// Security note: account tokens are kept in localStorage in plaintext, so
+// any XSS in this origin can steal every stored session. This is accepted
+// as a trade-off for multi-account persistence without a backend session
+// broker. Mitigations in place: short-lived tokens with refresh
+// (updateAccountToken), dropping the token on first 401 (onUnauthorized),
+// and scrubbing every reference on remove/logout. Do not add more secrets
+// to these keys, and keep the XSS surface (dangerouslySetInnerHTML,
+// untrusted URLs) minimal.
+
+function mergeAccounts(
+	current: StoredAccount[],
+	incoming: StoredAccount[],
+): StoredAccount[] {
+	// Union by user id for concurrent multi-tab writes: the token is a
+	// rotating field, not an identity — merging by token would resurrect a
+	// stale entry as a ghost duplicate after updateAccountToken rotates
+	// t1->t2 in another tab (incoming=[t2], prev=[t1]). Incoming wins on
+	// field conflicts (fresher refresh).
+	const byUser = new Map(current.map((a) => [a.user.id, a] as const));
+	for (const a of incoming) byUser.set(a.user.id, a);
+	return [...byUser.values()];
+}
+
 function readAccounts(): StoredAccount[] {
 	try {
 		return JSON.parse(
@@ -60,7 +87,13 @@ function writeAccounts(accounts: StoredAccount[]) {
 }
 
 function readActiveToken(): string | null {
-	return sessionStorage.getItem(ACTIVE_TOKEN_KEY);
+	try {
+		return sessionStorage.getItem(ACTIVE_TOKEN_KEY);
+	} catch {
+		// Storage may be blocked (private mode, disabled cookies): no
+		// session token is recoverable, treat as logged out.
+		return null;
+	}
 }
 
 function writeActiveToken(token: string) {
@@ -124,7 +157,19 @@ function useAuthState() {
 	useEffect(() => {
 		function handleStorage(e: StorageEvent) {
 			if (e.key === ACCOUNTS_KEY) {
-				setAccounts(readAccounts());
+				const incoming = readAccounts();
+				setAccounts((prev) => {
+					// A pure removal (incoming ⊆ prev) replaces the state so
+					// a logged-out session is not resurrected; otherwise
+					// union by user id so a concurrent add is not lost.
+					// Identity is the user id (see mergeAccounts): token
+					// rotation must not look like a new account.
+					const isPureRemoval = incoming.every((a) =>
+						prev.some((p) => p.user.id === a.user.id),
+					);
+					if (isPureRemoval) return incoming;
+					return mergeAccounts(prev, incoming);
+				});
 			}
 		}
 		window.addEventListener("storage", handleStorage);
@@ -133,15 +178,34 @@ function useAuthState() {
 
 	useEffect(() => {
 		const unsub = onUnauthorized((token) => {
+			const leaving =
+				readAccounts().find((a) => a.token === token) ?? null;
 			const updated = readAccounts().filter((a) => a.token !== token);
 			writeAccounts(updated);
 			setAccounts(updated);
+			// Scrub the last-active pointer too, or a restart would keep a
+			// stale reference to the revoked session.
+			if (readLastActiveToken() === token) {
+				removeLastActiveToken();
+			}
+			// Like logout: wipe the evicted account's IDB unless another
+			// live session of the same user still shares it.
+			if (
+				leaving !== null &&
+				!updated.some((a) => a.user.id === leaving.user.id)
+			) {
+				void deleteAccountDB(leaving.user.id);
+			}
+			clearAccountSwitchState();
 			if (activeToken === token) {
 				const next = updated[0]?.token ?? null;
 				setActiveToken(next);
 				if (next === null) {
 					removeActiveToken();
-					void getRouter().navigate({ to: "/login" });
+					void getRouter().navigate({
+						to: "/login",
+						search: { add: undefined },
+					});
 				} else {
 					writeActiveToken(next);
 				}
@@ -157,12 +221,13 @@ function useAuthState() {
 
 	const addAccount = useCallback(
 		(token: string, user: StoredUser, email: string, expiresAt: string) => {
-			const updated = readAccounts();
-			if (!updated.some((a) => a.token === token)) {
-				updated.push({ token, user, email, expiresAt });
-				writeAccounts(updated);
-				setAccounts(updated);
-			}
+			// Re-read storage at write time and merge by user id so an account
+			// added concurrently from another tab is not overwritten.
+			const updated = mergeAccounts(readAccounts(), [
+				{ token, user, email, expiresAt },
+			]);
+			writeAccounts(updated);
+			setAccounts(updated);
 			setActiveToken(token);
 			writeActiveToken(token);
 			writeLastActiveToken(token);
@@ -175,13 +240,21 @@ function useAuthState() {
 			const updated = readAccounts().filter((a) => a.token !== token);
 			writeAccounts(updated);
 			setAccounts(updated);
+			// Scrub the last-active pointer when it referenced the removed
+			// session, or a restart would keep pointing at a dead token.
+			if (readLastActiveToken() === token) {
+				removeLastActiveToken();
+			}
 			if (activeToken === token) {
 				const next = updated[0]?.token ?? null;
 				setActiveToken(next);
 				if (next === null) {
 					removeActiveToken();
 					removeLastActiveToken();
-					void getRouter().navigate({ to: "/login" });
+					void getRouter().navigate({
+						to: "/login",
+						search: { add: undefined },
+					});
 				} else {
 					writeActiveToken(next);
 				}
@@ -210,16 +283,29 @@ function useAuthState() {
 		[],
 	);
 
+	const switchAccountWithCleanup = useCallback(
+		(token: string) => {
+			clearAccountSwitchState();
+			switchAccount(token);
+		},
+		[switchAccount],
+	);
+
 	const logout = useCallback(() => {
 		const token = activeToken;
+		const leaving = accounts.find((a) => a.token === token) ?? null;
 		removeAccount(token ?? "");
+		clearAccountSwitchState();
+		if (leaving !== null) {
+			void deleteAccountDB(leaving.user.id);
+		}
 
 		// The token is revoked on the server as well: a token that only
 		// disappears from this browser stays usable until it expires.
 		if (token !== null) {
 			void revokeSession(token);
 		}
-	}, [activeToken, removeAccount]);
+	}, [activeToken, accounts, removeAccount]);
 
 	const activeAccount =
 		activeToken !== null
@@ -233,7 +319,7 @@ function useAuthState() {
 	return {
 		accounts,
 		activeAccount,
-		switchAccount,
+		switchAccount: switchAccountWithCleanup,
 		addAccount,
 		removeAccount,
 		updateAccountToken,

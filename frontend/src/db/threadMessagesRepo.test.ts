@@ -112,4 +112,40 @@ describe("threadMessagesRepo", () => {
 			(await threadMessagesRepo.getById("th1", "m1"))?.deliveryStatus,
 		).toBe("read");
 	});
+
+	it("preserves read receipts and queued status on re-upsert", async () => {
+		await threadMessagesRepo.upsert(msg("m1"), "th1", "queued");
+		await threadMessagesRepo.upsert(msg("m1"), "th1");
+
+		expect((await threadMessagesRepo.getById("th1", "m1"))?.status).toBe(
+			"queued",
+		);
+
+		await threadMessagesRepo.updateDeliveryStatus("m1", "read", ["bob:test"]);
+		await threadMessagesRepo.upsert(
+			{
+				...msg("m1"),
+				deliveryStatus: "delivered",
+			},
+			"th1",
+		);
+
+		const stored = await threadMessagesRepo.getById("th1", "m1");
+		expect(stored?.deliveryStatus).toBe("read");
+		expect(stored?.readBy).toEqual(["bob:test"]);
+	});
+
+	it("unions readers from both sides instead of dropping either", async () => {
+		await threadMessagesRepo.upsert(
+			{ ...msg("m1"), readBy: ["bob:test"] },
+			"th1",
+		);
+		await threadMessagesRepo.upsert(
+			{ ...msg("m1"), readBy: ["carol:test"] },
+			"th1",
+		);
+
+		const stored = await threadMessagesRepo.getById("th1", "m1");
+		expect(stored?.readBy?.sort()).toEqual(["bob:test", "carol:test"]);
+	});
 });

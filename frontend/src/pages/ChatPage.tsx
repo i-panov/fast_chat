@@ -1,4 +1,5 @@
 import { ActionIcon, Center, Group, Paper, Stack, Text } from "@mantine/core";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Settings } from "lucide-react";
 import type * as React from "react";
 import { useEffect } from "react";
@@ -12,7 +13,7 @@ import { ChatList } from "../components/chat/ChatList.tsx";
 import { CreateGroupModal } from "../components/chat/CreateGroupModal.tsx";
 import { EndedCallNotice } from "../components/chat/EndedCallNotice.tsx";
 import { GroupSettingsModal } from "../components/chat/GroupSettingsModal.tsx";
-import { IncomingCallOverlay } from "../components/chat/IncomingCallOverlay.tsx";
+import { IncomingCallSection } from "../components/chat/IncomingCallOverlay.tsx";
 import { InputBar } from "../components/chat/InputBar.tsx";
 import { LocationPickerModal } from "../components/chat/LocationPickerModal.tsx";
 import { MessageList } from "../components/chat/MessageList.tsx";
@@ -354,7 +355,11 @@ export function ChatPage() {
 
 	usePushNotifications(s.activeAccount?.token ?? "");
 
+	const routeSearch = useSearch({ from: "/chat", shouldThrow: false });
+	const navigate = useNavigate();
+
 	useEffect(() => {
+		if (!("serviceWorker" in navigator)) return;
 		function handleMessage(event: MessageEvent) {
 			const data = event.data as {
 				type?: string;
@@ -371,34 +376,45 @@ export function ChatPage() {
 			}
 		}
 
-		navigator.serviceWorker.addEventListener("message", handleMessage);
+		const sw = navigator.serviceWorker;
+		sw.addEventListener("message", handleMessage);
 
 		return () => {
-			navigator.serviceWorker.removeEventListener("message", handleMessage);
+			sw.removeEventListener("message", handleMessage);
 		};
 	}, [selectChat, handleOpenThread]);
 
 	useEffect(() => {
-		const params = new URLSearchParams(window.location.search);
-		const chatId = params.get("chatId");
+		const chatId =
+			routeSearch?.chatId ??
+			new URLSearchParams(window.location.search).get("chatId");
 		if (!chatId) return;
+		const threadId =
+			routeSearch?.threadId ??
+			new URLSearchParams(window.location.search).get("threadId");
 
-		const threadId = params.get("threadId");
+		void navigate({
+			to: "/chat",
+			search: { chatId: undefined, threadId: undefined },
+			replace: true,
+		});
 
-		params.delete("chatId");
-		params.delete("threadId");
-		const cleanSearch = params.toString();
-		window.history.replaceState(
-			{},
-			"",
-			cleanSearch ? `/chat?${cleanSearch}` : "/chat",
-		);
+		// Keep the URL clean even when the router is mocked or the app
+		// runs under a basepath: drop only the consumed params.
+		const params = new URLSearchParams(window.location.search);
+		if (params.has("chatId") || params.has("threadId")) {
+			params.delete("chatId");
+			params.delete("threadId");
+			const clean = params.toString();
+			const base = window.location.pathname;
+			window.history.replaceState({}, "", clean ? `${base}?${clean}` : base);
+		}
 
 		selectChat(chatId);
 		if (threadId) {
 			handleOpenThread(threadId);
 		}
-	}, [selectChat, handleOpenThread]);
+	}, [selectChat, handleOpenThread, routeSearch, navigate]);
 
 	if (s.activeAccount === null || s.user === null) {
 		return null;
@@ -475,16 +491,7 @@ export function ChatPage() {
 						</Paper>
 					)}
 				</div>
-				<IncomingCallOverlay
-					open={s.call.phase === "incoming"}
-					peerNick={callPeerNick(s)}
-					onAccept={() => {
-						void s.acceptCall();
-					}}
-					onReject={() => {
-						void s.rejectCall();
-					}}
-				/>
+				<IncomingCallSection s={s} peerNick={callPeerNick(s)} />
 				{s.call.phase === "ended" && (
 					<div style={{ padding: "8px 16px" }}>
 						<EndedCallNotice

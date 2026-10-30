@@ -12,6 +12,15 @@ import (
 const (
 	HeartbeatInterval = 30 * time.Second
 	channelBuffer     = 128
+	// maxHubConnections bounds the hub map: every Register allocates a
+	// 128-event channel, so anonymous callers naming fresh connectionIds
+	// must not grow it without bound. Authenticated connections always get
+	// a slot; under pressure the oldest unauthenticated one is evicted.
+	maxHubConnections = 10000
+	// hubAuthTimeout is how long an unauthenticated connection may hold its
+	// slot: Register happens before the auth request, and a client that
+	// never authenticates must not keep the channel forever.
+	hubAuthTimeout = 30 * time.Second
 )
 
 var ErrConnectionNotFound = errors.New("connection not found")
@@ -30,6 +39,9 @@ type Connection struct {
 	Authorized bool
 	Warned     bool
 	Channel    chan Event
+	// CreatedAt marks the Register time: an unauthenticated connection
+	// older than hubAuthTimeout is stale and may be reclaimed.
+	CreatedAt time.Time
 }
 
 func (c *Connection) Lock()   { c.mu.Lock() }
@@ -97,13 +109,54 @@ func (h *Hub) Register(connectionID string) *Connection {
 		}
 	}
 
+	now := time.Now()
+	h.reapStaleUnauthenticatedLocked(now)
+
+	if len(h.connections) >= maxHubConnections {
+		// No stale slots to reclaim. Evict the oldest unauthenticated
+		// connection so an anonymous flood cannot deny slots to
+		// authenticated users; if every slot is authenticated, log and
+		// still register (never return nil: the transport dereferences
+		// the result unconditionally).
+		if victim := h.oldestUnauthenticatedLocked(); victim != "" {
+			if conn, ok := h.connections[victim]; ok {
+				close(conn.Channel)
+				delete(h.connections, victim)
+			}
+
+			slog.Warn("SSE hub at capacity, evicted oldest unauthenticated connection",
+				"evicted", victim, "new", connectionID)
+		} else {
+			slog.Warn("SSE hub over capacity with all connections authenticated",
+				"connections", len(h.connections), "new", connectionID)
+		}
+	}
+
 	conn := &Connection{
-		ID:      connectionID,
-		Channel: make(chan Event, channelBuffer),
+		ID:        connectionID,
+		Channel:   make(chan Event, channelBuffer),
+		CreatedAt: now,
 	}
 	h.connections[connectionID] = conn
 
 	return conn
+}
+
+// ConnectionCount reports the number of registered connections.
+func (h *Hub) ConnectionCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	return len(h.connections)
+}
+
+// CloseExpiredUnauthenticated closes unauthenticated connections older than
+// hubAuthTimeout and reports how many were reclaimed.
+func (h *Hub) CloseExpiredUnauthenticated(now time.Time) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.reapStaleUnauthenticatedLocked(now)
 }
 
 func (h *Hub) Unregister(connectionID string, conn *Connection) {
@@ -197,6 +250,56 @@ func (h *Hub) Send(userID string, event Event) {
 			slog.Info("SSE channel full, dropping event", "userID", userID)
 		}
 	}
+}
+
+// reapStaleUnauthenticatedLocked closes unauthenticated connections that
+// never completed auth within hubAuthTimeout. Runs under the write lock.
+func (h *Hub) reapStaleUnauthenticatedLocked(now time.Time) int {
+	reaped := 0
+
+	for id, conn := range h.connections {
+		conn.mu.Lock()
+		authorized := conn.Authorized
+		created := conn.CreatedAt
+		conn.mu.Unlock()
+
+		if authorized || created.IsZero() {
+			continue
+		}
+
+		if now.Sub(created) > hubAuthTimeout {
+			close(conn.Channel)
+			delete(h.connections, id)
+			reaped++
+		}
+	}
+
+	return reaped
+}
+
+// oldestUnauthenticatedLocked returns the id of the oldest unauthenticated
+// connection, or "" when every connection is authenticated. Runs under the
+// write lock.
+func (h *Hub) oldestUnauthenticatedLocked() string {
+	victim := ""
+	var oldest time.Time
+
+	for id, conn := range h.connections {
+		conn.mu.Lock()
+		authorized := conn.Authorized
+		created := conn.CreatedAt
+		conn.mu.Unlock()
+
+		if authorized {
+			continue
+		}
+
+		if victim == "" || created.Before(oldest) {
+			victim, oldest = id, created
+		}
+	}
+
+	return victim
 }
 
 func (h *Hub) cleanupLastTyping(cleanupInterval time.Duration) {

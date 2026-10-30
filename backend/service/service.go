@@ -73,11 +73,16 @@ func (s *Service) sendEvent(userID string, event sse.Event) {
 // have to reason about SMTP vs debug mode.
 func New(s *store.Store, cfg *config.Config, hub *sse.Hub, ps *push.Service) *Service {
 	svc := &Service{
-		store:  s,
-		hub:    hub,
-		events: hub,
-		cfg:    cfg,
-		email:  newEmailSender(cfg),
+		store: s,
+		hub:   hub,
+		cfg:   cfg,
+		email: newEmailSender(cfg),
+	}
+	// Guard against a nil *sse.Hub being wrapped in a non-nil eventSender
+	// interface, which would defeat the `s.events == nil` check in sendEvent
+	// and panic on Hub.Send.
+	if hub != nil {
+		svc.events = hub
 	}
 	// Guard against a nil *push.Service being wrapped in a non-nil pushSender
 	// interface, which would defeat the `s.push == nil` check in SendPushForMessage.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"fast_chat/internal/httputil"
@@ -43,7 +44,74 @@ func TestRequestIDMiddleware(t *testing.T) {
 		}
 	})
 
-	t.Run("propagates incoming id", func(t *testing.T) {
+	t.Run("generated id is crypto random hex", func(t *testing.T) {
+		var captured string
+		h := httputil.RequestIDMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured = httputil.GetRequestID(r.Context())
+		}))
+
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/config", nil))
+
+		hexPart := captured[len("req-"):]
+		if len(hexPart) != 32 {
+			t.Fatalf("hex part length = %d, want 32", len(hexPart))
+		}
+
+		for _, c := range hexPart {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				t.Fatalf("hex part %q is not lowercase hex", hexPart)
+			}
+		}
+	})
+
+	t.Run("rejects invalid incoming id", func(t *testing.T) {
+		for _, bad := range []string{
+			"has space",
+			"a;b",
+			"with\nnewline",
+			"with\ttab",
+			"quote\"x",
+			"<script>",
+		} {
+			var captured string
+			h := httputil.RequestIDMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				captured = httputil.GetRequestID(r.Context())
+			}))
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/config", nil)
+			req.Header.Set(httputil.RequestIDHeader, bad)
+			h.ServeHTTP(w, req)
+
+			if captured == bad {
+				t.Errorf("invalid id %q was reused, want generated", bad)
+			}
+
+			if got := w.Header().Get(httputil.RequestIDHeader); got != captured {
+				t.Errorf("response header = %q, want context id %q", got, captured)
+			}
+		}
+	})
+
+	t.Run("rejects overlong incoming id", func(t *testing.T) {
+		var captured string
+		h := httputil.RequestIDMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured = httputil.GetRequestID(r.Context())
+		}))
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/config", nil)
+		req.Header.Set(httputil.RequestIDHeader,
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		h.ServeHTTP(w, req)
+
+		if strings.HasPrefix(captured, "aaaa") {
+			t.Errorf("overlong id was reused: %q", captured)
+		}
+	})
+
+	t.Run("propagates valid incoming id", func(t *testing.T) {
 		var captured string
 		h := httputil.RequestIDMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			captured = httputil.GetRequestID(r.Context())

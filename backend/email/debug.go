@@ -10,9 +10,13 @@ func NewDebugSender() *DebugSender {
 }
 
 func (s *DebugSender) SendCode(recipient, code string) error {
-	slog.Info("debug email code",
+	// The code is never logged: a debug sender enabled in production by
+	// accident would otherwise leak OTPs into the logs. The argument is
+	// kept (and explicitly ignored) so the call sites stay unchanged.
+	_ = code
+
+	slog.Info("debug email code requested",
 		"recipient", recipient,
-		"code", code,
 	)
 
 	return nil

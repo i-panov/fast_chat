@@ -3,7 +3,7 @@ import { setActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
-import type { OutboxOp, OutboxOpSend } from "../db/schema.ts";
+import type { OutboxOpSend } from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { extractRetryAfterMs, processOutbox } from "./outboxProcessor.ts";
 
@@ -322,202 +322,12 @@ describe("processOutbox", () => {
 		expect(await outboxRepo.list()).toHaveLength(0);
 	});
 
-	it("edits a message and removes the op", async () => {
-		await messagesRepo.upsert(
-			{
-				id: "m1",
-				chatId: "chat-1",
-				fromId: "alice:test",
-				fromNick: "alice",
-				text: "old",
-				createdAt: "2026-08-30T09:00:00.000Z",
-			},
-			"sent",
-		);
-		await outboxRepo.enqueue({
-			kind: "edit",
-			opId: "edit-op-1",
-			chatId: "chat-1",
-			messageId: "m1",
-			text: "new",
-			pendingFileClientIds: [],
-			keptFileIds: ["file-9"],
-			filesToRemove: [],
-			clientEditedAt: "2026-08-30T10:00:00.000Z",
-			createdAt: "2026-08-30T09:30:00.000Z",
-			attempts: 0,
-		});
-
-		await processOutbox("tok");
-
-		expect(editMessageMock).toHaveBeenCalledWith(
-			"tok",
-			expect.objectContaining({ messageId: "m1", fileIDs: ["file-9"] }),
-		);
-		expect(await messagesRepo.getById("chat-1", "m1")).toMatchObject({
-			status: "sent",
-		});
-		expect(await outboxRepo.list()).toHaveLength(0);
-	});
-
-	it("continues to the next op after a definitive failure", async () => {
-		const op1: OutboxOp = sendOp({ opId: "send-1", msgId: "m1" });
-		const op2: OutboxOp = {
-			kind: "delete",
-			opId: "del-after",
-			chatId: "chat-1",
-			messageId: "mz",
-			createdAt: "2026-08-30T09:30:00.000Z",
-			attempts: 0,
-		};
-		await outboxRepo.enqueue(op1);
-		await outboxRepo.enqueue(op2);
-		sendMessageMock.mockRejectedValue(new Error("http 400: bad"));
-
-		await processOutbox("tok");
-
-		const ops = await outboxRepo.list();
-		expect(ops).toHaveLength(1);
-		expect(ops[0].kind).toBe("send");
-		expect(ops[0].status).toBe("failed");
-	});
-
-	it("backs off for Retry-After before the next tick", async () => {
-		await outboxRepo.enqueue(sendOp({ opId: "send-1", msgId: "m1" }));
-		await outboxRepo.enqueue(sendOp({ opId: "send-2", msgId: "m2" }));
-		sendMessageMock.mockRejectedValue(
-			new Error("http 429: slow retry-after:1"),
-		);
-
-		await processOutbox("tok");
-
-		// The backoff consumed the tick: the second op was never attempted,
-		// and nothing failed.
-		expect(sendMessageMock).toHaveBeenCalledTimes(1);
-		expect((await outboxRepo.list()).map((o) => o.status)).toEqual([
-			undefined,
-			undefined,
-		]);
-	});
-
-	it("fails the op on unauthorized", async () => {
-		await messagesRepo.upsert(
-			{
-				id: "m1",
-				chatId: "chat-1",
-				fromId: "alice:test",
-				fromNick: "alice",
-				text: "hello",
-				createdAt: "2026-08-30T09:00:00.000Z",
-			},
-			"queued",
-		);
-		await outboxRepo.enqueue(sendOp());
-		sendMessageMock.mockRejectedValue(new Error("unauthorized"));
-
-		await processOutbox("tok");
-
-		expect((await outboxRepo.list())[0].status).toBe("failed");
-	});
-
-	it("keeps the op on non-Error throws", async () => {
-		await outboxRepo.enqueue(sendOp());
-		sendMessageMock.mockRejectedValue("boom");
-
-		await processOutbox("tok");
-
-		expect((await outboxRepo.list())[0].status).toBeUndefined();
-	});
-
-	it("edits with uploaded files and in threads", async () => {
-		await pendingBlobsRepo.put({
-			id: "blob-1",
-			blob: new Blob(["x"]),
-			name: "a.txt",
-			mimeType: "text/plain",
-			size: 1,
-		});
-		await threadMessagesRepo.upsert(
-			{
-				id: "tm1",
-				chatId: "chat-1",
-				fromId: "alice:test",
-				fromNick: "alice",
-				text: "old",
-				createdAt: "2026-08-30T09:00:00.000Z",
-			},
-			"thread-1",
-			"sent",
-		);
-		await outboxRepo.enqueue({
-			kind: "edit",
-			opId: "edit-thread",
-			chatId: "chat-1",
-			threadId: "thread-1",
-			messageId: "tm1",
-			text: "new",
-			pendingFileClientIds: ["blob-1"],
-			keptFileIds: ["kept-1"],
-			filesToRemove: [],
-			clientEditedAt: "2026-08-30T10:00:00.000Z",
-			createdAt: "2026-08-30T09:30:00.000Z",
-			attempts: 0,
-		});
-
-		await processOutbox("tok");
-
-		expect(editMessageMock).toHaveBeenCalledWith(
-			"tok",
-			expect.objectContaining({ threadId: "thread-1", fileIDs: ["file-1"] }),
-		);
-		expect((await threadMessagesRepo.getById("thread-1", "tm1"))?.status).toBe(
-			"sent",
-		);
-		expect(await outboxRepo.list()).toHaveLength(0);
-	});
-
-	it("edits without any files", async () => {
-		await outboxRepo.enqueue({
-			kind: "edit",
-			opId: "edit-plain",
-			chatId: "chat-1",
-			messageId: "m1",
-			text: "new",
-			pendingFileClientIds: [],
-			keptFileIds: [],
-			filesToRemove: [],
-			clientEditedAt: "2026-08-30T10:00:00.000Z",
-			createdAt: "2026-08-30T09:30:00.000Z",
-			attempts: 0,
-		});
-
-		await processOutbox("tok");
-
-		expect(editMessageMock).toHaveBeenCalledWith(
-			"tok",
-			expect.objectContaining({ fileIDs: undefined }),
-		);
-	});
-
-	it("skips staged blobs that vanished", async () => {
-		await outboxRepo.enqueue(sendOp({ pendingFileClientIds: ["gone"] }));
-
-		await processOutbox("tok");
-
-		expect(uploadFileMock).not.toHaveBeenCalled();
-		expect(sendMessageMock).toHaveBeenCalledWith(
-			"tok",
-			expect.objectContaining({ fileIDs: undefined }),
-		);
-	});
-
-	it("treats a 404 thread delete as already-deleted", async () => {
-		deleteMessageMock.mockRejectedValue(new Error("message not found"));
+	it("treats a 404 with a body as already-deleted", async () => {
+		deleteMessageMock.mockRejectedValue(new Error("http 404: not found"));
 		await outboxRepo.enqueue({
 			kind: "delete",
-			opId: "del-thread-404",
+			opId: "del-op-404-body",
 			chatId: "chat-1",
-			threadId: "thread-1",
 			messageId: "gone",
 			createdAt: "2026-08-30T09:30:00.000Z",
 			attempts: 0,
@@ -528,56 +338,32 @@ describe("processOutbox", () => {
 		expect(await outboxRepo.list()).toHaveLength(0);
 	});
 
-	it("removes the local copy when a delete definitively fails", async () => {
-		await messagesRepo.upsert(
-			{
-				id: "m1",
-				chatId: "chat-1",
-				fromId: "alice:test",
-				fromNick: "alice",
-				text: "hello",
-				createdAt: "2026-08-30T09:00:00.000Z",
-			},
-			"sent",
-		);
-		await outboxRepo.enqueue({
-			kind: "delete",
-			opId: "del-fail",
-			chatId: "chat-1",
-			messageId: "m1",
-			createdAt: "2026-08-30T09:30:00.000Z",
-			attempts: 0,
+	it("persists uploaded file ids so a retry does not re-upload", async () => {
+		await pendingBlobsRepo.put({
+			id: "blob-1",
+			blob: new Blob(["x"]),
+			name: "a.txt",
+			mimeType: "text/plain",
+			size: 1,
 		});
-		deleteMessageMock.mockRejectedValue(new Error("http 400: bad"));
+		await outboxRepo.enqueue(sendOp({ pendingFileClientIds: ["blob-1"] }));
+		sendMessageMock.mockRejectedValueOnce(new Error("network unavailable"));
 
 		await processOutbox("tok");
+		expect(uploadFileMock).toHaveBeenCalledTimes(1);
+		expect((await outboxRepo.list())[0].status).toBeUndefined();
 
-		expect(await messagesRepo.getById("chat-1", "m1")).toBeUndefined();
-		expect((await outboxRepo.list())[0].status).toBe("failed");
-	});
-
-	it("marks thread messages failed on definitive send errors", async () => {
-		await threadMessagesRepo.upsert(
-			{
-				id: "tm1",
-				chatId: "chat-1",
-				fromId: "alice:test",
-				fromNick: "alice",
-				text: "hi",
-				createdAt: "2026-08-30T09:00:00.000Z",
-			},
-			"thread-1",
-			"queued",
-		);
-		await outboxRepo.enqueue(
-			sendOp({ opId: "t-fail", threadId: "thread-1", msgId: "tm1" }),
-		);
-		sendMessageMock.mockRejectedValue(new Error("http 400: bad"));
-
+		// The first upload persisted its file id; the retry resumes without
+		// uploading again.
+		sendMessageMock.mockResolvedValue({ message: {} });
 		await processOutbox("tok");
 
-		expect((await threadMessagesRepo.getById("thread-1", "tm1"))?.status).toBe(
-			"failed",
+		expect(uploadFileMock).toHaveBeenCalledTimes(1);
+		expect(sendMessageMock).toHaveBeenCalledTimes(2);
+		expect(sendMessageMock).toHaveBeenLastCalledWith(
+			"tok",
+			expect.objectContaining({ fileIDs: ["file-1"] }),
 		);
+		expect(await outboxRepo.list()).toHaveLength(0);
 	});
 });

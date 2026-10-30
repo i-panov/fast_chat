@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -85,7 +86,7 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 					disposition = "inline"
 				}
 
-				w.Header().Set("Content-Disposition", disposition+"; filename=\""+filestage.SanitizeFilename(originalName)+"\"")
+				w.Header().Set("Content-Disposition", filestage.ContentDisposition(disposition, originalName))
 				w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(mimeCacheMaxAge))
 
 				http.ServeFile(w, r, fullPath)
@@ -123,6 +124,11 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 // mimeCacheMaxAge matches the pre-migration file cache duration (one day).
 const mimeCacheMaxAge = 86400
 
+// multipartMaxMemory bounds how much of an upload ParseMultipartForm keeps in
+// RAM; the rest spills to disk. The total body is already capped by
+// MaxBytesReader at MaxUploadSize, so this is only the memory/disk threshold.
+const multipartMaxMemory = 1 << 20
+
 // uploadFile mirrors the pre-migration multipart upload flow: cap, parse, stage,
 // dedup, persist. uploader is the account that owns the resulting file
 // record: only the owner may attach it to a message later.
@@ -138,7 +144,7 @@ func uploadFile(
 
 	r.Body = http.MaxBytesReader(w, r.Body, filestage.MaxUploadSize)
 
-	if err := r.ParseMultipartForm(filestage.MaxUploadSize); err != nil {
+	if err := r.ParseMultipartForm(multipartMaxMemory); err != nil {
 		return nil, &statusError{ErrorMessage: "file too large", code: http.StatusRequestEntityTooLarge}
 	}
 
@@ -156,6 +162,12 @@ func uploadFile(
 
 	staged, err := filestage.StageAndHashFile(file, clientHash, encrypted, cfg.Uploads.Dir)
 	if err != nil {
+		// The stage limit is defense in depth behind MaxBytesReader: a
+		// client that trips it sends something that can never succeed,
+		// so 413 (not a retriable 500) is the honest status.
+		if errors.Is(err, filestage.ErrFileTooLarge) {
+			return nil, &statusError{ErrorMessage: "file too large", code: http.StatusRequestEntityTooLarge}
+		}
 		slog.Error("failed to stage file", "err", err)
 		return nil, &statusError{ErrorMessage: "failed to process file", code: http.StatusInternalServerError}
 	}
@@ -194,6 +206,10 @@ func uploadFile(
 
 	saved, err := st.SaveFile(ctx, staged.Hash, staged.MimeType, staged.Size, header.Filename, staged.RelativePath, uploader)
 	if err != nil {
+		// The rename already happened, so the deferred TempPath cleanup no
+		// longer applies: remove the renamed file best-effort instead of
+		// leaving an orphan with no DB row.
+		os.Remove(staged.FullPath) //nolint:errcheck,gosec // best-effort: already failing
 		return nil, &statusError{ErrorMessage: "failed to save file metadata", code: http.StatusInternalServerError}
 	}
 

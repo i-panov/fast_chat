@@ -173,7 +173,10 @@ describe("account switcher", () => {
 		fireEvent.click(buttonByText(ADD_ACCOUNT_BUTTON));
 
 		expect(onClose).toHaveBeenCalledTimes(1);
-		expect(navigate).toHaveBeenCalledWith({ to: "/login" });
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/login",
+			search: { add: "1" },
+		});
 	});
 
 	it("shows the server version", async () => {

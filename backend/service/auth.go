@@ -62,12 +62,14 @@ func (s *Service) SendCode(input string) (*SendCodeResult, error) {
 		return nil, err
 	}
 
-	s.store.Codes().StoreCode(email, code, emailCodeTTL)
-
+	// Store only after the mail is accepted: a code for an undelivered mail
+	// would otherwise stay valid for 10 minutes without ever reaching the user.
 	if err := s.email.SendCode(email, code); err != nil {
 		log().Error("failed to send email", "err", err)
 		return nil, ErrEmailSendFailed
 	}
+
+	s.store.Codes().StoreCode(email, code, emailCodeTTL)
 
 	return &SendCodeResult{DebugCode: code}, nil
 }

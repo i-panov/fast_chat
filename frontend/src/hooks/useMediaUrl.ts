@@ -54,6 +54,7 @@ export function useMediaUrl(
 
 		if (fileUrl.startsWith("blob:")) {
 			setMediaUrl(fileUrl);
+			setError(null);
 			setLoading(false);
 			return;
 		}

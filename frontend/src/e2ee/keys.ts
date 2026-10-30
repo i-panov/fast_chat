@@ -5,7 +5,7 @@ import {
 	setKeyBackup,
 	uploadPublicKey,
 } from "../api.ts";
-import { getActiveAccountKey } from "../db/init.ts";
+import { getActiveAccountKey, getDB } from "../db/init.ts";
 import { metaRepo } from "../db/metaRepo.ts";
 import { decryptBackup, encryptBackup } from "./backup.ts";
 import { generateKeyPair, type KeyPair } from "./crypto.ts";
@@ -13,6 +13,17 @@ import { generateKeyPair, type KeyPair } from "./crypto.ts";
 const PRIVATE_KEY_META = "e2ee.privateKey";
 const PUBLIC_KEY_META = "e2ee.publicKey";
 const PUBLIC_KEY_UPLOADED_META = "e2ee.publicKeyUploaded";
+
+// Security trade-off: the private key is stored in plaintext in the
+// per-account IndexedDB (meta store) so messages stay decryptable across
+// reloads without asking for a password every time. IndexedDB is
+// same-origin: any XSS in the app can read it and with it the message
+// history. Mitigations in place: the DB is per-account (no cross-account
+// leak on switch), the in-memory mirror is scoped by account, and logout /
+// "clear all data" must delete the account's database (see resetAllDBs and
+// clearLocalKeys below). A stronger envelope (password-wrapped or
+// non-extractable CryptoKey) would remove offline decryption; documented
+// here instead of silently assuming IDB is safe.
 
 // Throw when the account has no local key pair but a backup exists on the
 // server, so the client asks the user to recover instead of silently
@@ -265,6 +276,22 @@ async function getRecipientPublicKey(
 	});
 
 	return publicKey;
+}
+
+// clearLocalKeys drops the cached key pair and removes both halves from the
+// active account's IndexedDB. Call it on logout / account removal so the next
+// user of the device cannot recover the previous account's private key from
+// the local database.
+export async function clearLocalKeys(): Promise<void> {
+	const scope = accountScope();
+	keyCacheByAccount.delete(scope);
+	inFlightByAccount.delete(scope);
+	const db = await getDB();
+	await Promise.all([
+		db.delete("meta", PUBLIC_KEY_META),
+		db.delete("meta", PRIVATE_KEY_META),
+		db.delete("meta", PUBLIC_KEY_UPLOADED_META),
+	]).catch(() => {});
 }
 
 export async function getRecipientPublicKeys(

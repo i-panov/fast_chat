@@ -37,14 +37,32 @@ function LoadingHeader() {
 	);
 }
 
+const flashTimers = new WeakMap<Element, number>();
+
 function flashElement(el: Element) {
 	const flashClass = "bubble-flash";
+	const prev = flashTimers.get(el);
+	if (prev !== undefined) clearTimeout(prev);
 	el.classList.remove(flashClass);
 	void el.getBoundingClientRect();
 	el.classList.add(flashClass);
-	window.setTimeout(() => {
+	const id = window.setTimeout(() => {
 		el.classList.remove(flashClass);
+		flashTimers.delete(el);
 	}, 1500);
+	flashTimers.set(el, id);
+}
+
+function queryMessageElement(messageId: string): Element | null {
+	try {
+		const escaped =
+			typeof CSS !== "undefined" && typeof CSS.escape === "function"
+				? CSS.escape(messageId)
+				: messageId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+		return document.querySelector(`[data-message-id="${escaped}"]`);
+	} catch {
+		return null;
+	}
 }
 
 interface Props {
@@ -129,7 +147,7 @@ function scrollToReplyMessage(
 	messageId: string,
 ) {
 	prevScrollToRef.current = messageId;
-	const el = document.querySelector(`[data-message-id="${messageId}"]`);
+	const el = queryMessageElement(messageId);
 	if (el !== null) {
 		el.scrollIntoView({ behavior: "smooth", block: "center" });
 		flashElement(el);
@@ -159,9 +177,7 @@ function scrollToMessageInRange(args: {
 	if (idx >= range.startIndex && idx <= range.endIndex) {
 		prevScrollToRef.current = scrollToMessageId;
 		virtuosoRef.current?.scrollToIndex({ index: idx, align: "center" });
-		const el = document.querySelector(
-			`[data-message-id="${scrollToMessageId}"]`,
-		);
+		const el = queryMessageElement(scrollToMessageId);
 		if (el !== null) flashElement(el);
 	}
 }
@@ -305,6 +321,9 @@ export function MessageList({
 	const locale = getCurrentLocale();
 	const virtuosoRef = useRef<VirtuosoHandle>(null);
 	const onLoadMoreRef = useRef(onLoadMore);
+	useEffect(() => {
+		onLoadMoreRef.current = onLoadMore;
+	}, [onLoadMore]);
 	const prevScrollToRef = useRef<string | null>(null);
 	const [visibleRange, setVisibleRange] = useState<{
 		startIndex: number;
@@ -395,7 +414,7 @@ export function MessageList({
 			style={{ flex: 1 }}
 			data={datedMessages}
 			itemContent={itemContent}
-			followOutput="smooth"
+			followOutput="auto"
 			initialTopMostItemIndex={datedMessages.length - 1}
 			startReached={() => {
 				if (hasMore && !isLoadingMore) {

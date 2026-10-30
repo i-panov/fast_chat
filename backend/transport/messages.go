@@ -44,7 +44,10 @@ func registerMessagePages(api huma.API, svc *service.Service) {
 
 		limit := messageLimit(input.Limit)
 
-		messages, nextCursor := svc.GetMessages(ctx, chat, user.ID, limit, input.Before, nil)
+		messages, nextCursor, err := svc.GetMessages(ctx, chat, user.ID, limit, input.Before, nil)
+		if err != nil {
+			return nil, errInternal
+		}
 		if messages == nil {
 			messages = []service.MessageWithStatus{}
 		}
@@ -74,7 +77,16 @@ func registerMessagePages(api huma.API, svc *service.Service) {
 			limit = service.DefaultMessagesLimit
 		}
 
-		messages, nextCursor := svc.GetMessages(ctx, chat, user.ID, limit, input.Body.Before, input.Body.MissingIDs)
+		// MissingIDs drives a batch status lookup: cap it like the read
+		// receipts endpoint so a 1MB body cannot turn into a 20k-row IN query.
+		if len(input.Body.MissingIDs) > service.MaxMessagesLimit {
+			return nil, &statusError{ErrorMessage: msgTooManyMessageIDs, code: http.StatusBadRequest}
+		}
+
+		messages, nextCursor, err := svc.GetMessages(ctx, chat, user.ID, limit, input.Body.Before, input.Body.MissingIDs)
+		if err != nil {
+			return nil, errInternal
+		}
 		if messages == nil {
 			messages = []service.MessageWithStatus{}
 		}
@@ -155,7 +167,7 @@ func registerMessageMutations(api huma.API, svc *service.Service, st *store.Stor
 			return nil, messageOrInternalError(err)
 		}
 
-		fed.Delete(ctx, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages/"+input.MessageID)
+		fedDelete(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages/"+input.MessageID)
 
 		return deletedStatus(), nil
 	})
@@ -177,7 +189,7 @@ func registerMessageMutations(api huma.API, svc *service.Service, st *store.Stor
 		}
 
 		if len(input.Body.MessageIDs) > 100 {
-			return nil, &statusError{ErrorMessage: "too many message IDs", code: http.StatusBadRequest}
+			return nil, &statusError{ErrorMessage: msgTooManyMessageIDs, code: http.StatusBadRequest}
 		}
 
 		if _, err := requireChatMember(ctx, svc, input.Body.ChatID, user.ID); err != nil {
@@ -271,13 +283,20 @@ func registerThreadMessages(api huma.API, svc *service.Service, st *store.Store,
 			return nil, err
 		}
 
+		if thread.ChatID != input.ID {
+			return nil, errThreadNotFound
+		}
+
 		if _, err := requireChatMember(ctx, svc, thread.ChatID, user.ID); err != nil {
 			return nil, err
 		}
 
 		limit := messageLimit(input.Limit)
 
-		messages, nextCursor := svc.GetThreadMessages(ctx, thread.ID, limit, input.Before)
+		messages, nextCursor, err := svc.GetThreadMessages(ctx, thread.ID, limit, input.Before)
+		if err != nil {
+			return nil, errInternal
+		}
 		if messages == nil {
 			messages = []model.Message{}
 		}
@@ -361,7 +380,7 @@ func registerTyping(api huma.API, svc *service.Service, fed *federation.Client) 
 			}{Status: "throttled"}}, nil
 		}
 
-		fed.Post(ctx, chat.RemoteServer, "/api/federated/chats/"+input.ID+"/typing", map[string]any{
+		fedPost(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+input.ID+"/typing", map[string]any{
 			"userId": user.ID,
 			"active": input.Body.Active,
 			"nick":   user.Nick,
@@ -397,14 +416,18 @@ func messageLimit(limit int) int {
 }
 
 // resolveMessageTarget loads the chat a request addresses. For a thread the
-// chat comes from the thread, so callers must use chat.ID rather than the {id}
-// path parameter: a thread reached through a foreign chat id would otherwise
-// be written under a chat the caller was never authorised for.
+// chat comes from the thread, and the thread must belong to the chat in the
+// path: a thread reached through a foreign chat id is a 404, not a write
+// under a chat the caller was never authorised for.
 func resolveMessageTarget(ctx context.Context, svc *service.Service, st *store.Store, chatID, threadID, userID string) (*model.Chat, string, error) {
 	if threadID != "" {
 		thread, threadErr := requireThread(ctx, st, threadID)
 		if threadErr != nil {
 			return nil, "", threadErr
+		}
+
+		if thread.ChatID != chatID {
+			return nil, "", errThreadNotFound
 		}
 
 		chat, chatErr := requireChatMember(ctx, svc, thread.ChatID, userID)
@@ -445,6 +468,12 @@ func sendMessage(
 	input *service.SendMessageInput,
 ) (*model.Message, error) {
 
+	// File references resolve with one store lookup each: reject an obviously
+	// abusive batch on the transport before the service fans out to the DB.
+	if len(input.FileIDs) > service.MaxMessageFiles || len(input.FileHashes) > service.MaxMessageFiles {
+		return nil, &statusError{ErrorMessage: msgTooManyFiles, code: http.StatusBadRequest}
+	}
+
 	msg, err := svc.SendMessage(ctx, chat, threadID, user.ID, user.Nick, input)
 	if err != nil {
 		return nil, messageOrInternalError(err)
@@ -456,7 +485,7 @@ func sendMessage(
 		// with an attachment therefore reaches the peer without it. Sending
 		// the file is a separate feature: it needs an endpoint, a size
 		// policy and a transfer of the encrypted content.
-		fed.Post(ctx, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages", map[string]any{
+		fedPost(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages", map[string]any{
 			"id":               msg.ID,
 			"fromId":           msg.FromID,
 			"fromNick":         msg.FromNick,
@@ -499,6 +528,10 @@ func editMessage(
 			return nil, threadErr
 		}
 
+		if thread.ChatID != chatID {
+			return nil, errThreadNotFound
+		}
+
 		chat, threadErr = requireChatMember(ctx, svc, thread.ChatID, user.ID)
 		if threadErr != nil {
 			return nil, threadErr
@@ -509,6 +542,10 @@ func editMessage(
 		if chatErr != nil {
 			return nil, chatErr
 		}
+	}
+
+	if len(req.FileIDs) > service.MaxMessageFiles || len(req.FileHashes) > service.MaxMessageFiles {
+		return nil, &statusError{ErrorMessage: msgTooManyFiles, code: http.StatusBadRequest}
 	}
 
 	updated, edit, err := svc.EditMessage(ctx, chat.ID, threadID, messageID, user.ID, req, cfg.MessageEditTTL)
@@ -525,9 +562,9 @@ func editMessage(
 	}
 
 	if threadID != "" {
-		fed.Patch(ctx, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/threads/"+threadID+"/messages/"+messageID, payload)
+		fedPatch(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/threads/"+threadID+"/messages/"+messageID, payload)
 	} else {
-		fed.Patch(ctx, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages/"+messageID, payload)
+		fedPatch(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages/"+messageID, payload)
 	}
 
 	svc.BroadcastMessageUpdated(ctx, chat, threadID, &updated)

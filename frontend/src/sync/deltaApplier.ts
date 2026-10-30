@@ -44,12 +44,10 @@ export async function applyDelta(delta: SyncResponse): Promise<void> {
 	await applyMessages(messages, outbox);
 
 	// The messages of the threads go into their own store: the chat feed
-	// holds the top-level messages only.
-	for (const msg of threadMessages) {
-		if (msg.threadId === undefined) continue;
-
-		await threadMessagesRepo.upsert(msg, msg.threadId, "sent");
-	}
+	// holds the top-level messages only. Thread records get the same
+	// queued/failed guard and LWW resolution as top-level messages so a
+	// parallel send in a thread is not clobbered by the delta.
+	await applyThreadMessages(threadMessages, outbox);
 
 	await applyDeletions(deletedMessages, outbox);
 
@@ -79,29 +77,31 @@ async function applyMessages(
 
 		// LWW: if a queued edit was beaten by a fresher server
 		// edit, drop the local outbox op and accept the server
-		// record.
+		// record. Otherwise the local row stays for replay: a server copy
+		// without a (newer) editedAt predates our edit, and overwriting it
+		// would lose the edit if the replay later fails.
 		const editOp = outbox.find(
 			(o) => o.kind === "edit" && o.messageId === msg.id,
 		);
-		const serverEditedAt =
-			msg.editedAt !== undefined ? new Date(msg.editedAt).getTime() : NaN;
-		const localEditedAt =
-			editOp !== undefined && editOp.kind === "edit"
-				? new Date(editOp.clientEditedAt).getTime()
-				: NaN;
-		// NaN comparisons are always false, so a malformed/empty
-		// timestamp never wins the conflict — the server record is
-		// accepted as-is.
-		if (
-			editOp !== undefined &&
-			editOp.kind === "edit" &&
-			!Number.isNaN(serverEditedAt) &&
-			!Number.isNaN(localEditedAt) &&
-			serverEditedAt > localEditedAt
-		) {
-			await outboxRepo.remove(editOp.opId);
-			if (editOp.pendingFileClientIds.length > 0) {
-				await pendingBlobsRepo.deleteMany(editOp.pendingFileClientIds);
+		if (editOp !== undefined && editOp.kind === "edit") {
+			const serverEditedAt =
+				msg.editedAt !== undefined ? new Date(msg.editedAt).getTime() : NaN;
+			const localEditedAt = new Date(editOp.clientEditedAt).getTime();
+			if (
+				!Number.isNaN(serverEditedAt) &&
+				!Number.isNaN(localEditedAt) &&
+				serverEditedAt > localEditedAt
+			) {
+				await outboxRepo.remove(editOp.opId);
+				if (editOp.pendingFileClientIds.length > 0) {
+					await pendingBlobsRepo.deleteMany(editOp.pendingFileClientIds);
+				}
+			} else {
+				// The local edit is newer (or the timestamps are not
+				// comparable): keep the outbox op for replay and do not
+				// overwrite the local row with the stale server copy —
+				// otherwise a failed replay would lose the edit.
+				continue;
 			}
 		}
 
@@ -110,6 +110,67 @@ async function applyMessages(
 
 	if (stored.length > 0) {
 		await messagesRepo.upsertMany(stored);
+	}
+}
+
+// applyThreadMessages stores the thread messages of the delta with the
+// same conflict resolution as top-level messages: queued/failed locals
+// are kept for the outbox, and LWW decides between a queued edit and a
+// fresher server edit.
+async function applyThreadMessages(
+	threadMessages: Message[],
+	outbox: OutboxOp[],
+): Promise<void> {
+	if (threadMessages.length === 0) return;
+
+	const stored: { threadId: string; msg: Message }[] = [];
+
+	for (const msg of threadMessages) {
+		if (msg.threadId === undefined) continue;
+
+		const local = await threadMessagesRepo.getById(msg.threadId, msg.id);
+
+		if (local?.status === "queued" || local?.status === "failed") {
+			continue;
+		}
+
+		const editOp = outbox.find(
+			(o) => o.kind === "edit" && o.messageId === msg.id,
+		);
+		if (editOp !== undefined && editOp.kind === "edit") {
+			const serverEditedAt =
+				msg.editedAt !== undefined ? new Date(msg.editedAt).getTime() : NaN;
+			const localEditedAt = new Date(editOp.clientEditedAt).getTime();
+			if (
+				!Number.isNaN(serverEditedAt) &&
+				!Number.isNaN(localEditedAt) &&
+				serverEditedAt > localEditedAt
+			) {
+				await outboxRepo.remove(editOp.opId);
+				if (editOp.pendingFileClientIds.length > 0) {
+					await pendingBlobsRepo.deleteMany(editOp.pendingFileClientIds);
+				}
+			} else {
+				// Same as top-level messages: without a (newer) server
+				// editedAt the local edit stays for replay.
+				continue;
+			}
+		}
+
+		stored.push({ threadId: msg.threadId, msg });
+	}
+
+	if (stored.length > 0) {
+		// Group by thread to keep the per-thread upsertMany contract.
+		const byThread = new Map<string, Message[]>();
+		for (const { threadId, msg } of stored) {
+			const list = byThread.get(threadId) ?? [];
+			list.push(msg);
+			byThread.set(threadId, list);
+		}
+		for (const [threadId, list] of byThread) {
+			await threadMessagesRepo.upsertMany(list, threadId);
+		}
 	}
 }
 
@@ -152,6 +213,14 @@ async function applyDeletions(
 export function pullDelta(
 	token: string,
 	since: string | null,
+	signal?: AbortSignal,
+	limit?: number,
+	sinceId?: string,
 ): Promise<SyncResponse> {
-	return getSync(token, since ?? DEFAULT_SINCE);
+	return getSync(token, since ?? DEFAULT_SINCE, signal, limit, sinceId);
 }
+
+// maxSyncRounds bounds one sync tick: a chat receiving live writes could
+// otherwise keep every page full forever. The cursor below always points
+// at undelivered data, so the remainder arrives on the next tick.
+export const maxSyncRounds = 50;

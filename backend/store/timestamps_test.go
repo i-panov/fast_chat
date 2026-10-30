@@ -132,9 +132,12 @@ func TestAddRawMessageStampsTimestamps(t *testing.T) {
 
 	since := time.Now().UTC().Add(-time.Hour)
 
-	changed := s.MessagesChangedSince(ctx, []string{chat.ID}, since)
-	if len(changed) != 1 || changed[0].ID != "fed-1" {
-		t.Fatalf("federated message missing from sync delta: got %d rows, want 1", len(changed))
+	changed, err := s.MessagesChangedSince(ctx, []string{chat.ID}, since, "", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(changed.Rows) != 1 || changed.Rows[0].ID != "fed-1" {
+		t.Fatalf("federated message missing from sync delta: got %d rows, want 1", len(changed.Rows))
 	}
 }
 
@@ -233,8 +236,10 @@ func TestNormalizeTimestampsToUTCMigratesLegacyRows(t *testing.T) {
 	// larger wall-clock reading than the row's stored "09:30:00-04:00".
 	cutoff := time.Date(2026, 10, 2, 13, 0, 0, 0, time.UTC)
 
-	if got := s.MessagesChangedSince(ctx, []string{chat.ID}, cutoff); len(got) != 0 {
-		t.Fatalf("precondition: expected the offset-bearing row to be dropped before migration, got %d rows", len(got))
+	if got, err := s.MessagesChangedSince(ctx, []string{chat.ID}, cutoff, "", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	} else if len(got.Rows) != 0 {
+		t.Fatalf("precondition: expected the offset-bearing row to be dropped before migration, got %d rows", len(got.Rows))
 	}
 
 	if err := normalizeTimestampsToUTC(s.DB()); err != nil {
@@ -244,14 +249,18 @@ func TestNormalizeTimestampsToUTCMigratesLegacyRows(t *testing.T) {
 	assertColumnIsUTC(t, s.DB(), "messages", "updated_at")
 
 	// After migration the row must be found by the same query.
-	if got := s.MessagesChangedSince(ctx, []string{chat.ID}, cutoff); len(got) != 1 || got[0].ID != "legacy" {
-		t.Errorf("post-migration delta returned %d rows, want the legacy row", len(got))
+	if got, err := s.MessagesChangedSince(ctx, []string{chat.ID}, cutoff, "", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	} else if len(got.Rows) != 1 || got.Rows[0].ID != "legacy" {
+		t.Errorf("post-migration delta returned %d rows, want the legacy row", len(got.Rows))
 	}
 
 	// And a cursor after the row must still exclude it.
 	later := time.Date(2026, 10, 2, 14, 0, 0, 0, time.UTC)
-	if got := s.MessagesChangedSince(ctx, []string{chat.ID}, later); len(got) != 0 {
-		t.Errorf("post-migration delta returned %d rows for a later cursor, want 0", len(got))
+	if got, err := s.MessagesChangedSince(ctx, []string{chat.ID}, later, "", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	} else if len(got.Rows) != 0 {
+		t.Errorf("post-migration delta returned %d rows for a later cursor, want 0", len(got.Rows))
 	}
 }
 
@@ -313,16 +322,20 @@ func TestRepairFrozenUpdatedAt(t *testing.T) {
 	}
 
 	since := time.Date(2026, 10, 2, 6, 0, 0, 0, time.UTC)
-	if got := s.MessagesChangedSince(ctx, []string{chat.ID}, since); len(got) != 1 {
-		t.Fatalf("precondition: poisoned row should be invisible before repair, got %d rows", len(got))
+	if got, err := s.MessagesChangedSince(ctx, []string{chat.ID}, since, "", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	} else if len(got.Rows) != 1 {
+		t.Fatalf("precondition: poisoned row should be invisible before repair, got %d rows", len(got.Rows))
 	}
 
 	if err := repairFrozenUpdatedAt(s.DB()); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := s.MessagesChangedSince(ctx, []string{chat.ID}, since); len(got) != 2 {
-		t.Errorf("after repair the delta returned %d rows, want 2", len(got))
+	if got, err := s.MessagesChangedSince(ctx, []string{chat.ID}, since, "", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	} else if len(got.Rows) != 2 {
+		t.Errorf("after repair the delta returned %d rows, want 2", len(got.Rows))
 	}
 
 	var msg model.Message

@@ -59,8 +59,11 @@ export function useMessages({
 	const [hasMore, setHasMore] = useState(false);
 	const [isLoadingMore, setIsLoadingMore] = useState(false);
 
+	// Cursors and in-flight flags are keyed by account+chat so two chats (or
+	// two accounts sharing a chat id) never block or reuse each other's
+	// pagination state.
 	const nextCursorsRef = useRef<Record<string, string | null>>({});
-	const loadingMoreRef = useRef(false);
+	const loadingMoreRef = useRef<Set<string>>(new Set());
 
 	const query = useCallback(() => {
 		if (chatId === null) return Promise.resolve([] as StoredMessage[]);
@@ -78,6 +81,10 @@ export function useMessages({
 	// so unrelated notify() cycles do not re-render the message list.
 	const [visible, setVisible] = useState<MessageWithStatus[]>([]);
 	const decryptCacheRef = useRef<Map<string, MessageWithStatus>>(new Map());
+	// Revision index: message id → cache keys of its known revisions, so
+	// dropping a superseded revision is O(1) instead of scanning the whole
+	// cache for every inserted message.
+	const decryptRevisionsRef = useRef<Map<string, Set<string>>>(new Map());
 	const cacheOwnerRef = useRef<string | undefined>(undefined);
 	const lastVisibleRef = useRef<{
 		key: string;
@@ -91,6 +98,7 @@ export function useMessages({
 			if (cacheOwnerRef.current !== userId) {
 				cacheOwnerRef.current = userId;
 				decryptCacheRef.current.clear();
+				decryptRevisionsRef.current.clear();
 			}
 
 			const signature = (stored ?? [])
@@ -119,6 +127,26 @@ export function useMessages({
 					userId !== undefined ? await decryptMessage(sm, userId, key) : sm;
 				const client = toClientMessage({ ...sm, ...decrypted });
 				decryptCacheRef.current.set(cacheKey, client);
+				// Drop stale revisions of the same message so old plaintext
+				// does not linger in memory until the generic eviction.
+				let revs = decryptRevisionsRef.current.get(sm.id);
+				if (revs === undefined) {
+					// Bound the index itself: worst case a stale revision
+					// waits for the generic size eviction, as before.
+					if (decryptRevisionsRef.current.size > DECRYPT_CACHE_MAX * 2) {
+						decryptRevisionsRef.current.clear();
+					}
+					revs = new Set();
+					decryptRevisionsRef.current.set(sm.id, revs);
+				} else {
+					for (const k of revs) {
+						if (k !== cacheKey) {
+							decryptCacheRef.current.delete(k);
+							revs.delete(k);
+						}
+					}
+				}
+				revs.add(cacheKey);
 				evictDecryptCache(decryptCacheRef.current);
 				out.push(client);
 			}
@@ -133,17 +161,19 @@ export function useMessages({
 	}, [stored, userId]);
 	const loadMore = useCallback(async () => {
 		if (chatId === null || token === undefined) return;
-		if (loadingMoreRef.current) return;
+		const cursorKey = `${userId ?? ""}:${chatId}`;
+		if (loadingMoreRef.current.has(cursorKey)) return;
 
-		const cursor = nextCursorsRef.current[chatId] ?? null;
-		if (cursor === null && nextCursorsRef.current[chatId] !== undefined) return;
+		const cursor = nextCursorsRef.current[cursorKey] ?? null;
+		if (cursor === null && nextCursorsRef.current[cursorKey] !== undefined)
+			return;
 
 		if (typeof navigator !== "undefined" && !navigator.onLine) {
 			setHasMore(false);
 			return;
 		}
 
-		loadingMoreRef.current = true;
+		loadingMoreRef.current.add(cursorKey);
 		setIsLoadingMore(true);
 
 		try {
@@ -162,27 +192,28 @@ export function useMessages({
 
 			const nxt =
 				res.nextCursor != null && res.nextCursor !== "" ? res.nextCursor : null;
-			nextCursorsRef.current[chatId] = nxt;
+			nextCursorsRef.current[cursorKey] = nxt;
 			setHasMore(nxt !== null);
 		} catch {
 			emitNotification(i18n.t("error.loadMessages"));
 		} finally {
 			setIsLoadingMore(false);
-			loadingMoreRef.current = false;
+			loadingMoreRef.current.delete(cursorKey);
 		}
-	}, [chatId, token]);
+	}, [chatId, token, userId]);
 
 	useEffect(() => {
 		if (chatId === null || token === undefined) {
 			setHasMore(false);
 			return;
 		}
-		if (nextCursorsRef.current[chatId] === undefined) {
+		const cursorKey = `${userId ?? ""}:${chatId}`;
+		if (nextCursorsRef.current[cursorKey] === undefined) {
 			void loadMore();
 		} else {
-			setHasMore(nextCursorsRef.current[chatId] !== null);
+			setHasMore(nextCursorsRef.current[cursorKey] !== null);
 		}
-	}, [chatId, token, loadMore]);
+	}, [chatId, token, userId, loadMore]);
 
 	return {
 		messages: visible,

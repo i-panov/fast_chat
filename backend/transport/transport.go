@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -330,21 +331,113 @@ type sseInput struct {
 	ConnectionID string `doc:"Unique connection identifier" query:"connectionId"`
 }
 
+// sseAuthDeadline bounds how long an unauthenticated SSE stream may stay
+// open. The client opens the stream first and authenticates it with a
+// separate sse-auth request; without a deadline an anonymous client could
+// hold streams (each with a 128-event buffer) forever.
+const sseAuthDeadline = 30 * time.Second
+
+// maxSSEConnections caps concurrent SSE streams process-wide. Per-user/IP
+// accounting lives in the hub; this is only a backstop so one anonymous
+// client cannot hold thousands of streams.
+const maxSSEConnections = 1024
+
+// sseActive counts live SSE streams for the maxSSEConnections backstop.
+var sseActive atomic.Int64
+
+// validConnectionID reports whether a client-chosen connection ID is safe to
+// register: 1-128 chars of [A-Za-z0-9._-]. UUIDs (what the frontend sends)
+// pass; separators and control characters do not.
+func validConnectionID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+
+	for i := range len(id) {
+		if !isConnectionIDChar(id[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// isConnectionIDChar reports whether c may appear in a client-chosen SSE
+// connection ID.
+func isConnectionIDChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z',
+		c >= 'A' && c <= 'Z',
+		c >= '0' && c <= '9',
+		c == '.' || c == '_' || c == '-':
+		return true
+	default:
+		return false
+	}
+}
+
+// rejectSSE answers an SSE open request with a JSON error before the stream
+// starts, matching the pre-migration validation shape.
+func rejectSSE(hctx huma.Context, status int, message string) {
+	hctx.SetHeader("Content-Type", "application/json")
+	hctx.SetStatus(status)
+	_, _ = fmt.Fprintf(hctx.BodyWriter(), `{"error":%q}`, message) //nolint:errcheck // best-effort: validation error before stream starts
+}
+
 // runSSE mirrors the existing handler.SSE behavior: register a connection,
 // write the connected event, then loop between heartbeats and hub events.
+//
+// The stream registers before authentication by design (the client
+// authenticates with sse-auth once the headers arrive), so an
+// unauthenticated stream is closed sseAuthDeadline after opening and the
+// total number of streams is capped by maxSSEConnections.
 func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Store, svc *service.Service, cfg *config.Config, connectionID string) {
 	if connectionID == "" {
-		hctx.SetHeader("Content-Type", "application/json")
-		hctx.SetStatus(http.StatusBadRequest)
-		_, _ = fmt.Fprint(hctx.BodyWriter(), `{"error":"connectionId required"}`) //nolint:errcheck // best-effort: validation error before stream starts
+		rejectSSE(hctx, http.StatusBadRequest, "connectionId required")
+
 		return
 	}
 
 	if len(connectionID) > 128 {
-		hctx.SetHeader("Content-Type", "application/json")
-		hctx.SetStatus(http.StatusBadRequest)
-		_, _ = fmt.Fprint(hctx.BodyWriter(), `{"error":"connectionId too long"}`) //nolint:errcheck // best-effort: validation error before stream starts
+		rejectSSE(hctx, http.StatusBadRequest, "connectionId too long")
+
 		return
+	}
+
+	if !validConnectionID(connectionID) {
+		rejectSSE(hctx, http.StatusBadRequest, "invalid connectionId")
+
+		return
+	}
+
+	if hub == nil {
+		rejectSSE(hctx, http.StatusInternalServerError, "internal error")
+
+		return
+	}
+
+	if sseActive.Add(1) > maxSSEConnections {
+		sseActive.Add(-1)
+		rejectSSE(hctx, http.StatusTooManyRequests, "too many connections")
+
+		return
+	}
+
+	defer sseActive.Add(-1)
+
+	// Never evict an authenticated connection with an unauthenticated
+	// registration: connection IDs are client-chosen, so anyone could
+	// otherwise close somebody else's stream by reusing its ID.
+	if existing := hub.GetConnection(connectionID); existing != nil {
+		existing.Lock()
+		authorized := existing.Authorized
+		existing.Unlock()
+
+		if authorized {
+			rejectSSE(hctx, http.StatusConflict, "connection id in use")
+
+			return
+		}
 	}
 
 	writer := hctx.BodyWriter()
@@ -368,7 +461,7 @@ func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Stor
 		uid := conn.UserID
 		conn.Unlock()
 
-		if uid != "" && st.RemoveConnection(uid) {
+		if uid != "" && st != nil && svc != nil && st.RemoveConnection(uid) {
 			svc.BroadcastUserStatus(context.Background(), uid, false)
 		}
 	}()
@@ -376,7 +469,11 @@ func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Stor
 	hctx.SetHeader("Content-Type", "text/event-stream")
 	hctx.SetHeader("Cache-Control", "no-cache")
 	hctx.SetHeader("Connection", "keep-alive")
-	hctx.SetHeader("Access-Control-Allow-Origin", cfg.CORS.Origin)
+	// Same guard as corsMiddleware: a missing or malformed origin sets no
+	// header instead of an empty one.
+	if cfg != nil && (cfg.CORS.Origin == "*" || config.IsValidCORSOrigin(cfg.CORS.Origin)) {
+		hctx.SetHeader("Access-Control-Allow-Origin", cfg.CORS.Origin)
+	}
 	hctx.SetStatus(http.StatusOK)
 
 	writeEvent(writer, flusher, "connected", map[string]string{"status": "ok"})
@@ -384,28 +481,25 @@ func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Stor
 	heartbeat := time.NewTicker(sse.HeartbeatInterval)
 	defer heartbeat.Stop()
 
+	// An unauthenticated stream never becomes useful: close it even when the
+	// client just holds the connection open.
+	authDeadline := time.NewTimer(sseAuthDeadline)
+	defer authDeadline.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-heartbeat.C:
-			expired := false
-			warn := false
-
+		case <-authDeadline.C:
 			conn.Lock()
-			if conn.Authorized {
-				remaining := time.Until(conn.ExpiresAt)
-				if remaining <= 0 {
-					conn.Authorized = false
-					expired = true
-				} else if remaining <= cfg.Auth.TokenExpiryWarning && !conn.Warned {
-					conn.Warned = true
-					warn = true
-				}
-			}
-
-			expiresAt := conn.ExpiresAt
+			authorized := conn.Authorized
 			conn.Unlock()
+
+			if !authorized {
+				return
+			}
+		case <-heartbeat.C:
+			expired, warn, expiresAt := checkSSEHeartbeat(ctx, conn, st, cfg)
 
 			if expired {
 				writeEvent(writer, flusher, "token_expired", map[string]any{
@@ -424,21 +518,69 @@ func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Stor
 			writeComment(writer, flusher, "heartbeat")
 
 		case evt, ok := <-conn.Channel:
-			if !ok {
+			if !pumpSSEEvent(conn, writer, flusher, evt, ok) {
 				return
 			}
-
-			conn.Lock()
-			authorized := conn.Authorized
-			conn.Unlock()
-
-			if !authorized {
-				continue
-			}
-
-			writeEvent(writer, flusher, evt.Event, evt.Data)
 		}
 	}
+}
+
+// pumpSSEEvent delivers one hub event to an authorized stream. It reports
+// whether the loop continues: a closed channel ends the stream, an event for
+// an unauthorized connection is skipped.
+func pumpSSEEvent(conn *sse.Connection, w io.Writer, flusher http.Flusher, evt sse.Event, ok bool) bool {
+	if !ok {
+		return false
+	}
+
+	conn.Lock()
+	authorized := conn.Authorized
+	conn.Unlock()
+
+	if !authorized {
+		return true
+	}
+
+	writeEvent(w, flusher, evt.Event, evt.Data)
+
+	return true
+}
+
+// checkSSEHeartbeat processes one heartbeat tick for a stream: token-expiry
+// bookkeeping plus revalidation of the session token against the store.
+// Logout revokes the token in the store without touching the hub, so a
+// stream whose token stopped working is expired here instead of receiving
+// events until ExpiresAt.
+func checkSSEHeartbeat(ctx context.Context, conn *sse.Connection, st *store.Store, cfg *config.Config) (bool, bool, time.Time) {
+	var expired, warn bool
+
+	conn.Lock()
+	if conn.Authorized {
+		remaining := time.Until(conn.ExpiresAt)
+		if remaining <= 0 {
+			conn.Authorized = false
+			expired = true
+		} else if cfg != nil && remaining <= cfg.Auth.TokenExpiryWarning && !conn.Warned {
+			conn.Warned = true
+			warn = true
+		}
+	}
+
+	authorized := conn.Authorized
+	token := conn.Token
+	expiresAt := conn.ExpiresAt
+	conn.Unlock()
+
+	if authorized && !expired && st != nil && token != "" {
+		if user, ok := st.GetUserByToken(ctx, token); !ok || time.Now().After(user.TokenExpiresAt) {
+			conn.Lock()
+			conn.Authorized = false
+			conn.Unlock()
+			expired = true
+		}
+	}
+
+	return expired, warn, expiresAt
 }
 
 func writeEvent(w io.Writer, flusher http.Flusher, event string, data any) {
@@ -541,11 +683,17 @@ func FederatedAuthMiddleware(fm *federation.Manager) func(ctx huma.Context, next
 }
 
 // verifyFederatedRequest checks federation headers, timestamp tolerance, and
-// the request signature, capping the signature body at 10 MiB. It mirrors
+// the request signature, capping the signature body at 1 MiB. It mirrors
 // handler.VerifyFederatedRequest minus the response writing (the transport
 // owns the wire response). tooLarge reports a body over the cap so the caller
 // can answer 413 like the pre-migration transport.
 func verifyFederatedRequest(fm *federation.Manager, w http.ResponseWriter, r *http.Request) (bool, bool) {
+	// Without a federation manager (federation disabled) no inbound
+	// server-to-server request can verify: fail closed instead of panicking
+	// on a nil manager.
+	if fm == nil {
+		return false, false
+	}
 	serverDomain := r.Header.Get("X-Federation-Server")
 	signature := r.Header.Get("X-Federation-Signature")
 	timestampStr := r.Header.Get("X-Federation-Timestamp")
@@ -595,4 +743,31 @@ func federatedServerFromContext(ctx context.Context) string {
 	}
 
 	return ""
+}
+
+// The fedPost/fedPatch/fedDelete helpers fan out fire-and-forget federation
+// requests. A nil client (federation disabled, e.g. in tests) is a no-op
+// instead of a panic; an empty server is skipped like the client itself does.
+func fedPost(ctx context.Context, c *federation.Client, server, path string, body any) {
+	if c == nil || server == "" {
+		return
+	}
+
+	c.Post(ctx, server, path, body)
+}
+
+func fedPatch(ctx context.Context, c *federation.Client, server, path string, body any) {
+	if c == nil || server == "" {
+		return
+	}
+
+	c.Patch(ctx, server, path, body)
+}
+
+func fedDelete(ctx context.Context, c *federation.Client, server, path string) {
+	if c == nil || server == "" {
+		return
+	}
+
+	c.Delete(ctx, server, path)
 }

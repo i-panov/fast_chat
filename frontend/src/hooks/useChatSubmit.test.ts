@@ -28,8 +28,12 @@ function deps(overrides: Record<string, unknown> = {}) {
 		activeChatId: "c1",
 		activeThreadId: null,
 		replyToMessage: null,
-		sendMessage: vi.fn(async (_o: unknown) => {}),
-		editMessage: vi.fn(async (_o: unknown) => {}),
+		sendMessage: vi.fn(
+			(_o: unknown): Promise<undefined> => Promise.resolve(undefined),
+		),
+		editMessage: vi.fn(
+			(_o: unknown): Promise<undefined> => Promise.resolve(undefined),
+		),
 		selectChat: vi.fn(),
 		closeThread: vi.fn(),
 		clearAllPendingFiles: vi.fn(),
@@ -172,6 +176,41 @@ describe("useChatSubmit", () => {
 		expect(d.clearPendingChat).toHaveBeenCalled();
 	});
 
+	it("does not create another chat when retrying after a failed send", async () => {
+		const newChat: Chat = {
+			id: "c-new",
+			type: "private",
+			name: "bob",
+			ownerId: "alice:test",
+			members: [],
+			createdAt: "2026-01-01T00:00:00Z",
+		};
+		vi.mocked(createChat).mockResolvedValueOnce({ chat: newChat });
+		const d = deps({
+			pendingChatWith: "bob:test",
+			activeChatId: null,
+			sendMessage: vi.fn((_o: unknown) => Promise.resolve(false)),
+		});
+		const { result, rerender } = renderHook((p: typeof d) => useChatSubmit(p), {
+			initialProps: d,
+		});
+
+		await result.current(event());
+
+		// The chat exists and is selected, but the send failed: the pending
+		// state is dropped so the retry goes through the active-chat path.
+		expect(d.clearPendingChat).toHaveBeenCalled();
+		expect(d.setInputText).not.toHaveBeenCalled();
+
+		rerender({ ...d, pendingChatWith: null, activeChatId: "c-new" });
+		await result.current(event());
+
+		expect(createChat).toHaveBeenCalledTimes(1);
+		expect(d.sendMessage).toHaveBeenLastCalledWith(
+			expect.objectContaining({ chatId: "c-new", text: "hello" }),
+		);
+	});
+
 	it("ignores a thread-only submit", async () => {
 		const d = deps({ activeChatId: null, activeThreadId: "th1" });
 		const { result } = renderHook(() => useChatSubmit(d));
@@ -180,5 +219,65 @@ describe("useChatSubmit", () => {
 
 		expect(d.sendMessage).not.toHaveBeenCalled();
 		expect(d.setInputText).not.toHaveBeenCalled();
+	});
+
+	it("keeps the draft when sending fails", async () => {
+		const d = deps({
+			sendMessage: vi.fn((_o: unknown) => Promise.resolve(false)),
+		});
+		const { result } = renderHook(() => useChatSubmit(d));
+
+		await result.current(event());
+
+		expect(d.sendMessage).toHaveBeenCalled();
+		expect(d.setInputText).not.toHaveBeenCalled();
+		expect(d.clearAllPendingFiles).not.toHaveBeenCalled();
+		expect(d.clearReply).not.toHaveBeenCalled();
+		expect(d.clearPendingLocation).not.toHaveBeenCalled();
+	});
+
+	it("keeps the draft when sending throws", async () => {
+		const d = deps({
+			sendMessage: vi.fn((_o: unknown) =>
+				Promise.reject(new Error("encrypt-failed")),
+			),
+		});
+		const { result } = renderHook(() => useChatSubmit(d));
+
+		await result.current(event());
+
+		expect(d.setInputText).not.toHaveBeenCalled();
+		expect(d.clearAllPendingFiles).not.toHaveBeenCalled();
+	});
+
+	it("keeps the editor open when editing fails", async () => {
+		const d = deps({
+			inputText: "fixed",
+			editingMessage: {
+				chatId: "c1",
+				messageId: "m1",
+				text: "old",
+			},
+			editMessage: vi.fn((_o: unknown) => Promise.resolve(false)),
+		});
+		const { result } = renderHook(() => useChatSubmit(d));
+
+		await result.current(event());
+
+		expect(d.editMessage).toHaveBeenCalled();
+		expect(d.clearEditing).not.toHaveBeenCalled();
+		expect(d.setInputText).not.toHaveBeenCalled();
+	});
+
+	it("keeps the draft when creating the private chat fails", async () => {
+		vi.mocked(createChat).mockRejectedValueOnce(new Error("down"));
+		const d = deps({ pendingChatWith: "bob:test", activeChatId: null });
+		const { result } = renderHook(() => useChatSubmit(d));
+
+		await result.current(event());
+
+		expect(d.sendMessage).not.toHaveBeenCalled();
+		expect(d.setInputText).not.toHaveBeenCalled();
+		expect(d.clearPendingChat).not.toHaveBeenCalled();
 	});
 });

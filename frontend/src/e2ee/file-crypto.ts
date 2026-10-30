@@ -28,6 +28,39 @@ export interface FileKey {
 const FILE_KEY_BYTES = 32;
 const FILE_NONCE_BYTES = 24; // crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
 
+// hashBytes returns the SHA-256 hex digest of already-read bytes. It shares
+// computePlaintextHash's digest so hashes stay comparable, but avoids
+// re-reading the file when the caller already holds its content.
+export async function hashBytes(
+	data: Uint8Array<ArrayBuffer>,
+): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", data);
+
+	return Array.from(new Uint8Array(digest))
+		.map((b) => b.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+// encryptBytes encrypts already-read bytes with the file key. Prefer it over
+// encryptFileStream when the plaintext was already read (e.g. for hashing)
+// so large files are read from disk exactly once.
+export async function encryptBytes(
+	data: Uint8Array,
+	fileKey: FileKey,
+): Promise<Uint8Array> {
+	await ensureSodium();
+	const key = sodium.from_base64(fileKey.key);
+	const nonce = sodium.from_base64(fileKey.nonce);
+
+	return sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+		data,
+		null, // additional data
+		null, // secret nonce
+		nonce,
+		key,
+	);
+}
+
 // generateFileKey creates a fresh random key for a file.
 export async function generateFileKey(): Promise<FileKey> {
 	await ensureSodium();

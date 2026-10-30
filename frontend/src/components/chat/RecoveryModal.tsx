@@ -80,9 +80,12 @@ export function RecoveryModal({ activeToken }: Props) {
 	return (
 		<Modal
 			opened={open}
-			onClose={() => setOpen(false)}
+			onClose={() => {}}
 			title={t("backup.recoveryTitle")}
 			size="sm"
+			closeOnEscape={false}
+			withCloseButton={false}
+			closeOnClickOutside={false}
 		>
 			<Stack gap="md">
 				<Alert color="red" title={t("backup.recoveryWarningTitle")}>

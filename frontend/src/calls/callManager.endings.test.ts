@@ -58,9 +58,21 @@ describe("callManager endings", () => {
 
 		expect(manager.state().role).toBe("caller");
 
+		manager.end();
 		incoming(manager);
 
 		expect(manager.state().role).toBe("callee");
+	});
+
+	it("ignores an incoming call while a call is going on", async () => {
+		const manager = createCallManager(fakeApi());
+
+		await manager.start("chat-1");
+		incoming(manager);
+
+		expect(manager.state().callId).toBe("c-1");
+		expect(manager.state().phase).toBe("outgoing");
+		expect(manager.state().role).toBe("caller");
 	});
 
 	it("closes the notice of the finished call", async () => {
@@ -109,10 +121,7 @@ describe("callManager endings", () => {
 		expect(manager.state().phase).toBe("outgoing");
 	});
 
-	it("releases the media of a call that was replaced", async () => {
-		const stop = vi.fn();
-		stubMedia(stop);
-
+	it("keeps the outgoing call when an incoming call arrives", async () => {
 		const resolvers: ((value: { callId: string; state: string }) => void)[] =
 			[];
 		const api = fakeApi({
@@ -131,16 +140,17 @@ describe("callManager endings", () => {
 			expect(FakePeerConnection.instances.length).toBe(1);
 		});
 
-		// An incoming call takes the place of the call that is being started.
+		// An incoming call while the user dials is busy: the outgoing call
+		// stays.
 		incoming(manager);
-		await manager.accept();
 
-		// The first call releases its own media and its own connection.
+		expect(manager.state().phase).toBe("outgoing");
+
 		resolvers[0]({ callId: "c-1", state: "ringing" });
 		await first;
 
-		expect(stop).toHaveBeenCalledTimes(1);
-		expect(FakePeerConnection.instances[0].closed).toBe(true);
+		expect(manager.state().callId).toBe("c-1");
+		expect(FakePeerConnection.instances[0].closed).toBe(false);
 	});
 
 	it("ends the call on the server when the user hangs up while it starts", async () => {
@@ -263,5 +273,63 @@ describe("callManager endings", () => {
 		expect(manager.state().reason).toBe("timeout");
 		expect(manager.state().phase).toBe("ended");
 		expect(listener).not.toHaveBeenCalled();
+	});
+
+	it("ends a failed connection on the server at once", async () => {
+		const api = fakeApi();
+		const manager = createCallManager(api);
+
+		await manager.start("chat-1");
+		FakePeerConnection.instances[0].setConnectionState("failed");
+
+		expect(api.hangupCall).toHaveBeenCalledWith("tok", "c-1", "peer-left");
+		expect(manager.state().phase).toBe("ended");
+		expect(manager.state().reason).toBe("peer-left");
+	});
+
+	it("gives a disconnected connection a grace period", async () => {
+		vi.useFakeTimers();
+		try {
+			const api = fakeApi();
+			const manager = createCallManager(api);
+
+			await manager.start("chat-1");
+			FakePeerConnection.instances[0].setConnectionState("disconnected");
+
+			// Transient gap: the call stays up and the server hears nothing.
+			expect(manager.state().phase).toBe("outgoing");
+			expect(api.hangupCall).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(10_000);
+
+			expect(api.hangupCall).toHaveBeenCalledWith(
+				"tok",
+				"c-1",
+				"peer-left",
+			);
+			expect(manager.state().phase).toBe("ended");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("recovers when a disconnected connection heals in time", async () => {
+		vi.useFakeTimers();
+		try {
+			const api = fakeApi();
+			const manager = createCallManager(api);
+
+			await manager.start("chat-1");
+			const peer = FakePeerConnection.instances[0];
+			peer.setConnectionState("disconnected");
+			peer.setConnectionState("connected");
+
+			await vi.advanceTimersByTimeAsync(10_000);
+
+			expect(api.hangupCall).not.toHaveBeenCalled();
+			expect(manager.state().phase).toBe("outgoing");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

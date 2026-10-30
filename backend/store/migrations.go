@@ -76,6 +76,11 @@ func createIndexes(db *gorm.DB) error {
 		// Threads: GetThreadsForChat filters by chat_id.
 		"CREATE INDEX IF NOT EXISTS idx_threads_chat ON threads(chat_id)",
 
+		// Threads: one thread per parent message. The application checks this
+		// before inserting, but only a unique index makes concurrent creates
+		// safe: the loser hits the constraint and maps to ErrThreadExists.
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_chat_parent ON threads(chat_id, parent_message_id)",
+
 		// MessageFile: batch lookups filter by message_id; ServeFile
 		// authorization also joins the other way by file_id.
 		"CREATE INDEX IF NOT EXISTS idx_message_files_message ON message_files(message_id)",
@@ -102,6 +107,11 @@ func createIndexes(db *gorm.DB) error {
 		// still waiting. The composite index serves both the barrier and the
 		// ordering.
 		"CREATE INDEX IF NOT EXISTS idx_federation_ops_peer_created ON federation_ops(remote_server, created_at, id)",
+
+		// FederationOp: DueFederationOps filters by next_attempt_at on every
+		// tick, so the due scan needs its own index rather than walking the
+		// peer/created one.
+		"CREATE INDEX IF NOT EXISTS idx_federation_ops_next_attempt ON federation_ops(next_attempt_at)",
 	}
 
 	for _, stmt := range statements {
@@ -185,10 +195,14 @@ func backfillMessageThreadID(db *gorm.DB) error {
 // builds the message itself. Those rows then failed the `updated_at >= since`
 // filter of every sync delta and were never delivered to a catch-up client.
 //
-// The predicate is timezone-independent: a genuine edit always moves
-// updated_at to at or after created_at, so only poisoned rows match.
+// The comparison runs over unixepoch, not over the stored text: timestamps
+// carry numeric offsets, so a lexicographic `<` compares wall-clock digits
+// instead of instants (an edit at 09:31-04:00 after a creation at 13:30+00:00
+// reads as "09:31" < "13:30" and would be clobbered). InitDB normalizes to
+// UTC first; the epoch comparison keeps the repair correct even if it ever
+// runs before normalization.
 func repairFrozenUpdatedAt(db *gorm.DB) error {
-	return db.Exec("UPDATE messages SET updated_at = created_at WHERE updated_at < created_at").Error
+	return db.Exec("UPDATE messages SET updated_at = created_at WHERE unixepoch(updated_at) < unixepoch(created_at)").Error
 }
 
 // utcTimestampColumns lists every persisted timestamp that is later filtered
@@ -212,7 +226,7 @@ var utcTimestampColumns = map[string][]string{
 	"deleted_chats":         {"deleted_at"},
 	"message_read_statuses": {"read_at"},
 	"push_subscriptions":    {fieldCreatedAt},
-	"users":                 {"token_expires_at", fieldKeyBackupAt},
+	"users":                 {fieldTokenExpireAt, fieldKeyBackupAt},
 	// The outbox filters by next_attempt_at and orders by created_at, so
 	// both columns are compared in SQL like the ones above. The cursor of
 	// the catch-up is only compared in Go and stays out of the list.
@@ -256,6 +270,11 @@ func normalizeTimestampsToUTC(db *gorm.DB) error {
 // idempotent: no row is rewritten on later boots. The probe itself is still a
 // scan of the column on every boot, which is why InitDB runs this before
 // serving traffic rather than lazily.
+// normalizeBatchSize bounds one normalize write transaction. Each chunk runs
+// in its own transaction so a large legacy database does not hold the write
+// lock for the whole table or accumulate every rewrite in memory.
+const normalizeBatchSize = 500
+
 func normalizeTimestampColumnUTC(db *gorm.DB, table, column string) error {
 	qual := table + "." + column
 
@@ -277,48 +296,68 @@ func normalizeTimestampColumnUTC(db *gorm.DB, table, column string) error {
 		when  time.Time
 	}
 
-	rewrites := make([]rewrite, 0, pendingCount)
+	var lastRowID int64
 
-	rows, err := db.Raw("SELECT rowid, " + qual + " FROM " + table + " WHERE " + convertible).Rows()
-	if err != nil {
-		return err
-	}
-
-	defer rows.Close() //nolint:errcheck // best-effort: close errors are not actionable
-
-	for rows.Next() {
-		var rw rewrite
-
-		if err := rows.Scan(&rw.rowID, &rw.when); err != nil {
+	for {
+		rows, err := db.Raw(
+			"SELECT rowid, "+qual+" FROM "+table+" WHERE "+convertible+" AND rowid > ? ORDER BY rowid LIMIT ?",
+			lastRowID, normalizeBatchSize,
+		).Rows()
+		if err != nil {
 			return err
 		}
 
-		if rw.when.IsZero() {
-			continue
+		batch := make([]rewrite, 0, normalizeBatchSize)
+		chunkLast := lastRowID
+
+		for rows.Next() {
+			var rw rewrite
+
+			if err := rows.Scan(&rw.rowID, &rw.when); err != nil {
+				if cerr := rows.Close(); cerr != nil {
+					return cerr
+				}
+				return err
+			}
+
+			chunkLast = rw.rowID
+
+			if rw.when.IsZero() {
+				continue
+			}
+
+			batch = append(batch, rewrite{rowID: rw.rowID, when: rw.when.UTC()})
 		}
 
-		rewrites = append(rewrites, rewrite{rowID: rw.rowID, when: rw.when.UTC()})
-	}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			if cerr := rows.Close(); cerr != nil {
+				return cerr
+			}
+			return rowsErr
+		}
 
-	if err := rows.Err(); err != nil {
-		return err
-	}
+		if err := rows.Close(); err != nil {
+			return err
+		}
 
-	// Release the read cursor before opening the write transaction. An
-	// exhausted cursor is already closed by database/sql, but relying on that
-	// would tie this to a driver detail while the pool can hand out several
-	// connections; closing explicitly also documents the ordering.
-	if err := rows.Close(); err != nil {
-		return err
-	}
+		if len(batch) > 0 {
+			if err := db.Transaction(func(tx *gorm.DB) error {
+				for _, rw := range batch {
+					if err := tx.Exec("UPDATE "+table+" SET "+column+" = ? WHERE rowid = ?", rw.when, rw.rowID).Error; err != nil {
+						return err
+					}
+				}
 
-	return db.Transaction(func(tx *gorm.DB) error {
-		for _, rw := range rewrites {
-			if err := tx.Exec("UPDATE "+table+" SET "+column+" = ? WHERE rowid = ?", rw.when, rw.rowID).Error; err != nil {
+				return nil
+			}); err != nil {
 				return err
 			}
 		}
 
-		return nil
-	})
+		if chunkLast == lastRowID {
+			return nil
+		}
+
+		lastRowID = chunkLast
+	}
 }

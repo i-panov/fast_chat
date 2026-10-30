@@ -31,7 +31,6 @@ function handler(): Handler {
 function baseParams(overrides: Record<string, unknown> = {}) {
 	return {
 		token: "tok",
-		knownThreadIdsRef: { current: new Set<string>() },
 		addTypingUser: vi.fn(),
 		clearTyping: vi.fn(),
 		onTokenExpiring: vi.fn(async (_t: string) => {}),
@@ -86,8 +85,7 @@ describe("useSseEvents", () => {
 	it("deletes messages from the chat or the thread", async () => {
 		await messagesRepo.upsertMany([msg("m1")]);
 		await threadMessagesRepo.upsert(msg("tm1"), "th1");
-		const ref = { current: new Set<string>(["th1"]) };
-		renderHook(() => useSseEvents(baseParams({ knownThreadIdsRef: ref })));
+		renderHook(() => useSseEvents(baseParams()));
 		const h = handler();
 
 		await h("message_deleted", { chatId: "c1", messageId: "m1" });
@@ -99,6 +97,38 @@ describe("useSseEvents", () => {
 			expect((await threadMessagesRepo.getById("th1", "tm1"))?.status).toBe(
 				"deleted",
 			);
+		});
+	});
+
+	it("routes thread deletions by messageId even with a real chatId", async () => {
+		await threadMessagesRepo.upsert(msg("tm1"), "th1");
+		// knownThreadIds is empty: the old chatId-based routing would have
+		// deleted from the wrong store.
+		renderHook(() => useSseEvents(baseParams()));
+		const h = handler();
+
+		await h("message_deleted", { chatId: "c1", messageId: "tm1" });
+
+		await waitFor(async () => {
+			expect((await threadMessagesRepo.getById("th1", "tm1"))?.status).toBe(
+				"deleted",
+			);
+		});
+	});
+
+	it("does not clobber a queued message with an incoming SSE copy", async () => {
+		await messagesRepo.upsert({ ...msg("m1"), text: "local queued" }, "queued");
+		renderHook(() => useSseEvents(baseParams()));
+		const h = handler();
+
+		await h("new_message", msg("m1"));
+
+		await waitFor(async () => {
+			// The lifecycle stays queued so the outbox still finishes the
+			// send; only the content follows the canonical server copy.
+			const stored = await messagesRepo.getById("c1", "m1");
+			expect(stored?.status).toBe("queued");
+			expect(stored?.text).toBe("text m1");
 		});
 	});
 
@@ -230,13 +260,21 @@ describe("useSseEvents", () => {
 		renderHook(() => useSseEvents(baseParams({ callManager })));
 		const h = handler();
 
-		await h("call_incoming", { callId: "c-1" });
+		await h("call_incoming", {
+			callId: "c-1",
+			chatId: "chat-1",
+			offer: "offer-sdp",
+			from: { id: "bob:test", nick: "bob" },
+		});
 		await h("call_accepted", { callId: "c-1", answer: "a" });
 		await h("call_ended", { callId: "c-1", reason: "hangup" });
 		await h("call_ice", { callId: "c-1", candidate: {} });
 
 		expect(callManager.handleIncoming).toHaveBeenCalledWith({
 			callId: "c-1",
+			chatId: "chat-1",
+			offer: "offer-sdp",
+			from: { id: "bob:test", nick: "bob" },
 		});
 		expect(callManager.handleAccepted).toHaveBeenCalledWith({
 			callId: "c-1",

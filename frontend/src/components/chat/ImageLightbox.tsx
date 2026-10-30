@@ -71,6 +71,7 @@ export function ImageLightbox({ images, startIndex, onClose }: Props) {
 				color="gray"
 				size="xl"
 				onClick={onClose}
+				aria-label={t("media.closeMenu")}
 				style={{
 					position: "absolute",
 					top: 16,
@@ -91,6 +92,7 @@ export function ImageLightbox({ images, startIndex, onClose }: Props) {
 						e.stopPropagation();
 						goPrev();
 					}}
+					aria-label="Previous image"
 					style={{
 						position: "absolute",
 						left: 16,
@@ -129,6 +131,7 @@ export function ImageLightbox({ images, startIndex, onClose }: Props) {
 						e.stopPropagation();
 						goNext();
 					}}
+					aria-label="Next image"
 					style={{
 						position: "absolute",
 						right: 16,

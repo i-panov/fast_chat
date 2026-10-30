@@ -25,7 +25,7 @@ const startCall = vi.hoisted(() =>
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual =
 		await importOriginal<typeof import("@tanstack/react-router")>();
-	return { ...actual, useNavigate: () => navigate };
+	return { ...actual, useNavigate: () => navigate, useSearch: () => undefined };
 });
 
 // The real module supplies ApiError: the call hook tells the refusals of the

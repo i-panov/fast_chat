@@ -35,7 +35,10 @@ export function FileDownloadAttachment({ file, fileKeys }: Props) {
 					file.url,
 					file.originalName,
 					activeAccount?.token,
-					fileKeys?.[file.hash ?? ""],
+					file.hash !== undefined
+						? (fileKeys?.[file.hash] ?? fileKeys?.[file.id])
+						: fileKeys?.[file.id],
+					file.mimeType,
 				).finally(() => setDownloading(false));
 			}}
 		>

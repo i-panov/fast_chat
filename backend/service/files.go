@@ -7,7 +7,12 @@ import (
 )
 
 // IsHexString reports whether s consists solely of hexadecimal characters.
+// IsHexString reports whether s is a non-empty hex string. Empty is
+// rejected: like filestage's local helper, so the two helpers agree.
 func IsHexString(s string) bool {
+	if s == "" {
+		return false
+	}
 	for _, c := range s {
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return false

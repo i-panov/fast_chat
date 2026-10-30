@@ -46,7 +46,6 @@ export function useVideoThumbnail(blobUrl: string | undefined): string | null {
 			video.removeEventListener("seeked", onSeeked);
 			video.removeAttribute("src");
 			video.load();
-			setThumb(null);
 		};
 	}, [blobUrl]);
 	return thumb;

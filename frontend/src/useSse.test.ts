@@ -99,7 +99,7 @@ describe("useSse", () => {
 		expect(mockSseAuth()).toHaveBeenCalledWith(connectionId, "tok");
 	});
 
-	it("dispatches parsed JSON events", () => {
+	it("dispatches parsed JSON events", async () => {
 		const onEvent = vi.fn();
 		renderHook(() => useSse("tok", onEvent));
 
@@ -107,9 +107,63 @@ describe("useSse", () => {
 			lastSource().emit("new_message", { id: "m1" });
 			lastSource().emitRaw("typing", "not-json{");
 		});
+		// The serialized dispatch runs on microtasks (fake timers stay
+		// untouched): drain the queue and assert the settled calls.
+		await act(async () => {});
 
 		expect(onEvent).toHaveBeenCalledTimes(1);
 		expect(onEvent).toHaveBeenCalledWith("new_message", { id: "m1" });
+	});
+
+	it("dispatches token lifecycle events", async () => {
+		const onEvent = vi.fn();
+		renderHook(() => useSse("tok", onEvent));
+
+		act(() => {
+			lastSource().emit("token_expiring", { expiresIn: 60 });
+			lastSource().emit("token_expired", {});
+		});
+		await act(async () => {});
+
+		expect(onEvent).toHaveBeenCalledWith("token_expiring", {
+			expiresIn: 60,
+		});
+		expect(onEvent).toHaveBeenCalledWith("token_expired", {});
+	});
+
+	it("dispatches data events strictly in arrival order", async () => {
+		const order: string[] = [];
+		const onEvent = vi.fn((event: string) => {
+			order.push(event);
+		});
+		renderHook(() => useSse("tok", onEvent));
+
+		act(() => {
+			lastSource().emit("new_message", { id: "m1" });
+			lastSource().emit("message_deleted", { messageId: "m1" });
+		});
+		await act(async () => {});
+
+		expect(onEvent).toHaveBeenCalledTimes(2);
+		expect(order).toEqual(["new_message", "message_deleted"]);
+	});
+
+	it("uses a fresh connectionId when the token changes", () => {
+		const { rerender } = renderHook(({ token }) => useSse(token, vi.fn()), {
+			initialProps: { token: "t1" },
+		});
+		const firstId = new URL(lastSource().url, "http://x").searchParams.get(
+			"connectionId",
+		);
+
+		rerender({ token: "t2" });
+		const secondId = new URL(lastSource().url, "http://x").searchParams.get(
+			"connectionId",
+		);
+
+		expect(firstId).toBeTruthy();
+		expect(secondId).toBeTruthy();
+		expect(secondId).not.toBe(firstId);
 	});
 
 	it("emits connected and resets the backoff", () => {

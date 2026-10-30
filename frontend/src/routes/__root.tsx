@@ -1,6 +1,6 @@
 import { MantineProvider } from "@mantine/core";
 import { Notifications } from "@mantine/notifications";
-import { createRootRoute, Outlet } from "@tanstack/react-router";
+import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
 import { NotificationToast } from "../components/NotificationToast.tsx";
@@ -35,6 +35,16 @@ function RootDocument() {
 	);
 }
 
+function NotFound() {
+	return (
+		<div style={{ padding: 24, textAlign: "center" }}>
+			<p>Page not found.</p>
+			<Link to="/">Back to home</Link>
+		</div>
+	);
+}
+
 export const Route = createRootRoute({
 	component: RootDocument,
+	notFoundComponent: NotFound,
 });

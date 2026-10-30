@@ -28,3 +28,25 @@ func TestGenerateIsUnique(t *testing.T) {
 		seen[id] = struct{}{}
 	}
 }
+
+func TestTryGenerateFormat(t *testing.T) {
+	got, err := TryGenerate()
+	if err != nil {
+		t.Fatalf("TryGenerate error: %v", err)
+	}
+
+	if len(got) != 32 {
+		t.Fatalf("length = %d, want 32", len(got))
+	}
+
+	if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(got) {
+		t.Fatalf("value %q is not 32 hex characters", got)
+	}
+}
+
+func TestMustGenerateFormat(t *testing.T) {
+	got := MustGenerate()
+	if len(got) != 32 {
+		t.Fatalf("length = %d, want 32", len(got))
+	}
+}

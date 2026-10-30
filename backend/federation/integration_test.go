@@ -164,6 +164,7 @@ func fedTestConfig(t *testing.T, domain string) *config.Config {
 		CORS:             config.CORSConfig{Origin: "*"},
 		Auth:             config.AuthConfig{TokenExpiry: time.Hour, TokenExpiryWarning: 5 * time.Minute},
 		Uploads:          config.UploadsConfig{Dir: t.TempDir()},
+		Federation:       config.FederationConfig{AllowPrivateAddresses: true},
 		MessageEditTTL:   300,
 		MessageDeleteTTL: 0,
 	}
@@ -579,9 +580,9 @@ func TestFederationPairTamperedSignatureRejected(t *testing.T) {
 
 	const path = "/api/federated/users/search?q=alice"
 
-	// Sign the request body with B's key.
+	// Sign the request body with B's key for A as the audience.
 	timestamp := time.Now().Unix()
-	signature, err := pair.b.manager.Sign(http.MethodGet, path, nil, timestamp, "test-nonce")
+	signature, err := pair.b.manager.Sign(pair.a.domain, http.MethodGet, path, nil, timestamp, "test-nonce")
 	if err != nil {
 		t.Fatalf("sign request: %v", err)
 	}

@@ -23,6 +23,28 @@ export class ErrorBoundary extends Component<Props, State> {
 		console.error("ErrorBoundary caught:", error, info);
 	}
 
+	override componentDidMount() {
+		if (typeof i18n.on === "function") {
+			i18n.on("languageChanged", this.handleLanguage);
+		}
+	}
+
+	override componentWillUnmount() {
+		const off = (i18n as unknown as { off?: unknown }).off;
+		if (typeof off === "function") {
+			(off as (event: string, cb: () => void) => void).call(
+				i18n,
+				"languageChanged",
+				this.handleLanguage,
+			);
+		}
+	}
+
+	private handleLanguage = () => {
+		// Re-render translated fallback strings on language switch.
+		this.forceUpdate();
+	};
+
 	reset = () => {
 		this.setState({ error: null });
 	};

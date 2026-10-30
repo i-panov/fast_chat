@@ -306,9 +306,11 @@ var errInternal = &statusError{ErrorMessage: "internal error", code: http.Status
 
 // Shared error messages (the wire format must stay byte-identical to the pre-migration transport).
 const (
-	msgChatNotFound = "chat not found"
-	msgNotMember    = "not a member"
-	msgUnauthorized = "unauthorized"
+	msgChatNotFound      = "chat not found"
+	msgNotMember         = "not a member"
+	msgUnauthorized      = "unauthorized"
+	msgTooManyFiles      = "too many files"
+	msgTooManyMessageIDs = "too many message IDs"
 )
 
 // AuthMiddleware validates the Bearer token and, on success, stores the user
@@ -330,7 +332,21 @@ func AuthMiddleware(st *store.Store) func(ctx huma.Context, next func(huma.Conte
 			return
 		}
 
-		token := strings.TrimPrefix(ctx.Header("Authorization"), "Bearer ")
+		// The scheme is part of the credential: a bare token or another
+		// scheme ("Basic ...") must not authenticate even when its value
+		// happens to match a session.
+		raw := ctx.Header("Authorization")
+		if !strings.HasPrefix(raw, "Bearer ") {
+			// Header must precede SetStatus: the adapter commits headers on
+			// SetStatus, and net/http ignores later header writes.
+			ctx.SetHeader("Content-Type", "application/json")
+			ctx.SetStatus(http.StatusUnauthorized)
+			ctx.BodyWriter().Write([]byte(`{"error":"unauthorized"}`)) //nolint:errcheck,gosec // best-effort: auth rejection
+
+			return
+		}
+
+		token := strings.TrimSpace(strings.TrimPrefix(raw, "Bearer "))
 		if token == "" {
 			// Header must precede SetStatus: the adapter commits headers on
 			// SetStatus, and net/http ignores later header writes.

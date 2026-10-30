@@ -29,7 +29,6 @@ import { useTyping } from "./useTyping";
 
 interface ChatLifecycleDeps {
 	token: string | undefined;
-	knownThreadIdsRef: React.MutableRefObject<Set<string>>;
 	addTypingUser: (payload: TypingPayload) => void;
 	clearTyping: (chatId: string, userId: string) => void;
 	updateAccountToken: (
@@ -44,7 +43,6 @@ interface ChatLifecycleDeps {
 
 function useChatLifecycle({
 	token,
-	knownThreadIdsRef,
 	addTypingUser,
 	clearTyping,
 	updateAccountToken,
@@ -74,7 +72,6 @@ function useChatLifecycle({
 
 	useSseEvents({
 		token: token ?? "",
-		knownThreadIdsRef,
 		addTypingUser,
 		clearTyping,
 		onTokenExpiring: async (currentToken: string) => {
@@ -267,21 +264,55 @@ function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 	};
 }
 
+// Cap for per-conversation input drafts kept in memory.
+const MAX_DRAFTS = 50;
+
 export function useChatPage(): ChatPageState {
 	const { activeAccount, logout, updateAccountToken } = useAuth();
 	const user = activeAccount?.user ?? null;
 	const token = activeAccount?.token;
 	const { config } = useServerConfig(token);
-
 	const [switcherOpen, setSwitcherOpen] = useState(false);
-	const [inputText, setInputText] = useState("");
+	const [inputText, setInputTextState] = useState("");
+	// Per-chat/per-account (+thread) drafts so switching chats or accounts
+	// neither loses text nor leaks it into another conversation. Every
+	// keystroke is written through to the map, so switching only loads.
+	const [drafts, setDrafts] = useState<Record<string, string>>({});
 
 	const chatList = useChatList({ token });
 	const messages = useMessages({ token, chatId: chatList.activeChatId });
 	const threads = useThreads({ token, chatId: chatList.activeChatId });
+	const draftKey = `${user?.id ?? "anon"}::${chatList.activeChatId ?? "none"}::${threads.activeThreadId ?? "main"}`;
+	// Load the stored draft only when switching conversations. Keystrokes go
+	// through setInputText (which writes both the field and the map), so
+	// re-running on every drafts change would redo the same setState on
+	// each keystroke. The closure holds the drafts of the render that
+	// changed the key, which is exactly the current map at switch time.
+	useEffect(() => {
+		setInputTextState(drafts[draftKey] ?? "");
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [draftKey]);
+	const setInputText = useCallback(
+		(value: string) => {
+			setInputTextState(value);
+			setDrafts((prev) => {
+				if (prev[draftKey] === value) return prev;
+				const next = { ...prev, [draftKey]: value };
+				// Bound memory: drop the oldest entries past the cap.
+				const keys = Object.keys(next);
+				if (keys.length > MAX_DRAFTS) {
+					for (const k of keys.slice(0, keys.length - MAX_DRAFTS)) {
+						delete next[k];
+					}
+				}
+				return next;
+			});
+		},
+		[draftKey],
+	);
 	const typing = useTyping({ token });
 	const pendingFiles = usePendingFiles();
-	const sender = useMessageSender({ token: token ?? "" });
+	const sender = useMessageSender({ token });
 	const location = useLocationPicker();
 	const search = useMessageSearch(token);
 	const editor = useMessageEditor(messages.messages);
@@ -298,7 +329,6 @@ export function useChatPage(): ChatPageState {
 
 	useChatLifecycle({
 		token,
-		knownThreadIdsRef: threads.knownThreadIdsRef,
 		addTypingUser: typing.addTypingUser,
 		clearTyping: typing.clearTyping,
 		updateAccountToken,

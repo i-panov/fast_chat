@@ -30,9 +30,17 @@ function Stream({
 	const ref = useRef<HTMLVideoElement | null>(null);
 
 	useEffect(() => {
-		if (ref.current) {
-			ref.current.srcObject = stream ?? null;
+		const element = ref.current;
+
+		if (element) {
+			element.srcObject = stream ?? null;
 		}
+
+		return () => {
+			if (element) {
+				element.srcObject = null;
+			}
+		};
 	}, [stream]);
 
 	return (

@@ -485,3 +485,32 @@ func TestNewWithoutABoundDoesNotGrowForever(t *testing.T) {
 		t.Errorf("entries = %d, want at most the 200 keys inserted", got)
 	}
 }
+
+// TestPruneTimestampsKeepsLiveSuffix is the regression for the inverted
+// prune: with a window of [expired, live] the old code returned
+// timestamps[:0] (empty) on the first expired entry, resetting the window
+// and letting one extra request through. The live suffix must survive.
+func TestPruneTimestampsKeepsLiveSuffix(t *testing.T) {
+	now := time.Now()
+	cutoff := now.Add(-time.Minute)
+
+	expired := now.Add(-2 * time.Minute)
+	live := now
+
+	got := pruneTimestamps([]time.Time{expired, live}, cutoff)
+	if len(got) != 1 || !got[0].Equal(live) {
+		t.Fatalf("pruneTimestamps([expired,live]) = %v, want [live]", got)
+	}
+
+	if got := pruneTimestamps([]time.Time{expired}, cutoff); len(got) != 0 {
+		t.Fatalf("pruneTimestamps([expired]) = %v, want empty", got)
+	}
+
+	if got := pruneTimestamps([]time.Time{live}, cutoff); len(got) != 1 {
+		t.Fatalf("pruneTimestamps([live]) = %v, want [live]", got)
+	}
+
+	if got := pruneTimestamps(nil, cutoff); len(got) != 0 {
+		t.Fatalf("pruneTimestamps(nil) = %v, want empty", got)
+	}
+}

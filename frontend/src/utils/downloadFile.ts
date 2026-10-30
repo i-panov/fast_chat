@@ -6,6 +6,7 @@ export async function downloadFile(
 	filename: string,
 	token?: string,
 	fileKey?: FileKey,
+	mimeType?: string,
 ): Promise<void> {
 	const headers: Record<string, string> = {};
 	if (token) {
@@ -20,7 +21,11 @@ export async function downloadFile(
 	const blob = await resp.blob();
 
 	// Decrypt if a key is provided (encrypted file).
-	const finalBlob = fileKey ? await decryptBlob(blob, fileKey) : blob;
+	const finalBlob = fileKey
+		? await decryptBlob(blob, fileKey, mimeType ?? blob.type)
+		: mimeType && blob.type !== mimeType
+			? new Blob([blob], { type: mimeType })
+			: blob;
 
 	const blobUrl = URL.createObjectURL(finalBlob);
 
@@ -36,9 +41,15 @@ export async function downloadFile(
 	}
 }
 
-async function decryptBlob(blob: Blob, fileKey: FileKey): Promise<Blob> {
+async function decryptBlob(
+	blob: Blob,
+	fileKey: FileKey,
+	mimeType?: string,
+): Promise<Blob> {
 	const ciphertext = new Uint8Array(await blob.arrayBuffer());
 	const plain = await decryptFileStream(ciphertext, fileKey);
 
-	return new Blob([plain as unknown as ArrayBuffer]);
+	return new Blob([plain as unknown as ArrayBuffer], {
+		type: mimeType || "application/octet-stream",
+	});
 }

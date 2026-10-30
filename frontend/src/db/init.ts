@@ -102,6 +102,26 @@ async function deleteDatabase(name: string): Promise<void> {
 	});
 }
 
+// closeAndDeleteAccountDB closes this tab's cached connection (if any)
+// and deletes one account's IndexedDB. The close must come first:
+// deleteDatabase on an open connection stalls in onblocked, and the
+// account's history plus its private E2E key would survive logout.
+// A block by another tab's open connection still resolves best-effort
+// (the delete proceeds once that tab closes its handle).
+export async function closeAndDeleteAccountDB(userId: string): Promise<void> {
+	const name = dbNameFor(userId);
+	const cached = dbs.get(name);
+	dbs.delete(name);
+	if (cached !== undefined) {
+		try {
+			(await cached).close();
+		} catch {
+			// A failed open cannot block the delete.
+		}
+	}
+	await deleteDatabase(name);
+}
+
 // Close and delete every account's IndexedDB (used by "clear all data").
 export async function resetAllDBs(): Promise<void> {
 	const names: string[] = [];

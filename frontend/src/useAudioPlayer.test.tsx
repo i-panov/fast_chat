@@ -194,4 +194,58 @@ describe("useAudioPlayer", () => {
 		expect(audioState.playCalls).toBe(0);
 		expect(result.current.isPlaying).toBe(false);
 	});
+
+	it("does not revoke foreign blob URLs on track change", async () => {
+		// Track URLs are owned by the attachments (useDecryptedFileUrl):
+		// revokeObjectURL is global, so revoking here would break the
+		// owner's copy and poison the shared fileCache entry.
+		const revoke = vi.fn();
+		vi.stubGlobal("URL", { revokeObjectURL: revoke });
+
+		try {
+			const { result } = renderHook(() => useAudioPlayer(), { wrapper });
+
+			await act(async () => {
+				result.current.play({ fileId: "f1", url: "blob:a", name: "a" });
+				await Promise.resolve();
+			});
+
+			await act(async () => {
+				result.current.play({ fileId: "f2", url: "blob:b", name: "b" });
+				await Promise.resolve();
+			});
+
+			await act(async () => {
+				result.current.stop();
+				await Promise.resolve();
+			});
+
+			expect(revoke).not.toHaveBeenCalled();
+		} finally {
+			vi.unstubAllGlobals();
+			vi.stubGlobal("Audio", FakeAudio);
+		}
+	});
+
+	it("rewinds the same track after it ended", async () => {
+		const { result } = renderHook(() => useAudioPlayer(), { wrapper });
+
+		await act(async () => {
+			result.current.play({ fileId: "f1", url: "blob:a", name: "a" });
+			await Promise.resolve();
+		});
+
+		(audio() as unknown as { ended: boolean }).ended = true;
+		(audio() as unknown as { paused: boolean }).paused = true;
+
+		await act(async () => {
+			result.current.play({ fileId: "f1", url: "blob:a", name: "a" });
+			await Promise.resolve();
+		});
+
+		expect((audio() as unknown as { currentTime?: number }).currentTime).toBe(
+			0,
+		);
+		expect(result.current.isPlaying).toBe(true);
+	});
 });

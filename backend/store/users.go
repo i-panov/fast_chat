@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -13,8 +14,10 @@ import (
 )
 
 const (
-	fieldKeyBackup   = "key_backup"
-	fieldKeyBackupAt = "key_backup_at"
+	fieldKeyBackup     = "key_backup"
+	fieldKeyBackupAt   = "key_backup_at"
+	fieldToken         = "token"
+	fieldTokenExpireAt = "token_expires_at"
 )
 
 var (
@@ -64,12 +67,19 @@ func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string
 	}
 
 	if err := s.db.WithContext(ctx).Create(user).Error; err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			if strings.Contains(err.Error(), "email") {
+		// Match the column with or without table qualification
+		// ("users.email" and bare "email" both occur across sqlite driver
+		// versions): an unqualified Contains("email") would also misclassify
+		// id/token collisions, and any other UNIQUE failure must stay a
+		// raw error.
+		msg := err.Error()
+		if strings.Contains(msg, "UNIQUE constraint failed") {
+			switch {
+			case strings.Contains(msg, ".email") || strings.Contains(msg, ": email"):
 				return nil, ErrEmailTaken
+			case strings.Contains(msg, ".nick") || strings.Contains(msg, ": nick"):
+				return nil, ErrNicknameTaken
 			}
-
-			return nil, ErrNicknameTaken
 		}
 
 		return nil, err
@@ -159,12 +169,19 @@ func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry
 	}
 
 	token := GenerateID()
-	user.Token = hashToken(token)
-	user.TokenExpiresAt = time.Now().UTC().Add(tokenExpiry)
+	expiresAt := time.Now().UTC().Add(tokenExpiry)
 
-	if err := s.db.WithContext(ctx).Save(user).Error; err != nil {
+	// Update only the session columns: Save would overwrite the whole row
+	// from a stale snapshot and lose a concurrent UpdatePublicKey.
+	if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+		Updates(map[string]any{
+			fieldToken:         hashToken(token),
+			fieldTokenExpireAt: expiresAt,
+		}).Error; err != nil {
 		return nil, err
 	}
+
+	user.TokenExpiresAt = expiresAt
 
 	// Return the plaintext token to the caller; only the hash is persisted.
 	user.Token = token
@@ -178,8 +195,8 @@ func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry
 func (s *Store) RevokeUserToken(ctx context.Context, userID string) error {
 	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
 		Updates(map[string]any{
-			"token":            hashToken(GenerateID()),
-			"token_expires_at": time.Now().UTC(),
+			fieldToken:         hashToken(GenerateID()),
+			fieldTokenExpireAt: time.Now().UTC(),
 		}).Error
 }
 
@@ -194,7 +211,20 @@ func (s *Store) GetUsersByIDs(ctx context.Context, userIDs []string) map[string]
 		Nick string
 	}
 
-	s.db.WithContext(ctx).Model(&model.User{}).Where("id IN ?", userIDs).Select("id, nick").Scan(&rows)
+	for start := 0; start < len(userIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(userIDs))
+
+		var chunk []struct {
+			ID   string
+			Nick string
+		}
+		if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id IN ?", userIDs[start:end]).Select("id, nick").Scan(&chunk).Error; err != nil {
+			slog.Warn("GetUsersByIDs failed", "err", err)
+			return map[string]string{}
+		}
+
+		rows = append(rows, chunk...)
+	}
 
 	for _, r := range rows {
 		out[r.ID] = r.Nick
@@ -211,7 +241,10 @@ func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []mode
 	q := escapeLike(strings.ToLower(query))
 
 	var users []model.User
-	s.db.WithContext(ctx).Where("LOWER(nick) LIKE ? ESCAPE '\\' AND id != ?", "%"+q+"%", excludeID).Find(&users)
+	if err := s.db.WithContext(ctx).Where("LOWER(nick) LIKE ? ESCAPE '\\' AND id != ?", "%"+q+"%", excludeID).Find(&users).Error; err != nil {
+		slog.Warn("SearchUsers failed", "err", err)
+		return []model.PublicUser{}
+	}
 
 	if len(users) == 0 {
 		return []model.PublicUser{}

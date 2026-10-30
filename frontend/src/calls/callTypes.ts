@@ -48,3 +48,49 @@ export interface CallApi {
 		candidate: RTCIceCandidateInit,
 	) => Promise<{ status: string }>;
 }
+
+// isRecord guards a signaling payload: a broken event must not throw inside
+// the SSE handler.
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value !== "";
+}
+
+// isIncomingCallPayload tells whether an event carries a call to take.
+export function isIncomingCallPayload(data: unknown): boolean {
+	if (!isRecord(data)) return false;
+	if (!isNonEmptyString(data.callId)) return false;
+	if (typeof data.chatId !== "string") return false;
+	if (!isNonEmptyString(data.offer)) return false;
+	if (!isRecord(data.from)) return false;
+
+	return isNonEmptyString(data.from.id) && typeof data.from.nick === "string";
+}
+
+// isAcceptedCallPayload tells whether an event carries an answer or the news
+// that another tab took the call.
+export function isAcceptedCallPayload(data: unknown): boolean {
+	if (!isRecord(data)) return false;
+	if (!isNonEmptyString(data.callId)) return false;
+	if (data.answer === undefined) return true;
+
+	return isNonEmptyString(data.answer);
+}
+
+// isEndedCallPayload tells whether an event can be matched to a call.
+export function isEndedCallPayload(data: unknown): boolean {
+	return isRecord(data) && isNonEmptyString(data.callId);
+}
+
+// isIceCallPayload tells whether an event carries a candidate.
+export function isIceCallPayload(data: unknown): boolean {
+	if (!isRecord(data)) return false;
+
+	return (
+		isRecord(data.candidate) &&
+		(data.callId === undefined || typeof data.callId === "string")
+	);
+}

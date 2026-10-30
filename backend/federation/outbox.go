@@ -34,7 +34,19 @@ const (
 	// attempts, and the queue moves on. The limit is high enough to survive a
 	// long outage (with the capped backoff it is about four hours).
 	outboxMaxAttempts = 50
+	// maxDeadLetters bounds the in-memory dead-letter queue: dropped
+	// operations stay inspectable, but a peer that is gone for good must
+	// not grow memory without bound.
+	maxDeadLetters = 1000
 )
+
+// DeadLetter is an operation the outbox gave up on, kept for manual
+// inspection instead of vanishing into a log line.
+type DeadLetter struct {
+	Op        model.FederationOp
+	Reason    string
+	DroppedAt time.Time
+}
 
 // outboxDelay returns the delay before the next attempt of an operation that
 // failed `attempts` times.
@@ -171,10 +183,12 @@ func (c *Client) drainOutbox(ctx context.Context) {
 		// A rejection that will repeat (the peer refuses the operation for
 		// good) must not be retried forever: with the per-peer order of the
 		// outbox it would block every later operation of that peer. The
-		// operation is dropped with a loud log, and the queue moves on.
+		// operation is moved to the dead-letter queue with a loud log, and
+		// the queue moves on.
 		if IsPermanentError(err) {
-			slog.Error("federation operation was rejected permanently, dropping it",
+			slog.Error("federation operation was rejected permanently, moving it to the dead-letter queue",
 				"opID", op.ID, "peer", op.RemoteServer, "method", op.Method, "path", op.Path, "err", err)
+			c.deadLetter(op, err.Error())
 
 			if delErr := c.outbox.DeleteFederationOp(ctx, op.ID); delErr != nil {
 				slog.Error("federation operation could not be removed from the queue", "opID", op.ID, "err", delErr)
@@ -186,11 +200,12 @@ func (c *Client) drainOutbox(ctx context.Context) {
 		attempts := op.Attempts + 1
 
 		// The operation has blocked the queue of its peer long enough. It is
-		// dropped with a loud log, so the queue of the peer moves on and the
-		// loss is visible.
+		// moved to the dead-letter queue with a loud log, so the queue of
+		// the peer moves on and the loss stays visible and inspectable.
 		if attempts >= outboxMaxAttempts {
-			slog.Error("federation operation gave up after too many attempts, dropping it",
+			slog.Error("federation operation gave up after too many attempts, moving it to the dead-letter queue",
 				"opID", op.ID, "peer", op.RemoteServer, "method", op.Method, "path", op.Path, "attempts", attempts, "err", err)
+			c.deadLetter(op, err.Error())
 
 			if delErr := c.outbox.DeleteFederationOp(ctx, op.ID); delErr != nil {
 				slog.Error("federation operation could not be removed from the queue", "opID", op.ID, "err", delErr)
@@ -223,4 +238,40 @@ func (c *Client) deliverOp(ctx context.Context, op *model.FederationOp) error {
 	_, err := c.Request(ctx, op.Method, url, body)
 
 	return err
+}
+
+// deadLetter preserves a dropped operation for manual inspection. The queue
+// is bounded: beyond maxDeadLetters the oldest entry is evicted first and
+// counted, so a permanently unreachable peer cannot grow memory without
+// bound.
+func (c *Client) deadLetter(op *model.FederationOp, reason string) {
+	c.dlqMu.Lock()
+	defer c.dlqMu.Unlock()
+
+	if len(c.deadLetters) >= maxDeadLetters {
+		c.deadLetters = append(c.deadLetters[:0], c.deadLetters[1:]...)
+		c.dlqDropped++
+	}
+
+	c.deadLetters = append(c.deadLetters, DeadLetter{
+		Op:        *op,
+		Reason:    reason,
+		DroppedAt: time.Now().UTC(),
+	})
+}
+
+// DeadLetters returns a copy of the operations the outbox gave up on.
+func (c *Client) DeadLetters() []DeadLetter {
+	c.dlqMu.Lock()
+	defer c.dlqMu.Unlock()
+
+	return append([]DeadLetter(nil), c.deadLetters...)
+}
+
+// DeadLetterDropped counts the dead letters evicted by the bound.
+func (c *Client) DeadLetterDropped() int {
+	c.dlqMu.Lock()
+	defer c.dlqMu.Unlock()
+
+	return c.dlqDropped
 }

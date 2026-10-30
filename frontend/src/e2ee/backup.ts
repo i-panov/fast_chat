@@ -64,10 +64,16 @@ async function deriveKey(
 
 // encryptBackup produces an opaque, self-describing blob that the server
 // stores verbatim. Without the password the private key cannot be recovered.
+// An empty password is rejected: it would produce a valid-looking blob on a
+// trivially guessable key. Callers should enforce a stronger minimum (the UI
+// validates length); this is only the last-resort guard.
 export async function encryptBackup(
 	password: string,
 	kp: KeyPair,
 ): Promise<string> {
+	if (password === "") {
+		throw new E2EBackupError("backup password must not be empty");
+	}
 	await ensureSodium();
 
 	const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
@@ -106,6 +112,9 @@ export async function decryptBackup(
 	password: string,
 	blob: string,
 ): Promise<KeyPair> {
+	if (password === "") {
+		throw new E2EBackupError("backup password must not be empty");
+	}
 	await ensureSodium();
 
 	let payload: BlobPayload;

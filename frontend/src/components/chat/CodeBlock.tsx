@@ -1,6 +1,6 @@
 import { ActionIcon, Text } from "@mantine/core";
 import { Check, Copy } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BORDER_RADIUS_XS } from "../../utils/constants.ts";
 
 const CODE_BLOCK_MAX_HEIGHT = 300;
@@ -13,6 +13,12 @@ interface Props {
 
 export function CodeBlock({ className, code, lang }: Props) {
 	const [copied, setCopied] = useState(false);
+	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(() => {
+		return () => {
+			if (timerRef.current !== null) clearTimeout(timerRef.current);
+		};
+	}, []);
 
 	return (
 		<div
@@ -50,11 +56,19 @@ export function CodeBlock({ className, code, lang }: Props) {
 					color="gray"
 					size="sm"
 					onClick={() => {
-						void navigator.clipboard.writeText(code).then(() => {
-							setCopied(true);
-							setTimeout(() => setCopied(false), 2000);
-						});
+						void navigator.clipboard
+							.writeText(code)
+							.then(() => {
+								setCopied(true);
+								if (timerRef.current !== null) clearTimeout(timerRef.current);
+								timerRef.current = setTimeout(() => setCopied(false), 2000);
+							})
+							.catch(() => {
+								// Clipboard access denied: leave the button state
+								// unchanged instead of an unhandled rejection.
+							});
 					}}
+					aria-label="Copy code"
 				>
 					{copied ? <Check size={14} /> : <Copy size={14} />}
 				</ActionIcon>

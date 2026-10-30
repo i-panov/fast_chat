@@ -33,7 +33,11 @@ func (s *Store) GetMessage(ctx context.Context, chatID, messageID string) (model
 	var msg model.Message
 
 	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
-		return model.Message{}, ErrMessageNotFound
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.Message{}, ErrMessageNotFound
+		}
+
+		return model.Message{}, err
 	}
 
 	return msg, nil
@@ -63,11 +67,22 @@ func (s *Store) EditMessage(
 	var msg model.Message
 
 	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
-		return model.Message{}, ErrMessageNotFound
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.Message{}, ErrMessageNotFound
+		}
+
+		return model.Message{}, err
 	}
 
 	if msg.FromID != userID {
 		return model.Message{}, ErrNotYourMessage
+	}
+
+	// The message must live in the addressed container: without this a
+	// thread id from the same chat addresses a chat-level message and vice
+	// versa.
+	if msg.ThreadID != threadID {
+		return model.Message{}, ErrMessageNotFound
 	}
 
 	now := time.Now().UTC()
@@ -108,8 +123,16 @@ func (s *Store) EditMessage(
 		msg.Location = location
 	}
 
-	if err := s.db.WithContext(ctx).Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates).Error; err != nil {
-		return model.Message{}, err
+	result := s.db.WithContext(ctx).Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates)
+	if result.Error != nil {
+		return model.Message{}, result.Error
+	}
+
+	// A concurrent delete removes the row between the read above and this
+	// write: Updates then reports success with zero affected rows. Verify
+	// the row is still there instead of answering with a stale copy.
+	if result.RowsAffected == 0 {
+		return model.Message{}, ErrMessageNotFound
 	}
 
 	return msg, nil
@@ -160,6 +183,16 @@ func (s messageScope) and(cond string, args ...any) messageScope {
 
 func (s *Store) SetMessageFiles(ctx context.Context, messageID string, fileIDs []string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Same existence gate as AddMessageFiles: link rows must not
+		// dangle on a ghost id.
+		var msgCount int64
+		if err := tx.Model(&model.Message{}).Where("id = ?", messageID).Count(&msgCount).Error; err != nil {
+			return err
+		}
+		if msgCount == 0 {
+			return ErrMessageNotFound
+		}
+
 		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
 			return err
 		}
@@ -173,7 +206,7 @@ func (s *Store) SetMessageFiles(ctx context.Context, messageID string, fileIDs [
 			rows = append(rows, model.MessageFile{MessageID: messageID, FileID: fid})
 		}
 
-		return tx.Create(&rows).Error
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 	})
 }
 
@@ -201,7 +234,11 @@ func (s *Store) AddMessage(
 		var thread model.Thread
 
 		if err := s.db.WithContext(ctx).First(&thread, "id = ?", threadID).Error; err != nil {
-			return nil, false, ErrThreadNotFound
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, false, ErrThreadNotFound
+			}
+
+			return nil, false, err
 		}
 
 		if thread.ChatID != chatID {
@@ -211,7 +248,9 @@ func (s *Store) AddMessage(
 		scope = threadScope(threadID)
 	} else {
 		var chatCount int64
-		s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Count(&chatCount)
+		if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chatID).Count(&chatCount).Error; err != nil {
+			return nil, false, err
+		}
 
 		if chatCount == 0 {
 			return nil, false, ErrChatNotFound
@@ -226,7 +265,11 @@ func (s *Store) AddMessage(
 		target := scope.and("id = ?", replyToID)
 
 		if err := s.db.WithContext(ctx).Where(target.where, target.args...).First(&replyMsg).Error; err != nil {
-			return nil, false, ErrMessageNotFound
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, false, ErrMessageNotFound
+			}
+
+			return nil, false, err
 		}
 
 		replyTo = &model.ReplyToInfo{
@@ -289,7 +332,11 @@ func (s *Store) existingMessage(ctx context.Context, chatID, threadID, messageID
 	var stored model.Message
 
 	if err := s.db.WithContext(ctx).First(&stored, "id = ?", messageID).Error; err != nil {
-		return nil, false, ErrMessageNotFound
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, ErrMessageNotFound
+		}
+
+		return nil, false, err
 	}
 
 	if stored.ChatID != chatID || stored.ThreadID != threadID {
@@ -306,7 +353,9 @@ func (s *Store) existingMessage(ctx context.Context, chatID, threadID, messageID
 // A non-empty ThreadID must exist and belong to ChatID.
 func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
 	var count int64
-	s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", msg.ChatID).Count(&count)
+	if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", msg.ChatID).Count(&count).Error; err != nil {
+		return err
+	}
 
 	if count == 0 {
 		return ErrChatNotFound
@@ -316,7 +365,11 @@ func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
 		var thread model.Thread
 
 		if err := s.db.WithContext(ctx).First(&thread, "id = ?", msg.ThreadID).Error; err != nil {
-			return ErrThreadNotFound
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrThreadNotFound
+			}
+
+			return err
 		}
 
 		if thread.ChatID != msg.ChatID {
@@ -348,11 +401,21 @@ func (s *Store) GetMessagesPaginated(ctx context.Context, chatID string, limit i
 	return s.paginateMessages(ctx, chatScope(chatID), limit, before)
 }
 
+// GetMessagesPaginatedE reports database failures to the caller instead of
+// collapsing them into an empty page.
+func (s *Store) GetMessagesPaginatedE(ctx context.Context, chatID string, limit int, before string) ([]model.Message, string, bool, error) {
+	return s.paginateMessagesE(ctx, chatScope(chatID), limit, before)
+}
+
 func (s *Store) DeleteMessage(ctx context.Context, chatID, messageID, userID string) error {
 	var msg model.Message
 
 	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
-		return ErrMessageNotFound
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrMessageNotFound
+		}
+
+		return err
 	}
 
 	if msg.FromID != userID {
@@ -360,6 +423,16 @@ func (s *Store) DeleteMessage(ctx context.Context, chatID, messageID, userID str
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
+			return err
+		}
+
+		if tx.Migrator().HasTable(&model.MessageReadStatus{}) {
+			if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageReadStatus{}).Error; err != nil {
+				return err
+			}
+		}
+
 		if err := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{}).Error; err != nil {
 			return err
 		}
@@ -412,24 +485,37 @@ func (s *Store) EditRawMessage(
 
 	result := s.db.WithContext(ctx).Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).Updates(updates)
 
+	if result.Error != nil {
+		return result.Error
+	}
+
 	if result.RowsAffected == 0 {
 		return ErrMessageNotFound
 	}
 
-	return result.Error
+	return nil
 }
 
 func (s *Store) DeleteRawMessage(ctx context.Context, chatID, messageID string) error {
 	now := time.Now().UTC()
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
-		if result.RowsAffected == 0 {
-			return ErrMessageNotFound
+		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
+			return err
 		}
 
+		if tx.Migrator().HasTable(&model.MessageReadStatus{}) {
+			if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageReadStatus{}).Error; err != nil {
+				return err
+			}
+		}
+
+		result := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
 		if err := result.Error; err != nil {
 			return err
+		}
+		if result.RowsAffected == 0 {
+			return ErrMessageNotFound
 		}
 
 		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.DeletedMessage{
@@ -441,6 +527,20 @@ func (s *Store) DeleteRawMessage(ctx context.Context, chatID, messageID string) 
 }
 
 func (s *Store) paginateMessages(ctx context.Context, scope messageScope, limit int, before string) ([]model.Message, string, bool) {
+	msgs, next, hasMore, err := s.paginateMessagesE(ctx, scope, limit, before)
+	if err != nil {
+		slog.Warn("paginateMessages failed", "err", err)
+		return nil, "", false
+	}
+
+	return msgs, next, hasMore
+}
+
+// paginateMessagesE is the error-returning core of paginateMessages. The
+// public wrappers keep the legacy (msgs, cursor, hasMore) shape for the
+// service callers; new code should use this variant so a database failure is
+// distinguishable from an empty history.
+func (s *Store) paginateMessagesE(ctx context.Context, scope messageScope, limit int, before string) ([]model.Message, string, bool, error) {
 	query := s.db.WithContext(ctx).Where(scope.where, scope.args...)
 
 	if before != "" {
@@ -456,7 +556,11 @@ func (s *Store) paginateMessages(ctx context.Context, scope messageScope, limit 
 			Select(fieldCreatedAt).
 			Where(cursorScope.where, cursorScope.args...).
 			First(&beforeMsg).Error; err != nil {
-			return nil, "", false
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, "", false, nil
+			}
+
+			return nil, "", false, err
 		}
 
 		query = query.Where("(created_at < ? OR (created_at = ? AND id < ?))",
@@ -468,7 +572,7 @@ func (s *Store) paginateMessages(ctx context.Context, scope messageScope, limit 
 	var msgs []model.Message
 
 	if err := query.Order("created_at DESC, id DESC").Limit(limit + 1).Find(&msgs).Error; err != nil {
-		return nil, "", false
+		return nil, "", false, err
 	}
 
 	hasMore := len(msgs) > limit
@@ -481,7 +585,7 @@ func (s *Store) paginateMessages(ctx context.Context, scope messageScope, limit 
 	}
 
 	if len(msgs) == 0 {
-		return nil, "", false
+		return nil, "", false, nil
 	}
 
 	nextCursor := ""
@@ -490,5 +594,5 @@ func (s *Store) paginateMessages(ctx context.Context, scope messageScope, limit 
 		nextCursor = msgs[0].ID
 	}
 
-	return msgs, nextCursor, hasMore
+	return msgs, nextCursor, hasMore, nil
 }

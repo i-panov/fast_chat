@@ -63,6 +63,27 @@ describe("downloadFile", () => {
 		expect(click).not.toHaveBeenCalled();
 	});
 
+	it("preserves the MIME type on decrypt", async () => {
+		const fileKey = await generateFileKey();
+		const ciphertext = await encryptFileStream(
+			new Blob(["secret file"]),
+			fileKey,
+		);
+		vi.stubGlobal("fetch", mockFetch(ciphertext));
+
+		await downloadFile(
+			"https://srv/files/enc",
+			"s.bin",
+			"tok",
+			fileKey,
+			"video/mp4",
+		);
+
+		const blob = createObjectURL.mock.calls[0]?.[0];
+		if (blob === undefined) throw new Error("createObjectURL not called");
+		expect(blob.type).toBe("video/mp4");
+	});
+
 	it("decrypts the blob when a file key is given", async () => {
 		const fileKey = await generateFileKey();
 		const ciphertext = await encryptFileStream(

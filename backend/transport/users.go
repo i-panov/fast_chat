@@ -62,7 +62,7 @@ func registerUserSearch(api huma.API, st *store.Store, fed *federation.Client, c
 
 		query := input.Q
 		if before, after, has := strings.Cut(query, ":"); has {
-			return searchFederated(ctx, st, fed, before, after, user.ID, cfg.Server.Domain)
+			return searchFederated(ctx, st, fed, before, after, user.ID, cfg.Server.Domain, cfg.Federation.AllowPrivateAddresses)
 		}
 
 		if utf8.RuneCountInString(strings.TrimSpace(query)) < service.MinSearchRunes {
@@ -120,7 +120,11 @@ func registerUserKeys(api huma.API, st *store.Store, fed *federation.Client, cfg
 		Summary:     "Fetch a user's E2E public key (proxied for federated users)",
 		Security:    []map[string][]string{{bearerScheme: {}}},
 	}, func(ctx context.Context, input *publicKeyPathInput) (*publicKeyOutput, error) {
-		remoteDomain := service.RemoteServerFromID(input.UserID)
+		if _, ok := userFromContext(ctx); !ok {
+			return nil, errUnauthorized
+		}
+
+		remoteDomain := service.RemoteServerFromIDFor(input.UserID, cfg.Federation.AllowPrivateAddresses)
 		if remoteDomain == "" || remoteDomain == cfg.Server.Domain {
 			key, exists := st.GetUserPublicKey(ctx, input.UserID)
 			if !exists {
@@ -128,6 +132,10 @@ func registerUserKeys(api huma.API, st *store.Store, fed *federation.Client, cfg
 			}
 
 			return publicKeyResponseBody(key), nil
+		}
+
+		if fed == nil {
+			return nil, &statusError{ErrorMessage: "failed to fetch public key", code: http.StatusBadGateway}
 		}
 
 		remoteURL := fed.URL(remoteDomain, "/api/federated/users/"+url.PathEscape(input.UserID)+"/public-key")
@@ -145,6 +153,12 @@ func registerUserKeys(api huma.API, st *store.Store, fed *federation.Client, cfg
 
 		if err := json.Unmarshal(data, &result); err != nil || result.PublicKey == "" {
 			return nil, &statusError{ErrorMessage: "failed to parse remote response", code: http.StatusBadGateway}
+		}
+
+		// A peer must not plant an arbitrary string as someone's E2E key:
+		// it has to decode to a 32-byte public key like a locally stored one.
+		if _, err := service.DecodePublicKey(result.PublicKey); err != nil {
+			return nil, &statusError{ErrorMessage: "invalid remote public key", code: http.StatusBadGateway}
 		}
 
 		keyVersion := result.KeyVersion
@@ -308,6 +322,11 @@ type keyBackupOutput struct {
 // pathKeyBackup is the key-backup route (PUT/GET/DELETE).
 const pathKeyBackup = "/api/users/key-backup"
 
+// maxFederatedSearchResults caps how many proxied remote users one search
+// answers. The peer may send far more; forwarding all of it would amplify
+// one remote reply into our client's response.
+const maxFederatedSearchResults = 20
+
 // searchFederated handles "nick:domain" search queries, proxying to the
 // remote server when needed (mirrors the pre-migration searchFederated handler).
 func searchFederated(
@@ -315,6 +334,7 @@ func searchFederated(
 	st *store.Store,
 	fed *federation.Client,
 	remoteNick, remoteDomain, callerID, localDomain string,
+	allowPrivate bool,
 ) (*searchUsersOutput, error) {
 
 	badRequest := &statusError{ErrorMessage: "invalid search query", code: http.StatusBadRequest}
@@ -323,7 +343,7 @@ func searchFederated(
 		return nil, badRequest
 	}
 
-	if !service.IsValidRemoteDomain(remoteDomain) {
+	if !service.IsValidRemoteDomainFor(remoteDomain, allowPrivate) {
 		return nil, badRequest
 	}
 
@@ -336,6 +356,10 @@ func searchFederated(
 		return &searchUsersOutput{Body: struct {
 			Users []model.PublicUser `json:"users"`
 		}{Users: users}}, nil
+	}
+
+	if fed == nil {
+		return nil, &statusError{ErrorMessage: "remote search failed", code: http.StatusBadGateway}
 	}
 
 	remoteURL := fed.URL(remoteDomain, "/api/federated/users/search?q="+url.QueryEscape(remoteNick))
@@ -352,6 +376,14 @@ func searchFederated(
 
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, &statusError{ErrorMessage: "failed to parse remote response", code: http.StatusInternalServerError}
+	}
+
+	if result.Users == nil {
+		result.Users = []model.PublicUser{}
+	}
+
+	if len(result.Users) > maxFederatedSearchResults {
+		result.Users = result.Users[:maxFederatedSearchResults]
 	}
 
 	// Strip trailing ":domain" from ID for display purposes.

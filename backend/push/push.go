@@ -2,6 +2,9 @@
 package push
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -22,12 +27,24 @@ type VAPIDKeys struct {
 	PrivateKey string `json:"privateKey"`
 }
 
+// maxPushConcurrency bounds simultaneous push-service requests, and
+// pushOverallTimeout bounds one SendToUser call as a whole: without them a
+// burst of subscriptions holds the sum of the 10s client timeouts with no
+// bound, and a storm of SendToUser calls spawns unbounded goroutines.
+const (
+	maxPushConcurrency = 8
+	pushOverallTimeout = 30 * time.Second
+)
+
 // Service sends WebPush notifications.
 type Service struct {
 	vapidKeys  VAPIDKeys
 	subject    string
 	httpClient *http.Client
 	onExpired  func(endpoint string)
+
+	sem     chan struct{}
+	dropped atomic.Int64
 }
 
 // NewService creates a Service, loading or generating VAPID keys.
@@ -48,6 +65,7 @@ func NewService(subject, keysDir string, onExpired func(endpoint string)) (*Serv
 		// answering must not hold the sending goroutine forever.
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		onExpired:  onExpired,
+		sem:        make(chan struct{}, maxPushConcurrency),
 	}, nil
 }
 
@@ -56,22 +74,74 @@ func (s *Service) PublicKey() string {
 	return s.vapidKeys.PublicKey
 }
 
-// SendToUser sends a payload to all push subscriptions.
+// SendToUser sends a payload to all push subscriptions with bounded
+// concurrency and an overall deadline. Each delivery waits for a semaphore
+// slot; a subscription still waiting when the overall deadline expires is
+// dropped with a counter instead of holding the caller past the deadline.
 func (s *Service) SendToUser(payload []byte, subscriptions []model.PushSubscription) {
-	for _, sub := range subscriptions {
-		err := s.sendOne(payload, sub.Endpoint, sub.P256DH, sub.Auth)
-		if err != nil {
-			if errors.Is(err, errSubscriptionExpired) {
-				slog.Info("push subscription expired, removing", "endpoint", truncate(sub.Endpoint, 40))
-
-				if s.onExpired != nil {
-					s.onExpired(sub.Endpoint)
-				}
-			} else {
-				slog.Warn("push send failed", "endpoint", truncate(sub.Endpoint, 40), "err", err)
+	if s.sem == nil {
+		// Zero-value Service (not built via NewService): no pool to
+		// bound with, deliver sequentially.
+		for _, sub := range subscriptions {
+			if err := s.sendOne(payload, sub.Endpoint, sub.P256DH, sub.Auth); err != nil {
+				slog.Warn("push send failed", "endpoint", hashEndpoint(sub.Endpoint), "err", err)
 			}
 		}
+
+		return
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), pushOverallTimeout)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	for _, sub := range subscriptions {
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			s.dropped.Add(1)
+			slog.Warn("push overall deadline exceeded, dropping subscription", "endpoint", hashEndpoint(sub.Endpoint))
+
+			continue
+		}
+
+		wg.Add(1)
+
+		go func(sub model.PushSubscription) {
+			defer wg.Done()
+			defer func() { <-s.sem }()
+
+			err := s.sendOne(payload, sub.Endpoint, sub.P256DH, sub.Auth)
+			if err != nil {
+				if errors.Is(err, errSubscriptionExpired) {
+					slog.Info("push subscription expired, removing", "endpoint", hashEndpoint(sub.Endpoint))
+
+					if s.onExpired != nil {
+						s.onExpired(sub.Endpoint)
+					}
+				} else {
+					slog.Warn("push send failed", "endpoint", hashEndpoint(sub.Endpoint), "err", err)
+				}
+			}
+		}(sub)
+	}
+
+	wg.Wait()
+}
+
+// Dropped counts the subscriptions skipped past the overall deadline.
+func (s *Service) Dropped() int64 {
+	return s.dropped.Load()
+}
+
+// hashEndpoint identifies a subscription in logs without leaking the
+// capability URL: the endpoint itself is a bearer secret, and even a
+// truncated prefix narrows brute force.
+func hashEndpoint(endpoint string) string {
+	sum := sha256.Sum256([]byte(endpoint))
+
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 var (

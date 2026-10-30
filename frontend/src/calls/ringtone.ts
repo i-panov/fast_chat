@@ -65,10 +65,18 @@ export function startRingtone(): Ringtone {
 // createAudioContext opens the audio context, or returns null when the
 // browser has none.
 function createAudioContext(): AudioContext | null {
-	if (typeof AudioContext === "undefined") return null;
+	const Ctor =
+		typeof AudioContext !== "undefined"
+			? AudioContext
+			: typeof window !== "undefined"
+				? (window as unknown as { webkitAudioContext?: typeof AudioContext })
+						.webkitAudioContext
+				: undefined;
+
+	if (typeof Ctor === "undefined" || Ctor === undefined) return null;
 
 	try {
-		return new AudioContext();
+		return new Ctor();
 	} catch {
 		return null;
 	}

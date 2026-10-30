@@ -89,10 +89,52 @@ describe("runSync", () => {
 
 		await runSync();
 
-		expect(getSyncMock).toHaveBeenCalledWith("tok", "1970-01-01T00:00:00.000Z");
+		expect(getSyncMock).toHaveBeenCalledWith(
+			"tok",
+			"1970-01-01T00:00:00.000Z",
+			expect.anything(),
+			undefined,
+			"",
+		);
 		const during = await messagesRepo.getByChat("chat-1");
 		expect(during[0].text).toBe("hi");
 		expect(await metaRepo.getLastSyncedAt()).toBe("2026-08-30T11:00:00.000Z");
+	});
+
+	it("pages through a truncated delta with the keyset cursor", async () => {
+		const page = (id: string, next?: string, nextId?: string) =>
+			syncResponse({
+				messages: [
+					{
+						id,
+						chatId: "chat-1",
+						fromId: "alice:test",
+						fromNick: "alice",
+						text: `text ${id}`,
+						createdAt: "2026-08-30T10:00:00.000Z",
+					},
+				],
+				...(next !== undefined
+					? { nextSince: next, nextSinceId: nextId ?? "" }
+					: {}),
+			});
+		getSyncMock
+			.mockResolvedValueOnce(page("m1", "2026-08-30T10:00:01.000Z", "m1"))
+			.mockResolvedValueOnce(page("m2"));
+
+		await runSync();
+
+		expect(getSyncMock).toHaveBeenCalledTimes(2);
+		expect(getSyncMock).toHaveBeenNthCalledWith(
+			2,
+			"tok",
+			"2026-08-30T10:00:01.000Z",
+			expect.anything(),
+			undefined,
+			"m1",
+		);
+		const stored = await messagesRepo.getByChat("chat-1");
+		expect(stored.map((m) => m.id).sort()).toEqual(["m1", "m2"]);
 	});
 
 	it("notifies listeners with syncing/idle transitions", async () => {
@@ -111,7 +153,8 @@ describe("runSync", () => {
 		const originalSetTimeout = globalThis.setTimeout;
 		let retryScheduled = 0;
 		vi.spyOn(globalThis, "setTimeout").mockImplementation((cb, ms) => {
-			if (typeof cb === "function" && ms === 5000) retryScheduled += 1;
+			if (typeof cb === "function" && typeof ms === "number" && ms >= 5000)
+				retryScheduled += 1;
 			return originalSetTimeout(cb, ms);
 		});
 
@@ -160,7 +203,8 @@ describe("runSync", () => {
 		const originalSetTimeout = globalThis.setTimeout;
 		let retryScheduled = 0;
 		vi.spyOn(globalThis, "setTimeout").mockImplementation((cb, ms) => {
-			if (typeof cb === "function" && ms === 5000) retryScheduled += 1;
+			if (typeof cb === "function" && typeof ms === "number" && ms >= 5000)
+				retryScheduled += 1;
 			return originalSetTimeout(cb, ms);
 		});
 

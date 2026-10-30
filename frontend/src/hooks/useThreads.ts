@@ -9,8 +9,13 @@ import type { StoredThread, StoredThreadMessage } from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
 import { useLiveQuery } from "../db/useLiveQuery.ts";
+import type { KeyPair } from "../e2ee/crypto.ts";
 import { getMyKeyPair } from "../e2ee/keys.ts";
-import { decryptMessage, decryptMessageText } from "../e2ee/message.ts";
+import {
+	decryptMessage,
+	decryptMessageContent,
+	decryptMessageText,
+} from "../e2ee/message.ts";
 import i18n from "../i18n.ts";
 import type { Message, Thread } from "../types/api.ts";
 import { useAuth } from "../useAuth.tsx";
@@ -34,10 +39,25 @@ interface UseThreadsReturn {
 	openThread: (threadId: string) => void;
 	closeThread: () => void;
 	loadMoreThreadMessages: () => Promise<void>;
-	knownThreadIdsRef: React.MutableRefObject<Set<string>>;
 }
 
 const PAGE_SIZE = 30;
+
+// decryptMessageContentSafe resolves a parent preview regardless of the
+// payload version: v2 content first, legacy v1 text as fallback.
+async function decryptMessageContentSafe(
+	parent: {
+		text: string;
+		encryptedPayload?: string;
+		location?: { lat: number; lng: number };
+	},
+	userId: string,
+	key: KeyPair,
+): Promise<string> {
+	const content = await decryptMessageContent(parent, userId, key);
+	if (content !== null) return content.text;
+	return decryptMessageText(parent, userId, key);
+}
 
 function useDecryptedThreadMessages(
 	activeThreadMessagesStored: StoredThreadMessage[] | undefined,
@@ -52,17 +72,18 @@ function useDecryptedThreadMessages(
 
 		void (async () => {
 			const key = await getMyKeyPair();
-			const out: Message[] = [];
-
-			for (const m of activeThreadMessagesStored ?? []) {
-				const { _updatedAt: _u, threadId: _tid, status: _s, ...rest } = m;
-				void _u;
-				void _tid;
-				void _s;
-				const decrypted: Message =
-					userId !== undefined ? await decryptMessage(m, userId, key) : rest;
-				out.push(decrypted);
-			}
+			// Decrypt in parallel: thread pages are small (PAGE_SIZE) and each
+			// item is independent, so sequential awaits only add latency.
+			const out = await Promise.all(
+				(activeThreadMessagesStored ?? []).map((m) => {
+					const { _updatedAt: _u, threadId: _tid, status: _s, ...rest } = m;
+					void _u;
+					void _tid;
+					void _s;
+					if (userId === undefined) return Promise.resolve(rest);
+					return decryptMessage(m, userId, key);
+				}),
+			);
 
 			if (alive) setDecryptedThreadMessages(out);
 		})();
@@ -90,33 +111,35 @@ function useThreadParentText(
 
 		void (async () => {
 			const key = await getMyKeyPair();
-			const entries: Array<[string, string]> = [];
+			const list = Object.values(threadsMap);
+			// Parallel parent resolution (IDB read + decrypt per thread).
+			const entries = await Promise.all(
+				list.map(async (t): Promise<[string, string]> => {
+					const parent = await messagesRepo.getByIdAny(t.parentMessageId);
 
-			for (const t of Object.values(threadsMap)) {
-				const parent = await messagesRepo.getByIdAny(t.parentMessageId);
-
-				if (parent === undefined) {
-					entries.push([t.id, t.parentMessageText]);
-					continue;
-				}
-
-				if (!parent.encrypted) {
-					entries.push([t.id, parent.text]);
-					continue;
-				}
-
-				if (userId !== undefined && key !== null) {
-					let parentText: string;
-					try {
-						parentText = await decryptMessageText(parent, userId, key);
-					} catch {
-						parentText = i18n.t("message.undecryptable");
+					if (parent === undefined) {
+						return [t.id, t.parentMessageText];
 					}
-					entries.push([t.id, parentText]);
-				} else {
-					entries.push([t.id, i18n.t("message.undecryptable")]);
-				}
-			}
+
+					if (!parent.encrypted) {
+						return [t.id, parent.text];
+					}
+
+					if (userId !== undefined && key !== null) {
+						try {
+							const content = await decryptMessageContentSafe(
+								parent,
+								userId,
+								key,
+							);
+							return [t.id, content];
+						} catch {
+							return [t.id, i18n.t("message.undecryptable")];
+						}
+					}
+					return [t.id, i18n.t("message.undecryptable")];
+				}),
+			);
 
 			if (alive) setThreadParentText(Object.fromEntries(entries));
 		})();
@@ -147,7 +170,10 @@ export function useThreads({
 
 	const threadNextCursorsRef = useRef<Record<string, string | null>>({});
 	const threadLoadingMoreRef = useRef(false);
-	const knownThreadIdsRef = useRef<Set<string>>(new Set());
+	// Threads opened while a background thread-list sync lands: threadsMap
+	// gets a fresh identity on every upsert, which would restart the effect
+	// and fire a duplicate initial fetch while one is still in flight.
+	const threadInitialFetchRef = useRef<Set<string>>(new Set());
 
 	const allStored = useLiveQuery<StoredThread[]>(
 		useCallback(() => {
@@ -186,12 +212,6 @@ export function useThreads({
 
 	const threadParentText = useThreadParentText(threadsMap, userId);
 
-	useEffect(() => {
-		if (allStored) {
-			knownThreadIdsRef.current = new Set(allStored.map((t) => t.id));
-		}
-	}, [allStored]);
-
 	// Fetch threads from server on chat change
 	useEffect(() => {
 		if (!token || !chatId) return;
@@ -199,21 +219,28 @@ export function useThreads({
 		fetchThreadsFromServer(token, chatId).catch(() => {});
 	}, [token, chatId]);
 
-	// Load thread messages from server when opening a thread
+	// Load thread messages from server when opening a thread. The initial
+	// fetch always runs once per thread (cursor === undefined), even with a
+	// non-empty IDB cache: otherwise a cached page with an unknown cursor
+	// sets hasMore=true that loadMore can never satisfy (no cursor).
 	useEffect(() => {
 		if (!token || !activeThreadId) {
 			setThreadHasMore(false);
 			return;
 		}
 
-		if (activeThreadMessagesStored && activeThreadMessagesStored.length > 0) {
-			setThreadHasMore(threadNextCursorsRef.current[activeThreadId] !== null);
+		const knownCursor = threadNextCursorsRef.current[activeThreadId];
+		if (knownCursor !== undefined) {
+			setThreadHasMore(knownCursor !== null);
 			return;
 		}
+
+		if (threadInitialFetchRef.current.has(activeThreadId)) return;
 
 		const thread = threadsMap[activeThreadId];
 		if (!thread) return;
 
+		threadInitialFetchRef.current.add(activeThreadId);
 		getThreadMessages(token, thread.chatId, activeThreadId, PAGE_SIZE)
 			.then(({ messages: msgs, nextCursor }) => {
 				void threadMessagesRepo.upsertMany(msgs, activeThreadId);
@@ -223,8 +250,11 @@ export function useThreads({
 			})
 			.catch(() => {
 				emitNotification(i18n.t("error.loadMessages"));
+			})
+			.finally(() => {
+				threadInitialFetchRef.current.delete(activeThreadId);
 			});
-	}, [activeThreadId, token, activeThreadMessagesStored, threadsMap]);
+	}, [activeThreadId, token, threadsMap]);
 
 	const createThread = useCallback(
 		async (cId: string, messageId: string) => {
@@ -323,6 +353,5 @@ export function useThreads({
 		openThread,
 		closeThread,
 		loadMoreThreadMessages,
-		knownThreadIdsRef,
 	};
 }

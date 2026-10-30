@@ -15,6 +15,15 @@ export class FakePeerConnection {
 	onicecandidate: ((event: { candidate: RTCIceCandidateInit }) => void) | null =
 		null;
 	ontrack: ((event: { streams: MediaStream[] }) => void) | null = null;
+	connectionState: string = "new";
+	onconnectionstatechange: (() => void) | null = null;
+
+	// setConnectionState moves the fake connection and fires the change
+	// handler the manager subscribed, like the browser does.
+	setConnectionState(state: string) {
+		this.connectionState = state;
+		this.onconnectionstatechange?.();
+	}
 
 	constructor() {
 		FakePeerConnection.instances.push(this);

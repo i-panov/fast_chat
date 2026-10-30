@@ -50,6 +50,13 @@ describe("EndedCallNotice", () => {
 		expect(screen.queryByRole("button")).toBeNull();
 	});
 
+	it("dismisses itself for a normal ending", () => {
+		const onDismiss = vi.fn();
+		renderNotice({ reason: "hangup", callRole: "callee", onDismiss });
+
+		expect(onDismiss).toHaveBeenCalledTimes(1);
+	});
+
 	it("closes the notice", () => {
 		const onDismiss = vi.fn();
 		renderNotice({ onDismiss });

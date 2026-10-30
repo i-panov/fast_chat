@@ -95,6 +95,15 @@ describe("useMessageReadStatuses", () => {
 			expect(mockMark()).toHaveBeenCalledTimes(1);
 		});
 		expect(mockMark().mock.calls[0][2]).toHaveLength(50);
+
+		// The 51st ID is not dropped: the leftover tail schedules its own
+		// flush after the first batch succeeds.
+		await waitFor(() => {
+			expect(mockMark()).toHaveBeenCalledTimes(2);
+		});
+		const allSent = mockMark().mock.calls.flatMap((c) => c[2]);
+		expect(allSent).toHaveLength(51);
+		expect(new Set(allSent).size).toBe(51);
 	});
 
 	it("requeues on failure and backs off after 429", async () => {
@@ -139,7 +148,7 @@ describe("useMessageReadStatuses", () => {
 		expect(mockMark()).not.toHaveBeenCalled();
 	});
 
-	it("drops the pending flush on unmount", async () => {
+	it("flushes the pending queue on unmount instead of dropping it", async () => {
 		const { result, unmount } = renderHook(() =>
 			useMessageReadStatuses({ token: "tok", chatId: "c1" }),
 		);
@@ -149,7 +158,10 @@ describe("useMessageReadStatuses", () => {
 		});
 		unmount();
 
-		await new Promise((r) => setTimeout(r, 500));
-		expect(mockMark()).not.toHaveBeenCalled();
+		// Best-effort flush in the unmount cleanup: the queued read reaches
+		// the server even though the debounce never fired.
+		await waitFor(() => {
+			expect(mockMark()).toHaveBeenCalledWith("tok", "c1", ["m1"]);
+		});
 	});
 });

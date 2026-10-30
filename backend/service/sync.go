@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"fast_chat/model"
+	"fast_chat/store"
 )
 
 const syncDefaultSince = "1970-01-01T00:00:00Z"
@@ -52,13 +53,24 @@ type SyncResponse struct {
 	ThreadMessages  []model.Message         `json:"threadMessages"`
 	DeletedMessages []SyncDeletedMessageDTO `json:"deletedMessages"`
 	OnlineStatus    map[string]bool         `json:"onlineStatus,omitempty"`
+	// NextSince continues the delta when a list hit the page limit
+	// (RFC3339, empty when the delta is complete); NextSinceID is its id
+	// tiebreaker. The client loops on them; the (time, id) keyset never
+	// loses or duplicates rows.
+	NextSince   string `json:"nextSince,omitempty"`
+	NextSinceID string `json:"nextSinceId,omitempty"`
 }
 
-// Sync returns the state of the account: the full list of its chats and the
-// messages and tombstones that changed since the given RFC3339 timestamp.
-// The client uses this to bring its local cache up to date after a period of
-// being offline.
-func (s *Service) Sync(ctx context.Context, userID string, since time.Time) SyncResponse {
+// Sync returns one page of the account state: the full list of its chats
+// and the messages and tombstones that changed since the given timestamp,
+// bounded by limit per list. NextSince carries the cursor for the next
+// page (empty when no list is full); the client loops on it until it is
+// empty. Page overlap at the cursor is idempotent downstream (upsert by
+// id), so resuming with >= never loses or duplicates rows.
+//
+// Storage failures are returned, never an empty page: emptiness means "end
+// of history" to the client, which could then wrongly discard its cache.
+func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinceID string, limit int) (SyncResponse, error) {
 	if _, err := s.store.EnsureSelfChat(ctx, userID); err != nil {
 		log().Error("failed to ensure self-chat", "err", err)
 	}
@@ -74,15 +86,84 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time) Sync
 		onlineStatus[id] = s.store.IsOnline(id)
 	}
 
+	msgPage, err := s.store.MessagesChangedSince(ctx, chatIDs, since, sinceID, limit)
+	if err != nil {
+		return SyncResponse{}, err
+	}
+	messages := msgPage.Rows
+	if messages == nil {
+		messages = []model.Message{}
+	}
+
+	threadPage, err := s.store.ThreadMessagesChangedSince(ctx, chatIDs, since, sinceID, limit)
+	if err != nil {
+		return SyncResponse{}, err
+	}
+	threadMessages := threadPage.Rows
+	if threadMessages == nil {
+		threadMessages = []model.Message{}
+	}
+
+	deletedMessages, deletedPage, err := s.buildDeletedMessages(ctx, chatIDs, since, sinceID, limit)
+	if err != nil {
+		return SyncResponse{}, err
+	}
+
+	deletedChats, chatsPage, err := s.buildDeletedChats(ctx, userID, since, sinceID, limit)
+	if err != nil {
+		return SyncResponse{}, err
+	}
+
+	nextSince, nextSinceID := nextSyncCursor(
+		cursorPage{msgPage.NextSince, msgPage.NextID, msgPage.HasMore},
+		cursorPage{threadPage.NextSince, threadPage.NextID, threadPage.HasMore},
+		cursorPage{deletedPage.NextSince, deletedPage.NextID, deletedPage.HasMore},
+		cursorPage{chatsPage.NextSince, chatsPage.NextID, chatsPage.HasMore},
+	)
+
 	return SyncResponse{
 		ServerNow:       time.Now().UTC(),
 		Chats:           s.buildChats(ctx, chats, nicks),
-		Messages:        s.store.MessagesChangedSince(ctx, chatIDs, since),
-		ThreadMessages:  s.store.ThreadMessagesChangedSince(ctx, chatIDs, since),
-		DeletedMessages: s.buildDeletedMessages(ctx, chatIDs, since),
-		DeletedChats:    s.buildDeletedChats(ctx, userID, since),
+		Messages:        messages,
+		ThreadMessages:  threadMessages,
+		DeletedMessages: deletedMessages,
+		DeletedChats:    deletedChats,
 		OnlineStatus:    onlineStatus,
+		NextSince:       nextSince,
+		NextSinceID:     nextSinceID,
+	}, nil
+}
+
+// cursorPage is one paged list's contribution to the combined next cursor.
+type cursorPage struct {
+	cursor   time.Time
+	cursorID string
+	hasMore  bool
+}
+
+// nextSyncCursor is the minimum keyset cursor over the full lists: the
+// resume position (time, id) of the list that ran out first. Empty when
+// every list fit in one page: the client stops paging. Resuming from the
+// minimum redelivers the tail of the shorter lists, which is harmless
+// because every application is idempotent; the (time, id) keyset itself
+// never repeats or skips a row.
+func nextSyncCursor(pages ...cursorPage) (string, string) {
+	var best *cursorPage
+	for i := range pages {
+		page := &pages[i]
+		if !page.hasMore {
+			continue
+		}
+		if best == nil || page.cursor.Before(best.cursor) ||
+			(page.cursor.Equal(best.cursor) && page.cursorID < best.cursorID) {
+
+			best = page
+		}
 	}
+	if best == nil {
+		return "", ""
+	}
+	return best.cursor.UTC().Format(time.RFC3339), best.cursorID
 }
 
 // ParseSince parses an RFC3339 since timestamp from a query parameter, falling
@@ -104,7 +185,7 @@ func ParseSince(sinceStr string) (time.Time, error) {
 // to, so sending it whole is cheap and leaves no gap.
 func (s *Service) buildChats(ctx context.Context, chats []*model.Chat, nicks map[string]string) []SyncChatDTO {
 	if len(chats) == 0 {
-		return nil
+		return []SyncChatDTO{}
 	}
 
 	out := make([]SyncChatDTO, 0, len(chats))
@@ -135,11 +216,17 @@ func (s *Service) buildDeletedMessages(
 	ctx context.Context,
 	chatIDs []string,
 	since time.Time,
-) []SyncDeletedMessageDTO {
+	sinceID string,
+	limit int,
+) ([]SyncDeletedMessageDTO, store.DeltaPage[model.DeletedMessage], error) {
 
-	tombs := s.store.DeletedMessagesSince(ctx, chatIDs, since)
+	page, err := s.store.DeletedMessagesSince(ctx, chatIDs, since, sinceID, limit)
+	if err != nil {
+		return nil, store.DeltaPage[model.DeletedMessage]{}, err
+	}
+	tombs := page.Rows
 	if len(tombs) == 0 {
-		return nil
+		return []SyncDeletedMessageDTO{}, store.DeltaPage[model.DeletedMessage]{}, nil
 	}
 
 	out := make([]SyncDeletedMessageDTO, 0, len(tombs))
@@ -152,18 +239,24 @@ func (s *Service) buildDeletedMessages(
 		})
 	}
 
-	return out
+	return out, page, nil
 }
 
 func (s *Service) buildDeletedChats(
 	ctx context.Context,
 	userID string,
 	since time.Time,
-) []SyncDeletedChatDTO {
+	sinceID string,
+	limit int,
+) ([]SyncDeletedChatDTO, store.DeltaPage[model.DeletedChat], error) {
 
-	tombs := s.store.DeletedChatsSince(ctx, userID, since)
+	page, err := s.store.DeletedChatsSince(ctx, userID, since, sinceID, limit)
+	if err != nil {
+		return nil, store.DeltaPage[model.DeletedChat]{}, err
+	}
+	tombs := page.Rows
 	if len(tombs) == 0 {
-		return nil
+		return []SyncDeletedChatDTO{}, store.DeltaPage[model.DeletedChat]{}, nil
 	}
 
 	out := make([]SyncDeletedChatDTO, 0, len(tombs))
@@ -175,7 +268,7 @@ func (s *Service) buildDeletedChats(
 		})
 	}
 
-	return out
+	return out, page, nil
 }
 
 func (s *Service) collectMembers(

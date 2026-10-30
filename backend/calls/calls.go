@@ -48,6 +48,17 @@ const (
 	OfflineGrace = time.Minute
 )
 
+// Signaling size caps: the SDP and ICE payloads are stored in the registry
+// and fanned out over SSE channels (buffer 128), so one client sending
+// megabytes would bloat every fan-out. A real SDP offer/answer is a few
+// kilobytes; 32 KiB leaves an order of magnitude of headroom, and a single
+// ICE candidate is smaller still.
+const (
+	MaxOfferLen        = 32 << 10
+	MaxAnswerLen       = 32 << 10
+	MaxICECandidateLen = 16 << 10
+)
+
 var (
 	ErrBusy = errors.New("user is already in a call")
 	// ErrBusyCaller and ErrBusyCallee name the side of the call that is
@@ -59,6 +70,12 @@ var (
 	ErrNotRinging = errors.New("call is not ringing")
 	ErrEnded      = errors.New("call is already ended")
 	ErrExpired    = errors.New("call was not answered in time")
+	// ErrOfferTooLarge, ErrAnswerTooLarge and ErrICECandidateTooLarge bound
+	// the signaling payloads a client may store or fan out.
+	ErrOfferTooLarge        = errors.New("call offer is too large")
+	ErrAnswerTooLarge       = errors.New("call answer is too large")
+	ErrICECandidateTooLarge = errors.New("ICE candidate is too large")
+	ErrEmptyAnswer          = errors.New("call answer is empty")
 )
 
 // Call is one conversation. The SDP is kept only while it can still be used:
@@ -145,11 +162,49 @@ func (m *Manager) SetOnEnded(onEnded func(call Call, reason string)) {
 	m.onEnded = onEnded
 }
 
+// ValidateOffer reports whether an SDP offer fits the signaling cap.
+func ValidateOffer(offer string) error {
+	if len(offer) > MaxOfferLen {
+		return ErrOfferTooLarge
+	}
+
+	return nil
+}
+
+// ValidateAnswer reports whether an SDP answer fits the signaling cap.
+// Empty answers never carry an SDP: reject them like oversized ones so a
+// call cannot go active with nothing for the caller to apply.
+func ValidateAnswer(answer string) error {
+	if answer == "" {
+		return ErrEmptyAnswer
+	}
+	if len(answer) > MaxAnswerLen {
+		return ErrAnswerTooLarge
+	}
+
+	return nil
+}
+
+// ValidateICECandidate reports whether a raw ICE candidate fits the cap.
+// The service layer calls it before fanning the candidate out over SSE: the
+// registry never stores candidates, so this is the only bound on them.
+func ValidateICECandidate(candidate []byte) error {
+	if len(candidate) > MaxICECandidateLen {
+		return ErrICECandidateTooLarge
+	}
+
+	return nil
+}
+
 // CreateCall registers a new call. It fails when either side is already in
 // a call, and the error names the side that is busy.
 func (m *Manager) CreateCall(callerID, calleeID, chatID, offer string) (*Call, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if err := ValidateOffer(offer); err != nil {
+		return nil, err
+	}
 
 	if m.active[callerID] != "" {
 		return nil, ErrBusyCaller
@@ -196,6 +251,10 @@ func (m *Manager) AcceptCall(callID, answer string) (*Call, error) {
 	call, ok := m.calls[callID]
 	if !ok {
 		return nil, ErrNotFound
+	}
+
+	if err := ValidateAnswer(answer); err != nil {
+		return nil, err
 	}
 
 	if call.State == StateEnded {

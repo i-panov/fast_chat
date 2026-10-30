@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -186,7 +187,7 @@ func (s *Service) CreatePrivateChat(ctx context.Context, userID, withUserID stri
 		return ChatView{}, ErrChatWithSelf
 	}
 
-	remoteServer := RemoteServerFromID(withUserID)
+	remoteServer := s.remoteServerFromID(withUserID)
 	if remoteServer == s.cfg.Server.Domain {
 		remoteServer = ""
 	}
@@ -241,7 +242,7 @@ func (s *Service) CreateGroupChat(ctx context.Context, ownerID, name string, mem
 	}
 
 	for _, memberID := range cleaned {
-		remoteServer := RemoteServerFromID(memberID)
+		remoteServer := s.remoteServerFromID(memberID)
 		if remoteServer != "" && remoteServer != s.cfg.Server.Domain {
 			return ChatView{}, ErrGroupRemoteMemb
 		}
@@ -305,7 +306,7 @@ func (s *Service) AddChatMember(ctx context.Context, chatID, userID string) (Cha
 		return ChatView{}, ErrUserIDRequired
 	}
 
-	remoteServer := RemoteServerFromID(userID)
+	remoteServer := s.remoteServerFromID(userID)
 	if remoteServer != "" && remoteServer != s.cfg.Server.Domain {
 		return ChatView{}, ErrRemoteMember
 	}
@@ -445,17 +446,195 @@ func RemoteServerFromID(id string) string {
 
 // IsValidRemoteDomain rejects loopback, private and link-local targets so
 // federated URLs can never be pointed at internal infrastructure.
+//
+// The input may carry a port ("example.com:8080", "127.0.0.1:8080",
+// "[::1]:8080"): only the host part is validated. Numeric IP bypasses in
+// decimal, octal, hexadecimal and single-integer (inet_aton) forms are
+// resolved to the address they denote before the check.
+//
+// Production default denies private targets. Local multi-instance setups and
+// the federation integration harness opt in via
+// config Federation.AllowPrivateAddresses and the *WithOverride helpers below.
 func IsValidRemoteDomain(domain string) bool {
-	if domain == "localhost" || domain == "localhost." {
+	return IsValidRemoteDomainFor(domain, false)
+}
+
+// IsValidRemoteDomainFor is IsValidRemoteDomain with an explicit override for
+// private targets. allowPrivate lifts only the IP-range check (loopback,
+// private, link-local, unspecified, multicast, localhost name); syntactic
+// checks (empty host, userinfo, path, query) always apply.
+func IsValidRemoteDomainFor(domain string, allowPrivate bool) bool {
+	host := remoteHost(domain)
+	if host == "" {
 		return false
 	}
 
-	ip := net.ParseIP(domain)
-	if ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-			return false
+	if strings.ContainsAny(host, "/@?#") {
+		return false
+	}
+
+	lowered := strings.ToLower(strings.TrimSuffix(host, "."))
+	if lowered == "localhost" {
+		return allowPrivate
+	}
+
+	if ip := parseNumericIP(lowered); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return allowPrivate
 		}
 	}
 
 	return true
+}
+
+// remoteServerFromID is the service-aware RemoteServerFromID: it honors
+// cfg.Federation.AllowPrivateAddresses so loopback-based local setups keep
+// working while production stays strict. Nil-safe: nil cfg means no override.
+func (s *Service) remoteServerFromID(id string) string {
+	return RemoteServerFromIDFor(id, s != nil && s.cfg != nil && s.cfg.Federation.AllowPrivateAddresses)
+}
+
+// RemoteServerFromIDFor is RemoteServerFromID with an explicit private-target
+// override (see IsValidRemoteDomainFor).
+func RemoteServerFromIDFor(id string, allowPrivate bool) string {
+	if idx := strings.Index(id, ":"); idx != -1 && idx < len(id)-1 {
+		domain := id[idx+1:]
+		if _, err := url.Parse("//" + domain); err != nil {
+			return ""
+		}
+
+		if strings.ContainsAny(domain, "/@?#") {
+			return ""
+		}
+
+		if !IsValidRemoteDomainFor(domain, allowPrivate) {
+			return ""
+		}
+
+		return domain
+	}
+
+	return ""
+}
+
+// remoteHost strips a port and IPv6 brackets from a domain.
+func remoteHost(domain string) string {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return ""
+	}
+
+	// Userinfo smuggling ("user@host") must never validate as the host.
+	if strings.Contains(domain, "@") {
+		return ""
+	}
+
+	if strings.HasPrefix(domain, "[") {
+		if end := strings.Index(domain, "]"); end != -1 {
+			return domain[1:end]
+		}
+
+		return domain
+	}
+
+	if strings.Count(domain, ":") > 1 {
+		// Bare IPv6 literal without brackets or port ("::1"): url.Parse
+		// would mis-split it at the last colon, so keep it as-is — but
+		// only if it parses as an IP. Anything else with several colons
+		// ("evil:127.0.0.1:9000", "a:b:c") is a crafted authority, not a
+		// host, and must not validate as a DNS name.
+		if net.ParseIP(domain) == nil {
+			return ""
+		}
+		return domain
+	}
+
+	if u, err := url.Parse("//" + domain); err == nil {
+		if h := u.Hostname(); h != "" {
+			return h
+		}
+	}
+
+	return domain
+}
+
+// parseNumericIP parses an IP literal including the inet_aton numeric forms
+// net.ParseIP rejects: dotted octal ("0177.0.0.1"), hexadecimal
+// ("0x7f.0.0.1") and single-integer ("2130706433", "0x7f000001") forms.
+// Returns nil when the host is not a numeric IP (e.g. a DNS name).
+//
+//nolint:gosec // G115: every part is range-checked against its field width before narrowing to a byte.
+func parseNumericIP(host string) net.IP {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip
+	}
+
+	if strings.Contains(host, ":") {
+		return nil
+	}
+
+	parts := strings.Split(host, ".")
+	if len(parts) < 1 || len(parts) > 4 {
+		return nil
+	}
+
+	nums := make([]uint64, len(parts))
+
+	for idx, part := range parts {
+		if part == "" {
+			return nil
+		}
+
+		num, err := strconv.ParseUint(strings.ToLower(part), 0, 32)
+		if err != nil {
+			return nil
+		}
+
+		nums[idx] = num
+	}
+
+	var addr [4]byte
+
+	switch len(nums) {
+	case 1:
+		if nums[0] > 0xFFFFFFFF {
+			return nil
+		}
+
+		addr[0] = byte(nums[0] >> 24)
+		addr[1] = byte(nums[0] >> 16)
+		addr[2] = byte(nums[0] >> 8)
+		addr[3] = byte(nums[0])
+	case 2:
+		if nums[0] > 0xFF || nums[1] > 0xFFFFFF {
+			return nil
+		}
+
+		addr[0] = byte(nums[0])
+		addr[1] = byte(nums[1] >> 16)
+		addr[2] = byte(nums[1] >> 8)
+		addr[3] = byte(nums[1])
+	case 3:
+		if nums[0] > 0xFF || nums[1] > 0xFF || nums[2] > 0xFFFF {
+			return nil
+		}
+
+		addr[0] = byte(nums[0])
+		addr[1] = byte(nums[1])
+		addr[2] = byte(nums[2] >> 8)
+		addr[3] = byte(nums[2])
+	case 4:
+		for _, num := range nums {
+			if num > 0xFF {
+				return nil
+			}
+		}
+
+		addr[0] = byte(nums[0])
+		addr[1] = byte(nums[1])
+		addr[2] = byte(nums[2])
+		addr[3] = byte(nums[3])
+	}
+
+	return net.IPv4(addr[0], addr[1], addr[2], addr[3])
 }

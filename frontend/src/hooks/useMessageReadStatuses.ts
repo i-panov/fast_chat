@@ -24,13 +24,19 @@ export function useMessageReadStatuses({
 	const pendingRef = useRef<Set<string>>(new Set());
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const nextAllowedFlushRef = useRef(0);
+	const flushRef = useRef<() => Promise<void>>(async () => {});
+	const scheduleFlushRef = useRef<(() => void) | null>(null);
 
 	const flush = useCallback(async () => {
 		if (pendingRef.current.size === 0) return;
 		if (token === undefined || chatId === null || userId === undefined) return;
 
+		// Send at most one batch; only the sent IDs leave the queue so a
+		// batch >50 keeps its tail instead of dropping it.
 		const messageIds = Array.from(pendingRef.current).slice(0, MAX_BATCH_SIZE);
-		pendingRef.current.clear();
+		for (const id of messageIds) {
+			pendingRef.current.delete(id);
+		}
 
 		try {
 			await markMessagesRead(token, chatId, messageIds);
@@ -38,6 +44,10 @@ export function useMessageReadStatuses({
 				await threadMessagesRepo.markAsRead(messageIds);
 			} else {
 				await messagesRepo.markAsRead(messageIds);
+			}
+			// A leftover tail schedules its own flush.
+			if (pendingRef.current.size > 0) {
+				scheduleFlushRef.current?.();
 			}
 		} catch (err) {
 			// Re-add failed messages to pending for retry
@@ -68,6 +78,11 @@ export function useMessageReadStatuses({
 		}, wait);
 	}, [flush]);
 
+	useEffect(() => {
+		flushRef.current = flush;
+		scheduleFlushRef.current = scheduleFlush;
+	}, [flush, scheduleFlush]);
+
 	const markVisibleAsRead = useCallback(
 		(messageIds: string[]) => {
 			if (userId === undefined || chatId === null) return;
@@ -88,9 +103,18 @@ export function useMessageReadStatuses({
 	);
 
 	useEffect(() => {
+		// Copy the ref into the effect: the cleanup runs after unmount when
+		// the ref object may already be detached.
+		const pending = pendingRef.current;
 		return () => {
 			if (timerRef.current !== null) {
 				clearTimeout(timerRef.current);
+				timerRef.current = null;
+			}
+			// Best-effort flush on unmount so queued reads are not lost when
+			// the chat closes before the debounce fires.
+			if (pending.size > 0) {
+				void flushRef.current();
 			}
 		};
 	}, []);

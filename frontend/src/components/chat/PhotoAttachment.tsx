@@ -51,7 +51,7 @@ export function PhotoAttachment({ file, fileKeys, onPhotoClick }: Props) {
 		);
 	}
 	return (
-		<a href={blobUrl} target="_blank" rel="noreferrer">
+		<a href={blobUrl} target="_blank" rel="noopener noreferrer">
 			<img src={blobUrl} alt={file.originalName} style={imgStyle} />
 		</a>
 	);

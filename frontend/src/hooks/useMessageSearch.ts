@@ -23,6 +23,7 @@ export function useMessageSearch(
 	const [pendingChatWith, setPendingChatWith] = useState<string | null>(null);
 	const [pendingChatNick, setPendingChatNick] = useState<string | null>(null);
 	const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const searchSeqRef = useRef(0);
 
 	const handleSearchChange = useCallback(
 		(value: string) => {
@@ -38,13 +39,17 @@ export function useMessageSearch(
 				clearTimeout(searchTimerRef.current);
 			}
 
+			const seq = ++searchSeqRef.current;
 			const debouncedSearch = async () => {
 				if (!token) return;
 				try {
 					const { users } = await searchUsers(token, value);
+					// Drop stale responses: a slow "a" must not overwrite "ab".
+					if (searchSeqRef.current !== seq) return;
 					setSearchResults(users);
 					setShowSearchResults(true);
 				} catch {
+					if (searchSeqRef.current !== seq) return;
 					setShowSearchResults(false);
 				}
 			};

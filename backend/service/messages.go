@@ -11,6 +11,7 @@ import (
 
 	"fast_chat/model"
 	"fast_chat/sse"
+	"fast_chat/store"
 )
 
 // Message domain errors. Handlers map a specific error to an HTTP status and a
@@ -32,7 +33,10 @@ var (
 	ErrThreadAlreadyExists = errors.New("thread already exists")
 	ErrReadInputRequired   = errors.New("messageIds and chatId are required")
 	ErrTooManyReadIDs      = errors.New("too many message IDs")
-	ErrMessageIDConflict   = errors.New("message id already used by another message")
+	// ErrMessageIDConflict aliases the store sentinel: two distinct
+	// sentinels with identical text would make errors.Is mapping in the
+	// transport a trap (one entry, two identities).
+	ErrMessageIDConflict = store.ErrMessageIDConflict
 )
 
 // E2E payload validation errors. The server does not decrypt messages but
@@ -372,9 +376,10 @@ func (s *Service) EnrichMessagesWithStatuses(
 	return result
 }
 
-// GetMessages returns a page of messages with status enrichment. It returns
-// the enriched list (nil-safe) and the next-cursor; when enrichment yields
-// nil (empty page) the transport falls back to the empty raw list.
+// GetMessages returns a page of messages with status enrichment. A storage
+// failure is reported (not an empty page): an empty list is
+// indistinguishable from "end of history" to the client, which could
+// then wrongly discard its cache.
 func (s *Service) GetMessages(
 	ctx context.Context,
 	chat *model.Chat,
@@ -382,18 +387,25 @@ func (s *Service) GetMessages(
 	limit int,
 	before string,
 	missingIDs []string,
-) ([]MessageWithStatus, string) {
+) ([]MessageWithStatus, string, error) {
 
-	messages, nextCursor, _ := s.store.GetMessagesPaginated(ctx, chat.ID, limit, before)
+	messages, nextCursor, _, err := s.store.GetMessagesPaginatedE(ctx, chat.ID, limit, before)
+	if err != nil {
+		return nil, "", err
+	}
 
 	result := s.EnrichMessagesWithStatuses(ctx, messages, chat, userID, missingIDs)
 
-	return result, nextCursor
+	return result, nextCursor, nil
 }
 
 // GetThreadMessages returns a page of thread messages with files attached.
-func (s *Service) GetThreadMessages(ctx context.Context, threadID string, limit int, before string) ([]model.Message, string) {
-	messages, nextCursor, _ := s.store.GetThreadMessagesPaginated(ctx, threadID, limit, before)
+// Storage failures propagate like in GetMessages.
+func (s *Service) GetThreadMessages(ctx context.Context, threadID string, limit int, before string) ([]model.Message, string, error) {
+	messages, nextCursor, _, err := s.store.GetThreadMessagesPaginatedE(ctx, threadID, limit, before)
+	if err != nil {
+		return nil, "", err
+	}
 
 	if len(messages) > 0 {
 		ids := make([]string, len(messages))
@@ -409,7 +421,7 @@ func (s *Service) GetThreadMessages(ctx context.Context, threadID string, limit 
 		}
 	}
 
-	return messages, nextCursor
+	return messages, nextCursor, nil
 }
 
 // SendMessage persists a message in a chat. The chat is authoritative: a
@@ -439,6 +451,13 @@ func (s *Service) SendMessage(
 
 	if len(fileIDs) > MaxMessageFiles {
 		return nil, ErrTooManyFiles
+	}
+
+	// Resolve drops foreign references: re-check emptiness on what is actually
+	// attached, or a text-less message naming only someone else's files would
+	// be stored empty.
+	if input.Text == "" && len(fileIDs) == 0 && input.Location == nil {
+		return nil, ErrEmptyMessage
 	}
 
 	msg, created, err := s.store.AddMessage(
@@ -471,8 +490,11 @@ func (s *Service) SendMessage(
 	return msg, nil
 }
 
-// notifyMessageSent broadcasts a new message to all chat members and marks it
-// delivered for the non-sender recipients. Delivery tracking is best-effort.
+// notifyMessageSent broadcasts a new message to all chat members. Delivery
+// is only recorded for recipients currently online, and the sender receives
+// a single aggregated receipt: Hub.Send drops offline recipients silently,
+// so marking everyone would lie about offline delivery and emit N-1
+// duplicates to the sender.
 func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *model.Message, threadID, senderID string) {
 	eventName := eventNewMessage
 	eventData := map[string]any{keyMessage: msg}
@@ -483,14 +505,25 @@ func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *
 
 	for _, memberID := range chat.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventName, Data: eventData})
+	}
 
+	delivered := false
+
+	for _, memberID := range chat.Members {
 		if memberID == senderID {
 			continue
 		}
 
-		// Mark as delivered for other members (ignore errors - best effort).
+		if !s.store.IsOnline(memberID) {
+			continue
+		}
+
+		// Mark as delivered for online members (ignore errors - best effort).
 		_ = s.store.MarkMessagesDelivered(ctx, []string{msg.ID}, memberID) //nolint:errcheck // best-effort: failure is not actionable
-		// Notify sender about delivery.
+		delivered = true
+	}
+
+	if delivered {
 		s.sendEvent(senderID, sse.Event{
 			Event: eventMessageDelivered,
 			Data: map[string]any{
@@ -551,6 +584,13 @@ func (s *Service) EditMessage(
 
 	if len(fileIDs) > MaxMessageFiles {
 		return model.Message{}, EditPayload{}, ErrTooManyFiles
+	}
+
+	// Resolve drops foreign references: re-check emptiness on what is actually
+	// attached, or an edit naming only someone else's files would wipe the
+	// message to empty.
+	if edit.Text == "" && len(fileIDs) == 0 && !hasLocation && !edit.ClearLocation {
+		return model.Message{}, EditPayload{}, ErrEmptyMessage
 	}
 
 	updated, err := s.store.EditMessage(
@@ -692,7 +732,9 @@ func (s *Service) CreateThread(ctx context.Context, chat *model.Chat, chatID, me
 		return nil, ErrMessageNotFound
 	}
 
-	if _, exists := s.store.GetThread(ctx, chatID); exists {
+	// A message that already lives inside a thread cannot parent another
+	// thread.
+	if msg.ThreadID != "" {
 		return nil, ErrThreadOnThread
 	}
 
@@ -722,16 +764,41 @@ func ValidCoords(lat, lng float64) bool {
 	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
 }
 
+// nullLiteral is the JSON null marker, shared by the location-patch checks
+// below so the literal is not repeated.
+const nullLiteral = "null"
+
 // parseLocationPatch mirrors the transport's location patch semantics: empty
-// means "not sent", "null" clears, otherwise it validates bounds.
+// means "not sent", "null" clears, otherwise it validates bounds. Both
+// coordinates must be present: an empty object would otherwise decode to the
+// zero value and pin the message to (0,0).
 func parseLocationPatch(raw json.RawMessage) (*model.Location, bool, error) {
 	if len(raw) == 0 {
 		return nil, false, nil
 	}
 
 	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "null" {
+	if trimmed == nullLiteral {
 		return nil, true, nil
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, false, ErrInvalidCoordinates
+	}
+
+	if _, ok := fields["lat"]; !ok {
+		return nil, false, ErrInvalidCoordinates
+	}
+
+	if _, ok := fields["lng"]; !ok {
+		return nil, false, ErrInvalidCoordinates
+	}
+
+	// Explicit nulls decode to the zero value and would pin the message to
+	// (0,0): reject them like missing keys.
+	if string(fields["lat"]) == nullLiteral || string(fields["lng"]) == nullLiteral {
+		return nil, false, ErrInvalidCoordinates
 	}
 
 	var loc model.Location

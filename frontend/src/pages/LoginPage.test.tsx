@@ -103,7 +103,10 @@ describe("login page", () => {
 		fireEvent.click(submit());
 
 		await waitFor(() => {
-			expect(navigate).toHaveBeenCalledWith({ to: "/chat" });
+			expect(navigate).toHaveBeenCalledWith({
+				to: "/chat",
+				search: { chatId: undefined, threadId: undefined },
+			});
 		});
 		expect(localStorage.getItem("accounts")).toContain("tok");
 	});
@@ -131,7 +134,10 @@ describe("login page", () => {
 
 		await waitFor(() => {
 			expect(completeRegistration).toHaveBeenCalledWith("st", "bob");
-			expect(navigate).toHaveBeenCalledWith({ to: "/chat" });
+			expect(navigate).toHaveBeenCalledWith({
+				to: "/chat",
+				search: { chatId: undefined, threadId: undefined },
+			});
 		});
 	});
 
@@ -168,6 +174,9 @@ describe("login page", () => {
 		const back = await screen.findByText(BACK_TO_CHAT);
 		fireEvent.click(back);
 
-		expect(navigate).toHaveBeenCalledWith({ to: "/chat" });
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/chat",
+			search: { chatId: undefined, threadId: undefined },
+		});
 	});
 });

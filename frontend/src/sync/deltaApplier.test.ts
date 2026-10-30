@@ -238,7 +238,8 @@ describe("applyDelta", () => {
 		expect(await outboxRepo.list()).toHaveLength(1);
 	});
 
-	it("accepts a malformed server edit timestamp as-is", async () => {
+	it("keeps the local edit when the server copy has no (valid) editedAt", async () => {
+		await messagesRepo.upsert({ ...msg("m1", "local edit") }, "sent");
 		await outboxRepo.enqueue(
 			editOp({ clientEditedAt: "2026-08-30T10:00:00.000Z" }),
 		);
@@ -247,9 +248,11 @@ describe("applyDelta", () => {
 			delta({ messages: [msg("m1", "server edit", "not-a-date")] }),
 		);
 
+		// The server copy predates our unreflected edit: keep the local row
+		// for replay instead of showing the stale text.
 		expect(await outboxRepo.list()).toHaveLength(1);
 		const stored = await messagesRepo.getById("chat-1", "m1");
-		expect(stored?.text).toBe("server edit");
+		expect(stored?.text).toBe("local edit");
 	});
 
 	it("does not delete a message that has a queued send op", async () => {
@@ -302,6 +305,85 @@ describe("applyDelta", () => {
 		const stored = await messagesRepo.getById("chat-1", "m1");
 		expect(stored?.status).toBe("deleted");
 	});
+
+	it("keeps a local queued thread send and skips the server record", async () => {
+		const { threadMessagesRepo } = await import("../db/threadMessagesRepo.ts");
+		await threadMessagesRepo.upsert(
+			{ ...msg("tm1", "local queued text") },
+			"th1",
+			"queued",
+		);
+
+		await applyDelta(
+			delta({
+				threadMessages: [{ ...msg("tm1", "server text"), threadId: "th1" }],
+			}),
+		);
+
+		const stored = await threadMessagesRepo.getById("th1", "tm1");
+		expect(stored?.status).toBe("queued");
+		expect(stored?.text).toBe("local queued text");
+	});
+
+	it("does not overwrite a newer local thread edit with the server copy", async () => {
+		const { threadMessagesRepo } = await import("../db/threadMessagesRepo.ts");
+		await threadMessagesRepo.upsert(
+			{ ...msg("tm1", "local thread edit") },
+			"th1",
+			"sent",
+		);
+		await outboxRepo.enqueue(editOp({ messageId: "tm1", threadId: "th1" }));
+
+		await applyDelta(
+			delta({
+				threadMessages: [
+					{
+						...msg("tm1", "older server edit", "2026-08-30T09:59:00.000Z"),
+						threadId: "th1",
+					},
+				],
+			}),
+		);
+
+		expect(await outboxRepo.list()).toHaveLength(1);
+		const stored = await threadMessagesRepo.getById("th1", "tm1");
+		expect(stored?.text).toBe("local thread edit");
+	});
+
+	it("drops a queued thread edit beaten by a fresher server edit", async () => {
+		const { threadMessagesRepo } = await import("../db/threadMessagesRepo.ts");
+		await outboxRepo.enqueue(editOp({ messageId: "tm1", threadId: "th1" }));
+
+		await applyDelta(
+			delta({
+				threadMessages: [
+					{
+						...msg("tm1", "server thread edit", "2026-08-30T10:00:01.000Z"),
+						threadId: "th1",
+					},
+				],
+			}),
+		);
+
+		expect(await outboxRepo.list()).toHaveLength(0);
+		const stored = await threadMessagesRepo.getById("th1", "tm1");
+		expect(stored?.text).toBe("server thread edit");
+	});
+
+	it("does not overwrite a newer local edit with the server copy", async () => {
+		await messagesRepo.upsert({ ...msg("m1", "local edit") }, "sent");
+		await outboxRepo.enqueue(editOp());
+
+		await applyDelta(
+			delta({
+				messages: [msg("m1", "older server edit", "2026-08-30T09:59:00.000Z")],
+			}),
+		);
+
+		expect(await outboxRepo.list()).toHaveLength(1);
+		const stored = await messagesRepo.getById("chat-1", "m1");
+		expect(stored?.text).toBe("local edit");
+	});
 });
 
 describe("pullDelta", () => {
@@ -310,7 +392,13 @@ describe("pullDelta", () => {
 
 		await pullDelta("tok", null);
 
-		expect(getSyncMock).toHaveBeenCalledWith("tok", "1970-01-01T00:00:00.000Z");
+		expect(getSyncMock).toHaveBeenCalledWith(
+			"tok",
+			"1970-01-01T00:00:00.000Z",
+			undefined,
+			undefined,
+			undefined,
+		);
 	});
 
 	it("forwards an existing since", async () => {
@@ -318,6 +406,12 @@ describe("pullDelta", () => {
 
 		await pullDelta("tok", "2026-08-30T10:00:00.000Z");
 
-		expect(getSyncMock).toHaveBeenCalledWith("tok", "2026-08-30T10:00:00.000Z");
+		expect(getSyncMock).toHaveBeenCalledWith(
+			"tok",
+			"2026-08-30T10:00:00.000Z",
+			undefined,
+			undefined,
+			undefined,
+		);
 	});
 });

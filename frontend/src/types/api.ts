@@ -193,4 +193,10 @@ export interface SyncResponse {
 	threadMessages?: Message[];
 	deletedMessages: SyncDeletedMessage[];
 	onlineStatus?: Record<string, boolean>;
+	// nextSince continues the delta when a list hit the server page limit
+	// (absent when the delta is complete); nextSinceId is its id
+	// tiebreaker. Overlapping redelivery across pages is idempotent
+	// downstream.
+	nextSince?: string;
+	nextSinceId?: string;
 }

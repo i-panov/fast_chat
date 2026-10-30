@@ -9,6 +9,10 @@ export function useFileUrl(
 	const [error, setError] = useState<Error | null>(null);
 
 	useEffect(() => {
+		// Reset stale state first so a fileUrl switch never shows the
+		// previous file's blob or error while the new one resolves.
+		setBlobUrl(null);
+		setError(null);
 		if (!fileUrl) return;
 
 		let cancelled = false;

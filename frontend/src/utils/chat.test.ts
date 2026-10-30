@@ -61,6 +61,33 @@ describe("formatCoords", () => {
 	});
 });
 
+describe("formatCoords invalid", () => {
+	it("returns a placeholder for NaN", () => {
+		expect(formatCoords({ lat: Number.NaN, lng: 0 })).toBe("—");
+	});
+
+	it("returns a placeholder for string coords from the server", () => {
+		expect(formatCoords({ lat: "51.5" as unknown as number, lng: -0.09 })).toBe(
+			"—",
+		);
+	});
+
+	it("returns a placeholder for out-of-range coords", () => {
+		expect(formatCoords({ lat: 200, lng: 0 })).toBe("—");
+	});
+});
+
+describe("extractCodeText elements", () => {
+	it("extracts from React-element-like objects", () => {
+		expect(extractCodeText({ props: { children: ["a", "b"] } })).toBe("ab");
+	});
+
+	it("returns empty for nullish", () => {
+		expect(extractCodeText(null)).toBe("");
+		expect(extractCodeText(undefined)).toBe("");
+	});
+});
+
 describe("openStreetMapURL", () => {
 	it("builds an OSM URL with mlat/mlon and map hash", () => {
 		expect(openStreetMapURL({ lat: 51.505, lng: -0.09 })).toBe(

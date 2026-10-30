@@ -47,3 +47,15 @@ func TestGenerateUsesTheSecret(t *testing.T) {
 		t.Fatal("the credential does not depend on the secret")
 	}
 }
+
+func TestGenerateCheckedRejectsEmptySecret(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+
+	if _, err := GenerateChecked("", "alice", now); err == nil {
+		t.Fatal("expected error for empty secret, got nil")
+	}
+
+	if got := Generate("", "alice", now); got != (Credentials{}) {
+		t.Fatalf("Generate with empty secret = %+v, want empty credentials", got)
+	}
+}

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef } from "react";
 import type { CallManager } from "../calls/callManager.ts";
 import { handleCallEvent } from "../calls/handleCallEvent.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
+import { getDB } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
+import { notify } from "../db/notify.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
@@ -11,7 +13,6 @@ import { useSse } from "../useSse.ts";
 
 interface UseSseEventsParams {
 	token: string;
-	knownThreadIdsRef: React.MutableRefObject<Set<string>>;
 	addTypingUser: (payload: TypingPayload) => void;
 	clearTyping: (chatId: string, userId: string) => void;
 	onTokenExpiring: (currentToken: string) => Promise<void>;
@@ -22,27 +23,45 @@ interface UseSseEventsParams {
 }
 
 // applyReadEvent marks a message as read by a reader. The readers are
-// accumulated instead of overwritten, so two readers do not erase each other.
+// merged inside a single readwrite transaction over both message stores,
+// so two concurrent read events re-read and union instead of
+// read-modify-write racing and dropping each other.
 async function applyReadEvent(data: { messageId: string; readerId: string }) {
 	const { messageId, readerId } = data;
 
-	const existing = await messagesRepo.getByIdAny(messageId);
-	const currentReadBy = existing?.readBy ?? [];
-	const newReadBy = currentReadBy.includes(readerId)
-		? currentReadBy
-		: [...currentReadBy, readerId];
-	void messagesRepo.updateDeliveryStatus(messageId, "read", newReadBy);
+	const db = await getDB();
+	const tx = db.transaction(["messages", "threadMessages"], "readwrite");
 
-	const existingThread = await threadMessagesRepo.getByIdAny(messageId);
-	const currentThreadReadBy = existingThread?.readBy ?? [];
-	const newThreadReadBy = currentThreadReadBy.includes(readerId)
-		? currentThreadReadBy
-		: [...currentThreadReadBy, readerId];
-	void threadMessagesRepo.updateDeliveryStatus(
-		messageId,
-		"read",
-		newThreadReadBy,
-	);
+	const existing = await tx.objectStore("messages").get(messageId);
+	if (existing !== undefined) {
+		const currentReadBy = existing.readBy ?? [];
+		const newReadBy = currentReadBy.includes(readerId)
+			? currentReadBy
+			: [...currentReadBy, readerId];
+		await tx.objectStore("messages").put({
+			...existing,
+			deliveryStatus: "read",
+			readBy: newReadBy,
+			_updatedAt: new Date().toISOString(),
+		});
+	}
+
+	const existingThread = await tx.objectStore("threadMessages").get(messageId);
+	if (existingThread !== undefined) {
+		const currentThreadReadBy = existingThread.readBy ?? [];
+		const newThreadReadBy = currentThreadReadBy.includes(readerId)
+			? currentThreadReadBy
+			: [...currentThreadReadBy, readerId];
+		await tx.objectStore("threadMessages").put({
+			...existingThread,
+			deliveryStatus: "read",
+			readBy: newThreadReadBy,
+			_updatedAt: new Date().toISOString(),
+		});
+	}
+
+	await tx.done;
+	notify();
 }
 
 // routeCallEvent hands a call event to the manager, if there is one.
@@ -86,7 +105,6 @@ function chatFromEvent(data: unknown): Chat | null {
 
 export function useSseEvents({
 	token,
-	knownThreadIdsRef,
 	addTypingUser,
 	clearTyping,
 	onTokenExpiring,
@@ -106,7 +124,10 @@ export function useSseEvents({
 			}
 			if (event === "new_message" || event === "message_updated") {
 				const msg = data as Message;
-				void messagesRepo.upsert(msg, "sent");
+				// No explicit "sent": upsert without a status keeps a local
+				// queued/failed row (with its pending file references) until
+				// the outbox finishes, instead of flipping it to sent early.
+				await messagesRepo.upsert(msg);
 				return;
 			}
 			if (event === "message_deleted") {
@@ -114,17 +135,24 @@ export function useSseEvents({
 					chatId: string;
 					messageId: string;
 				};
-				if (knownThreadIdsRef.current.has(chatId)) {
-					void threadMessagesRepo.applyDelete(chatId, messageId);
-				} else {
-					void messagesRepo.applyDelete(chatId, messageId);
+				// Route by messageId in both stores like deltaApplier: the
+				// chatId of a thread deletion is the real chat, not the
+				// thread, so knownThreadIds routing could hit the wrong store.
+				// Awaited in order so a preceding new_message lands first.
+				await messagesRepo.applyDelete(chatId, messageId);
+				const threadMessage = await threadMessagesRepo.getByIdAny(messageId);
+				if (threadMessage !== undefined) {
+					await threadMessagesRepo.applyDelete(
+						threadMessage.threadId,
+						messageId,
+					);
 				}
 				return;
 			}
 			if (event === "message_delivered") {
 				const { messageId } = data as { messageId: string };
-				void messagesRepo.updateDeliveryStatus(messageId, "delivered");
-				void threadMessagesRepo.updateDeliveryStatus(messageId, "delivered");
+				await messagesRepo.updateDeliveryStatus(messageId, "delivered");
+				await threadMessagesRepo.updateDeliveryStatus(messageId, "delivered");
 				return;
 			}
 			if (event === "message_read") {
@@ -139,19 +167,19 @@ export function useSseEvents({
 			) {
 				const chat = chatFromEvent(data);
 				if (chat !== null) {
-					void chatsRepo.upsert(chat);
+					await chatsRepo.upsert(chat);
 				}
 
 				return;
 			}
 			if (event === "chat_deleted") {
 				const { chatId } = data as { chatId: string };
-				void chatsRepo.remove(chatId);
+				await chatsRepo.remove(chatId);
 				return;
 			}
 			if (event === "thread_created") {
 				const thread = data as Thread;
-				void threadsRepo.upsert(thread);
+				await threadsRepo.upsert(thread);
 				return;
 			}
 			if (event === "thread_message_new") {
@@ -159,7 +187,7 @@ export function useSseEvents({
 					threadId: string;
 					message: Message;
 				};
-				void threadMessagesRepo.upsert(message, threadId, "sent");
+				await threadMessagesRepo.upsert(message, threadId);
 				return;
 			}
 			if (event === "user_status_changed") {
@@ -167,7 +195,7 @@ export function useSseEvents({
 					userId: string;
 					online: boolean;
 				};
-				void chatsRepo.updateMemberStatus(userId, online);
+				await chatsRepo.updateMemberStatus(userId, online);
 				return;
 			}
 			if (event === "typing") {
@@ -195,14 +223,7 @@ export function useSseEvents({
 				scheduleSync();
 			}
 		},
-		[
-			addTypingUser,
-			clearTyping,
-			onTokenExpiring,
-			onTokenExpired,
-			knownThreadIdsRef,
-			callManager,
-		],
+		[addTypingUser, clearTyping, onTokenExpiring, onTokenExpired, callManager],
 	);
 
 	useSse(token, handler);

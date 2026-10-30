@@ -241,7 +241,7 @@ var sentinelErrors = []sentinelErrPair{
 	},
 	{
 		sentinel: service.ErrTooManyFiles,
-		target:   &statusError{ErrorMessage: "too many files", code: http.StatusBadRequest},
+		target:   &statusError{ErrorMessage: msgTooManyFiles, code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrNotYourMessage,
@@ -285,7 +285,7 @@ var sentinelErrors = []sentinelErrPair{
 	},
 	{
 		sentinel: service.ErrTooManyReadIDs,
-		target:   &statusError{ErrorMessage: "too many message IDs", code: http.StatusBadRequest},
+		target:   &statusError{ErrorMessage: msgTooManyMessageIDs, code: http.StatusBadRequest},
 	},
 
 	// Federation domain.
@@ -340,6 +340,10 @@ var sentinelErrors = []sentinelErrPair{
 	{
 		sentinel: service.ErrEmptyOffer,
 		target:   &statusError{ErrorMessage: "the offer of a call is empty", code: http.StatusBadRequest},
+	},
+	{
+		sentinel: calls.ErrEmptyAnswer,
+		target:   &statusError{ErrorMessage: "the answer of a call is empty", code: http.StatusBadRequest},
 	},
 
 	// Call registry.

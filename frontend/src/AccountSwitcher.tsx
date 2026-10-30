@@ -142,7 +142,7 @@ function AccountList({
 		<ScrollArea style={{ flex: 1 }}>
 			{accounts.map((acc) => (
 				<AccountRow
-					key={acc.token}
+					key={acc.user.id}
 					account={acc}
 					isActive={acc.token === activeAccount?.token}
 					onClick={() => {
@@ -265,7 +265,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					}}
 					onClick={() => {
 						onClose();
-						void navigate({ to: "/login" });
+						void navigate({ to: "/login", search: { add: "1" } });
 					}}
 				>
 					{t("accounts.add")}

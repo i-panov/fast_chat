@@ -1,10 +1,8 @@
 /// <reference lib="webworker" />
 
-import { CacheableResponsePlugin } from "workbox-cacheable-response";
 import { cacheNames, setCacheNameDetails } from "workbox-core";
-import { ExpirationPlugin } from "workbox-expiration";
 import { registerRoute } from "workbox-routing";
-import { CacheFirst, NetworkFirst, NetworkOnly } from "workbox-strategies";
+import { NetworkOnly } from "workbox-strategies";
 
 declare let self: ServiceWorkerGlobalScope & {
 	__WB_MANIFEST: Array<{ url: string; revision?: string }>;
@@ -60,40 +58,36 @@ self.addEventListener("activate", (event: ExtendableEvent) => {
 	void self.clients.claim();
 });
 
-registerRoute(
-	({ url }) => url.pathname.startsWith("/api/files/"),
-	new CacheFirst({
-		cacheName: "file-cache",
-		plugins: [
-			new ExpirationPlugin({
-				maxEntries: 200,
-				maxAgeSeconds: 60 * 60 * 24 * 30,
-			}),
-			new CacheableResponsePlugin({ statuses: [0, 200] }),
-		],
-	}),
-);
-
-registerRoute(
-	({ url }) =>
-		url.pathname.startsWith("/api/") &&
-		!url.pathname.startsWith("/api/events") &&
-		!url.pathname.startsWith("/api/files/") &&
-		!url.pathname.startsWith("/api/chats/") &&
-		!url.pathname.startsWith("/api/messages/") &&
-		!url.pathname.startsWith("/api/sync") &&
-		!url.pathname.startsWith("/api/users/") &&
-		!url.pathname.startsWith("/api/push/"),
-	new NetworkFirst({
-		cacheName: "api-cache",
-		plugins: [
-			new ExpirationPlugin({ maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 }),
-			new CacheableResponsePlugin({ statuses: [0, 200] }),
-		],
-	}),
-);
+// Authenticated API and file responses are never cached: the cache key
+// is the URL without Authorization, so one account would otherwise read
+// another account's bytes after logout/switch. File blobs stay in the
+// per-account IndexedDB fileCache instead.
+registerRoute(({ url }) => url.pathname.startsWith("/api/"), new NetworkOnly());
 
 registerRoute(() => true, new NetworkOnly());
+
+// Explicit cache purge for logout/account-switch. CacheStorage is shared
+// with the window context (clearAllData already deletes it), this handles
+// the worker side when it is the only live context.
+self.addEventListener("message", (event: ExtendableMessageEvent) => {
+	const data = event.data as { type?: string } | null;
+	if (data?.type !== "CLEAR_SW_CACHES") return;
+	event.waitUntil(
+		caches
+			.keys()
+			.then((names) =>
+				Promise.all(
+					names
+						.filter(
+							(name) =>
+								name.includes("file-cache") || name.includes("api-cache"),
+						)
+						.map((name) => caches.delete(name)),
+				),
+			)
+			.then(() => undefined),
+	);
+});
 
 void self.skipWaiting();
 

@@ -48,7 +48,7 @@ func registerFederatedUsers(api huma.API, st *store.Store, svc *service.Service,
 		Summary:     "Serve a local user's public key to a remote server",
 		Security:    fedSecurity,
 	}, func(ctx context.Context, input *federatedPublicKeyInput) (*publicKeyOutput, error) {
-		if service.RemoteServerFromID(input.UserID) != cfg.Server.Domain {
+		if service.RemoteServerFromIDFor(input.UserID, cfg.Federation.AllowPrivateAddresses) != cfg.Server.Domain {
 			return nil, &statusError{ErrorMessage: "user does not belong to this server", code: http.StatusBadRequest}
 		}
 
@@ -198,6 +198,13 @@ func registerFederatedChatMutations(api huma.API, st *store.Store, svc *service.
 			return nil, err
 		}
 
+		// Like send/edit/delete, a typing indicator must come from a user of
+		// the sending server: otherwise a signed peer could emit typing as
+		// any local user.
+		if input.Body.UserID == "" || !service.UserIDBelongsToServer(input.Body.UserID, chat.RemoteServer) {
+			return nil, &statusError{ErrorMessage: "user does not belong to remote server", code: http.StatusForbidden}
+		}
+
 		svc.HandleFederatedTyping(ctx, chat, input.Body.UserID, input.Body.Nick, input.Body.Active)
 
 		return okStatus(), nil
@@ -223,8 +230,15 @@ func registerFederatedSync(api huma.API, svc *service.Service) {
 			return nil, &statusError{ErrorMessage: "missing federation server", code: http.StatusForbidden}
 		}
 
+		limit := syncPageLimit(input.Limit)
+
+		body, err := svc.SyncFederated(ctx, serverDomain, since, input.SinceID, limit)
+		if err != nil {
+			return nil, errInternal
+		}
+
 		var out federatedSyncOutput
-		out.Body = svc.SyncFederated(ctx, serverDomain, since)
+		out.Body = body
 
 		return &out, nil
 	})
@@ -391,7 +405,9 @@ type federatedTypingInput struct {
 }
 
 type federatedSyncInput struct {
-	Since string `query:"since"`
+	Since   string `query:"since"`
+	SinceID string `query:"sinceId"`
+	Limit   int    `query:"limit"`
 }
 
 type federatedSyncOutput struct {

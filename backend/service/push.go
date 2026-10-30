@@ -6,9 +6,42 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"fast_chat/model"
 )
+
+// maxConcurrentPushes bounds the push fan-out: every SendToUser walks its
+// subscriptions sequentially with a 10s HTTP timeout each, so an unbounded
+// burst of goroutines would pile up for the sum of those timeouts.
+const maxConcurrentPushes = 8
+
+var (
+	pushSendSem      = make(chan struct{}, maxConcurrentPushes)
+	droppedPushCount atomic.Int64
+)
+
+// DroppedPushes reports how many push fan-outs were dropped because the sender
+// was saturated.
+func DroppedPushes() int64 {
+	return droppedPushCount.Load()
+}
+
+// sendPushBounded delivers a push payload without letting a burst of messages
+// spawn an unbounded number of goroutines. When all slots are busy the push
+// is dropped and counted instead of queued forever.
+func sendPushBounded(ps pushSender, payload []byte, subs []model.PushSubscription) {
+	select {
+	case pushSendSem <- struct{}{}:
+		go func() {
+			defer func() { <-pushSendSem }()
+			ps.SendToUser(payload, subs)
+		}()
+	default:
+		droppedPushCount.Add(1)
+		log().Warn("push dropped: sender saturated")
+	}
+}
 
 // PushPayload is the WebPush notification payload sent to clients.
 type PushPayload struct {
@@ -113,5 +146,5 @@ func (s *Service) SendPushForMessage(
 		return
 	}
 
-	go s.push.SendToUser(raw, subs)
+	sendPushBounded(s.push, raw, subs)
 }

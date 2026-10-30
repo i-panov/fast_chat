@@ -20,14 +20,17 @@ import { useAuth } from "../../useAuth.tsx";
 import { MessageAttachments } from "./bubble/MessageAttachments.tsx";
 import { MessageAuthor } from "./bubble/MessageAuthor.tsx";
 import { MessageBody } from "./bubble/MessageBody.tsx";
-import { MessageContextMenu } from "./bubble/MessageContextMenu.tsx";
+import {
+	BubbleContextMenu,
+	MessageMenuButton,
+} from "./bubble/MessageBubbleMenu.tsx";
 import { MessageLocation } from "./bubble/MessageLocation.tsx";
 import { MessageReplyPreview } from "./bubble/MessageReplyPreview.tsx";
 import { MessageThreadLink } from "./bubble/MessageThreadLink.tsx";
 import { ImageLightbox } from "./ImageLightbox.tsx";
 import { LocationLightbox } from "./LocationLightbox.tsx";
 
-interface Props {
+export interface MessageBubbleProps {
 	text: string;
 	isOwn: boolean;
 	fromNick?: string;
@@ -94,7 +97,10 @@ function deepEq(a: unknown, b: unknown): boolean {
 	return false;
 }
 
-function primitivePropsEqual(prev: Props, next: Props): boolean {
+function primitivePropsEqual(
+	prev: MessageBubbleProps,
+	next: MessageBubbleProps,
+): boolean {
 	return (
 		prev.text === next.text &&
 		prev.isOwn === next.isOwn &&
@@ -117,15 +123,24 @@ function primitivePropsEqual(prev: Props, next: Props): boolean {
 	);
 }
 
-function deepPropsEqual(prev: Props, next: Props): boolean {
+function deepPropsEqual(
+	prev: MessageBubbleProps,
+	next: MessageBubbleProps,
+): boolean {
 	return (
 		deepEq(prev.replyTo, next.replyTo) &&
 		deepEq(prev.files, next.files) &&
-		deepEq(prev.location, next.location)
+		deepEq(prev.location, next.location) &&
+		deepEq(prev.fileKeys, next.fileKeys)
 	);
 }
 
-function areEqual(prev: Props, next: Props): boolean {
+// Callbacks (onReply/onDelete/...) are intentionally excluded: parents pass
+// stable useCallback handlers, and comparing by reference would defeat the
+// memo on every render. fileKeys must stay in the comparison so a message
+// stuck in failed/encrypted state re-renders once keys arrive.
+
+function areEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
 	return primitivePropsEqual(prev, next) && deepPropsEqual(prev, next);
 }
 
@@ -209,97 +224,6 @@ function BubbleThreadLink({
 	);
 }
 
-function BubbleContextMenu({
-	menuPos,
-	canEdit,
-	canDelete,
-	canCancelSend,
-	canReply,
-	canCreateThread,
-	status,
-	text,
-	chatId,
-	msgId,
-	files,
-	threadId,
-	onStartEdit,
-	onRetry,
-	onCancelSend,
-	onReply,
-	onCreateThread,
-	onDelete,
-	onClose,
-	menuRef,
-	firstMenuItemRef,
-}: {
-	menuPos: { x: number; y: number } | null;
-	canEdit: boolean;
-	canDelete: boolean;
-	canCancelSend: boolean;
-	canReply: boolean;
-	canCreateThread: boolean;
-	status?: "sent" | "queued" | "failed";
-	text: string;
-	chatId: string;
-	msgId: string;
-	files?: FileInfo[];
-	threadId?: string;
-	onStartEdit: Props["onStartEdit"];
-	onRetry: Props["onRetry"];
-	onCancelSend: Props["onCancelSend"];
-	onReply: Props["onReply"];
-	onCreateThread: Props["onCreateThread"];
-	onDelete: Props["onDelete"];
-	onClose: () => void;
-	menuRef: React.RefObject<HTMLDivElement | null>;
-	firstMenuItemRef: React.RefObject<HTMLButtonElement | null>;
-}) {
-	return (
-		<MessageContextMenu
-			opened={menuPos !== null}
-			position={menuPos ?? { x: 0, y: 0 }}
-			canEdit={canEdit}
-			canDelete={canDelete}
-			canCancelSend={canCancelSend}
-			canReply={canReply}
-			canCreateThread={canCreateThread}
-			hasText={text.length > 0}
-			status={status}
-			onCopy={() => {
-				void navigator.clipboard.writeText(text);
-				onClose();
-			}}
-			onEdit={() => {
-				onStartEdit(chatId, msgId, text, files, threadId);
-				onClose();
-			}}
-			onRetry={() => {
-				void onRetry?.(chatId, msgId);
-				onClose();
-			}}
-			onCancelSend={() => {
-				onCancelSend?.(chatId, msgId);
-				onClose();
-			}}
-			onReply={() => {
-				onReply?.(chatId, msgId);
-				onClose();
-			}}
-			onCreateThread={() => {
-				onCreateThread?.(chatId, msgId);
-				onClose();
-			}}
-			onDelete={() => {
-				void onDelete(chatId, msgId);
-				onClose();
-			}}
-			onClose={onClose}
-			menuRef={menuRef}
-			firstMenuItemRef={firstMenuItemRef}
-		/>
-	);
-}
-
 function BubbleLightboxes({
 	photoFiles,
 	lightboxIdx,
@@ -367,7 +291,7 @@ export const MessageBubble = memo(function MessageBubble({
 	encrypted,
 	undecryptable,
 	fileKeys,
-}: Props) {
+}: MessageBubbleProps) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
 	const [locationLightboxOpen, setLocationLightboxOpen] = useState(false);
@@ -439,6 +363,10 @@ export const MessageBubble = memo(function MessageBubble({
 		return () => window.removeEventListener("keydown", onKey);
 	}, [menuPos, closeMenu]);
 
+	function openMenuAt(x: number, y: number) {
+		setMenuPos({ x, y });
+	}
+
 	return (
 		<>
 			<BubbleAuthor
@@ -446,38 +374,41 @@ export const MessageBubble = memo(function MessageBubble({
 				isOwn={isOwn}
 				fromNick={fromNick}
 			/>
-			<Paper
-				className={isOwn ? "bubble-own" : "bubble-other"}
-				data-message-id={msgId}
-				onContextMenu={(e) => {
-					e.preventDefault();
-					setMenuPos({ x: e.clientX, y: e.clientY });
-				}}
-				style={{ overflow: "hidden" }}
-			>
-				<BubbleContent
-					replyTo={replyTo}
-					photoBlobUrl={replyPhotoBlobUrl}
-					onReplyClick={onReplyClick}
-					files={files}
-					fileKeys={fileKeys}
-					status={status}
-					onPhotoClick={setLightboxIdx}
-					location={location}
-					onOpenLocation={() => setLocationLightboxOpen(true)}
-				/>
-				<MessageBody
-					text={text}
-					status={status}
-					deliveryStatus={deliveryStatus}
-					isOwn={isOwn}
-					time={time}
-					editedAt={editedAt}
-					locale={locale}
-					encrypted={encrypted}
-					undecryptable={undecryptable}
-				/>
-			</Paper>
+			<div style={{ position: "relative", maxWidth: "100%", display: "flex" }}>
+				<Paper
+					className={isOwn ? "bubble-own" : "bubble-other"}
+					data-message-id={msgId}
+					onContextMenu={(e) => {
+						e.preventDefault();
+						openMenuAt(e.clientX, e.clientY);
+					}}
+					style={{ overflow: "hidden", flex: 1 }}
+				>
+					<BubbleContent
+						replyTo={replyTo}
+						photoBlobUrl={replyPhotoBlobUrl}
+						onReplyClick={onReplyClick}
+						files={files}
+						fileKeys={fileKeys}
+						status={status}
+						onPhotoClick={setLightboxIdx}
+						location={location}
+						onOpenLocation={() => setLocationLightboxOpen(true)}
+					/>
+					<MessageBody
+						text={text}
+						status={status}
+						deliveryStatus={deliveryStatus}
+						isOwn={isOwn}
+						time={time}
+						editedAt={editedAt}
+						locale={locale}
+						encrypted={encrypted}
+						undecryptable={undecryptable}
+					/>
+				</Paper>
+				<MessageMenuButton onOpen={openMenuAt} />
+			</div>
 			<BubbleThreadLink
 				threadId={threadId}
 				threadMessageCount={threadMessageCount}

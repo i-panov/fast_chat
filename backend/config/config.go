@@ -4,10 +4,13 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -16,7 +19,25 @@ import (
 var (
 	ErrDatabasePathRequired = errors.New("database.path is required")
 	ErrServerHostRequired   = errors.New("server.host is required")
+	ErrInvalidPort          = errors.New("server.port must be 1..65535")
+	ErrInvalidTTL           = errors.New("message_edit_ttl/message_delete_ttl must be >= 0")
+	ErrInvalidFedScheme     = errors.New("federation.scheme must be http or https")
+	ErrInvalidFedTimeout    = errors.New("federation.timeout must be 1..300 seconds")
+	ErrInvalidSMTPPort      = errors.New("email.smtp.port must be 1..65535")
+	ErrInvalidTokenExpiry   = errors.New("auth.token_expiry must be > 0")
+	ErrInvalidTokenWarning  = errors.New("auth.token_expiry_warning must be > 0")
+	ErrTokenWarningTooLarge = errors.New("auth.token_expiry_warning must be less than auth.token_expiry")
+	ErrInvalidRateLimit     = errors.New("rate_limits entry must have limit > 0 and window > 0")
+	ErrInvalidVAPIDSubject  = errors.New("push.vapid_subject must be a mailto: or http(s):// URL")
+	ErrInvalidTURNConfig    = errors.New("ice.turn entry must list at least one non-empty url")
+	ErrInvalidCORSOrigin    = errors.New("cors.origin must be an http(s)://host[:port] origin or empty")
+	ErrSecretNotRegular     = errors.New("secret file must be a regular file")
+	ErrSecretFilePermissive = errors.New("secret file permissions must be 0600")
 )
+
+// federationSchemeHTTPS is the default and only production scheme for
+// federation traffic.
+const federationSchemeHTTPS = "https"
 
 type Config struct {
 	MessageEditTTL   int              `yaml:"message_edit_ttl"`
@@ -144,15 +165,24 @@ func applyICEDefaults(cfg *Config) {
 // read from the file. The variables exist so a second local instance can run
 // from the same configuration file: the port, the database and the uploads
 // directory have to differ, and the domain follows from the port.
-func applyEnvOverrides(cfg *Config) {
+//
+// Secrets never come from YAML alone: FASTCHAT_SMTP_PASSWORD (or
+// FASTCHAT_SMTP_PASSWORD_FILE) overrides smtp.password, and
+// FASTCHAT_TURN_SECRET (or FASTCHAT_TURN_SECRET_FILE) overrides the secret of
+// every configured TURN server. A *_FILE value is a path to a file holding
+// the secret (mode 0600); it wins over the plain variable when both are set.
+func applyEnvOverrides(cfg *Config) error {
 	if host := os.Getenv("FASTCHAT_HOST"); host != "" {
 		cfg.Server.Host = host
 	}
 
 	if port := os.Getenv("FASTCHAT_PORT"); port != "" {
-		if parsed, err := strconv.Atoi(port); err == nil && parsed > 0 {
-			cfg.Server.Port = parsed
+		parsed, err := strconv.Atoi(strings.TrimSpace(port))
+		if err != nil || parsed < 1 || parsed > 65535 {
+			return fmt.Errorf("%w: FASTCHAT_PORT=%q", ErrInvalidPort, port)
 		}
+
+		cfg.Server.Port = parsed
 	}
 
 	if path := os.Getenv("FASTCHAT_DB_PATH"); path != "" {
@@ -170,6 +200,52 @@ func applyEnvOverrides(cfg *Config) {
 	if scheme := os.Getenv("FASTCHAT_FEDERATION_SCHEME"); scheme != "" {
 		cfg.Federation.Scheme = scheme
 	}
+
+	if secret, err := readSecret("FASTCHAT_SMTP_PASSWORD", "FASTCHAT_SMTP_PASSWORD_FILE"); err != nil {
+		return err
+	} else if secret != "" {
+		cfg.Email.SMTP.Password = secret
+	}
+
+	if secret, err := readSecret("FASTCHAT_TURN_SECRET", "FASTCHAT_TURN_SECRET_FILE"); err != nil {
+		return err
+	} else if secret != "" {
+		for i := range cfg.ICE.TURN {
+			cfg.ICE.TURN[i].Secret = secret
+		}
+	}
+
+	return nil
+}
+
+// readSecret returns a secret from a plain env var or a file holding it.
+// The file wins when both are set. The file must be mode 0600 (no group/other
+// permissions) so a secret does not leak through backups or shared dirs.
+func readSecret(envName, fileEnvName string) (string, error) {
+	if path := strings.TrimSpace(os.Getenv(fileEnvName)); path != "" {
+		cleanPath := filepath.Clean(path)
+		info, err := os.Stat(cleanPath) //nolint:gosec // operator-controlled env path, not request input
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", fileEnvName, err)
+		}
+
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("%w: %s", ErrSecretNotRegular, fileEnvName)
+		}
+
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			return "", fmt.Errorf("%w: %s has %04o", ErrSecretFilePermissive, fileEnvName, perm)
+		}
+
+		data, err := os.ReadFile(cleanPath) //nolint:gosec // operator-controlled env path, not request input
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", fileEnvName, err)
+		}
+
+		return strings.TrimSpace(string(data)), nil
+	}
+
+	return strings.TrimSpace(os.Getenv(envName)), nil
 }
 
 func Load(configPath string) (*Config, error) {
@@ -197,9 +273,36 @@ func Load(configPath string) (*Config, error) {
 
 	// The environment overrides the file: it is what makes a second local
 	// instance possible without a second configuration file.
-	applyEnvOverrides(&cfg)
+	if err := applyEnvOverrides(&cfg); err != nil {
+		return nil, err
+	}
 
 	cfg.Server.Domain = net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
+
+	applyDefaults(&cfg)
+	applyICEDefaults(&cfg)
+
+	// Filesystem paths are resolved against the config file directory so the
+	// server does not depend on the working directory it was started from.
+	resolveConfigPaths(&cfg, filepath.Dir(configPath))
+
+	if err := validateConfig(&cfg); err != nil {
+		return nil, err
+	}
+
+	slog.Info("config loaded",
+		"database_path", cfg.Database.Path,
+		"uploads_dir", cfg.Uploads.Dir,
+		"push_key_path", cfg.Push.KeyPath,
+		"federation_key_path", cfg.Federation.KeyPath,
+	)
+
+	return &cfg, nil
+}
+
+// applyDefaults fills the zero values documented in prod.yaml.example so the
+// rest of the server can rely on them being set.
+func applyDefaults(cfg *Config) {
 	if cfg.MessageEditTTL == 0 {
 		cfg.MessageEditTTL = 300
 	}
@@ -233,46 +336,220 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	if cfg.Federation.Scheme == "" {
-		cfg.Federation.Scheme = "https"
+		cfg.Federation.Scheme = federationSchemeHTTPS
 	}
 
 	if cfg.Federation.Timeout == 0 {
 		cfg.Federation.Timeout = 10
 	}
 
-	if cfg.RateLimits.General.Limit == 0 {
-		cfg.RateLimits.General.Limit = 600
+	setRateLimitDefaults(&cfg.RateLimits.General, 600, time.Minute)
+	setRateLimitDefaults(&cfg.RateLimits.SendCode, 5, time.Minute)
+	setRateLimitDefaults(&cfg.RateLimits.VerifyCode, 10, time.Minute)
+	setRateLimitDefaults(&cfg.RateLimits.Register, 5, 10*time.Minute)
+}
+
+// setRateLimitDefaults fills one limiter entry without touching explicitly
+// configured values.
+func setRateLimitDefaults(rl *RateLimitConfig, limit int, window time.Duration) {
+	if rl.Limit == 0 {
+		rl.Limit = limit
 	}
 
-	if cfg.RateLimits.General.Window == 0 {
-		cfg.RateLimits.General.Window = time.Minute
+	if rl.Window == 0 {
+		rl.Window = window
+	}
+}
+
+// IsValidCORSOrigin reports whether origin is a usable CORS origin: an
+// http(s) URL with a host and no path, query or fragment. "*" is rejected
+// here; callers keep it only for backward-compatible tests/dev setups.
+func IsValidCORSOrigin(origin string) bool {
+	return isValidCORSOrigin(origin)
+}
+
+func isValidCORSOrigin(origin string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil || !parsed.IsAbs() {
+		return false
 	}
 
-	if cfg.RateLimits.SendCode.Limit == 0 {
-		cfg.RateLimits.SendCode.Limit = 5
+	if parsed.Scheme != "http" && parsed.Scheme != federationSchemeHTTPS {
+		return false
 	}
 
-	if cfg.RateLimits.SendCode.Window == 0 {
-		cfg.RateLimits.SendCode.Window = time.Minute
+	if parsed.Host == "" || parsed.User != nil {
+		return false
 	}
 
-	if cfg.RateLimits.VerifyCode.Limit == 0 {
-		cfg.RateLimits.VerifyCode.Limit = 10
+	// A trailing slash never matches the browser's Origin header (which
+	// carries no path), so "https://host/" would silently break CORS.
+	// Reject it here instead of normalizing: a typo in config must fail
+	// loudly at startup, not as mysterious cross-origin errors.
+	if parsed.Path != "" {
+		return false
 	}
 
-	if cfg.RateLimits.VerifyCode.Window == 0 {
-		cfg.RateLimits.VerifyCode.Window = time.Minute
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
 	}
 
-	if cfg.RateLimits.Register.Limit == 0 {
-		cfg.RateLimits.Register.Limit = 5
+	if strings.ContainsAny(origin, " \t\r\n") {
+		return false
 	}
 
-	if cfg.RateLimits.Register.Window == 0 {
-		cfg.RateLimits.Register.Window = 10 * time.Minute
+	return true
+}
+
+// resolveConfigPaths turns relative filesystem paths into absolute ones
+// anchored at the config file directory.
+func resolveConfigPaths(cfg *Config, baseDir string) {
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return
 	}
 
-	applyICEDefaults(&cfg)
+	resolve := func(p string) string {
+		if p == "" || filepath.IsAbs(p) {
+			return p
+		}
 
-	return &cfg, nil
+		return filepath.Join(absBase, p)
+	}
+
+	cfg.Database.Path = resolve(cfg.Database.Path)
+	cfg.Uploads.Dir = resolve(cfg.Uploads.Dir)
+	cfg.Push.KeyPath = resolve(cfg.Push.KeyPath)
+	cfg.Federation.KeyPath = resolve(cfg.Federation.KeyPath)
+}
+
+// validateConfig fail-fasts on values that would otherwise start the server
+// in a broken or insecure state (negative limits, wrong schemes, bad ports).
+func validateConfig(cfg *Config) error {
+	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
+		return fmt.Errorf("%w: got %d", ErrInvalidPort, cfg.Server.Port)
+	}
+
+	if cfg.MessageEditTTL < 0 || cfg.MessageDeleteTTL < 0 {
+		return fmt.Errorf("%w: got %d/%d", ErrInvalidTTL, cfg.MessageEditTTL, cfg.MessageDeleteTTL)
+	}
+
+	if err := validateFederation(&cfg.Federation); err != nil {
+		return err
+	}
+
+	if err := validateAuth(&cfg.Auth); err != nil {
+		return err
+	}
+
+	if err := validateRateLimits(&cfg.RateLimits); err != nil {
+		return err
+	}
+
+	if err := validateEmailAndPush(&cfg.Email, &cfg.Push); err != nil {
+		return err
+	}
+
+	if err := validateTURN(cfg.ICE.TURN); err != nil {
+		return err
+	}
+
+	if cfg.CORS.Origin != "" && cfg.CORS.Origin != "*" && !isValidCORSOrigin(cfg.CORS.Origin) {
+		return fmt.Errorf("%w: got %q", ErrInvalidCORSOrigin, cfg.CORS.Origin)
+	}
+
+	return nil
+}
+
+// validateFederation checks the outbound federation scheme and timeout.
+func validateFederation(fed *FederationConfig) error {
+	switch fed.Scheme {
+	case "http", federationSchemeHTTPS:
+	default:
+		return fmt.Errorf("%w: got %q", ErrInvalidFedScheme, fed.Scheme)
+	}
+
+	if fed.Timeout < 1 || fed.Timeout > 300 {
+		return fmt.Errorf("%w: got %d", ErrInvalidFedTimeout, fed.Timeout)
+	}
+
+	return nil
+}
+
+// validateAuth checks the session token lifetime and its warning window.
+func validateAuth(auth *AuthConfig) error {
+	if auth.TokenExpiry <= 0 {
+		return fmt.Errorf("%w: got %v", ErrInvalidTokenExpiry, auth.TokenExpiry)
+	}
+
+	if auth.TokenExpiryWarning <= 0 {
+		return fmt.Errorf("%w: got %v", ErrInvalidTokenWarning, auth.TokenExpiryWarning)
+	}
+
+	if auth.TokenExpiryWarning >= auth.TokenExpiry {
+		return fmt.Errorf(
+			"%w: warning %v vs expiry %v",
+			ErrTokenWarningTooLarge, auth.TokenExpiryWarning, auth.TokenExpiry,
+		)
+	}
+
+	return nil
+}
+
+// validateRateLimits checks every limiter entry.
+func validateRateLimits(rls *RateLimitsConfig) error {
+	for name, entry := range map[string]RateLimitConfig{
+		"general":     rls.General,
+		"send_code":   rls.SendCode,
+		"verify_code": rls.VerifyCode,
+		"register":    rls.Register,
+	} {
+		if entry.Limit <= 0 || entry.Window <= 0 {
+			return fmt.Errorf("%w: %s got %d/%v", ErrInvalidRateLimit, name, entry.Limit, entry.Window)
+		}
+	}
+
+	return nil
+}
+
+// validateEmailAndPush checks the SMTP port and the VAPID subject format.
+func validateEmailAndPush(email *EmailConfig, push *PushConfig) error {
+	if email.SMTP.Port < 1 || email.SMTP.Port > 65535 {
+		return fmt.Errorf("%w: got %d", ErrInvalidSMTPPort, email.SMTP.Port)
+	}
+
+	if !isValidVAPIDSubject(push.VAPIDSubject) {
+		return fmt.Errorf("%w: got %q", ErrInvalidVAPIDSubject, push.VAPIDSubject)
+	}
+
+	return nil
+}
+
+// isValidVAPIDSubject reports whether the subject is empty (unset) or a
+// mailto:/http(s):// URL.
+func isValidVAPIDSubject(subject string) bool {
+	if subject == "" {
+		return true
+	}
+
+	return strings.HasPrefix(subject, "mailto:") ||
+		strings.HasPrefix(subject, "https://") ||
+		strings.HasPrefix(subject, "http://")
+}
+
+// validateTURN checks that every relay entry lists a usable URL.
+func validateTURN(servers []TURNServer) error {
+	for idx, server := range servers {
+		if len(server.URLs) == 0 {
+			return fmt.Errorf("%w: ice.turn[%d]", ErrInvalidTURNConfig, idx)
+		}
+
+		for _, rawURL := range server.URLs {
+			if strings.TrimSpace(rawURL) == "" {
+				return fmt.Errorf("%w: ice.turn[%d] has an empty url", ErrInvalidTURNConfig, idx)
+			}
+		}
+	}
+
+	return nil
 }

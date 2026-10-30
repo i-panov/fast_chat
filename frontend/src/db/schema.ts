@@ -68,6 +68,9 @@ export interface OutboxOpSend {
 	replyToId?: string;
 	pendingFileClientIds: string[];
 	fileHashes?: string[];
+	// uploadedFileIds persists successfully uploaded file IDs so a retry
+	// after a crash does not re-upload the same blobs (server orphans).
+	uploadedFileIds?: string[];
 	createdAt: string;
 	attempts: number;
 	threadId?: string;
@@ -88,6 +91,9 @@ export interface OutboxOpEdit {
 	filesToRemove: string[];
 	clearLocation?: boolean;
 	clientEditedAt: string;
+	// uploadedFileIds persists successfully uploaded file IDs so a retry
+	// after a crash does not re-upload the same blobs (server orphans).
+	uploadedFileIds?: string[];
 	createdAt: string;
 	attempts: number;
 	threadId?: string;

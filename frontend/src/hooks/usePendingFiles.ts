@@ -35,10 +35,18 @@ function revokeIfTracked(
 export function usePendingFiles(
 	onLargeFile?: LargeFileHandler,
 ): UsePendingFilesReturn {
-	const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+	const [pendingFiles, setPendingFilesState] = useState<PendingFile[]>([]);
 	const cleanupRef = useRef<Set<string>>(new Set());
+	// Read-only snapshot of the list for computing revokes outside of
+	// setState updaters (updaters must stay pure: concurrent mode may
+	// invoke them twice or discard the result, which would revoke live
+	// URLs or corrupt cleanupRef).
+	const filesRef = useRef(pendingFiles);
+	useEffect(() => {
+		filesRef.current = pendingFiles;
+	}, [pendingFiles]);
 
-	// Очистка всех blobUrl при размонтировании
+	// Revoke blobUrls on unmount
 	useEffect(() => {
 		const urls = cleanupRef.current;
 
@@ -83,28 +91,48 @@ export function usePendingFiles(
 				});
 			}
 
-			setPendingFiles((prev) => [...prev, ...newEntries]);
+			setPendingFilesState((prev) => [...prev, ...newEntries]);
 		},
 		[onLargeFile],
 	);
 
 	const handleRemoveFile = useCallback((fileId: string) => {
-		setPendingFiles((prev) => {
-			const removed = prev.find((f) => f.id === fileId);
-			if (removed) {
-				revokeIfTracked(cleanupRef, removed.blobUrl);
-			}
-			return prev.filter((f) => f.id !== fileId);
-		});
+		const removed = filesRef.current.find((f) => f.id === fileId);
+		if (removed) {
+			revokeIfTracked(cleanupRef, removed.blobUrl);
+		}
+		setPendingFilesState((prev) => prev.filter((f) => f.id !== fileId));
 	}, []);
 
 	const clearAllPendingFiles = useCallback(() => {
-		setPendingFiles((prev) => {
-			for (const f of prev) {
+		for (const f of filesRef.current) {
+			revokeIfTracked(cleanupRef, f.blobUrl);
+		}
+		setPendingFilesState([]);
+	}, []);
+
+	// Tracked setter: keeps cleanupRef in sync so direct state updates cannot
+	// leak blob URLs (missing revoke) or double-revoke URLs created elsewhere.
+	// The diff is computed from the snapshot before setState, never inside
+	// the updater.
+	const setPendingFiles = useCallback<
+		React.Dispatch<React.SetStateAction<PendingFile[]>>
+	>((action) => {
+		const prev = filesRef.current;
+		const next = typeof action === "function" ? action(prev) : action;
+		const prevUrls = new Set(prev.map((f) => f.blobUrl));
+		const nextUrls = new Set(next.map((f) => f.blobUrl));
+		for (const f of prev) {
+			if (!nextUrls.has(f.blobUrl)) {
 				revokeIfTracked(cleanupRef, f.blobUrl);
 			}
-			return [];
-		});
+		}
+		for (const url of nextUrls) {
+			if (!prevUrls.has(url)) {
+				cleanupRef.current.add(url);
+			}
+		}
+		setPendingFilesState(next);
 	}, []);
 
 	return {

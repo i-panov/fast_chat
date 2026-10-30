@@ -45,7 +45,6 @@ function reconnectDelayMs(attempt: number): number {
 
 export function useSse(token: string, onEvent: EventHandler) {
 	const onEventRef = useRef<EventHandler>(onEvent);
-	const connectionIdRef = useRef<string>(crypto.randomUUID());
 
 	useEffect(() => {
 		onEventRef.current = onEvent;
@@ -56,7 +55,11 @@ export function useSse(token: string, onEvent: EventHandler) {
 			return;
 		}
 
-		const connectionId = connectionIdRef.current;
+		// A fresh connectionId per effect run (i.e. per token): the
+		// server binds the auth to the stream, so reusing the previous
+		// account's id would authenticate the wrong stream after a switch.
+		// Internal reconnects within one effect run keep the same id.
+		const connectionId = crypto.randomUUID();
 		const url = `/api/events?connectionId=${encodeURIComponent(connectionId)}`;
 		let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 		let reconnectAttempt = 0;
@@ -125,11 +128,23 @@ export function useSse(token: string, onEvent: EventHandler) {
 				"call_accepted",
 				"call_ended",
 				"call_ice",
+				"token_expiring",
+				"token_expired",
 			];
 
+			// Data events run strictly in arrival order: the handler is
+			// async (IDB writes), and two events for one id (new_message
+			// closely followed by message_deleted) must not interleave, or
+			// the delete lands first and a ghost row survives.
+			let eventChain: Promise<void> = Promise.resolve();
 			for (const event of jsonEvents) {
 				addJSONListener(event, (data) => {
-					void onEventRef.current(event, data);
+					eventChain = eventChain
+						.then(() => onEventRef.current(event, data))
+						.then(
+							() => undefined,
+							() => undefined,
+						);
 				});
 			}
 

@@ -300,7 +300,10 @@ func TestIsPermanentError(t *testing.T) {
 	}{
 		{&StatusError{Status: 400}, true},
 		{&StatusError{Status: 403}, true},
-		{&StatusError{Status: 404}, true},
+		// A 404 rides the bounded retry queue instead of dropping at once:
+		// when a chat creation is still queued, every message behind it
+		// answers 404 until the creation lands.
+		{&StatusError{Status: 404}, false},
 		// A refused signature also happens on a clock skew or a rotated key
 		// of the peer: it may pass on the next attempt.
 		{&StatusError{Status: 401}, false},
@@ -422,5 +425,60 @@ func TestOutboxDelayGrowsAndIsCapped(t *testing.T) {
 
 	if got := outboxDelay(50); got != outboxMaxDelay {
 		t.Errorf("delay after many failures = %v, want %v", got, outboxMaxDelay)
+	}
+}
+
+func TestOutboxPreservesDroppedOpsInDeadLetters(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	c := NewClient(m, "local.test", "http", 5, false)
+	c.SetHTTPClient(srv.Client())
+
+	outbox := &fakeOutbox{}
+	c.SetOutbox(outbox)
+
+	c.Post(context.Background(), peerHost(t, srv), "/first", nil)
+	c.drainOutbox(context.Background())
+
+	if ops := outbox.snapshot(); len(ops) != 0 {
+		t.Fatalf("queued %+v, want the rejected operation removed from the queue", ops)
+	}
+
+	dead := c.DeadLetters()
+	if len(dead) != 1 || dead[0].Op.Path != "/first" {
+		t.Fatalf("dead letters = %+v, want the rejected operation preserved", dead)
+	}
+}
+
+func TestOutbox404IsRetriedNotDropped(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewClient(m, "local.test", "http", 5, false)
+	c.SetHTTPClient(srv.Client())
+
+	outbox := &fakeOutbox{}
+	c.SetOutbox(outbox)
+
+	c.Post(context.Background(), peerHost(t, srv), "/msg", nil)
+	c.drainOutbox(context.Background())
+
+	// A 404 must ride the retry queue (it may resolve once the chat creation
+	// ahead of it lands), not drop into the dead letters at once.
+	if ops := outbox.snapshot(); len(ops) != 1 {
+		t.Fatalf("queued %d operations, want the 404 kept for retry", len(ops))
+	}
+
+	if dead := c.DeadLetters(); len(dead) != 0 {
+		t.Fatalf("dead letters = %+v, want none for a first 404", dead)
 	}
 }

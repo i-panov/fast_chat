@@ -79,6 +79,30 @@ describe("VideoAttachment", () => {
 		vi.unstubAllGlobals();
 	});
 
+	it("decrypts id-keyed video without a hash", async () => {
+		const fileKey = await generateFileKey();
+		const ciphertext = await encryptFileStream(
+			new Blob(["secret video"]),
+			fileKey,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() =>
+				Promise.resolve(new Response(ciphertext.buffer as ArrayBuffer)),
+			),
+		);
+		const file = videoFile("https://srv/v/noid");
+		// No hash on the file; the key is indexed by file id.
+		delete (file as { hash?: string }).hash;
+		const { container } = renderWithAccount(
+			<VideoAttachment file={file} fileKeys={{ v1: fileKey }} />,
+		);
+		await waitFor(() => {
+			expect(container.querySelector("video")).toBeTruthy();
+		});
+		vi.unstubAllGlobals();
+	});
+
 	it("shows an error when loading fails", async () => {
 		vi.stubGlobal(
 			"fetch",

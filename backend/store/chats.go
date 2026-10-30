@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -30,64 +32,115 @@ var (
 	ErrRemoveLastMember   = errors.New("cannot remove the last member")
 	ErrNotGroupChat       = errors.New("not a group chat")
 	ErrDeleteNonGroup     = errors.New("cannot delete non-group chat")
+	ErrSelfPrivateChat    = errors.New("private chat with self must use EnsureSelfChat")
 )
 
 func (s *Store) CreateChat(ctx context.Context, member1, member2, remoteServer string) (*model.Chat, error) {
-	var chatIDs []string
+	// A self-pair would never match findPrivateChat (COUNT DISTINCT = 2 is
+	// unreachable) and mint a duplicate private chat per call. Self chats
+	// live under EnsureSelfChat with a deterministic id and "self" type.
+	if member1 == member2 {
+		return nil, ErrSelfPrivateChat
+	}
 
-	s.db.WithContext(ctx).Model(&ChatMember{}).
-		Select("chat_id").
-		Where("user_id IN ?", []string{member1, member2}).
-		Group("chat_id").
-		Having("COUNT(DISTINCT user_id) = 2").
-		Pluck("chat_id", &chatIDs)
+	chat, ok, err := s.findPrivateChat(ctx, member1, member2, remoteServer)
+	if err != nil {
+		return nil, err
+	}
 
-	if len(chatIDs) > 0 {
-		var chat model.Chat
-
-		chatIDQuery := s.db.WithContext(ctx).Model(&model.Chat{}).
-			Select("id").
-			Where("id IN ? AND type = ?", chatIDs, chatTypePrivate)
-
-		var foundID string
-		if err := chatIDQuery.Limit(1).Row().Scan(&foundID); err == nil {
-			if err := s.db.WithContext(ctx).First(&chat, "id = ?", foundID).Error; err == nil {
-				chat.Members = []string{member1, member2}
-
-				if remoteServer != "" && chat.RemoteServer == "" {
-					s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chat.ID).Update("remote_server", remoteServer)
-					chat.RemoteServer = remoteServer
-				}
-
-				return &chat, nil
-			}
-		}
+	if ok {
+		return chat, nil
 	}
 
 	id := GenerateID()
-	chat := &model.Chat{
+	chat = &model.Chat{
 		ID:           id,
 		Type:         chatTypePrivate,
 		RemoteServer: remoteServer,
 		CreatedAt:    time.Now().UTC(),
 	}
 
-	if err := s.db.WithContext(ctx).Create(chat).Error; err != nil {
+	// A self-pair carries one membership row: two identical rows would hit
+	// the (chat_id, user_id) primary key.
+	memberIDs := []string{member1}
+	if member2 != "" && member2 != member1 {
+		memberIDs = append(memberIDs, member2)
+	}
+
+	members := make([]ChatMember, 0, len(memberIDs))
+	for _, memberID := range memberIDs {
+		members = append(members, ChatMember{ChatID: id, UserID: memberID})
+	}
+
+	// Chat and members go out in one transaction so a crash between them
+	// cannot leave a member-less orphan visible in lists.
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(chat).Error; err != nil {
+			return err
+		}
+
+		return tx.Create(&members).Error
+	}); err != nil {
 		return nil, err
 	}
 
-	members := []ChatMember{
-		{ChatID: id, UserID: member1},
-		{ChatID: id, UserID: member2},
+	chat.Members = memberIDs
+
+	return chat, nil
+}
+
+// findPrivateChat returns the existing private chat of the two members.
+// ok=false means no such chat (or a lookup miss); err reports a database
+// failure, which the caller must not mistake for "no chat".
+func (s *Store) findPrivateChat(ctx context.Context, member1, member2, remoteServer string) (*model.Chat, bool, error) {
+	var chatIDs []string
+
+	if err := s.db.WithContext(ctx).Model(&ChatMember{}).
+		Select("chat_id").
+		Where("user_id IN ?", []string{member1, member2}).
+		Group("chat_id").
+		Having("COUNT(DISTINCT user_id) = 2").
+		Pluck("chat_id", &chatIDs).Error; err != nil {
+		return nil, false, err
 	}
 
-	if err := s.db.WithContext(ctx).Create(&members).Error; err != nil {
-		return nil, err
+	if len(chatIDs) == 0 {
+		return nil, false, nil
+	}
+
+	var foundID string
+	chatIDQuery := s.db.WithContext(ctx).Model(&model.Chat{}).
+		Select("id").
+		Where("id IN ? AND type = ?", chatIDs, chatTypePrivate)
+
+	if scanErr := chatIDQuery.Limit(1).Row().Scan(&foundID); scanErr != nil {
+		// Only a miss means "no private chat": a transient failure must
+		// surface, or the caller mints a duplicate chat on top of it.
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, scanErr
+	}
+
+	var chat model.Chat
+	if firstErr := s.db.WithContext(ctx).First(&chat, "id = ?", foundID).Error; firstErr != nil {
+		if errors.Is(firstErr, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, firstErr
 	}
 
 	chat.Members = []string{member1, member2}
 
-	return chat, nil
+	if remoteServer != "" && chat.RemoteServer == "" {
+		if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chat.ID).Update("remote_server", remoteServer).Error; err != nil {
+			return nil, false, err
+		}
+
+		chat.RemoteServer = remoteServer
+	}
+
+	return &chat, true, nil
 }
 
 func (s *Store) CreateGroupChat(ctx context.Context, name, ownerID string, memberIDs []string, remoteServer string) (*model.Chat, error) {
@@ -126,16 +179,18 @@ func (s *Store) CreateGroupChat(ctx context.Context, name, ownerID string, membe
 		CreatedAt:    time.Now().UTC(),
 	}
 
-	if err := s.db.WithContext(ctx).Create(chat).Error; err != nil {
-		return nil, err
-	}
-
 	members := make([]ChatMember, 0, len(dedup))
 	for _, m := range dedup {
 		members = append(members, ChatMember{ChatID: id, UserID: m})
 	}
 
-	if err := s.db.WithContext(ctx).Create(&members).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(chat).Error; err != nil {
+			return err
+		}
+
+		return tx.Create(&members).Error
+	}); err != nil {
 		return nil, err
 	}
 
@@ -172,7 +227,9 @@ func (s *Store) EnsureSelfChat(ctx context.Context, userID string) (*model.Chat,
 	}
 
 	var members []string
-	s.db.WithContext(ctx).Model(&ChatMember{}).Where("chat_id = ?", chatID).Pluck("user_id", &members)
+	if err := s.db.WithContext(ctx).Model(&ChatMember{}).Where("chat_id = ?", chatID).Pluck("user_id", &members).Error; err != nil {
+		return nil, err
+	}
 	chat.Members = members
 
 	return &chat, nil
@@ -194,7 +251,9 @@ func (s *Store) AddChatMember(ctx context.Context, chatID, userID string, maxMem
 
 	// The count check and insert run in a single write transaction so
 	// concurrent AddChatMember calls cannot exceed maxMembers. SQLite
-	// serializes write transactions, making this atomic.
+	// serializes write transactions, making this atomic. The insert is an
+	// upsert so two concurrent adds of the same user do not race into a
+	// UNIQUE failure after both passing the fast-path Contains above.
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var count int64
 		if err := tx.Model(&ChatMember{}).Where("chat_id = ?", chatID).Count(&count).Error; err != nil {
@@ -205,7 +264,8 @@ func (s *Store) AddChatMember(ctx context.Context, chatID, userID string, maxMem
 			return ErrTooManyMembers
 		}
 
-		return tx.Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
 	})
 }
 
@@ -225,11 +285,23 @@ func (s *Store) RemoveChatMember(ctx context.Context, chatID, userID string) err
 		return ErrRemoveFromPrivate
 	}
 
-	if len(chat.Members) <= 1 {
-		return ErrRemoveLastMember
-	}
-
+	// The last-member guard lives inside the write transaction: checking the
+	// snapshot above lets two concurrent removes from a two-member group
+	// both see len==2 and empty the chat.
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&ChatMember{}).Where("chat_id = ?", chatID).Count(&count).Error; err != nil {
+			return err
+		}
+
+		if count == 0 {
+			return ErrChatNotFound
+		}
+
+		if count <= 1 {
+			return ErrRemoveLastMember
+		}
+
 		result := tx.Where("chat_id = ? AND user_id = ?", chatID, userID).Delete(&ChatMember{})
 		if result.Error != nil {
 			return result.Error
@@ -263,6 +335,15 @@ func (s *Store) ReplaceChatMembers(ctx context.Context, chatID string, members [
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var chat model.Chat
+		if err := tx.First(&chat, "id = ?", chatID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrChatNotFound
+			}
+
+			return err
+		}
+
 		var current []ChatMember
 		if err := tx.Where("chat_id = ?", chatID).Find(&current).Error; err != nil {
 			return err
@@ -290,7 +371,7 @@ func (s *Store) ReplaceChatMembers(ctx context.Context, chatID string, members [
 				rows = append(rows, ChatMember{ChatID: chatID, UserID: memberID})
 			}
 
-			if err := tx.Create(&rows).Error; err != nil {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
 				return err
 			}
 		}
@@ -488,6 +569,15 @@ func writeMessageDeleteTombs(tx *gorm.DB, chatID string, at time.Time) error {
 		if err := tx.Where("message_id IN ?", msgIDs[start:end]).Delete(&model.MessageFile{}).Error; err != nil {
 			return err
 		}
+
+		// Read receipts of deleted messages must go with them: otherwise
+		// they linger forever and are still served for removed messages.
+		// The table may not exist in older test schemas, so probe first.
+		if tx.Migrator().HasTable(&model.MessageReadStatus{}) {
+			if err := tx.Where("message_id IN ?", msgIDs[start:end]).Delete(&model.MessageReadStatus{}).Error; err != nil {
+				return err
+			}
+		}
 	}
 
 	return tx.Where("chat_id = ?", chatID).Delete(&model.Message{}).Error
@@ -496,7 +586,10 @@ func writeMessageDeleteTombs(tx *gorm.DB, chatID string, at time.Time) error {
 func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
 	var chatIDs []string
 
-	s.db.WithContext(ctx).Model(&ChatMember{}).Where("user_id = ?", userID).Pluck("chat_id", &chatIDs)
+	if err := s.db.WithContext(ctx).Model(&ChatMember{}).Where("user_id = ?", userID).Pluck("chat_id", &chatIDs).Error; err != nil {
+		slog.Warn("GetUserChats: failed to list chat ids", "userID", userID, "err", err)
+		return nil
+	}
 
 	if len(chatIDs) == 0 {
 		return nil
@@ -504,7 +597,12 @@ func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
 
 	var chats []*model.Chat
 
-	s.db.WithContext(ctx).Where("id IN ?", chatIDs).Order("CASE WHEN type = 'self' THEN 0 ELSE 1 END, created_at DESC").Find(&chats)
+	chatsQuery := s.db.WithContext(ctx).Where("id IN ?", chatIDs).
+		Order("CASE WHEN type = 'self' THEN 0 ELSE 1 END, created_at DESC")
+	if err := chatsQuery.Find(&chats).Error; err != nil {
+		slog.Warn("GetUserChats: failed to load chats", "userID", userID, "err", err)
+		return nil
+	}
 
 	// One query for all memberships across all of the user's chats,
 	// instead of one query per chat. The lookup table is small enough
@@ -515,10 +613,13 @@ func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
 	}
 
 	var rows []memberRow
-	s.db.WithContext(ctx).Model(&ChatMember{}).
+	if err := s.db.WithContext(ctx).Model(&ChatMember{}).
 		Where("chat_id IN ?", chatIDs).
 		Select("chat_id, user_id").
-		Scan(&rows)
+		Scan(&rows).Error; err != nil {
+		slog.Warn("GetUserChats: failed to load members", "userID", userID, "err", err)
+		return nil
+	}
 
 	membersByChat := make(map[string][]string, len(chats))
 	for _, r := range rows {
@@ -541,7 +642,10 @@ func (s *Store) GetChat(ctx context.Context, chatID string) (*model.Chat, bool) 
 
 	var members []string
 
-	s.db.WithContext(ctx).Model(&ChatMember{}).Where("chat_id = ?", chatID).Pluck("user_id", &members)
+	if err := s.db.WithContext(ctx).Model(&ChatMember{}).Where("chat_id = ?", chatID).Pluck("user_id", &members).Error; err != nil {
+		slog.Warn("GetChat: failed to load members", "chatID", chatID, "err", err)
+		return nil, false
+	}
 	chat.Members = members
 
 	return &chat, true
@@ -549,7 +653,10 @@ func (s *Store) GetChat(ctx context.Context, chatID string) (*model.Chat, bool) 
 
 func (s *Store) GetFederatedChatIDs(ctx context.Context, remoteServer string) []string {
 	var chatIDs []string
-	s.db.WithContext(ctx).Model(&model.Chat{}).Where("remote_server = ?", remoteServer).Pluck("id", &chatIDs)
+	if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("remote_server = ?", remoteServer).Pluck("id", &chatIDs).Error; err != nil {
+		slog.Warn("GetFederatedChatIDs failed", "err", err)
+		return []string{}
+	}
 
 	if len(chatIDs) == 0 {
 		return []string{}
@@ -559,26 +666,40 @@ func (s *Store) GetFederatedChatIDs(ctx context.Context, remoteServer string) []
 }
 
 func (s *Store) CreateRemoteChat(ctx context.Context, chat *model.Chat) error {
-	var count int64
-	s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chat.ID).Count(&count)
-
-	if count > 0 {
-		return nil
-	}
-
 	if chat.Type == "" {
 		chat.Type = chatTypePrivate
 	}
 
-	if err := s.db.WithContext(ctx).Create(chat).Error; err != nil {
-		return err
+	if chat.CreatedAt.IsZero() {
+		chat.CreatedAt = time.Now().UTC()
+	} else {
+		chat.CreatedAt = chat.CreatedAt.UTC()
 	}
 
-	members := make([]ChatMember, len(chat.Members))
-
-	for i, m := range chat.Members {
-		members[i] = ChatMember{ChatID: chat.ID, UserID: m}
+	seen := make(map[string]struct{}, len(chat.Members))
+	dedup := make([]ChatMember, 0, len(chat.Members))
+	for _, memberID := range chat.Members {
+		if memberID == "" {
+			continue
+		}
+		if _, ok := seen[memberID]; ok {
+			continue
+		}
+		seen[memberID] = struct{}{}
+		dedup = append(dedup, ChatMember{ChatID: chat.ID, UserID: memberID})
 	}
 
-	return s.db.WithContext(ctx).Create(&members).Error
+	// Idempotent: a concurrent federated receive of the same chat hits the
+	// primary key and becomes a no-op instead of a conflict.
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(chat).Error; err != nil {
+			return err
+		}
+
+		if len(dedup) == 0 {
+			return nil
+		}
+
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&dedup).Error
+	})
 }

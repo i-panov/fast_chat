@@ -1,9 +1,10 @@
 import { Anchor, Group, Skeleton, Stack, Text } from "@mantine/core";
 import { MapPin } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Location } from "../../types/api.ts";
 import { formatCoords, openStreetMapURL } from "../../utils/chat.ts";
+import { ErrorBoundary } from "../ErrorBoundary.tsx";
 
 const LeafletMiniMap = lazy(() =>
 	import("./LocationMiniMapLeaflet.tsx").then((m) => ({
@@ -15,9 +16,14 @@ interface Props {
 	location: Location;
 }
 
-export function LocationMiniMap({ location }: Props) {
+function MiniMapBody({ location }: Props) {
 	const { t } = useTranslation();
 	const [loaded, setLoaded] = useState(false);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset effect intentionally re-runs when the location changes.
+	useEffect(() => {
+		setLoaded(false);
+	}, [location.lat, location.lng]);
 
 	return (
 		<Stack gap={4} style={{ marginTop: 4 }}>
@@ -55,12 +61,28 @@ export function LocationMiniMap({ location }: Props) {
 				<Anchor
 					href={openStreetMapURL(location)}
 					target="_blank"
-					rel="noreferrer"
+					rel="noopener noreferrer"
 					size="xs"
+					onClick={(e) => e.stopPropagation()}
 				>
 					{t("message.openInMap")}
 				</Anchor>
 			</Group>
 		</Stack>
+	);
+}
+
+export function LocationMiniMap({ location }: Props) {
+	const { t } = useTranslation();
+	return (
+		<ErrorBoundary
+			fallback={
+				<Text size="xs" c="dimmed">
+					{formatCoords(location)} — {t("message.openInMap")}
+				</Text>
+			}
+		>
+			<MiniMapBody location={location} />
+		</ErrorBoundary>
 	);
 }

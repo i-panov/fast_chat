@@ -1,7 +1,7 @@
 import { Anchor, Button, Group, Modal, Stack, Text } from "@mantine/core";
 import type L from "leaflet";
 import { MapPin } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MapContainer, Marker, TileLayer } from "react-leaflet";
 import type { Location } from "../../types/api.ts";
@@ -31,6 +31,9 @@ export function LocationLightbox({
 		lat: location.lat,
 		lng: location.lng,
 	});
+	useEffect(() => {
+		setPos({ lat: location.lat, lng: location.lng });
+	}, [location.lat, location.lng]);
 	const markerRef = useRef<L.Marker | null>(null);
 
 	function handleMarkerDragEnd() {
@@ -97,7 +100,7 @@ export function LocationLightbox({
 					<Anchor
 						href={openStreetMapURL(pos)}
 						target="_blank"
-						rel="noreferrer"
+						rel="noopener noreferrer"
 						size="sm"
 					>
 						{t("message.openInMap")}
