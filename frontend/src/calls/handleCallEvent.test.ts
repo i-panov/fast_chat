@@ -25,6 +25,21 @@ describe("handleCallEvent", () => {
 		expect(manager.handleIncoming).toHaveBeenCalledWith(payload);
 	});
 
+	it("routes an incoming call with an explicit null ICE config", () => {
+		const manager = fakeManager();
+		const payload = {
+			callId: "c-1",
+			chatId: "chat-1",
+			offer: "offer-sdp",
+			from: { id: "bob:test", nick: "bob" },
+			iceServers: null,
+		};
+
+		handleCallEvent(manager as never, "call_incoming", payload);
+
+		expect(manager.handleIncoming).toHaveBeenCalledWith(payload);
+	});
+
 	it("routes the accepted call", () => {
 		const manager = fakeManager();
 

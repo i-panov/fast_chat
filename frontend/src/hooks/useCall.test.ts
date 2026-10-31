@@ -349,7 +349,11 @@ describe("useCall", () => {
 	it("tells a peer of another server", async () => {
 		stubMedia();
 		startCall.mockRejectedValueOnce(
-			new ApiError(403, "http 403: the callee is on another server"),
+			new ApiError(
+				403,
+				"http 403: federated calls are unavailable",
+				"federation-unavailable",
+			),
 		);
 
 		const notifications = collectNotifications();

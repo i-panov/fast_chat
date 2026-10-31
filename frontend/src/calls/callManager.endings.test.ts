@@ -302,11 +302,7 @@ describe("callManager endings", () => {
 
 			await vi.advanceTimersByTimeAsync(10_000);
 
-			expect(api.hangupCall).toHaveBeenCalledWith(
-				"tok",
-				"c-1",
-				"peer-left",
-			);
+			expect(api.hangupCall).toHaveBeenCalledWith("tok", "c-1", "peer-left");
 			expect(manager.state().phase).toBe("ended");
 		} finally {
 			vi.useRealTimers();

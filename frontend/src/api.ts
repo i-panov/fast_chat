@@ -455,18 +455,25 @@ export function subscribePush(
 }
 
 export function startCall(token: string, chatId: string, offer: string) {
-	return request<{ callId: string; state: string }>("/api/calls", token, {
+	return request<{
+		callId: string;
+		state: string;
+		iceServers?: ICEConfig;
+	}>("/api/calls", token, {
 		method: "POST",
 		body: JSON.stringify({ chatId, offer }),
 	});
 }
 
 export function acceptCall(token: string, callId: string, answer: string) {
-	return request<{ callId: string; state: string }>(
-		`/api/calls/${callId}/accept`,
-		token,
-		{ method: "POST", body: JSON.stringify({ answer }) },
-	);
+	return request<{
+		callId: string;
+		state: string;
+		iceServers?: ICEConfig;
+	}>(`/api/calls/${callId}/accept`, token, {
+		method: "POST",
+		body: JSON.stringify({ answer }),
+	});
 }
 
 export function rejectCall(token: string, callId: string) {

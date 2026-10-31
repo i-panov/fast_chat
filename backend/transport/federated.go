@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -20,6 +21,7 @@ import (
 func RegisterFederated(api huma.API, st *store.Store, svc *service.Service, fm *federation.Manager, cfg *config.Config) {
 	registerFederatedUsers(api, st, svc, cfg)
 	registerFederatedChats(api, st, svc, fm, cfg)
+	registerFederatedCalls(api, st, svc)
 	registerFederatedSync(api, svc)
 }
 
@@ -83,7 +85,7 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 		}
 
 		if server == "" || input.Body.RemoteServer != server {
-			return nil, &statusError{ErrorMessage: "remote server mismatch", code: http.StatusForbidden}
+			return nil, &statusError{ErrorMessage: msgRemoteServerMismatch, code: http.StatusForbidden}
 		}
 
 		view, alreadyExists, err := svc.CreateFederatedChat(ctx, input.Body.ChatID, input.Body.Members, server, fm.ServerDomain())
@@ -299,8 +301,13 @@ func federatedEdit(
 }
 
 // federatedOrInternalError maps federation-domain errors, logging and
-// converting unmapped ones to a 500 (pre-migration parity).
+// converting unmapped ones to a 500 (pre-migration parity). Errors already
+// mapped to a status (see mapFederatedCallError) pass through untouched.
 func federatedOrInternalError(err error) error {
+	if se, _ := errors.AsType[*statusError](err); se != nil {
+		return se
+	}
+
 	if se := MapError(err); se != nil {
 		return se
 	}

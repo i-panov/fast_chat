@@ -124,6 +124,11 @@ type Manager struct {
 	onEnded      func(call Call, reason string)
 	timers       map[string]*time.Timer
 	now          func() time.Time
+	// federated keeps ephemeral shadows of inbound federated calls.
+	// A shadow reserves the local callee for the ringing window, so a
+	// second invite for the same callee is rejected with ErrBusyCallee
+	// until the shadow expires or the owner reports the end of the call.
+	federated map[string]*FederatedInbound
 	// ringingTimeout is how long the callee has to answer. It is a field and
 	// not a constant, so the tests do not have to wait for the real window.
 	ringingTimeout time.Duration
@@ -142,6 +147,7 @@ func NewManager(offlineSince func(userID string) time.Time) *Manager {
 		active:         make(map[string]string),
 		recent:         make(map[string]string),
 		timers:         make(map[string]*time.Timer),
+		federated:      make(map[string]*FederatedInbound),
 		offlineSince:   offlineSince,
 		now:            time.Now,
 		ringingTimeout: RingingTimeout,
@@ -212,6 +218,18 @@ func (m *Manager) CreateCall(callerID, calleeID, chatID, offer string) (*Call, e
 
 	if m.active[calleeID] != "" {
 		return nil, ErrBusyCallee
+	}
+
+	m.purgeExpiredFederatedLocked(m.now())
+	for _, shadow := range m.federated {
+		if shadow.CallerID == callerID || shadow.CalleeID == callerID {
+			return nil, ErrBusyCaller
+		}
+	}
+	for _, shadow := range m.federated {
+		if shadow.CallerID == calleeID || shadow.CalleeID == calleeID {
+			return nil, ErrBusyCallee
+		}
 	}
 
 	now := m.now()
@@ -334,6 +352,8 @@ func (m *Manager) Sweep() {
 	m.mu.Lock()
 
 	now := m.now()
+	m.purgeExpiredFederatedLocked(now)
+
 	var expiredRinging []string
 	var staleActive []string
 

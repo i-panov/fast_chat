@@ -1,9 +1,5 @@
 import type { CallRole, ICEConfig } from "../types/api.ts";
-import {
-	releaseMedia,
-	settleEnded,
-	stopStream,
-} from "./callEndings.ts";
+import { releaseMedia, settleEnded, stopStream } from "./callEndings.ts";
 import { createPeer } from "./callPeer.ts";
 import {
 	type CallApi,
@@ -11,8 +7,10 @@ import {
 	type CallView,
 	isAcceptedCallPayload,
 	isEndedCallPayload,
+	isICEConfig,
 	isIceCallPayload,
 	isIncomingCallPayload,
+	unionIceServers,
 } from "./callTypes.ts";
 
 const MEDIA_CONSTRAINTS: MediaStreamConstraints = {
@@ -92,6 +90,10 @@ export interface CallContext {
 	muted: boolean;
 	cameraOn: boolean;
 	iceServers: RTCIceServer[];
+	// remoteIce are the servers of the peer of a federated call. The
+	// connection is built with the union of both sides: each side only
+	// reaches its own relay.
+	remoteIce?: ICEConfig;
 	// generation invalidates the running operations: every start and every
 	// incoming call begins a new one, so a late answer does not touch the
 	// call that replaced it.
@@ -184,12 +186,7 @@ export function createCallManager(
 		handleIncoming(payload: unknown) {
 			if (!isIncomingCallPayload(payload)) return;
 
-			const data = payload as {
-				callId: string;
-				chatId: string;
-				offer: string;
-				from: { id: string; nick: string };
-			};
+			const data = payload;
 
 			// A call that is already going on is not replaced: the user is
 			// busy, and dropping the current call without telling the server
@@ -203,12 +200,14 @@ export function createCallManager(
 			ctx.accepting = false;
 
 			// The call waits for the user: the media is only asked for when
-			// he accepts it.
+			// he accepts it. The servers of the peer wait for the same: the
+			// connection is built with the union of both sides.
 			ctx.callId = data.callId;
 			ctx.chatId = data.chatId;
 			ctx.peerId = data.from.id;
 			ctx.peerNick = data.from.nick;
 			ctx.pendingOffer = data.offer;
+			ctx.remoteIce = data.iceServers;
 			ctx.phase = "incoming";
 			ctx.role = "callee";
 			ctx.pendingCandidates = [];
@@ -219,7 +218,18 @@ export function createCallManager(
 		handleAccepted(payload: unknown) {
 			if (!isAcceptedCallPayload(payload)) return;
 
-			const data = payload as { callId: string; answer?: string };
+			const data = payload;
+
+			// The peer attached its own servers: they wait for the next
+			// connection, the running one keeps the servers it was built
+			// with.
+			// NOTE(federated): the caller peer is already created (the
+			// offer is needed for invite), so the saved remoteIce is not
+			// applied to the running connection; that needs a
+			// re-offer/restartIce — follow-up.
+			if (data.iceServers !== undefined) {
+				ctx.remoteIce = data.iceServers;
+			}
 
 			if (data.answer === undefined) {
 				// The call was taken. When this tab is the one that accepted
@@ -364,6 +374,7 @@ function resetContext(ctx: CallContext) {
 	ctx.chatId = undefined;
 	ctx.peerId = undefined;
 	ctx.peerNick = undefined;
+	ctx.remoteIce = undefined;
 	ctx.accepting = false;
 	ctx.muted = false;
 	ctx.cameraOn = true;
@@ -393,6 +404,7 @@ async function startCall(
 	// The state of the previous call must not leak into the new one: the
 	// identifier of the old call would send the new candidates to it.
 	ctx.callId = undefined;
+	ctx.remoteIce = undefined;
 	releaseMedia(ctx);
 
 	// The call starts before the first wait: the interface must see that the
@@ -407,7 +419,7 @@ async function startCall(
 	let peer: RTCPeerConnection | undefined;
 
 	try {
-		ctx.iceServers = await loadIceServers(api);
+		const localIce = await loadIceServers(api);
 		stream = await acquireMedia();
 
 		if (ctx.generation !== generation) {
@@ -417,6 +429,7 @@ async function startCall(
 		}
 
 		ctx.localStream = stream;
+		ctx.iceServers = unionIceServers(localIce, ctx.remoteIce);
 		peer = createPeer(ctx, api, notify, generation);
 		ctx.peer = peer;
 		attachLocalTracks(peer, stream);
@@ -425,6 +438,10 @@ async function startCall(
 		await peer.setLocalDescription(offer);
 
 		const result = await api.startCall(api.token, chatId, offer.sdp ?? "");
+
+		if (isICEConfig(result.iceServers)) {
+			ctx.remoteIce = result.iceServers;
+		}
 
 		if (ctx.generation !== generation) {
 			// The call is not wanted anymore: the server must end it too,
@@ -490,7 +507,7 @@ async function acceptIncomingCall(
 	let peer: RTCPeerConnection | undefined;
 
 	try {
-		ctx.iceServers = await loadIceServers(api);
+		const localIce = await loadIceServers(api);
 
 		if (ctx.generation !== generation) return;
 
@@ -503,6 +520,7 @@ async function acceptIncomingCall(
 		}
 
 		ctx.localStream = stream;
+		ctx.iceServers = unionIceServers(localIce, ctx.remoteIce);
 		peer = createPeer(ctx, api, notify, generation);
 		ctx.peer = peer;
 		attachLocalTracks(peer, stream);
@@ -514,7 +532,11 @@ async function acceptIncomingCall(
 		const answer = await peer.createAnswer();
 		await peer.setLocalDescription(answer);
 
-		await api.acceptCall(api.token, callId, answer.sdp ?? "");
+		const result = await api.acceptCall(api.token, callId, answer.sdp ?? "");
+
+		if (isICEConfig(result.iceServers)) {
+			ctx.remoteIce = result.iceServers;
+		}
 
 		if (ctx.generation !== generation) {
 			// The call ended while the answer was prepared: this call
@@ -558,21 +580,13 @@ async function acceptIncomingCall(
 	}
 }
 // loadIceServers reads the servers of the server. Without them the call only
-// connects inside one network.
-async function loadIceServers(api: CallApi): Promise<RTCIceServer[]> {
+// connects inside one network. The servers of the peer arrive with the
+// signaling and are merged at the connection, not here.
+async function loadIceServers(api: CallApi): Promise<ICEConfig> {
 	try {
-		const config: ICEConfig = await api.getIceServers(api.token);
-
-		return [
-			...config.stun.map((url) => ({ urls: url })),
-			...config.turn.map((turn) => ({
-				urls: turn.urls,
-				username: turn.username,
-				credential: turn.credential,
-			})),
-		];
+		return await api.getIceServers(api.token);
 	} catch {
-		return [];
+		return { stun: [], turn: [] };
 	}
 }
 

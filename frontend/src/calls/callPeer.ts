@@ -1,11 +1,10 @@
-import type { CallApi } from "./callTypes.ts";
-import type { CallContext } from "./callManager.ts";
 import {
 	DISCONNECT_GRACE_MS,
 	endRemoteCall,
 	settleEnded,
 } from "./callEndings.ts";
-
+import type { CallContext } from "./callManager.ts";
+import type { CallApi } from "./callTypes.ts";
 
 // createPeer builds the connection and wires the events it reports. The
 // events belong to one generation only: a late event of the old connection
@@ -88,4 +87,3 @@ export function createPeer(
 
 	return connection;
 }
-

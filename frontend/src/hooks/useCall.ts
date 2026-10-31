@@ -61,11 +61,16 @@ const CALL_PENDING_KEY = "fastchat.callPending";
 // same missed call again.
 const CALL_NOTICE_KEY = "fastchat.callNotice";
 
+// FEDERATION_UNAVAILABLE_CODE is the reason the server names when it cannot
+// reach the other server: only then a 403 means "another server".
+const FEDERATION_UNAVAILABLE_CODE = "federation-unavailable";
+
 // startFailureMessage tells what to report when the server refused to start
 // the call: a peer that is busy or lives on another server is not a broken
 // call, and the user can act on it. The 409 status covers both sides of a
 // busy call, so the reason decides: a call of the user's own device is not a
-// call of the peer.
+// call of the peer. A 403 is another server only with the federation reason:
+// other 403 answers (for example, not a participant) are broken calls.
 function startFailureMessage(error: unknown): string {
 	if (!(error instanceof ApiError)) return FAILED_MESSAGE;
 
@@ -75,7 +80,9 @@ function startFailureMessage(error: unknown): string {
 		case HTTP_CONFLICT:
 			return BUSY_MESSAGE;
 		case HTTP_FORBIDDEN:
-			return REMOTE_MESSAGE;
+			return error.code === FEDERATION_UNAVAILABLE_CODE
+				? REMOTE_MESSAGE
+				: FAILED_MESSAGE;
 		default:
 			return FAILED_MESSAGE;
 	}

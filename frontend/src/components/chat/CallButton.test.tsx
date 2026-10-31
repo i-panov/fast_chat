@@ -35,10 +35,25 @@ describe("CallButton", () => {
 		expect(screen.queryByRole("button")).toBeNull();
 	});
 
-	it("is hidden for a peer on another server", () => {
-		renderButton({ peer: { id: "bob:remote.test", nick: "bob" } });
+	it("calls a peer on another server with a remote badge", () => {
+		const onCall = vi.fn();
+		renderButton({
+			peer: { id: "bob:remote.test", nick: "bob" },
+			onCall,
+		});
 
-		expect(screen.queryByRole("button")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "call.start" }));
+
+		expect(onCall).toHaveBeenCalledTimes(1);
+		expect(screen.getByText("call.remoteBadge")).toBeTruthy();
+	});
+
+	it("shows no badge for a local peer", () => {
+		renderButton();
+
+		fireEvent.click(screen.getByRole("button", { name: "call.start" }));
+
+		expect(screen.queryByText("call.remoteBadge")).toBeNull();
 	});
 
 	it("is hidden for the own chat", () => {

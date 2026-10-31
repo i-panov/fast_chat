@@ -99,6 +99,29 @@ func MapError(err error) huma.StatusError { //nolint:ireturn // huma.StatusError
 	return nil
 }
 
+// mapFederatedCallError maps call-registry misses and expiries to 410 Gone
+// in the federated context: a missing shadow means the ringing window passed
+// or the owner already ended the call, so the peer must stop retrying instead
+// of treating the call as never-existed. A busy callee and a wrong peer keep
+// the shared mappings (409 busy-callee via calls.ErrBusyCallee, 403 via
+// service.ErrNotParticipant). Anything else passes through unchanged for
+// federatedOrInternalError.
+func mapFederatedCallError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, calls.ErrExpired) {
+		return &statusError{ErrorMessage: "call was not answered in time", code: http.StatusGone}
+	}
+
+	if errors.Is(err, calls.ErrNotFound) || errors.Is(err, service.ErrCallNotFound) {
+		return &statusError{ErrorMessage: "call not found", code: http.StatusGone}
+	}
+
+	return err
+}
+
 // mapServerError translates a service error to a Huma status error, defaulting
 // to a generic 500 for unmapped errors (mirroring the pre-migration transport, which
 // logged and wrote 500 "internal error").
@@ -335,7 +358,11 @@ var sentinelErrors = []sentinelErrPair{
 	},
 	{
 		sentinel: service.ErrRemoteCallee,
-		target:   &statusError{ErrorMessage: "calls between servers are not supported", code: http.StatusForbidden},
+		target: &statusError{
+			ErrorMessage: "federated calls are unavailable",
+			ErrorCode:    "federation-unavailable",
+			code:         http.StatusForbidden,
+		},
 	},
 	{
 		sentinel: service.ErrEmptyOffer,

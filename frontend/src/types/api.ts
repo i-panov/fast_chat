@@ -183,6 +183,28 @@ export interface ICEConfig {
 	turn: { urls: string[]; username: string; credential: string }[];
 }
 
+// CallIncomingPayload is the payload of a call_incoming event. In a
+// federated call the owner attaches its own servers, so the callee can reach
+// the caller through both relays.
+export interface CallIncomingPayload {
+	callId: string;
+	chatId: string;
+	offer: string;
+	from: { id: string; nick: string };
+	iceServers?: ICEConfig;
+	federated?: boolean;
+	owner?: string;
+}
+
+// CallAcceptedPayload is the payload of a call_accepted event. In a
+// federated call the accepting side attaches its own servers, so the caller
+// learns the relay of the peer.
+export interface CallAcceptedPayload {
+	callId: string;
+	answer?: string;
+	iceServers?: ICEConfig;
+}
+
 export interface SyncResponse {
 	serverNow: string;
 	chats: Chat[];

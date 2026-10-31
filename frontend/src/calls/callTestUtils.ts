@@ -7,6 +7,9 @@ import type { CallApi } from "./callTypes.ts";
 export class FakePeerConnection {
 	static instances: FakePeerConnection[] = [];
 
+	// config records the configuration the manager built the connection
+	// with: the tests check that both relays made it into it.
+	config?: RTCConfiguration;
 	remoteDescription: unknown = null;
 	closed = false;
 	addedCandidates: unknown[] = [];
@@ -25,7 +28,8 @@ export class FakePeerConnection {
 		this.onconnectionstatechange?.();
 	}
 
-	constructor() {
+	constructor(config?: RTCConfiguration) {
+		this.config = config;
 		FakePeerConnection.instances.push(this);
 	}
 

@@ -135,6 +135,7 @@
 	"call.busy": "The peer is already in a call",
 	"call.selfBusy": "You are already in a call",
 	"call.remote": "Calls between servers are not supported",
+	"call.remoteBadge": "remote",
 	"call.remoteVideo": "Video of the peer",
 	"call.localVideo": "Own video",
 	"lang.en": "English",
