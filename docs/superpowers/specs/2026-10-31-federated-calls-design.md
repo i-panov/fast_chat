@@ -68,12 +68,15 @@ caller (A)   server A (owner)              server B (proxy)   callee (B)
 
 Сервер B хранит только тень inbound-звонка для `busy-callee` и
 маршрутизации:
-`FederatedInbound{CallID, Owner, ChatID, CallerID, CalleeID, Offer, ExpiresAt}`.
-TTL тени = ringing window (45с). После `accept` прокси продлевает её на
-`ActiveTTL`: без тени он не сможет маршрутизировать `ice/hangup/ended`
-владельцу во время активного звонка. `ended` владельца удаляет тень.
-Graceful shutdown владельца завершает его локальные звонки и присылает
-`ended`; при краше `ended` не приходит, и тень живёт до `ActiveTTL`.
+`FederatedInbound{CallID, Owner, ChatID, CallerID, CalleeID, State, Offer,
+ExpiresAt}`.
+TTL тени = ringing window (45с). После `accept` прокси помечает её
+`active`, очищает `offer` и продлевает на `ActiveTTL`: без тени он не
+сможет маршрутизировать `ice/hangup/ended` владельцу во время активного
+звонка, а очищенный `offer` не даёт клиенту принять звонок повторно после
+reload. `ended` владельца удаляет тень. Graceful shutdown владельца
+завершает его локальные звонки и присылает `ended`; при краше `ended` не
+приходит, и тень живёт до `ActiveTTL`.
 
 Маршрутизация есть: `chat.RemoteServer`, `RemoteServerFromIDFor`,
 `UserIDBelongsToServer`. `StartCall` вместо `ErrRemoteCallee` делает
@@ -116,7 +119,8 @@ Graceful shutdown владельца завершает его локальны�
 Владелец также шлёт `accepted/ended/ice` в сторону B тем же способом
 (`Client.Request` на сервер B). Клиентский REST (`/api/calls/*`) не меняется;
 `GET /api/calls/current` на владельце отдаёт полное состояние, на прокси —
-тень как `ringing` (состояние `active` на прокси не хранится).
+состояние тени (`ringing` до accept, `active` после) без `offer` у
+принятого звонка.
 
 ## 5. ICE-обмен и медиа
 
@@ -159,11 +163,11 @@ SFU, владелец станет хостом, клиенты пойдут н�
 | `B` callee busy | тень занята → `409 busy-callee` в ответ на `invite` → A завершает звонок как `call_ended` с `reason=hangup` (отдельного `busy` reason нет) |
 | callee офлайн | `invite` принимается, B шлёт push `call_incoming`, тень ждёт 45с → A: `timeout` |
 | гонка `hangup vs accept` | решает владелец: кто первый дошёл до `Manager`, второй получает `409 not ringing` или `409 already ended` |
-| дубли `invite/ended` | повтор не создаёт вторую тень: `invite` повторяет нотификацию, `ended` — no-op, оба отвечают 200 |
+| дубли `invite/ended` | повтор не создаёт вторую тень: `invite` повторяет нотификацию, пока тень `ringing`; после `accept` отвечает 200 без события; `ended` — no-op |
 | дубли `ice` | без `seq`: повтор доставляется как есть, клиент дропает его по `generation` |
 | партиция A↔B mid-call | медиа P2P продолжает идти; `disconnected 10s grace` на клиенте, затем `peer-left`; `ActiveTTL` — страховка |
 | graceful shutdown A | локальные звонки завершаются, `ended` уходит на B, тень стирается |
-| краш A | `ended` не приходит, тень B живёт до `ActiveTTL`; клиент B завершает звонок по `disconnected` grace, но `GET /current` может вернуть тень как `ringing` до истечения |
+| краш A | `ended` не приходит, тень B живёт до `ActiveTTL`; клиент B завершает звонок по `disconnected` grace, а `GET /current` отдаёт тень как `active` без `offer` |
 | рестарт B | A получает `timeout` через 45с; повторный `invite` создаст новую тень |
 
 Push: `call_incoming` через существующий `sendPushBounded`
@@ -218,7 +222,8 @@ Push: `call_incoming` через существующий `sendPushBounded`
 - `frontend`: union ICE, поздний `accepted` по `generation`, тень в
   `current`, audio-only fallback;
 - стенд из двух серверов (`make frontend:e2e:federated`): медиа A→B и
-  B→A, decline, reload звонящего (`peer-left`), audio-only, hangup callee;
+  B→A, decline, reload звонящего (`peer-left`), reload callee (не
+  повторяет входящий), audio-only, hangup callee;
 - CI: отдельный прогон федеративного стенда: Playwright сам поднимает два
   бэкенда и два dev-сервера.
 
@@ -245,11 +250,10 @@ Push: `call_incoming` через существующий `sendPushBounded`
   получает `timeout` через 45с (см. §6).
 - **Тень после `accept` живёт `ActiveTTL`.** Иначе прокси не сможет
   маршрутизировать `ice/hangup/ended` активного звонка. При краше
-  владельца тень B не удаляется до `ActiveTTL`; `GET /current` на прокси
-  может вернуть её как `ringing`, хотя клиент уже завершил звонок по
-  `disconnected` grace.
-- **`GET /current` на прокси всегда `ringing`.** Состояние `active` на
-  прокси не хранится, только тень.
+  владельца тень B не удаляется до `ActiveTTL`; после reload callee
+  `GET /current` отдаст её как `active` без `offer`, поэтому повторного
+  «входящего» не будет, но и активный звонок в UI не восстановится —
+  страница при уходе отправит `peer-left`.
 - **Union ICE только у callee.** Caller создаёт соединение до получения
   `remoteIce`; см. §5.
 - **Нет `sfuURL`** — задел на группы описан в §10, но полем протокола

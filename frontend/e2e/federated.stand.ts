@@ -354,6 +354,48 @@ test("reload of the federated caller ends the call for the peer", async ({
 	}
 });
 
+test("reload of the federated callee does not ring it again", async ({
+	browser,
+}) => {
+	const caller = await open(browser, FRONTEND_A, alice, bob);
+	const callee = await open(browser, FRONTEND_B, bob, alice);
+
+	try {
+		await caller.page
+			.getByRole("button", { name: "Call", exact: true })
+			.click();
+
+		await expect(
+			callee.page.getByText(`Incoming call from ${alice.user.nick}`),
+		).toBeVisible();
+		await callee.page.getByRole("button", { name: "Accept" }).click();
+
+		await expectMedia(callee.page);
+
+		// The shadow is active: a reload must not turn the accepted call
+		// into a new incoming one. The chat selection is not part of the
+		// URL, so it is reopened after the reload.
+		await callee.page.reload();
+
+		await callee.page
+			.getByRole("button", { name: `@${alice.user.nick}` })
+			.click();
+		await expect(
+			callee.page.getByRole("button", { name: "Call", exact: true }),
+		).toBeVisible({ timeout: 30_000 });
+		await expect(callee.page.getByText("Incoming call from")).toHaveCount(0);
+
+		// The page that went away told the owner: the caller's call ends.
+		await expect(
+			caller.page.getByRole("button", { name: "End call" }),
+		).toBeHidden({ timeout: 30_000 });
+	} finally {
+		await hangup(caller.page);
+		await caller.context.close();
+		await callee.context.close();
+	}
+});
+
 test("federated audio-only call connects without a camera", async ({
 	browser,
 }) => {

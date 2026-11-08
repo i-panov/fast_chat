@@ -350,7 +350,7 @@ func TestCurrentCallReportsTheShadowAsRinging(t *testing.T) {
 
 func TestHandleFederatedInviteIsIdempotent(t *testing.T) {
 	fed := &fakeFed{}
-	s, _ := newFederatedCallService(t, fed)
+	s, recorder := newFederatedCallService(t, fed)
 	s.cfg.Server.Domain = "remote.test"
 	ctx := context.Background()
 
@@ -364,6 +364,10 @@ func TestHandleFederatedInviteIsIdempotent(t *testing.T) {
 		t.Fatalf("first invite: %v", err)
 	}
 
+	if got := countIncoming(recorder.all()); got != 1 {
+		t.Fatalf("incoming events = %d, want the first invite to ring once", got)
+	}
+
 	shadow, ok := s.calls.GetFederated("call-retry")
 	if !ok || shadow.Offer != "offer" {
 		t.Fatalf("shadow = %+v, %v, want the offer kept", shadow, ok)
@@ -371,6 +375,11 @@ func TestHandleFederatedInviteIsIdempotent(t *testing.T) {
 
 	if err := invite(); err != nil {
 		t.Fatalf("repeated invite: %v", err)
+	}
+
+	// The shadow is still ringing: the retry re-sends the notification.
+	if got := countIncoming(recorder.all()); got != 2 {
+		t.Fatalf("incoming events = %d, want the ringing retry to notify again", got)
 	}
 }
 
@@ -418,7 +427,7 @@ func TestHandleFederatedAcceptReportsToTheProxy(t *testing.T) {
 	}
 }
 
-func TestHandleFederatedAcceptExtendsTheShadow(t *testing.T) {
+func TestHandleFederatedAcceptActivatesTheShadow(t *testing.T) {
 	fed := &fakeFed{}
 	s, _ := newProxiedCallService(t, fed, "call-extend")
 	ctx := context.Background()
@@ -437,9 +446,83 @@ func TestHandleFederatedAcceptExtendsTheShadow(t *testing.T) {
 		t.Fatal("the shadow is gone after accept")
 	}
 
+	if after.State != calls.StateActive {
+		t.Fatalf("state = %q, want active", after.State)
+	}
+
+	if after.Offer != "" {
+		t.Fatalf("offer = %q, want it dropped after accept", after.Offer)
+	}
+
 	if !after.ExpiresAt.After(before.ExpiresAt) {
 		t.Fatalf("expiry = %v, want it after %v", after.ExpiresAt, before.ExpiresAt)
 	}
+}
+
+func TestCurrentCallReportsAnAcceptedShadowAsActive(t *testing.T) {
+	fed := &fakeFed{}
+	s, _ := newProxiedCallService(t, fed, "call-active")
+	ctx := context.Background()
+
+	if err := s.HandleFederatedAccept(ctx, "call-active", "answer", nil); err != nil {
+		t.Fatalf("HandleFederatedAccept: %v", err)
+	}
+
+	call, found := s.CurrentCall(ctx, "bob:remote.test")
+	if !found {
+		t.Fatal("expected the shadow in CurrentCall")
+	}
+
+	if call.State != calls.StateActive || call.Offer != "" {
+		t.Fatalf("call = %+v, want an active shadow without an offer", call)
+	}
+}
+
+func TestHandleFederatedInviteAfterAcceptDoesNotRingAgain(t *testing.T) {
+	fed := &fakeFed{}
+	s, recorder := newFederatedCallService(t, fed)
+	s.cfg.Server.Domain = "remote.test"
+	ctx := context.Background()
+
+	chatID := createPrivateChat(t, s, "alice:localhost:8080", "bob:remote.test")
+
+	invite := func() error {
+		return s.HandleFederatedInvite(ctx, "localhost:8080", "call-active", chatID, "alice:localhost:8080", "bob:remote.test", "offer", nil)
+	}
+
+	if err := invite(); err != nil {
+		t.Fatalf("first invite: %v", err)
+	}
+
+	if err := s.HandleFederatedAccept(ctx, "call-active", "answer", nil); err != nil {
+		t.Fatalf("HandleFederatedAccept: %v", err)
+	}
+
+	before := countIncoming(recorder.all())
+	if before != 1 {
+		t.Fatalf("incoming events = %d, want the first invite to ring once", before)
+	}
+
+	if err := invite(); err != nil {
+		t.Fatalf("repeated invite: %v", err)
+	}
+
+	if after := countIncoming(recorder.all()); after != before {
+		t.Fatalf("incoming events = %d, want no new one after accept", after-before)
+	}
+}
+
+// countIncoming counts the call_incoming events the recorder collected.
+func countIncoming(events []recordedEvent) int {
+	count := 0
+
+	for _, e := range events {
+		if e.Event.Event == "call_incoming" {
+			count++
+		}
+	}
+
+	return count
 }
 
 func TestSendIceForwardsToTheRemotePeer(t *testing.T) {

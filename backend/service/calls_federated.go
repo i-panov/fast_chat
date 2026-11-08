@@ -182,7 +182,11 @@ func (s *Service) HandleFederatedInvite(ctx context.Context, owner, callID, chat
 			existing.CallerID == callerID && existing.CalleeID == calleeID
 
 		if sameCall {
-			s.sendEvent(calleeID, s.federatedInviteEvent(ctx, owner, callID, chatID, callerID, offer, iceServers, existing.ExpiresAt))
+			// An accepted call is no longer ringing: a retried invite must
+			// not ring the callee a second time.
+			if existing.State != calls.StateActive {
+				s.sendEvent(calleeID, s.federatedInviteEvent(ctx, owner, callID, chatID, callerID, offer, iceServers, existing.ExpiresAt))
+			}
 
 			return nil
 		}
@@ -245,7 +249,12 @@ func (s *Service) HandleFederatedAccept(ctx context.Context, callID, answer stri
 	if shadow, ok := s.calls.GetFederated(callID); ok {
 		// The call is active now: keep the shadow for the whole active
 		// window, or the owner report about its end would find nothing.
-		s.calls.ExtendFederated(callID, calls.ActiveTTL)
+		// The shadow also stops looking like an incoming call: the offer is
+		// dropped, so a client that reconciles after a reload does not ring
+		// the callee again.
+		if !s.calls.MarkFederatedActive(callID, calls.ActiveTTL) {
+			return ErrCallNotFound
+		}
 
 		acceptedData := map[string]any{callIDKey: callID}
 

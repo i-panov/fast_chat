@@ -259,8 +259,10 @@ func (s *Service) SendIce(ctx context.Context, userID, callID string, candidate 
 }
 
 // CurrentCall returns the call the user is in, or the last one. A federated
-// call owned by another server is reported as a ringing shadow with the
-// offer, so a reloaded client can reconcile it like a local ringing call.
+// call owned by another server is reported with the state of its shadow:
+// ringing with the offer until the callee accepts, active without the offer
+// afterwards. A reloaded client reconciles the ringing one as a local
+// incoming call and leaves an active one alone.
 func (s *Service) CurrentCall(_ context.Context, userID string) (*calls.Call, bool) {
 	if s.calls == nil {
 		return nil, false
@@ -280,7 +282,7 @@ func (s *Service) CurrentCall(_ context.Context, userID string) (*calls.Call, bo
 		CallerID:  shadow.CallerID,
 		CalleeID:  shadow.CalleeID,
 		ChatID:    shadow.ChatID,
-		State:     calls.StateRinging,
+		State:     shadow.State,
 		Offer:     shadow.Offer,
 		ExpiresAt: shadow.ExpiresAt,
 	}, true

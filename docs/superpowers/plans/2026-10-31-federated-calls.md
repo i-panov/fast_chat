@@ -1,5 +1,11 @@
 # Federated Calls 1:1 Implementation Plan
 
+> **Статус:** выполнено. Актуальные решения, ограничения и отклонения от
+> первой редакции — в
+> `docs/superpowers/specs/2026-10-31-federated-calls-design.md` (§11).
+> История реализации — в `git log`. Чекбоксы ниже не отмечались: план
+> местами расходится с фактической реализацией.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Звонок 1:1 между пользователями разных серверов в существующем federated private-чате, владелец — сервер звонящего.

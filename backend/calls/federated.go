@@ -4,14 +4,16 @@ import "time"
 
 // FederatedInbound is the ephemeral shadow of an inbound federated call.
 // Server B keeps it for the ringing window to enforce busy-callee and to
-// route accept/ice/hangup to the right owner. An active call does not extend
-// the shadow: the owner's ended report removes it.
+// route accept/ice/hangup to the right owner. On accept the proxy marks it
+// active, drops the offer and stretches it for the whole active call: the
+// owner's ended report removes it.
 type FederatedInbound struct {
 	CallID    string
 	Owner     string
 	ChatID    string
 	CallerID  string
 	CalleeID  string
+	State     State
 	Offer     string
 	ExpiresAt time.Time
 }
@@ -21,7 +23,7 @@ type FederatedInbound struct {
 // when the same callee already has a shadow, or when the callee is busy in
 // a local call. The shadow keeps the offer, so a client that reloads can
 // reconcile the ringing call, and lives for the ringing window: the proxy
-// extends it on accept for the whole active call (see ExtendFederated).
+// extends it on accept for the whole active call (see MarkFederatedActive).
 func (m *Manager) TryReserveFederated(callID, owner, chatID, callerID, calleeID, offer string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -57,6 +59,7 @@ func (m *Manager) TryReserveFederated(callID, owner, chatID, callerID, calleeID,
 		ChatID:    chatID,
 		CallerID:  callerID,
 		CalleeID:  calleeID,
+		State:     StateRinging,
 		Offer:     offer,
 		ExpiresAt: now.Add(m.ringingTimeout),
 	}
@@ -93,11 +96,11 @@ func (m *Manager) RemoveFederated(callID string) {
 	delete(m.federated, callID)
 }
 
-// ExtendFederated stretches the shadow of an accepted call for the whole
-// active window. The ringing shadow would expire mid-call otherwise, and the
-// owner report about the end of the call would find nothing to deliver to.
-// It reports whether the shadow exists.
-func (m *Manager) ExtendFederated(callID string, ttl time.Duration) bool {
+// MarkFederatedActive records that the callee accepted the shadowed call and
+// stretches the shadow for the whole active window. The offer is dropped: a
+// client that reconciles after the accept must not take the call for a new
+// incoming one. It reports whether the shadow exists.
+func (m *Manager) MarkFederatedActive(callID string, ttl time.Duration) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -106,13 +109,15 @@ func (m *Manager) ExtendFederated(callID string, ttl time.Duration) bool {
 		return false
 	}
 
+	shadow.State = StateActive
+	shadow.Offer = ""
 	shadow.ExpiresAt = m.now().Add(ttl)
 
 	return true
 }
 
-// CurrentFederated returns a copy of the shadow ringing for the given callee,
-// if any. An expired shadow is removed and reported as missing.
+// CurrentFederated returns a copy of the shadow of the given callee, ringing
+// or active, if any. An expired shadow is removed and reported as missing.
 func (m *Manager) CurrentFederated(calleeID string) (*FederatedInbound, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
