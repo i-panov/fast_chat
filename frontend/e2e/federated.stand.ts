@@ -8,18 +8,18 @@ import {
 } from "@playwright/test";
 
 // Federated call stand: alice lives on server A (backend :8082, frontend
-// :5175), bob lives on server B (backend :8081, frontend :5174). The chat
+// :5175), bob lives on server B (backend :8083, frontend :5176). The chat
 // between them is federated; the call must flow through the owner -> proxy
-// signaling. Servers are started by hand, this file only drives browsers.
+// signaling. The config of the suite starts both servers itself.
 
 // The interface reads the account from the local storage on start.
 const ACCOUNT_KEY = "accounts";
 const TOKEN_KEY = "activeToken";
 
 const BACKEND_A = "http://localhost:8082";
-const BACKEND_B = "http://localhost:8081";
+const BACKEND_B = "http://localhost:8083";
 const FRONTEND_A = "http://localhost:5175";
-const FRONTEND_B = "http://localhost:5174";
+const FRONTEND_B = "http://localhost:5176";
 
 const ALICE_EMAIL = "fedalice@e2e.local";
 const BOB_EMAIL = "fedbob@e2e.local";

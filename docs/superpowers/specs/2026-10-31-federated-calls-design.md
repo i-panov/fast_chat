@@ -1,7 +1,9 @@
 # Федеративные звонки 1:1 — дизайн
 
 Дата: 2026-10-31
-Статус: на ревью, после аппрува — к планированию реализации
+Обновлено: 2026-11-08
+Статус: реализовано (MVP 1:1). Известные ограничения и отклонения от
+первой редакции — в §11.
 
 ## 1. Контекст и цель
 
@@ -9,8 +11,9 @@
 `frontend/src/calls`, см. `2026-10-20-calls-1to1-design.md`).
 Федерация сообщений/чатов реализована (`backend/federation/*`,
 `backend/transport/federated.go`, outbox + catch-up).
-Звонки между серверами запрещены: `service/calls.go:StartCall` возвращает
-`ErrRemoteCallee` (403).
+Звонки между серверами теперь поддержаны: при удалённом callee
+`StartCall` уходит в `startFederatedCall` (`backend/service/calls_federated.go`),
+а не возвращает `ErrRemoteCallee`.
 
 Цель — **аудио/видео звонок 1:1 в private-чате между пользователями разных
 серверов**, с заделом на группы. Медиа остаётся P2P (`DTLS-SRTP`), серверы
@@ -25,13 +28,14 @@
 - владение звонком сервером звонящего, тень на сервере callee;
 - обмен ICE-конфигами (union short-lived TURN-кред);
 - сигналинг поверх существующей federated-подписи (`fedSecurity`);
-- `busy/timeout/offline/hangup`, идемпотентные повторы;
+- `busy/timeout/offline/hangup`, идемпотентные `invite/ended`;
 - SSE fan-out только локально, push `call_incoming` как сейчас;
-- тесты backend + frontend + ручной стенд из двух серверов.
+- тесты backend + frontend + автоматический стенд из двух серверов.
 
 Не входит:
 
-- группы / SFU (только задел: `owner`, `sfuURL?`);
+- группы / SFU (задел — архитектура владельца; поля `sfuURL` в текущем
+  протоколе нет);
 - запись, транскрипция;
 - звонки в self-чатах и группах;
 - переиспользование outbox-очереди для сигналинга звонков;
@@ -47,7 +51,7 @@ caller (A)   server A (owner)              server B (proxy)   callee (B)
    |              |--POST /federated/calls/invite |                 |
    |              | {callID,chat,caller,callee,   |                 |
    |              |  offer,iceA}                  |--call_incoming->|
-   |              |                         201/409                 |
+   |              |                         200/409                 |
    |              |                              |<--POST .../accept|
    |              |                              |  {answer,iceB}   |
    |              |<--POST /federated/calls/accept|                 |
@@ -64,10 +68,12 @@ caller (A)   server A (owner)              server B (proxy)   callee (B)
 
 Сервер B хранит только тень inbound-звонка для `busy-callee` и
 маршрутизации:
-`FederatedInbound{CallID, Owner, ChatID, CallerID, CalleeID, ExpiresAt}`.
-TTL = ringing timeout. Активный звонок тень не продлевает: `ended`
-от владельца её стирает; рестарт владельца = `timeout` у обоих
-(как сейчас при рестарте одного сервера).
+`FederatedInbound{CallID, Owner, ChatID, CallerID, CalleeID, Offer, ExpiresAt}`.
+TTL тени = ringing window (45с). После `accept` прокси продлевает её на
+`ActiveTTL`: без тени он не сможет маршрутизировать `ice/hangup/ended`
+владельцу во время активного звонка. `ended` владельца удаляет тень.
+Graceful shutdown владельца завершает его локальные звонки и присылает
+`ended`; при краше `ended` не приходит, и тень живёт до `ActiveTTL`.
 
 Маршрутизация есть: `chat.RemoteServer`, `RemoteServerFromIDFor`,
 `UserIDBelongsToServer`. `StartCall` вместо `ErrRemoteCallee` делает
@@ -75,36 +81,42 @@ TTL = ringing timeout. Активный звонок тень не продле�
 
 ## 4. API сигналинга (все под `federationSignature`)
 
-Общий конверт: `{callId, chatId, callerId, calleeId, seq}` + специфичные
-поля. `seq = callID + направление + счётчик` для идемпотентности повторов;
-повтор = тот же ответ 200 без побочных эффектов. Лимиты те же:
-`offer/answer ≤32KiB`, `candidate ≤16KiB`, тело federated `≤1MiB`.
+Общего конверта и `seq` нет: идентификатор звонка едет в пути, тела
+описаны ниже. Идемпотентны только `invite` (повтор с теми же полями
+возвращает 200 и повторяет нотификацию) и `ended` (повтор — 200 no-op).
+Лимиты те же: `offer/answer ≤32KiB`, `candidate ≤16KiB`, тело federated
+`≤1MiB`.
 
-- `POST /api/federated/calls/invite {callID, chatID, callerID, calleeID,
-  offer, iceServers}` → `201 {ok}` / `409 busy-callee` / `404 no chat` /
-  `403 wrong peer`. Проверки B: `chat.RemoteServer == X-Federation-Server`,
-  оба — мемберы чата, `callee` локален, `caller` принадлежит отправителю,
-  `ValidateOffer`, тень свободна. Успех: создать тень, `sendEvent(callee,
+- `POST /api/federated/calls/invite {remoteServer, callId, chatId,
+  callerId, calleeId, offer, iceServers?}` → `200 {ok}` /
+  `409 busy-callee` / `403 wrong peer, unknown or foreign chat`.
+  `remoteServer` обязателен и должен совпасть с подписантом. Проверки B:
+  `chat.RemoteServer == X-Federation-Server`, оба — мемберы чата,
+  `callee` локален, `caller` принадлежит отправителю, `ValidateOffer`,
+  тень свободна. Успех: создать тень, `sendEvent(callee,
   call_incoming)`.
-- `POST /api/federated/calls/{id}/accept {answer, iceServers}` (B→A):
-  владелец `AcceptCall`, `sendEvent(caller, call_accepted)`. Ошибка:
-  `404/410 expired`, `409 not ringing`.
-- `POST /api/federated/calls/{id}/reject|hangup {reason}` (в обе стороны):
-  владелец — терминальное состояние, рассылает `ended` обеим сторонам
-  (`POST /api/federated/calls/{id}/ended {reason}` + локальный `sendEvent`).
-  `reason ∈ {hangup, rejected, timeout, peer-left}`; из тела принимается
-  только `peer-left`, остальное ставит сервер (как сейчас).
+- `POST /api/federated/calls/{id}/accept {answer, iceServers?}` (B→A):
+  владелец `AcceptCall`, `sendEvent(caller, call_accepted)`, отчёт
+  прокси с `answer/iceServers`. Ошибка: `410 expired/not found`,
+  `409 not ringing/already ended`.
+- `POST /api/federated/calls/{id}/reject` (B→A) — пустое тело;
+  `POST /api/federated/calls/{id}/hangup {reason?}` (в обе стороны).
+  Владелец — терминальное состояние, рассылает `ended` обеим сторонам
+  (`POST /api/federated/calls/{id}/ended {reason?}` + локальный
+  `sendEvent`). `reason ∈ {hangup, rejected, timeout, peer-left}`; из
+  тела `hangup` принимается только `peer-left`, остальное ставит сервер;
+  `reject` всегда завершает как `rejected`.
 - `POST /api/federated/calls/{id}/ice {candidate}` (в обе стороны):
   `ValidateICECandidate`, форвард владельцу/прокси + `sendEvent(peer,
-  call_ice)`. Без гарантии доставки: опоздавший кандидат дропается клиентом
-  по `generation` (как сейчас).
-- `POST /api/federated/calls/{id}/ended {reason}` (A→B): стереть тень,
-  `sendEvent(callee, call_ended)`.
+  call_ice)`. Без гарантии доставки: опоздавший или дублирующий кандидат
+  дропается клиентом по `generation` (как сейчас).
+- `POST /api/federated/calls/{id}/ended {reason?}` (A→B): стереть тень,
+  `sendEvent(callee, call_ended)`; повторный вызов — 200.
 
 Владелец также шлёт `accepted/ended/ice` в сторону B тем же способом
 (`Client.Request` на сервер B). Клиентский REST (`/api/calls/*`) не меняется;
-`GET /api/calls/current` на каждом сервере отдаёт свою половину
-(владелец — полное состояние, прокси — тень как `ringing`).
+`GET /api/calls/current` на владельце отдаёт полное состояние, на прокси —
+тень как `ringing` (состояние `active` на прокси не хранится).
 
 ## 5. ICE-обмен и медиа
 
@@ -127,9 +139,9 @@ TTL = ringing timeout. Активный звонок тень не продле�
 Follow-up: re-offer endpoint / `restartIce` для пересоздания соединения
 caller'а с полным union после получения `accept`.
 
-Задел на группы: в `invite/accept` резервное поле `sfuURL?` (пока всегда
-пусто). Когда появится SFU, владелец станет хостом, клиенты пойдут на его
-`sfuURL`, сигналинг не изменится.
+Задел на группы: поля `sfuURL` в текущем протоколе нет. Когда появится
+SFU, владелец станет хостом, клиенты пойдут на его `sfuURL`, сигналинг
+не изменится.
 
 ## 6. Тайминги, гонки, ошибки
 
@@ -144,16 +156,24 @@ caller'а с полным union после получения `accept`.
 | Ситуация | Поведение |
 |---|---|
 | `A` caller busy | `409 busy-caller` локально, federated не ходим |
-| `B` callee busy | тень занята → `409 busy-callee` в ответ на `invite` → A: `Ended(busy)`, notice звонящему |
-| callee офлайн | B отвечает `404/410` (нет SSE-доставки) → A: `timeout` |
-| гонка `hangup vs accept` | решает владелец: кто первый дошёл до `Manager`, второй получает `404/ended` |
-| дубли `invite/ice/ended` | идемпотентно по `callID+seq`, повтор = 200 |
+| `B` callee busy | тень занята → `409 busy-callee` в ответ на `invite` → A завершает звонок как `call_ended` с `reason=hangup` (отдельного `busy` reason нет) |
+| callee офлайн | `invite` принимается, B шлёт push `call_incoming`, тень ждёт 45с → A: `timeout` |
+| гонка `hangup vs accept` | решает владелец: кто первый дошёл до `Manager`, второй получает `409 not ringing` или `409 already ended` |
+| дубли `invite/ended` | повтор не создаёт вторую тень: `invite` повторяет нотификацию, `ended` — no-op, оба отвечают 200 |
+| дубли `ice` | без `seq`: повтор доставляется как есть, клиент дропает его по `generation` |
 | партиция A↔B mid-call | медиа P2P продолжает идти; `disconnected 10s grace` на клиенте, затем `peer-left`; `ActiveTTL` — страховка |
-| рестарт A | звонок потерян, B-тень истекает за 45с → `timeout` у B |
-| рестарт B | A получает `timeout`; тень пересоздастся при повторном `invite` |
+| graceful shutdown A | локальные звонки завершаются, `ended` уходит на B, тень стирается |
+| краш A | `ended` не приходит, тень B живёт до `ActiveTTL`; клиент B завершает звонок по `disconnected` grace, но `GET /current` может вернуть тень как `ringing` до истечения |
+| рестарт B | A получает `timeout` через 45с; повторный `invite` создаст новую тень |
 
 Push: `call_incoming` через существующий `sendPushBounded`
 (`tag=call-<id>`) на сервере B, как сейчас локально.
+
+Офлайн callee — сознательное отличие от первой редакции: `404/410` не
+возвращается. Присутствие по SSE ненадёжно (второй таб, задержка
+переподключения), а push — единственный канал, которым офлайн-пользователь
+узнаёт о звонке; локальные звонки ведут себя так же. Звонящий получает
+`timeout` через 45с, если никто не ответил.
 
 ## 7. Безопасность
 
@@ -175,32 +195,65 @@ Push: `call_incoming` через существующий `sendPushBounded`
 
 ## 8. Frontend
 
-- `callManager.ts`: `start()` для federated-чата (`peer.domain != self`)
-  ждёт тот же `POST /api/calls` — сервер сам решает federated или локально;
-  клиент разницы не видит, кроме `iceServers = union(local, remote)`:
-  `remote` приходит в `call_incoming/call_accepted` payload.
-- `handleIncoming/Accepted`: сохранить `remoteIce`, при `createPeer`
-  передать union. Поздний `accepted` дропается по `generation` (как сейчас).
-- `useCall.ts reconcile`: `GET /current` на своём сервере уже отдаёт тень;
+- `callManager.ts`: `start()` для federated-чата ждёт тот же
+  `POST /api/calls` — сервер сам решает federated или локально; клиент
+  разницы не видит.
+- `handleIncoming/Accepted`: `remoteIce` сохраняется, при `createPeer`
+  передаётся union. Поздний `accepted` дропается по `generation`.
+  Ограничение union у caller'а описано в §5.
+- `useCall.ts reconcile`: `GET /current` на своём сервере отдаёт тень;
   поведение при F5/pagehide без изменений (`hangup peer-left`).
-- UI без изменений: `CallButton` уже разрешён для private 1:1, надо снять
-  проверку `domain(peer)==domain(self)` и показать `remote`-бейдж.
+- UI: кнопка звонка доступна в private 1:1, в том числе собеседнику с
+  другого сервера; у federated-чата показывается remote-бейдж.
+- Audio-only fallback: если камера недоступна, звонок идёт с микрофоном;
+  `cameraOn` выставляется по фактическому видеотреку, превью и кнопка
+  камеры при его отсутствии не показываются.
 
 ## 9. Тестирование и приёмка
 
 - `service`: federated invite→shadow→busy-callee, форвард accept/hangup,
-  `hangup vs timeout` решает владелец, тень истекает;
+  точные тела invite/accept/hangup/reject/ice/ended, тень истекает;
 - `transport/federated_calls`: подпись/verify, `403 wrong peer`,
-  `409 busy`, идемпотентность повторов, капы `32/16KiB`;
-- `frontend`: union ICE, поздний `accepted` по `generation`, тень в `current`;
-- ручной стенд: два сервера (`allow_private_addresses=true`), TURN на одном,
-  звонок A→B и B→A, `hangup/reject/timeout`, убийство сети mid-call
-  (медиа держится, затем `peer-left`);
-- CI: расширить `e2e/calls.e2e.ts` federated-сценарием при наличии стенда.
+  `409 busy`, идемпотентность `invite/ended`, капы `32/16KiB`;
+- `frontend`: union ICE, поздний `accepted` по `generation`, тень в
+  `current`, audio-only fallback;
+- стенд из двух серверов (`make frontend:e2e:federated`): медиа A→B и
+  B→A, decline, reload звонящего (`peer-left`), audio-only, hangup callee;
+- CI: отдельный прогон федеративного стенда: Playwright сам поднимает два
+  бэкенда и два dev-сервера.
 
 ## 10. Задел на группы (не реализуется сейчас)
 
 `callID = {ownerDomain, localID}`, `owner` хранит реестр, участники —
 тени. SFU поднимается у владельца, адрес раздаётся в `invite/accepted`
-полем `sfuURL`. Сигналинг 1:1 без изменений переиспользуется для
-`join/leave/ice` группового звонка.
+полем `sfuURL` (в текущем протоколе поля нет). Сигналинг 1:1 без
+изменений переиспользуется для `join/leave/ice` группового звонка.
+
+## 11. Известные ограничения и отклонения от первой редакции
+
+- **Нет `seq`-идемпотентности.** Идемпотентны `invite` и `ended`;
+  дубли `ice` доставляются как есть и дропаются клиентом по `generation`.
+- **`invite` отвечает `200`, не `201`.** Остальные федеративные ручки
+  тоже отвечают `200 {ok}`.
+- **Busy без отдельного reason.** При `409 busy-callee` звонящий получает
+  `call_ended` с `reason=hangup`; отдельного `busy` в клиентском
+  протоколе нет.
+- **Гонка `hangup vs accept` — `409`.** Проигравший получает
+  `409 not ringing` или `409 already ended`, а не `404/410`.
+- **Офлайн callee получает push.** `404/410` не возвращается: presence по
+  SSE ненадёжен, push — единственный канал офлайн-пользователю; звонящий
+  получает `timeout` через 45с (см. §6).
+- **Тень после `accept` живёт `ActiveTTL`.** Иначе прокси не сможет
+  маршрутизировать `ice/hangup/ended` активного звонка. При краше
+  владельца тень B не удаляется до `ActiveTTL`; `GET /current` на прокси
+  может вернуть её как `ringing`, хотя клиент уже завершил звонок по
+  `disconnected` grace.
+- **`GET /current` на прокси всегда `ringing`.** Состояние `active` на
+  прокси не хранится, только тень.
+- **Union ICE только у callee.** Caller создаёт соединение до получения
+  `remoteIce`; см. §5.
+- **Нет `sfuURL`** — задел на группы описан в §10, но полем протокола
+  ещё не стал.
+- **TURN в автостенде не поднимается.** Стенд проверяет сигналинг и
+  медиа на loopback; поведение через relay проверяется отдельно с
+  настроенным coturn.

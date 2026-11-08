@@ -146,6 +146,31 @@ database:
 	}
 }
 
+func TestLoadKeyPathsFromEnv(t *testing.T) {
+	yaml := `
+server:
+  host: localhost
+  port: 8080
+database:
+  path: /tmp/test.db
+`
+	t.Setenv("FASTCHAT_PUSH_KEY_PATH", "/tmp/test-push-keys")
+	t.Setenv("FASTCHAT_FEDERATION_KEY_PATH", "/tmp/test-federation-keys")
+
+	cfg, err := Load(writeTestConfig(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Push.KeyPath != "/tmp/test-push-keys" {
+		t.Errorf("push key path = %q, want /tmp/test-push-keys", cfg.Push.KeyPath)
+	}
+
+	if cfg.Federation.KeyPath != "/tmp/test-federation-keys" {
+		t.Errorf("federation key path = %q, want /tmp/test-federation-keys", cfg.Federation.KeyPath)
+	}
+}
+
 func TestLoadSecretFromEnv(t *testing.T) {
 	yaml := `
 server:

@@ -193,6 +193,14 @@ func applyEnvOverrides(cfg *Config) error {
 		cfg.Uploads.Dir = dir
 	}
 
+	if path := os.Getenv("FASTCHAT_PUSH_KEY_PATH"); path != "" {
+		cfg.Push.KeyPath = path
+	}
+
+	if path := os.Getenv("FASTCHAT_FEDERATION_KEY_PATH"); path != "" {
+		cfg.Federation.KeyPath = path
+	}
+
 	if origin := os.Getenv("FASTCHAT_CORS_ORIGIN"); origin != "" {
 		cfg.CORS.Origin = origin
 	}

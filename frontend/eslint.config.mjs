@@ -97,7 +97,7 @@ export default defineConfig([
 			"vite.config.ts",
 			"vitest.setup.ts",
 			"postcss.config.mjs",
-			"playwright.config.ts",
+			"playwright*.config.ts",
 		],
 		languageOptions: {
 			globals: globals.node,

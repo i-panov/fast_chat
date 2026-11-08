@@ -116,6 +116,12 @@ jobs:
         run: make frontend:e2e
         working-directory: .
 
+      # The federated suite starts its own pair of servers: the call crosses
+      # the owner/proxy signaling that a single server cannot exercise.
+      - name: Test federated calls
+        run: make frontend:e2e:federated
+        working-directory: .
+
       - name: Keep the artifacts of a failure
         if: failure()
         uses: actions/upload-artifact@v4

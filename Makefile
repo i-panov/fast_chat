@@ -66,6 +66,11 @@ frontend\:test:
 frontend\:e2e:
 	cd frontend && npx playwright test
 
+# Федеративный стенд: Playwright поднимает два бэкенда и два dev-сервера
+# на отдельных портах (см. frontend/playwright.fedstand.config.ts).
+frontend\:e2e\:federated:
+	cd frontend && npx playwright test -c playwright.fedstand.config.ts
+
 frontend\:run:
 	cd frontend && VITE_API_PROXY=$(API_PROXY) npx vite --host --port $(FRONTEND_PORT)
 
