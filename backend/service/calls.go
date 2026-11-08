@@ -18,6 +18,19 @@ const (
 	callChatTypePrivate = "private"
 	// callIDKey is the name of the call identifier in the event payloads.
 	callIDKey = "callId"
+
+	// The names of the call fields in the events and the federated bodies.
+	keyOffer      = "offer"
+	keyAnswer     = "answer"
+	keyCandidate  = "candidate"
+	keyReason     = "reason"
+	keyIceServers = "iceServers"
+
+	// The names of the call events.
+	eventCallIncoming = "call_incoming"
+	eventCallAccepted = "call_accepted"
+	eventCallEnded    = "call_ended"
+	eventCallICE      = "call_ice"
 )
 
 var (
@@ -107,11 +120,11 @@ func (s *Service) StartCall(ctx context.Context, callerID, chatID, offer string)
 		return nil, err
 	}
 
-	s.sendEvent(calleeID, sse.Event{Event: "call_incoming", Data: map[string]any{
+	s.sendEvent(calleeID, sse.Event{Event: eventCallIncoming, Data: map[string]any{
 		callIDKey:   call.ID,
 		"from":      map[string]string{"id": callerID, "nick": s.nickOf(ctx, callerID)},
-		"chatId":    chatID,
-		"offer":     offer,
+		keyChatID:   chatID,
+		keyOffer:    offer,
 		"expiresAt": call.ExpiresAt.Format(time.RFC3339),
 	}})
 
@@ -143,12 +156,12 @@ func (s *Service) AcceptCall(ctx context.Context, userID, callID, answer string)
 		return nil, err
 	}
 
-	s.sendEvent(accepted.CallerID, sse.Event{Event: "call_accepted", Data: map[string]any{
+	s.sendEvent(accepted.CallerID, sse.Event{Event: eventCallAccepted, Data: map[string]any{
 		callIDKey: accepted.ID,
-		"answer":  answer,
+		keyAnswer: answer,
 	}})
 
-	s.sendEvent(accepted.CalleeID, sse.Event{Event: "call_accepted", Data: map[string]any{
+	s.sendEvent(accepted.CalleeID, sse.Event{Event: eventCallAccepted, Data: map[string]any{
 		callIDKey: accepted.ID,
 	}})
 
@@ -225,16 +238,17 @@ func (s *Service) SendIce(ctx context.Context, userID, callID string, candidate 
 
 	peer := call.Peer(userID)
 
-	s.sendEvent(peer, sse.Event{Event: "call_ice", Data: map[string]any{
-		callIDKey:   call.ID,
-		"candidate": candidate,
+	s.sendEvent(peer, sse.Event{Event: eventCallICE, Data: map[string]any{
+		callIDKey:    call.ID,
+		keyCandidate: candidate,
 	}})
 
 	// A peer on another server is not on the local hub: forward the
 	// candidate to the owning side best-effort, like HandleFederatedIce
-	// does for federated candidates.
+	// does for federated candidates. The call rides in the path and huma
+	// rejects unknown properties, so the body carries only the candidate.
 	if remote := domainOfUserID(peer); remote != "" && s.cfg != nil && remote != s.cfg.Server.Domain && s.fed != nil {
-		body := map[string]any{"callId": call.ID, "candidate": candidate}
+		body := map[string]any{keyCandidate: candidate}
 
 		if _, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(remote, "/api/federated/calls/"+call.ID+"/ice"), body); err != nil {
 			log().Warn("federated ice forward failed", "callID", call.ID, "err", err)
@@ -295,10 +309,10 @@ func (s *Service) participantCall(callID, userID string) (*calls.Call, error) {
 // ends by timeout or ActiveTTL has no client hangup to forward, so without
 // this the proxy side would ring until its own expiry.
 func (s *Service) notifyEnded(call *calls.Call, reason string) {
-	data := map[string]any{callIDKey: call.ID, "reason": reason}
+	data := map[string]any{callIDKey: call.ID, keyReason: reason}
 
-	s.sendEvent(call.CallerID, sse.Event{Event: "call_ended", Data: data})
-	s.sendEvent(call.CalleeID, sse.Event{Event: "call_ended", Data: data})
+	s.sendEvent(call.CallerID, sse.Event{Event: eventCallEnded, Data: data})
+	s.sendEvent(call.CalleeID, sse.Event{Event: eventCallEnded, Data: data})
 
 	s.forwardEndedToRemote(call, reason)
 }
@@ -314,20 +328,22 @@ func (s *Service) forwardEndedToRemote(call *calls.Call, reason string) {
 	seen := make(map[string]struct{}, 1)
 
 	for _, id := range []string{call.CallerID, call.CalleeID} {
-		d := domainOfUserID(id)
-		if d == "" || d == s.cfg.Server.Domain {
+		remote := domainOfUserID(id)
+		if remote == "" || remote == s.cfg.Server.Domain {
 			continue
 		}
 
-		if _, dup := seen[d]; dup {
+		if _, dup := seen[remote]; dup {
 			continue
 		}
 
-		seen[d] = struct{}{}
+		seen[remote] = struct{}{}
 
-		body := map[string]any{"callId": call.ID, "reason": reason}
+		// The ended input names only the reason: the call rides in the
+		// path, and huma rejects unknown properties.
+		body := map[string]any{keyReason: reason}
 
-		if _, err := s.fed.Request(context.Background(), http.MethodPost, s.fed.URL(d, "/api/federated/calls/"+call.ID+"/ended"), body); err != nil {
+		if _, err := s.fed.Request(context.Background(), http.MethodPost, s.fed.URL(remote, "/api/federated/calls/"+call.ID+"/ended"), body); err != nil {
 			log().Warn("federated ended report failed", "callID", call.ID, "err", err)
 		}
 	}

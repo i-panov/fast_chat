@@ -82,7 +82,11 @@ export function IncomingCallSection({
 			/>
 			{incomingCallId !== null && snoozedCallId === incomingCallId && (
 				<div style={{ padding: "8px 16px" }}>
-					<Button variant="light" fullWidth onClick={() => setSnoozedCallId(null)}>
+					<Button
+						variant="light"
+						fullWidth
+						onClick={() => setSnoozedCallId(null)}
+					>
 						{t("call.incomingFrom", { nick: peerNick })}
 					</Button>
 				</div>

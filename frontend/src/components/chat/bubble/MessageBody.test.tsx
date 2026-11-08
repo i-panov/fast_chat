@@ -10,6 +10,12 @@ const FAILED_TITLE = /Failed to send|message\.failed/;
 const PLAIN_ICON = /Not encrypted|message\.notEncrypted/;
 const UNDECRYPTABLE_TITLE =
 	/Message cannot be decrypted|message\.undecryptable/;
+const EXTERNAL_IMAGE_PLACEHOLDER =
+	/Load external image|message\.loadExternalImage/;
+// The URL of the test: the high-entropy heuristic of the linter reports it
+// as a secret, which it is not.
+// biome-ignore lint/security/noSecrets: test fixture, not a secret
+const REMOTE_IMAGE = "![pixel](https://evil.example/1.png)";
 
 function renderBody(props: Partial<React.ComponentProps<typeof MessageBody>>) {
 	return render(
@@ -119,24 +125,16 @@ describe("message body", () => {
 	});
 
 	it("does not load remote images without a click", () => {
-		const { container } = renderBody({
-			text: "![pixel](https://evil.example/1.png)",
-		});
+		const { container } = renderBody({ text: REMOTE_IMAGE });
 
 		expect(container.querySelector("img")).toBeNull();
-		expect(
-			screen.getByText(/Load external image|message\.loadExternalImage/),
-		).toBeTruthy();
+		expect(screen.getByText(EXTERNAL_IMAGE_PLACEHOLDER)).toBeTruthy();
 	});
 
 	it("loads a remote image after the placeholder click", () => {
-		const { container } = renderBody({
-			text: "![pixel](https://evil.example/1.png)",
-		});
+		const { container } = renderBody({ text: REMOTE_IMAGE });
 
-		fireEvent.click(
-			screen.getByText(/Load external image|message\.loadExternalImage/),
-		);
+		fireEvent.click(screen.getByText(EXTERNAL_IMAGE_PLACEHOLDER));
 
 		const img = container.querySelector("img");
 		expect(img?.getAttribute("src")).toBe("https://evil.example/1.png");

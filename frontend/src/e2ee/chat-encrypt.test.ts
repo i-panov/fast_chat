@@ -19,6 +19,8 @@ const keyStore = vi.hoisted(() => ({
 	bob: null as KeyPair | null,
 }));
 
+const UPLOAD_LIMIT_PATTERN = /upload limit/;
+
 // The api module is mocked so encryption runs without a network: recipient
 // public keys resolve to the per-test key pairs, and the key-backup lookup
 // reports "no backup" so ensureAccountKeys generates fresh local keys.
@@ -235,7 +237,10 @@ describe("prepareFiles upload limit", () => {
 			"./chat-encrypt.ts"
 		);
 		const arrayBuffer = vi.fn();
-		const big = { size: MaxSendableFileSize + 1, arrayBuffer } as unknown as File;
+		const big = {
+			size: MaxSendableFileSize + 1,
+			arrayBuffer,
+		} as unknown as File;
 		const pending = {
 			id: "p1",
 			file: big,
@@ -247,7 +252,7 @@ describe("prepareFiles upload limit", () => {
 		} as const;
 
 		await expect(prepareFiles([pending], "tok")).rejects.toThrow(
-			/upload limit/,
+			UPLOAD_LIMIT_PATTERN,
 		);
 		expect(arrayBuffer).not.toHaveBeenCalled();
 	});

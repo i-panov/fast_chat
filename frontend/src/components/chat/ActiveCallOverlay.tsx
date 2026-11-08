@@ -72,6 +72,10 @@ export function ActiveCallOverlay({
 
 	if (!open) return null;
 
+	// A device without a camera falls back to audio only: there is no video
+	// track to toggle, so the control must not promise one.
+	const hasVideo = (localStream?.getVideoTracks().length ?? 0) > 0;
+
 	return (
 		<Paper p="md" withBorder>
 			<Stack>
@@ -94,9 +98,11 @@ export function ActiveCallOverlay({
 					<Button variant="light" onClick={onToggleMute}>
 						{muted ? t("call.unmute") : t("call.mute")}
 					</Button>
-					<Button variant="light" onClick={onToggleCamera}>
-						{cameraOn ? t("call.cameraOff") : t("call.cameraOn")}
-					</Button>
+					{hasVideo && (
+						<Button variant="light" onClick={onToggleCamera}>
+							{cameraOn ? t("call.cameraOff") : t("call.cameraOn")}
+						</Button>
+					)}
 					<Button color="red" onClick={onHangup}>
 						{t("call.hangup")}
 					</Button>

@@ -428,6 +428,9 @@ async function startCall(
 			return;
 		}
 
+		// A device without a camera falls back to audio only: the own
+		// preview must not claim a camera that is not there.
+		ctx.cameraOn = stream.getVideoTracks().length > 0;
 		ctx.localStream = stream;
 		ctx.iceServers = unionIceServers(localIce, ctx.remoteIce);
 		peer = createPeer(ctx, api, notify, generation);
@@ -519,6 +522,9 @@ async function acceptIncomingCall(
 			return;
 		}
 
+		// The same audio-only fallback as in startCall: no camera, no
+		// preview and no "turn the camera off" control.
+		ctx.cameraOn = stream.getVideoTracks().length > 0;
 		ctx.localStream = stream;
 		ctx.iceServers = unionIceServers(localIce, ctx.remoteIce);
 		peer = createPeer(ctx, api, notify, generation);

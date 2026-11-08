@@ -38,7 +38,7 @@ func (f *fakeFed) Request(_ context.Context, method, urlStr string, body any) ([
 	return f.responseBody, f.err
 }
 
-func (f *fakeFed) lastRequest() (method, urlStr string, body any) {
+func (f *fakeFed) lastRequest() (string, string, any) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -85,8 +85,25 @@ func TestStartCallInvitesTheRemoteServer(t *testing.T) {
 		t.Fatalf("body = %#v, want a map", body)
 	}
 
-	if payload["callId"] != call.ID || payload["offer"] != "offer" {
-		t.Fatalf("body = %#v, want the call id and the offer", payload)
+	// The invite input has no omitempty fields: huma rejects a body that
+	// misses one (422), so the full wire contract is asserted here.
+	want := map[string]any{
+		"remoteServer": "localhost:8080",
+		"callId":       call.ID,
+		"chatId":       chatID,
+		"callerId":     "alice:localhost:8080",
+		"calleeId":     "bob:remote.test",
+		"offer":        "offer",
+	}
+
+	if len(payload) != len(want)+1 {
+		t.Fatalf("body = %#v, want the invite fields and iceServers only", payload)
+	}
+
+	for key, value := range want {
+		if payload[key] != value {
+			t.Fatalf("body[%q] = %#v, want %#v", key, payload[key], value)
+		}
 	}
 
 	if _, ok := payload["iceServers"]; !ok {
@@ -105,25 +122,36 @@ func TestStartCallEndsTheCallWhenTheInviteFails(t *testing.T) {
 		t.Fatal("expected the invite error")
 	}
 
-	_, _, body := fed.lastRequest()
+	// The last request is the ended forward of the locally ended call
+	// (see notifyEnded): the invite itself is covered by
+	// TestStartCallInvitesTheRemoteServer.
+	_, urlStr, body := fed.lastRequest()
+
+	if !strings.Contains(urlStr, "/ended") {
+		t.Fatalf("url = %q, want the ended forward", urlStr)
+	}
 
 	payload, ok := body.(map[string]any)
 	if !ok {
 		t.Fatalf("body = %#v, want a map", body)
 	}
 
-	callID, _ := payload["callId"].(string)
-	if callID == "" {
-		t.Fatalf("body = %#v, want a call id", payload)
+	if payload["reason"] != calls.ReasonHangup {
+		t.Fatalf("body = %#v, want the hangup reason", payload)
 	}
 
-	stored, ok := s.calls.Get(callID)
-	if !ok {
-		t.Fatal("the failed call is gone")
+	if len(payload) != 1 {
+		t.Fatalf("body = %#v, want only the reason: huma rejects unknown properties", payload)
 	}
 
-	if stored.State != calls.StateEnded {
-		t.Fatalf("state = %q, want ended", stored.State)
+	var stored *calls.Call
+
+	if current, ok := s.calls.Current("alice:localhost:8080"); ok {
+		stored = current
+	}
+
+	if stored == nil || stored.State != calls.StateEnded {
+		t.Fatalf("stored = %+v, want the failed call ended", stored)
 	}
 }
 
@@ -218,6 +246,10 @@ func TestAcceptCallForwardsTheShadowToTheOwner(t *testing.T) {
 		t.Fatalf("body = %#v, want iceServers", payload)
 	}
 
+	if len(payload) != 2 {
+		t.Fatalf("body = %#v, want only the answer and iceServers", payload)
+	}
+
 	if _, ok := s.calls.Get("call-accept"); ok {
 		t.Fatal("the proxy must not own the call")
 	}
@@ -251,7 +283,44 @@ func TestHangupCallForwardsTheShadowToTheOwner(t *testing.T) {
 		t.Fatalf("body = %#v, want the normalized hangup reason", payload)
 	}
 
+	if len(payload) != 1 {
+		t.Fatalf("body = %#v, want only the reason: huma rejects unknown properties", payload)
+	}
+
 	if _, ok := s.calls.GetFederated("call-hangup"); !ok {
+		t.Fatal("the proxy must keep the shadow until the owner reports ended")
+	}
+}
+
+func TestRejectCallForwardsTheShadowToTheOwner(t *testing.T) {
+	fed := &fakeFed{}
+	s, _ := newProxiedCallService(t, fed, "call-reject")
+	ctx := context.Background()
+
+	if err := s.RejectCall(ctx, "bob:remote.test", "call-reject"); err != nil {
+		t.Fatalf("RejectCall proxied: %v", err)
+	}
+
+	method, urlStr, body := fed.lastRequest()
+
+	if method != "POST" {
+		t.Fatalf("method = %q, want POST", method)
+	}
+
+	if !strings.Contains(urlStr, "/api/federated/calls/call-reject/reject") {
+		t.Fatalf("url = %q, want the owner reject endpoint", urlStr)
+	}
+
+	payload, ok := body.(map[string]any)
+	if !ok {
+		t.Fatalf("body = %#v, want a map", body)
+	}
+
+	if len(payload) != 0 {
+		t.Fatalf("body = %#v, want an empty body: the call rides in the path", payload)
+	}
+
+	if _, ok := s.calls.GetFederated("call-reject"); !ok {
 		t.Fatal("the proxy must keep the shadow until the owner reports ended")
 	}
 }
@@ -305,6 +374,50 @@ func TestHandleFederatedInviteIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestHandleFederatedAcceptReportsToTheProxy(t *testing.T) {
+	fed := &fakeFed{}
+	s, _ := newFederatedCallService(t, fed)
+	ctx := context.Background()
+
+	chatID := createPrivateChat(t, s, "alice:localhost:8080", "bob:remote.test")
+
+	call, err := s.StartCall(ctx, "alice:localhost:8080", chatID, "offer")
+	if err != nil {
+		t.Fatalf("StartCall federated: %v", err)
+	}
+
+	if err := s.HandleFederatedAccept(ctx, call.ID, "answer", nil); err != nil {
+		t.Fatalf("HandleFederatedAccept: %v", err)
+	}
+
+	method, urlStr, body := fed.lastRequest()
+
+	if method != "POST" {
+		t.Fatalf("method = %q, want POST", method)
+	}
+
+	if !strings.Contains(urlStr, "/api/federated/calls/"+call.ID+"/accept") {
+		t.Fatalf("url = %q, want the proxy accept endpoint", urlStr)
+	}
+
+	payload, ok := body.(map[string]any)
+	if !ok {
+		t.Fatalf("body = %#v, want a map", body)
+	}
+
+	if payload["answer"] != "answer" {
+		t.Fatalf("body = %#v, want the answer", payload)
+	}
+
+	if _, ok := payload["iceServers"]; !ok {
+		t.Fatalf("body = %#v, want iceServers", payload)
+	}
+
+	if len(payload) != 2 {
+		t.Fatalf("body = %#v, want only the answer and iceServers: huma rejects unknown properties", payload)
+	}
+}
+
 func TestHandleFederatedAcceptExtendsTheShadow(t *testing.T) {
 	fed := &fakeFed{}
 	s, _ := newProxiedCallService(t, fed, "call-extend")
@@ -346,10 +459,24 @@ func TestSendIceForwardsToTheRemotePeer(t *testing.T) {
 		t.Fatalf("SendIce: %v", err)
 	}
 
-	_, urlStr, _ := fed.lastRequest()
+	_, urlStr, body := fed.lastRequest()
 
 	if !strings.Contains(urlStr, "/api/federated/calls/"+call.ID+"/ice") {
 		t.Fatalf("url = %q, want the federated ice path", urlStr)
+	}
+
+	payload, ok := body.(map[string]any)
+	if !ok {
+		t.Fatalf("body = %#v, want a map", body)
+	}
+
+	raw, ok := payload["candidate"].(json.RawMessage)
+	if !ok || string(raw) != string(candidate) {
+		t.Fatalf("body = %#v, want the candidate unchanged", payload)
+	}
+
+	if len(payload) != 1 {
+		t.Fatalf("body = %#v, want only the candidate: huma rejects unknown properties", payload)
 	}
 }
 

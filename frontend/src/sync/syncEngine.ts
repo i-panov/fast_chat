@@ -186,7 +186,13 @@ async function processOutboxAndPull(): Promise<void> {
 	let cursorID = "";
 	try {
 		for (let round = 0; ; round++) {
-			const delta = await pullDelta(token, cursor, controller.signal, undefined, cursorID);
+			const delta = await pullDelta(
+				token,
+				cursor,
+				controller.signal,
+				undefined,
+				cursorID,
+			);
 			if (getActiveAccountKey() !== accountKey) return;
 			await applyDelta(delta);
 			if (getActiveAccountKey() !== accountKey) return;

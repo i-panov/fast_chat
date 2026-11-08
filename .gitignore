@@ -15,6 +15,9 @@ AGENTS.md
 backend/keys/
 backend/data/
 backend/uploads/
+# Secrets the dev server writes next to the config it is started with.
+config/data/
+config/keys/
 KODA.md
 backend/bin/
 .codeql/

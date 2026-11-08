@@ -288,6 +288,7 @@ export function useChatPage(): ChatPageState {
 	// re-running on every drafts change would redo the same setState on
 	// each keystroke. The closure holds the drafts of the render that
 	// changed the key, which is exactly the current map at switch time.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the draft map is read only on a conversation switch, see above
 	useEffect(() => {
 		setInputTextState(drafts[draftKey] ?? "");
 		// eslint-disable-next-line react-hooks/exhaustive-deps

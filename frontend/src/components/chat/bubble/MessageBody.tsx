@@ -1,4 +1,11 @@
-import { Anchor, Group, Loader, Text, Tooltip, UnstyledButton } from "@mantine/core";
+import {
+	Anchor,
+	Group,
+	Loader,
+	Text,
+	Tooltip,
+	UnstyledButton,
+} from "@mantine/core";
 import { Lock, LockOpen } from "lucide-react";
 import { isValidElement, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -66,9 +73,7 @@ function SafeMarkdownImage({ src, alt }: { src: string; alt: string }) {
 	let remote: boolean;
 	if (trimmed.toLowerCase().startsWith("data:")) {
 		if (trimmed.length > MAX_INLINE_IMAGE_CHARS) return <span>{alt}</span>;
-		return (
-			<img src={trimmed} alt={alt} style={{ maxWidth: "100%" }} />
-		);
+		return <img src={trimmed} alt={alt} style={{ maxWidth: "100%" }} />;
 	}
 
 	try {
@@ -203,9 +208,7 @@ export function MessageBody({
 								if (typeof src !== "string" || src === "") {
 									return <span>{alt ?? ""}</span>;
 								}
-								return (
-									<SafeMarkdownImage src={src} alt={alt ?? ""} />
-								);
+								return <SafeMarkdownImage src={src} alt={alt ?? ""} />;
 							},
 							code: ({ className, children }) => {
 								const lang = className?.replace("language-", "");

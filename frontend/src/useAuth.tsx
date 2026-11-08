@@ -178,8 +178,7 @@ function useAuthState() {
 
 	useEffect(() => {
 		const unsub = onUnauthorized((token) => {
-			const leaving =
-				readAccounts().find((a) => a.token === token) ?? null;
+			const leaving = readAccounts().find((a) => a.token === token) ?? null;
 			const updated = readAccounts().filter((a) => a.token !== token);
 			writeAccounts(updated);
 			setAccounts(updated);

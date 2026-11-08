@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"fast_chat/calls"
@@ -30,22 +31,29 @@ func (s *Service) startFederatedCall(ctx context.Context, callerID, chatID, offe
 	}
 
 	body := map[string]any{
-		"callId":     call.ID,
-		"chatId":     chatID,
-		"callerId":   callerID,
-		"calleeId":   calleeID,
-		"offer":      offer,
-		"iceServers": s.localICE(callerID),
+		"callId":      call.ID,
+		keyChatID:     chatID,
+		"callerId":    callerID,
+		"calleeId":    calleeID,
+		keyOffer:      offer,
+		keyIceServers: s.localICE(callerID),
+		// The transport names the sender explicitly and huma requires every
+		// field without omitempty: without our domain the invite is a 422.
+		// StartCall has already dereferenced the config to pick the federated
+		// path, so the domain is always known here.
+		"remoteServer": s.cfg.Server.Domain,
 	}
 
 	if _, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(remote, "/api/federated/calls/invite"), body); err != nil {
-		_, _ = s.calls.EndCall(call.ID, calls.ReasonHangup)
+		// The invite failed: ending the attempted registration is the cleanup,
+		// and its own error cannot change the answer of the operation.
+		_, _ = s.calls.EndCall(call.ID, calls.ReasonHangup) //nolint:errcheck // best-effort cleanup
 
 		// The peer answers with the same statuses the local transport uses:
 		// a busy callee is a conflict, a missing chat means the invite
 		// reached nobody.
-		var statusErr *federation.StatusError
-		if errors.As(err, &statusErr) {
+		statusErr, ok := errors.AsType[*federation.StatusError](err)
+		if ok {
 			switch statusErr.Status {
 			case http.StatusConflict:
 				return nil, calls.ErrBusyCallee
@@ -103,12 +111,18 @@ func (s *Service) localICE(userID string) map[string]any {
 // federatedInviteEvent is the payload of a call_incoming event for a call
 // owned by another server. The owner field tells whose registry holds the
 // call; the local side only keeps a shadow for it.
-func (s *Service) federatedInviteEvent(ctx context.Context, owner, callID, chatID, callerID, offer string, iceServers any, expiresAt time.Time) sse.Event {
+func (s *Service) federatedInviteEvent(
+	ctx context.Context,
+	owner, callID, chatID, callerID, offer string,
+	iceServers any,
+	expiresAt time.Time,
+) sse.Event {
+
 	data := map[string]any{
 		callIDKey:   callID,
 		"from":      map[string]string{"id": callerID, "nick": s.nickOf(ctx, callerID)},
-		"chatId":    chatID,
-		"offer":     offer,
+		keyChatID:   chatID,
+		keyOffer:    offer,
 		"expiresAt": expiresAt.Format(time.RFC3339),
 		"federated": true,
 		"owner":     owner,
@@ -117,10 +131,10 @@ func (s *Service) federatedInviteEvent(ctx context.Context, owner, callID, chatI
 	// A missing ICE config stays missing on the wire: an explicit null
 	// would fail the strict client guard and drop the incoming call.
 	if iceServers != nil {
-		data["iceServers"] = iceServers
+		data[keyIceServers] = iceServers
 	}
 
-	return sse.Event{Event: "call_incoming", Data: data}
+	return sse.Event{Event: eventCallIncoming, Data: data}
 }
 
 // HandleFederatedInvite reserves the local callee for an inbound federated
@@ -164,8 +178,10 @@ func (s *Service) HandleFederatedInvite(ctx context.Context, owner, callID, chat
 	}
 
 	if existing, ok := s.calls.GetFederated(callID); ok {
-		if existing.Owner == owner && existing.ChatID == chatID &&
-			existing.CallerID == callerID && existing.CalleeID == calleeID {
+		sameCall := existing.Owner == owner && existing.ChatID == chatID &&
+			existing.CallerID == callerID && existing.CalleeID == calleeID
+
+		if sameCall {
 			s.sendEvent(calleeID, s.federatedInviteEvent(ctx, owner, callID, chatID, callerID, offer, iceServers, existing.ExpiresAt))
 
 			return nil
@@ -202,21 +218,21 @@ func (s *Service) HandleFederatedAccept(ctx context.Context, callID, answer stri
 
 		acceptedData := map[string]any{
 			callIDKey: accepted.ID,
-			"answer":  answer,
+			keyAnswer: answer,
 		}
 
 		if iceServers != nil {
-			acceptedData["iceServers"] = iceServers
+			acceptedData[keyIceServers] = iceServers
 		}
 
-		s.sendEvent(accepted.CallerID, sse.Event{Event: "call_accepted", Data: acceptedData})
+		s.sendEvent(accepted.CallerID, sse.Event{Event: eventCallAccepted, Data: acceptedData})
 
-		s.sendEvent(accepted.CalleeID, sse.Event{Event: "call_accepted", Data: map[string]any{
+		s.sendEvent(accepted.CalleeID, sse.Event{Event: eventCallAccepted, Data: map[string]any{
 			callIDKey: accepted.ID,
 		}})
 
 		if remote := domainOfUserID(call.CalleeID); remote != "" && s.fed != nil {
-			body := map[string]any{"callId": callID, "answer": answer, "iceServers": s.localICE(call.CalleeID)}
+			body := map[string]any{keyAnswer: answer, keyIceServers: s.localICE(call.CalleeID)}
 
 			if _, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(remote, "/api/federated/calls/"+callID+"/accept"), body); err != nil {
 				log().Warn("federated accepted report failed", "callID", callID, "err", err)
@@ -234,10 +250,10 @@ func (s *Service) HandleFederatedAccept(ctx context.Context, callID, answer stri
 		acceptedData := map[string]any{callIDKey: callID}
 
 		if iceServers != nil {
-			acceptedData["iceServers"] = iceServers
+			acceptedData[keyIceServers] = iceServers
 		}
 
-		s.sendEvent(shadow.CalleeID, sse.Event{Event: "call_accepted", Data: acceptedData})
+		s.sendEvent(shadow.CalleeID, sse.Event{Event: eventCallAccepted, Data: acceptedData})
 
 		return nil
 	}
@@ -245,10 +261,12 @@ func (s *Service) HandleFederatedAccept(ctx context.Context, callID, answer stri
 	return ErrCallNotFound
 }
 
-// HandleFederatedHangup ends the owned call and reports it to the proxy. A
-// hangup for a shadowed call comes from the local client: it is only
-// forwarded to the owner, whose ended report (see HandleFederatedEnded)
-// notifies the callee, so both sides get exactly one event.
+// HandleFederatedHangup ends the owned call; the registry forwards the end
+// report to the proxy through notifyEnded, so both sides get exactly one
+// event. The shadow branch is defensive: the transport infers the caller as
+// the signer on the proxy side, while a local hangup goes through
+// hangupFederatedCall. The branch still forwards to the owner, whose ended
+// report notifies the callee, should that inference ever change.
 func (s *Service) HandleFederatedHangup(ctx context.Context, callID, reason string) error {
 	if reason != calls.ReasonPeerLeft {
 		reason = calls.ReasonHangup
@@ -266,11 +284,13 @@ func (s *Service) HandleFederatedHangup(ctx context.Context, callID, reason stri
 	}
 
 	if shadow, ok := s.calls.GetFederated(callID); ok {
+		// Defensive: the federated signer of a shadow is its caller, not the
+		// local callee, so the current protocol never lands in this branch.
 		if s.fed == nil {
 			return ErrRemoteCallee
 		}
 
-		body := map[string]any{"callId": callID, "reason": reason}
+		body := map[string]any{keyReason: reason}
 
 		_, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(shadow.Owner, "/api/federated/calls/"+callID+"/hangup"), body)
 
@@ -280,9 +300,10 @@ func (s *Service) HandleFederatedHangup(ctx context.Context, callID, reason stri
 	return ErrCallNotFound
 }
 
-// HandleFederatedReject declines the owned call and reports it to the proxy.
-// A reject for a shadowed call comes from the local client and is only
-// forwarded to the owner, like a hangup.
+// HandleFederatedReject declines the owned call; the registry forwards the
+// end report to the proxy through notifyEnded. The shadow branch is
+// defensive for the same reason as in HandleFederatedHangup: the local
+// callee's rejection goes through rejectFederatedCall.
 func (s *Service) HandleFederatedReject(ctx context.Context, callID string) error {
 	if _, ok := s.calls.Get(callID); ok {
 		if _, err := s.calls.EndCall(callID, calls.ReasonRejected); err != nil {
@@ -295,13 +316,15 @@ func (s *Service) HandleFederatedReject(ctx context.Context, callID string) erro
 	}
 
 	if shadow, ok := s.calls.GetFederated(callID); ok {
+		// Defensive: the federated signer of a shadow is its caller, not the
+		// local callee, so the current protocol never lands in this branch.
 		if s.fed == nil {
 			return ErrRemoteCallee
 		}
 
-		body := map[string]any{"callId": callID}
-
-		_, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(shadow.Owner, "/api/federated/calls/"+callID+"/reject"), body)
+		// The reject input carries no required fields: the call rides in the
+		// path, and huma rejects unknown properties.
+		_, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(shadow.Owner, "/api/federated/calls/"+callID+"/reject"), map[string]any{})
 
 		return err
 	}
@@ -311,10 +334,10 @@ func (s *Service) HandleFederatedReject(ctx context.Context, callID string) erro
 
 // HandleFederatedIce delivers an ICE candidate to the other side. On the
 // owner side the candidate goes to the local peer and, when that peer is
-// remote, on to the proxy. On the proxy side a candidate from the local
-// callee is forwarded to the owner, while a candidate from the owner is
-// delivered locally. Routing by locality keeps a candidate from bouncing
-// back to its sender.
+// remote, on to the proxy. On the proxy side the transport infers the caller
+// as the signer, so a candidate from the owner is delivered to the local
+// callee. Forwarding a candidate from the callee to the owner is defensive:
+// local candidates already go through iceFederatedCall.
 func (s *Service) HandleFederatedIce(ctx context.Context, callID, fromID string, candidate json.RawMessage) error {
 	if err := calls.ValidateICECandidate(candidate); err != nil {
 		return err
@@ -327,13 +350,13 @@ func (s *Service) HandleFederatedIce(ctx context.Context, callID, fromID string,
 
 		peer := call.Peer(fromID)
 
-		s.sendEvent(peer, sse.Event{Event: "call_ice", Data: map[string]any{
-			callIDKey:   call.ID,
-			"candidate": candidate,
+		s.sendEvent(peer, sse.Event{Event: eventCallICE, Data: map[string]any{
+			callIDKey:    call.ID,
+			keyCandidate: candidate,
 		}})
 
 		if remote := domainOfUserID(peer); remote != "" && remote != s.cfg.Server.Domain && s.fed != nil {
-			body := map[string]any{"callId": callID, "candidate": candidate}
+			body := map[string]any{keyCandidate: candidate}
 
 			if _, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(remote, "/api/federated/calls/"+callID+"/ice"), body); err != nil {
 				log().Warn("federated ice forward failed", "callID", callID, "err", err)
@@ -345,20 +368,22 @@ func (s *Service) HandleFederatedIce(ctx context.Context, callID, fromID string,
 
 	if shadow, ok := s.calls.GetFederated(callID); ok {
 		if fromID == shadow.CalleeID {
+			// Defensive: the federated signer of a shadow is its caller, so
+			// the current protocol never forwards from here.
 			if s.fed == nil {
 				return ErrRemoteCallee
 			}
 
-			body := map[string]any{"callId": callID, "candidate": candidate}
+			body := map[string]any{keyCandidate: candidate}
 
 			_, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(shadow.Owner, "/api/federated/calls/"+callID+"/ice"), body)
 
 			return err
 		}
 
-		s.sendEvent(shadow.CalleeID, sse.Event{Event: "call_ice", Data: map[string]any{
-			callIDKey:   callID,
-			"candidate": candidate,
+		s.sendEvent(shadow.CalleeID, sse.Event{Event: eventCallICE, Data: map[string]any{
+			callIDKey:    callID,
+			keyCandidate: candidate,
 		}})
 
 		return nil
@@ -379,9 +404,9 @@ func (s *Service) HandleFederatedEnded(_ context.Context, callID, reason string)
 		return nil
 	}
 
-	s.sendEvent(shadow.CalleeID, sse.Event{Event: "call_ended", Data: map[string]any{
+	s.sendEvent(shadow.CalleeID, sse.Event{Event: eventCallEnded, Data: map[string]any{
 		callIDKey: callID,
-		"reason":  reason,
+		keyReason: reason,
 	}})
 
 	return nil
@@ -389,13 +414,7 @@ func (s *Service) HandleFederatedEnded(_ context.Context, callID, reason string)
 
 // containsMember reports whether the chat members hold the given user.
 func containsMember(members []string, userID string) bool {
-	for _, member := range members {
-		if member == userID {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(members, userID)
 }
 
 // proxyShadow loads the federated shadow of a call the local registry does
@@ -468,7 +487,7 @@ func (s *Service) acceptFederatedCall(ctx context.Context, callID, userID, answe
 		return nil, ErrCallNotFound
 	}
 
-	body := map[string]any{"answer": answer, "iceServers": s.localICE(userID)}
+	body := map[string]any{keyAnswer: answer, keyIceServers: s.localICE(userID)}
 
 	if _, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(owner, "/api/federated/calls/"+callID+"/accept"), body); err != nil {
 		if federatedNotFound(err) {
@@ -510,9 +529,9 @@ func (s *Service) rejectFederatedCall(ctx context.Context, callID, userID string
 		return ErrCallNotFound
 	}
 
-	body := map[string]any{"callId": callID}
-
-	if _, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(owner, "/api/federated/calls/"+callID+"/reject"), body); err != nil {
+	// The reject input carries no required fields: the call rides in the
+	// path, and huma rejects unknown properties.
+	if _, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(owner, "/api/federated/calls/"+callID+"/reject"), map[string]any{}); err != nil {
 		if federatedNotFound(err) {
 			s.calls.RemoveFederated(callID)
 
@@ -549,7 +568,7 @@ func (s *Service) hangupFederatedCall(ctx context.Context, callID, userID, reaso
 		return ErrCallNotFound
 	}
 
-	body := map[string]any{"callId": callID, "reason": reason}
+	body := map[string]any{keyReason: reason}
 
 	if _, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(owner, "/api/federated/calls/"+callID+"/hangup"), body); err != nil {
 		if federatedNotFound(err) {
@@ -587,7 +606,7 @@ func (s *Service) iceFederatedCall(ctx context.Context, callID, userID string, c
 		return ErrCallNotFound
 	}
 
-	body := map[string]any{"callId": callID, "candidate": candidate}
+	body := map[string]any{keyCandidate: candidate}
 
 	if _, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(owner, "/api/federated/calls/"+callID+"/ice"), body); err != nil {
 		if federatedNotFound(err) {

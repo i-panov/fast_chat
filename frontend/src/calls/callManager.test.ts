@@ -297,6 +297,27 @@ describe("callManager", () => {
 		expect(manager.state().cameraOn).toBe(false);
 	});
 
+	it("reports no camera when the media falls back to audio only", async () => {
+		const audioTrack = { kind: "audio", enabled: true, stop: vi.fn() };
+
+		getUserMediaMock
+			.mockRejectedValueOnce(new Error("no camera"))
+			.mockResolvedValueOnce({
+				getTracks: () => [audioTrack],
+				getAudioTracks: () => [audioTrack],
+				getVideoTracks: () => [],
+			});
+
+		const manager = createCallManager(fakeApi());
+
+		await manager.start("chat-1");
+
+		// The fallback carries the microphone only: the own preview and the
+		// camera toggle must not claim a camera that is not there.
+		expect(manager.state().cameraOn).toBe(false);
+		expect(FakePeerConnection.instances[0].tracks).toEqual([audioTrack]);
+	});
+
 	it("takes the answer that arrived before the identifier of the call", async () => {
 		let answer: (value: { callId: string; state: string }) => void = () => {};
 		const api = fakeApi({

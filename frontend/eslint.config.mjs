@@ -82,6 +82,7 @@ export default defineConfig([
 		files: [
 			"**/*.{test,spec}.{ts,tsx}",
 			"**/*.e2e.ts",
+			"**/*.stand.ts",
 			"**/__tests__/**/*.{ts,tsx}",
 		],
 		rules: {

@@ -95,9 +95,7 @@ export function SearchBox({
 						aria-expanded={open}
 						aria-controls={hasList ? "user-search-listbox" : undefined}
 						aria-activedescendant={
-							activeIndex >= 0
-								? `user-search-option-${activeIndex}`
-								: undefined
+							activeIndex >= 0 ? `user-search-option-${activeIndex}` : undefined
 						}
 						aria-label={t("search.placeholder")}
 						rightSection={

@@ -24,6 +24,12 @@ function renderOverlay(
 	);
 }
 
+function videoStream(): MediaStream {
+	return {
+		getVideoTracks: () => [{ kind: "video" }],
+	} as unknown as MediaStream;
+}
+
 describe("ActiveCallOverlay", () => {
 	it("ends the call", () => {
 		const onHangup = vi.fn();
@@ -45,11 +51,17 @@ describe("ActiveCallOverlay", () => {
 
 	it("switches the camera", () => {
 		const onToggleCamera = vi.fn();
-		renderOverlay({ onToggleCamera });
+		renderOverlay({ localStream: videoStream(), onToggleCamera });
 
 		fireEvent.click(screen.getByRole("button", { name: "call.cameraOff" }));
 
 		expect(onToggleCamera).toHaveBeenCalledTimes(1);
+	});
+
+	it("hides the camera control without a video track", () => {
+		renderOverlay({ cameraOn: false });
+
+		expect(screen.queryByRole("button", { name: "call.cameraOn" })).toBeNull();
 	});
 
 	it("shows the own preview only with the camera on", () => {

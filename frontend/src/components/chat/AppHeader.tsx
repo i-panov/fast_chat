@@ -15,7 +15,6 @@ function Dot({ color, label }: { color: string; label: string }) {
 			<span
 				role="img"
 				aria-label={label}
-				tabIndex={0}
 				style={{
 					width: 10,
 					height: 10,
