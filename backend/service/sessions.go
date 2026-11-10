@@ -64,13 +64,10 @@ func (s *Service) sessionTTL() time.Duration {
 }
 
 // Logout revokes only the given session and releases its realtime resources.
+// The store deletes the session's push subscriptions in the same transaction.
 func (s *Service) Logout(ctx context.Context, sessionID, userID string) error {
 	if err := s.store.RevokeSession(ctx, userID, sessionID); err != nil {
 		return err
-	}
-
-	if err := s.store.DeletePushSubscriptionsBySession(ctx, sessionID); err != nil {
-		log().Warn("failed to delete push subscriptions", "sessionID", sessionID, "err", err)
 	}
 
 	if s.hub != nil {
@@ -80,14 +77,11 @@ func (s *Service) Logout(ctx context.Context, sessionID, userID string) error {
 	return nil
 }
 
-// LogoutAll revokes every session of the user.
+// LogoutAll revokes every session of the user. The store deletes all push
+// subscriptions of the user in the same transaction.
 func (s *Service) LogoutAll(ctx context.Context, userID string) error {
 	if _, err := s.store.RevokeAllSessions(ctx, userID); err != nil {
 		return err
-	}
-
-	if err := s.store.DeleteAllPushSubscriptions(ctx, userID); err != nil {
-		log().Warn("failed to delete push subscriptions", "userID", userID, "err", err)
 	}
 
 	if s.hub != nil {
@@ -159,10 +153,6 @@ func (s *Service) trimSessions(ctx context.Context, userID, keepID string) {
 	for _, sessionID := range revoked {
 		if s.hub != nil {
 			s.hub.CloseSession(sessionID)
-		}
-
-		if err := s.store.DeletePushSubscriptionsBySession(ctx, sessionID); err != nil {
-			log().Warn("failed to delete push subscriptions", "sessionID", sessionID, "err", err)
 		}
 	}
 }

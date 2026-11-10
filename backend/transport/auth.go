@@ -281,36 +281,11 @@ func registerSSEAuth(api huma.API, svc *service.Service, st *store.Store, hub *s
 			return nil, errUnauthorized
 		}
 
-		conn := hub.GetConnection(input.Body.ConnectionID)
-		if conn == nil {
-			return nil, errConnectionNotFound
-		}
-
-		conn.Lock()
-		alreadyAuthorized := conn.Authorized
-		sameSession := alreadyAuthorized && conn.UserID == user.ID && conn.SessionID == session.ID
-		conn.Unlock()
-
-		// Rebinding one connection to another user or session would leak the
-		// presence count of the first binding: reject it instead.
-		if alreadyAuthorized && !sameSession {
-			return nil, errConnectionInUse
-		}
-
-		out := &sseAuthOutput{}
-		out.Body.Status = "ok"
-
-		// The frontend retries sse-auth on the same connection. A repeated
-		// auth for the same session must only refresh the expiry: calling
-		// AddConnectionForSession again would double-count presence.
-		if sameSession {
-			hub.UpdateSessionExpiry(session.ID, session.ExpiresAt)
-			touchSession(ctx, st, session.ID)
-
-			return out, nil
-		}
-
-		if err := hub.AuthenticateSession(input.Body.ConnectionID, user.ID, session.ID, session.ExpiresAt); err != nil {
+		// BindSession is atomic and reports whether this call created the
+		// binding. The frontend retries sse-auth on the same connection, and
+		// only a genuinely new binding may increment presence.
+		newBinding, err := hub.BindSession(input.Body.ConnectionID, user.ID, session.ID, session.ExpiresAt)
+		if err != nil {
 			if errors.Is(err, sse.ErrConnectionInUse) {
 				return nil, errConnectionInUse
 			}
@@ -318,11 +293,14 @@ func registerSSEAuth(api huma.API, svc *service.Service, st *store.Store, hub *s
 			return nil, errConnectionNotFound
 		}
 
-		if st.AddConnectionForSession(user.ID, session.ID) {
+		if newBinding && st.AddConnectionForSession(user.ID, session.ID) {
 			svc.BroadcastUserStatus(ctx, user.ID, true)
 		}
 
 		touchSession(ctx, st, session.ID)
+
+		out := &sseAuthOutput{}
+		out.Body.Status = "ok"
 
 		return out, nil
 	})

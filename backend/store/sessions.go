@@ -313,7 +313,6 @@ func (s *Store) RevokeAllSessions(ctx context.Context, userID string) (int64, er
 		}
 
 		revoked = 0
-		revokedIDs := make([]string, 0, len(sessions))
 		for idx := range sessions {
 			res := tx.Model(&model.Session{}).
 				Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessions[idx].ID, userID).
@@ -325,16 +324,13 @@ func (s *Store) RevokeAllSessions(ctx context.Context, userID string) (int64, er
 			if res.Error != nil {
 				return res.Error
 			}
-			if res.RowsAffected > 0 {
-				revokedIDs = append(revokedIDs, sessions[idx].ID)
-				revoked += res.RowsAffected
-			}
+			revoked += res.RowsAffected
 		}
 
-		if len(revokedIDs) > 0 {
-			if err := tx.Where("session_id IN ?", revokedIDs).Delete(&model.PushSubscription{}).Error; err != nil {
-				return err
-			}
+		// Every subscription of the user is dead, including legacy rows with
+		// an empty session id; logout-all must not leave a notification path.
+		if err := tx.Where("user_id = ?", userID).Delete(&model.PushSubscription{}).Error; err != nil {
+			return err
 		}
 
 		// The legacy columns must not keep a token that no longer has a session.

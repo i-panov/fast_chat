@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"fast_chat/model"
 )
@@ -111,9 +110,14 @@ func IsValidPushEndpoint(endpoint string) bool {
 }
 
 // offlinePushSubscriptions returns the subscriptions that should receive a
-// push: the ones whose session is offline and still active. A legacy
+// push: the ones whose session is offline and not revoked. A legacy
 // subscription without a session id counts as offline only while the whole
 // user is offline.
+//
+// Expired sessions still receive push: a user who closed the app for longer
+// than the token TTL must be notified, and the token is refreshed when the
+// app opens again. Auth itself keeps rejecting expired sessions; this is only
+// the notification path.
 func (s *Service) offlinePushSubscriptions(ctx context.Context, userID string) []model.PushSubscription {
 	subs, err := s.store.GetPushSubscriptionsByUser(ctx, userID)
 	if err != nil {
@@ -129,10 +133,11 @@ func (s *Service) offlinePushSubscriptions(ctx context.Context, userID string) [
 			out = append(out, sub)
 			continue
 		}
-		// A revoked or expired session must never receive a push, even when
-		// its subscription row survived the revocation.
+		// A revoked session must never receive a push, even when its
+		// subscription row survived the revocation. An expired one still
+		// does, so a closed app can be notified.
 		session, ok := s.store.GetSessionByID(ctx, sub.SessionID)
-		if !ok || !session.Active(time.Now().UTC()) {
+		if !ok || session.RevokedAt != nil {
 			continue
 		}
 

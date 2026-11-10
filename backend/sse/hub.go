@@ -204,20 +204,37 @@ func (h *Hub) GetConnection(connectionID string) *Connection {
 	return h.connections[connectionID]
 }
 
-// AuthenticateSession binds a connection to a user session.
-func (h *Hub) AuthenticateSession(connectionID, userID, sessionID string, expiresAt time.Time) error {
+// BindSession atomically binds a connection to a session. It reports whether
+// this call created a new binding: a replay for the same user and session only
+// refreshes the expiry, so the caller must not count presence again.
+//
+// A connection already authorized to another user or session is rejected with
+// ErrConnectionInUse instead of being rebound.
+func (h *Hub) BindSession(connectionID, userID, sessionID string, expiresAt time.Time) (bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	conn, ok := h.connections[connectionID]
 	if !ok {
-		return ErrConnectionNotFound
+		return false, ErrConnectionNotFound
 	}
 
 	conn.mu.Lock()
-	if conn.Authorized && (conn.UserID != userID || conn.SessionID != sessionID) {
+
+	// Compare the binding, not Authorized: an expiry race may have flipped
+	// Authorized off for the very same binding, and that is still a replay.
+	switch {
+	case conn.UserID == userID && conn.SessionID == sessionID:
+		conn.ExpiresAt = expiresAt
+		conn.Authorized = true
+		conn.Warned = false
 		conn.mu.Unlock()
-		return ErrConnectionInUse
+
+		return false, nil
+	case conn.Authorized:
+		conn.mu.Unlock()
+
+		return false, ErrConnectionInUse
 	}
 
 	conn.UserID = userID
@@ -229,13 +246,20 @@ func (h *Hub) AuthenticateSession(connectionID, userID, sessionID string, expire
 
 	// Avoid duplicate entries if sseAuth is replayed for the same
 	// connection (e.g. a retried auth request).
-	if slices.Contains(h.userConns[userID], connectionID) {
-		return nil
+	if !slices.Contains(h.userConns[userID], connectionID) {
+		h.userConns[userID] = append(h.userConns[userID], connectionID)
 	}
 
-	h.userConns[userID] = append(h.userConns[userID], connectionID)
+	return true, nil
+}
 
-	return nil
+// AuthenticateSession binds a connection to a user session. It keeps the
+// pre-BindSession API; callers that must count presence use BindSession to
+// learn whether the binding is new.
+func (h *Hub) AuthenticateSession(connectionID, userID, sessionID string, expiresAt time.Time) error {
+	_, err := h.BindSession(connectionID, userID, sessionID, expiresAt)
+
+	return err
 }
 
 // Authenticate is kept for tests and pre-session callers: it binds the

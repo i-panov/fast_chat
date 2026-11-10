@@ -161,6 +161,35 @@ func TestOfflinePushSubscriptionsSkipsOnlineSession(t *testing.T) {
 	}
 }
 
+// An expired session is no longer usable for auth, but the device must still
+// be notified: the user may simply have closed the app for longer than the
+// token TTL, and the token is refreshed when the app opens again.
+func TestOfflinePushSubscriptionsIncludesExpiredSession(t *testing.T) {
+	s := newPushTestService(t)
+	ctx := context.Background()
+	alice := registerPushTestUser(t, s, "alice")
+
+	session, _, err := s.store.CreateSession(ctx, alice.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.AddPushSubscriptionForSession(
+		ctx, alice.ID, session.ID, "https://fcm.googleapis.com/fcm/send/expired", "dGVzdA==", "aHVl",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.store.DB().Model(&model.Session{}).Where("id = ?", session.ID).
+		Update("expires_at", time.Now().UTC().Add(-time.Hour)).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	subs := s.offlinePushSubscriptions(ctx, alice.ID)
+	if len(subs) != 1 || subs[0].SessionID != session.ID {
+		t.Fatalf("subscriptions = %+v, want the expired session to receive push", subs)
+	}
+}
+
 // A subscription whose session was revoked (or never existed) must never
 // receive a push, even when its row survived the cleanup.
 func TestOfflinePushSubscriptionsSkipsDeadSession(t *testing.T) {

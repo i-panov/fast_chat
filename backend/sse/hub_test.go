@@ -2,6 +2,8 @@ package sse
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -473,5 +475,83 @@ func TestSendIgnoresStaleUserIndexEntry(t *testing.T) {
 	case got := <-conn.Channel:
 		t.Fatalf("event leaked to another user's connection: %+v", got)
 	default:
+	}
+}
+
+func TestBindSessionReportsNewBindingOnce(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	if _, err := h.BindSession("missing", "u1", "s1", time.Now().Add(time.Hour)); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("missing connection = %v, want ErrConnectionNotFound", err)
+	}
+
+	conn := h.Register("c1")
+	exp := time.Now().Add(time.Hour)
+	newBinding, err := h.BindSession("c1", "u1", "s1", exp)
+	if err != nil || !newBinding {
+		t.Fatalf("first bind = %v/%v, want true/nil", newBinding, err)
+	}
+
+	// An expiry race can flip Authorized off for the very same binding; that
+	// is still a replay and must only refresh the expiry.
+	conn.Lock()
+	conn.Authorized = false
+	conn.Unlock()
+
+	replayExpiry := exp.Add(time.Minute)
+	newBinding, err = h.BindSession("c1", "u1", "s1", replayExpiry)
+	if err != nil || newBinding {
+		t.Fatalf("replay = %v/%v, want false/nil", newBinding, err)
+	}
+
+	conn.Lock()
+	authorized := conn.Authorized
+	gotExpiry := conn.ExpiresAt
+	conn.Unlock()
+	if !authorized || !gotExpiry.Equal(replayExpiry) {
+		t.Fatalf("replay did not refresh the binding: authorized=%v expiry=%v", authorized, gotExpiry)
+	}
+	if len(h.userConns["u1"]) != 1 {
+		t.Fatalf("userConns = %v, want one entry", h.userConns["u1"])
+	}
+}
+
+func TestBindSessionConcurrentReplaysCreateOneBinding(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+	h.Register("c1")
+
+	const workers = 8
+
+	var (
+		wg    sync.WaitGroup
+		count atomic.Int64
+		errs  = make(chan error, workers)
+	)
+	for range workers {
+		wg.Go(func() {
+			newBinding, err := h.BindSession("c1", "u1", "s1", time.Now().Add(time.Hour))
+			if err != nil {
+				errs <- err
+
+				return
+			}
+			if newBinding {
+				count.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Errorf("BindSession: %v", err)
+	}
+	if count.Load() != 1 {
+		t.Fatalf("new bindings = %d, want exactly 1", count.Load())
+	}
+	if len(h.userConns["u1"]) != 1 {
+		t.Fatalf("userConns = %v, want one entry", h.userConns["u1"])
 	}
 }

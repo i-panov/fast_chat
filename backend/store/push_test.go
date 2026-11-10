@@ -198,7 +198,7 @@ func TestRevokeSessionDeletesItsPushSubscriptions(t *testing.T) {
 	}
 }
 
-func TestRevokeAllSessionsDeletesSessionPushSubscriptions(t *testing.T) {
+func TestRevokeAllSessionsDeletesAllPushSubscriptions(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	user := createTestUserWithoutSessions(t, s, "alice")
@@ -220,8 +220,7 @@ func TestRevokeAllSessionsDeletesSessionPushSubscriptions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A legacy row has no session and is not the store's to remove here; the
-	// service-level logout-all still deletes it.
+	// Logout-all must also drop legacy rows that carry no session id.
 	if _, err := s.AddPushSubscription(ctx, user.ID, "https://fcm.googleapis.com/fcm/send/legacy", "p256dh", "auth"); err != nil {
 		t.Fatal(err)
 	}
@@ -238,8 +237,8 @@ func TestRevokeAllSessionsDeletesSessionPushSubscriptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(subs) != 1 || subs[0].SessionID != "" {
-		t.Fatalf("subscriptions = %+v, want only the legacy row", subs)
+	if len(subs) != 0 {
+		t.Fatalf("subscriptions = %+v, want none after logout-all", subs)
 	}
 }
 
