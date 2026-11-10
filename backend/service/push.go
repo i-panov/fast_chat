@@ -120,6 +120,18 @@ func IsValidPushEndpoint(endpoint string) bool {
 // the notification path.
 func (s *Service) offlinePushSubscriptions(ctx context.Context, userID string) []model.PushSubscription {
 	subs, err := s.store.GetPushSubscriptionsByUser(ctx, userID)
+	if err != nil || len(subs) == 0 {
+		return nil
+	}
+
+	sessionIDs := make([]string, 0, len(subs))
+	for _, sub := range subs {
+		if sub.SessionID != "" {
+			sessionIDs = append(sessionIDs, sub.SessionID)
+		}
+	}
+
+	sessions, err := s.store.GetSessionsByIDs(ctx, sessionIDs)
 	if err != nil {
 		return nil
 	}
@@ -136,7 +148,7 @@ func (s *Service) offlinePushSubscriptions(ctx context.Context, userID string) [
 		// A revoked session must never receive a push, even when its
 		// subscription row survived the revocation. An expired one still
 		// does, so a closed app can be notified.
-		session, ok := s.store.GetSessionByID(ctx, sub.SessionID)
+		session, ok := sessions[sub.SessionID]
 		if !ok || session.RevokedAt != nil {
 			continue
 		}

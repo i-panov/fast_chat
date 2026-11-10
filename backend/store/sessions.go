@@ -5,10 +5,10 @@ import (
 	"errors"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"gorm.io/gorm"
 
+	"fast_chat/internal/textutil"
 	"fast_chat/model"
 )
 
@@ -44,26 +44,22 @@ func backfillSessions(db *gorm.DB) error {
 
 	// Only the columns needed below: users also carries the key backup blob.
 	// unixepoch keeps the comparison correct for legacy local-zone values.
+	// NOT EXISTS keeps this to one query instead of a COUNT per user.
 	var users []model.User
-	if err := db.Select("id", "token", "token_expires_at").
-		Where("token <> '' AND unixepoch(token_expires_at) > unixepoch(?)", now).
+	if err := db.Select("users.id", "users.token", "users.token_expires_at").
+		Where("users.token <> '' AND unixepoch(users.token_expires_at) > unixepoch(?)", now).
+		Where("NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = users.id)").
 		Find(&users).Error; err != nil {
 		return err
 	}
+	if len(users) == 0 {
+		return nil
+	}
 
+	sessions := make([]model.Session, 0, len(users))
 	for i := range users {
 		user := &users[i]
-
-		var sessionCount int64
-		if err := db.Model(&model.Session{}).Where("user_id = ?", user.ID).
-			Count(&sessionCount).Error; err != nil {
-			return err
-		}
-		if sessionCount > 0 {
-			continue
-		}
-
-		session := model.Session{
+		sessions = append(sessions, model.Session{
 			ID:         GenerateID(),
 			UserID:     user.ID,
 			DeviceID:   legacyDeviceID,
@@ -72,13 +68,12 @@ func backfillSessions(db *gorm.DB) error {
 			CreatedAt:  now,
 			LastSeenAt: now,
 			ExpiresAt:  user.TokenExpiresAt.UTC(),
-		}
-		if err := db.Create(&session).Error; err != nil {
-			return err
-		}
+		})
 	}
 
-	return nil
+	return db.Transaction(func(tx *gorm.DB) error {
+		return tx.CreateInBatches(sessions, 500).Error
+	})
 }
 
 // GetSessionByToken resolves a bearer token to an active session and its user.
@@ -210,6 +205,31 @@ func (s *Store) GetSessionByID(ctx context.Context, sessionID string) (*model.Se
 	return &session, true
 }
 
+// GetSessionsByIDs returns the sessions with the given IDs. Missing IDs are
+// simply absent from the map. The lookup is chunked to stay below SQLite's
+// bound-variable limit.
+func (s *Store) GetSessionsByIDs(ctx context.Context, sessionIDs []string) (map[string]model.Session, error) {
+	out := make(map[string]model.Session, len(sessionIDs))
+	if len(sessionIDs) == 0 {
+		return out, nil
+	}
+
+	for start := 0; start < len(sessionIDs); start += 500 {
+		end := min(start+500, len(sessionIDs))
+		var sessions []model.Session
+		if err := s.db.WithContext(ctx).
+			Where("id IN ?", sessionIDs[start:end]).
+			Find(&sessions).Error; err != nil {
+			return nil, err
+		}
+		for i := range sessions {
+			out[sessions[i].ID] = sessions[i]
+		}
+	}
+
+	return out, nil
+}
+
 // RefreshSession rotates the token of one session and extends its expiry.
 func (s *Store) RefreshSession(ctx context.Context, sessionID string, ttl time.Duration) (*model.Session, string, error) {
 	if ttl <= 0 {
@@ -285,7 +305,11 @@ func (s *Store) RevokeSession(ctx context.Context, userID, sessionID string) err
 			return ErrSessionNotFound
 		}
 
-		if err := tx.Where("session_id = ?", sessionID).Delete(&model.PushSubscription{}).Error; err != nil {
+		// Delete this device's subscription and the legacy sessionless rows:
+		// after a logout no push must reach a row that cannot be attributed to
+		// an active session.
+		if err := tx.Where("user_id = ? AND (session_id = ? OR session_id = '')", userID, sessionID).
+			Delete(&model.PushSubscription{}).Error; err != nil {
 			return err
 		}
 
@@ -391,7 +415,9 @@ func (s *Store) TrimSessions(ctx context.Context, userID string, limit int, keep
 }
 
 // DeleteOldSessions removes sessions that expired or were revoked long ago,
-// together with their push subscriptions, in one transaction.
+// together with their push subscriptions, in one transaction. The ids are
+// deleted in chunks: SQLite has a bound-variable limit, and an unbounded
+// IN (?) would stop the hourly cleanup from ever succeeding.
 func (s *Store) DeleteOldSessions(ctx context.Context, before time.Time) (int64, error) {
 	var deleted int64
 
@@ -402,18 +428,21 @@ func (s *Store) DeleteOldSessions(ctx context.Context, before time.Time) (int64,
 			Pluck("id", &ids).Error; err != nil {
 			return err
 		}
-		if len(ids) == 0 {
-			return nil
+
+		for start := 0; start < len(ids); start += 500 {
+			end := min(start+500, len(ids))
+			chunk := ids[start:end]
+			if err := tx.Where("session_id IN ?", chunk).Delete(&model.PushSubscription{}).Error; err != nil {
+				return err
+			}
+			res := tx.Where("id IN ?", chunk).Delete(&model.Session{})
+			if res.Error != nil {
+				return res.Error
+			}
+			deleted += res.RowsAffected
 		}
 
-		if err := tx.Where("session_id IN ?", ids).Delete(&model.PushSubscription{}).Error; err != nil {
-			return err
-		}
-
-		res := tx.Where("id IN ?", ids).Delete(&model.Session{})
-		deleted = res.RowsAffected
-
-		return res.Error
+		return nil
 	})
 	if err != nil {
 		return 0, err
@@ -423,24 +452,9 @@ func (s *Store) DeleteOldSessions(ctx context.Context, before time.Time) (int64,
 }
 
 func truncateDeviceName(s string) string {
-	return truncateUTF8(strings.TrimSpace(s), 64)
+	return textutil.TruncateUTF8(strings.TrimSpace(s), 64)
 }
 
 func truncateUserAgent(s string) string {
-	return truncateUTF8(s, 512)
-}
-
-// truncateUTF8 cuts s to at most max bytes without splitting a UTF-8 rune, so
-// a stored device name or user agent is always valid text.
-func truncateUTF8(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(value[cut]) {
-		cut--
-	}
-
-	return value[:cut]
+	return textutil.TruncateUTF8(s, 512)
 }

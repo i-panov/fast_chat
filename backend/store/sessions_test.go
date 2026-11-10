@@ -837,3 +837,101 @@ func TestTouchSessionAdvancesStaleTimestampOnly(t *testing.T) {
 		t.Fatalf("last_seen_at = %v, want %v after the throttle window", got.LastSeenAt, later)
 	}
 }
+
+func TestGetSessionsByIDs(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	first, _, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetSessionsByIDs(ctx, []string{first.ID, second.ID, "missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[first.ID].DeviceID != "dev-1" || got[second.ID].DeviceID != "dev-2" {
+		t.Fatalf("sessions = %+v", got)
+	}
+}
+
+func TestDeleteOldSessionsBatches(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	now := time.Now().UTC()
+	sessions := make([]model.Session, 0, 501)
+	for range 501 {
+		sessions = append(sessions, model.Session{
+			ID:         GenerateID(),
+			UserID:     user.ID,
+			DeviceID:   "old-" + GenerateID(),
+			DeviceName: "old",
+			TokenHash:  hashToken(GenerateID()),
+			CreatedAt:  now.Add(-2 * time.Hour),
+			LastSeenAt: now.Add(-2 * time.Hour),
+			ExpiresAt:  now.Add(-time.Hour),
+		})
+	}
+	if err := s.DB().CreateInBatches(&sessions, 100).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := s.DeleteOldSessions(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 501 {
+		t.Fatalf("deleted = %d, want 501", deleted)
+	}
+}
+
+func TestRevokeSessionDeletesLegacyPushRows(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+	session, _, ok := s.GetSessionByToken(ctx, user.Token)
+	if !ok {
+		t.Fatal("legacy session missing")
+	}
+	if _, err := s.AddPushSubscription(ctx, user.ID, "https://fcm.googleapis.com/fcm/send/legacy", "p256dh", "auth"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RevokeSession(ctx, user.ID, session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int64
+	if err := s.DB().Model(&model.PushSubscription{}).Where("user_id = ?", user.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("push subscriptions = %d, want 0", count)
+	}
+}
+
+func TestCreateUserZeroTTLUsesDefault(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "zero@test.local", "zero", "test", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	session, _, ok := s.GetSessionByToken(ctx, user.Token)
+	if !ok {
+		t.Fatal("token must resolve to a session")
+	}
+	if !session.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("session expiry = %v, want a future time", session.ExpiresAt)
+	}
+}

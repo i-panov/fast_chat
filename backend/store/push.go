@@ -52,6 +52,9 @@ func (s *Store) AddPushSubscriptionForSession(
 
 // AddPushSubscription is the legacy user-only form. It writes a subscription
 // with an empty session id, which is delivered only while the user is offline.
+// AddPushSubscription is a legacy helper used by tests.
+//
+// Deprecated: use AddPushSubscriptionForSession.
 func (s *Store) AddPushSubscription(ctx context.Context, userID, endpoint, p256dh, auth string) (*model.PushSubscription, error) {
 	return s.AddPushSubscriptionForSession(ctx, userID, "", endpoint, p256dh, auth)
 }
@@ -63,10 +66,6 @@ func (s *Store) GetPushSubscriptionsByUser(ctx context.Context, userID string) (
 	}
 
 	return subs, nil
-}
-
-func (s *Store) DeletePushSubscription(ctx context.Context, userID, endpoint string) error {
-	return s.db.WithContext(ctx).Where("user_id = ? AND endpoint = ?", userID, endpoint).Delete(&model.PushSubscription{}).Error
 }
 
 // DeletePushSubscriptionForSession removes the subscription of one device.
@@ -97,6 +96,10 @@ func (s *Store) DeletePushSubscriptionByEndpoint(ctx context.Context, endpoint s
 
 // DeletePushSubscriptionsBySession removes the subscriptions of one device
 // session, leaving the other sessions of the user subscribed.
+// DeletePushSubscriptionsBySession is kept for tests.
+//
+// Deprecated: session revocation deletes its push rows in the same
+// transaction.
 func (s *Store) DeletePushSubscriptionsBySession(ctx context.Context, sessionID string) error {
 	// An empty session id identifies legacy rows of every user: never let it
 	// widen into a delete-all.
@@ -110,6 +113,10 @@ func (s *Store) DeletePushSubscriptionsBySession(ctx context.Context, sessionID 
 // DeleteAllPushSubscriptions removes every subscription of the user, for
 // every device. It is the logout-everywhere counterpart of
 // DeletePushSubscriptionsBySession.
+// DeleteAllPushSubscriptions is kept for tests.
+//
+// Deprecated: RevokeAllSessions deletes all push rows in the same
+// transaction.
 func (s *Store) DeleteAllPushSubscriptions(ctx context.Context, userID string) error {
 	return s.db.WithContext(ctx).Where("user_id = ?", userID).Delete(&model.PushSubscription{}).Error
 }

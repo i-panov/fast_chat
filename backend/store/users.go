@@ -61,6 +61,10 @@ func (s *Store) CreateUserWithSession(
 	ctx context.Context, email, nick, serverDomain, deviceID, deviceName, userAgent string, ttl time.Duration,
 ) (*model.User, *model.Session, string, error) {
 
+	if ttl <= 0 {
+		return nil, nil, "", errInvalidTTL
+	}
+
 	fullID := nick + ":" + serverDomain
 	now := time.Now().UTC()
 	token := GenerateID()
@@ -122,6 +126,9 @@ func (s *Store) CreateUserWithSession(
 // CreateUser keeps the pre-session signature working for callers that do not
 // have device information: it creates the account with a legacy session.
 func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string, tokenExpiry time.Duration) (*model.User, error) {
+	if tokenExpiry <= 0 {
+		tokenExpiry = 24 * time.Hour
+	}
 	user, _, _, err := s.CreateUserWithSession(ctx, email, nick, serverDomain, legacyDeviceID, "Legacy session", "", tokenExpiry)
 	return user, err
 }
@@ -199,6 +206,10 @@ func (s *Store) DeleteKeyBackup(ctx context.Context, userID string) error {
 // pulled back to now, so a stale value cannot resurrect a revoked session if
 // the database is ever backfilled again. Session authentication itself no
 // longer reads these columns.
+// RevokeUserToken is a compatibility wrapper for callers that only need the
+// legacy columns.
+//
+// Deprecated: use revokeUserToken inside a session transaction.
 func (s *Store) RevokeUserToken(ctx context.Context, userID string) error {
 	return revokeUserToken(s.db.WithContext(ctx), userID)
 }

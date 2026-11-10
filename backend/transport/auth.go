@@ -232,7 +232,7 @@ func registerLogout(api huma.API, svc *service.Service) {
 			return nil, errUnauthorized
 		}
 
-		if err := svc.Logout(ctx, user.SessionID, user.ID); err != nil {
+		if err := svc.Logout(ctx, user.ID, user.SessionID); err != nil {
 			return nil, mapSessionError(err)
 		}
 
@@ -339,14 +339,6 @@ type authUser struct {
 	ID        string
 	Nick      string
 	SessionID string
-	DeviceID  string
-}
-
-// WithAuthUser stores the authenticated user in the context. It is the
-// sessionless form used by tests and internal callers; handlers that need the
-// device session must resolve it through AuthMiddleware.
-func WithAuthUser(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, authContextKey{}, &authUser{ID: userID})
 }
 
 // userFromContext retrieves the authenticated user from the request context.
@@ -358,8 +350,8 @@ func userFromContext(ctx context.Context) (*authUser, bool) {
 }
 
 // sessionFromContext retrieves the authenticated device session. It reports
-// false for the sessionless WithAuthUser form, so device-scoped handlers
-// reject contexts that cannot be tied to a session.
+// false for a context that cannot be tied to a session, so device-scoped
+// handlers reject it.
 func sessionFromContext(ctx context.Context) (*authUser, bool) {
 	u, ok := userFromContext(ctx)
 	if !ok || u.SessionID == "" {
@@ -472,7 +464,6 @@ func AuthMiddleware(st *store.Store) func(ctx huma.Context, next func(huma.Conte
 			ID:        user.ID,
 			Nick:      user.Nick,
 			SessionID: session.ID,
-			DeviceID:  session.DeviceID,
 		}))
 	}
 }

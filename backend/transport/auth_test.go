@@ -396,3 +396,46 @@ func TestSSEAuthRejectsRebindingToAnotherSession(t *testing.T) {
 		t.Error("the rejected rebind must not mark the second session online")
 	}
 }
+
+func TestSSEAuthIdempotentAfterTokenRotation(t *testing.T) {
+	api, st, hub := newAuthTestServerWithHub(t, &APIConfig{})
+	t.Cleanup(hub.Close)
+	ctx := context.Background()
+
+	user := createTestUser(t, st)
+	session, _, ok := st.GetSessionByToken(ctx, user.Token)
+	if !ok {
+		t.Fatal("test user has no session")
+	}
+
+	hub.Register("c1")
+	auth := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/auth/sse-auth",
+			strings.NewReader(`{"connectionId":"c1","token":"`+token+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Adapter().ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := auth(user.Token); rec.Code != http.StatusOK {
+		t.Fatalf("first sse-auth = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Rotate the session token while the stream is open. The same connection
+	// must re-authenticate as a replay, not as a second presence.
+	_, rotated, err := st.RefreshSession(ctx, session.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := auth(rotated); rec.Code != http.StatusOK {
+		t.Fatalf("rotated sse-auth = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if !st.RemoveConnectionForSession(user.ID, session.ID) {
+		t.Fatal("one connection removal must be the last one for the user")
+	}
+	if st.IsSessionOnline(session.ID) {
+		t.Error("session must be offline after the only connection is removed")
+	}
+}

@@ -122,7 +122,7 @@ func TestLogoutRevokesOnlyOneDevice(t *testing.T) {
 	first := loginDevice(t, s, user.Email, "dev-1")
 	second := loginDevice(t, s, user.Email, "dev-2")
 
-	if err := s.Logout(ctx, first.Session.ID, user.ID); err != nil {
+	if err := s.Logout(ctx, user.ID, first.Session.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -254,7 +254,7 @@ func TestLogoutReleasesSessionResources(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.Logout(ctx, first.Session.ID, user.ID); err != nil {
+	if err := s.Logout(ctx, user.ID, first.Session.ID); err != nil {
 		t.Fatal(err)
 	}
 

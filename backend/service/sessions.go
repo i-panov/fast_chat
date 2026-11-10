@@ -3,8 +3,8 @@ package service
 import (
 	"context"
 	"time"
-	"unicode/utf8"
 
+	"fast_chat/internal/textutil"
 	"fast_chat/model"
 	"fast_chat/store"
 )
@@ -31,26 +31,11 @@ func normalizeDevice(in DeviceInfo) DeviceInfo {
 		in.ID = "legacy-" + store.GenerateID()
 	}
 
-	in.ID = truncateUTF8(in.ID, maxDeviceIDBytes)
-	in.Name = truncateUTF8(in.Name, maxDeviceNameBytes)
-	in.UserAgent = truncateUTF8(in.UserAgent, maxDeviceUserAgentBytes)
+	in.ID = textutil.TruncateUTF8(in.ID, maxDeviceIDBytes)
+	in.Name = textutil.TruncateUTF8(in.Name, maxDeviceNameBytes)
+	in.UserAgent = textutil.TruncateUTF8(in.UserAgent, maxDeviceUserAgentBytes)
 
 	return in
-}
-
-// truncateUTF8 cuts s to at most max bytes without splitting a UTF-8 rune, so
-// a truncated value never reaches the database as invalid text.
-func truncateUTF8(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(value[cut]) {
-		cut--
-	}
-
-	return value[:cut]
 }
 
 // sessionTTL keeps tests and partially configured servers from issuing
@@ -65,7 +50,7 @@ func (s *Service) sessionTTL() time.Duration {
 
 // Logout revokes only the given session and releases its realtime resources.
 // The store deletes the session's push subscriptions in the same transaction.
-func (s *Service) Logout(ctx context.Context, sessionID, userID string) error {
+func (s *Service) Logout(ctx context.Context, userID, sessionID string) error {
 	if err := s.store.RevokeSession(ctx, userID, sessionID); err != nil {
 		return err
 	}
@@ -93,7 +78,7 @@ func (s *Service) LogoutAll(ctx context.Context, userID string) error {
 
 // RevokeSession revokes another device of the user.
 func (s *Service) RevokeSession(ctx context.Context, userID, sessionID string) error {
-	return s.Logout(ctx, sessionID, userID)
+	return s.Logout(ctx, userID, sessionID)
 }
 
 // ListSessions returns the active sessions of the user.

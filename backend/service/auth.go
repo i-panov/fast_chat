@@ -99,6 +99,12 @@ func (s *Service) VerifyCode(ctx context.Context, input, code string, device Dev
 	if exists {
 		device = normalizeDevice(device)
 
+		// Serialize login + trim per process: the cap is enforced after the
+		// new session exists, and two concurrent logins must not both pass it
+		// or race the same-device select/insert.
+		s.authMu.Lock()
+		defer s.authMu.Unlock()
+
 		session, token, err := s.store.CreateSession(
 			ctx, user.ID, device.ID, device.Name, device.UserAgent, s.sessionTTL(),
 		)
