@@ -386,15 +386,15 @@ type callPushData struct {
 	FromNick string `json:"fromNick"`
 }
 
-// sendCallPush notifies an offline callee. Every call gets its own tag, so
-// two calls in a row do not collapse into one notification.
+// sendCallPush notifies the offline sessions of the callee. Every call gets
+// its own tag, so two calls in a row do not collapse into one notification.
 func (s *Service) sendCallPush(ctx context.Context, call *calls.Call) {
-	if s.push == nil || s.store.IsOnline(call.CalleeID) {
+	if s.push == nil {
 		return
 	}
 
-	subs, err := s.store.GetPushSubscriptionsByUser(ctx, call.CalleeID)
-	if err != nil || len(subs) == 0 {
+	subs := s.offlinePushSubscriptions(ctx, call.CalleeID)
+	if len(subs) == 0 {
 		return
 	}
 

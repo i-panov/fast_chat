@@ -9,6 +9,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
+	"fast_chat/calls"
 	"fast_chat/config"
 	"fast_chat/model"
 	"fast_chat/sse"
@@ -48,9 +49,19 @@ func newPushTestService(t *testing.T) *Service {
 
 type mockPushService struct {
 	sent chan []byte
+	// subs, when set, receives the subscriptions passed to SendToUser so a
+	// test can assert which sessions were selected.
+	subs chan []model.PushSubscription
 }
 
-func (m *mockPushService) SendToUser(payload []byte, _ []model.PushSubscription) {
+func (m *mockPushService) SendToUser(payload []byte, subs []model.PushSubscription) {
+	if m.subs != nil {
+		select {
+		case m.subs <- subs:
+		default:
+		}
+	}
+
 	select {
 	case m.sent <- payload:
 	default:
@@ -152,6 +163,78 @@ func registerPushTestUser(t *testing.T, s *Service, nick string) *model.User {
 	}
 
 	return user
+}
+
+// newCallPushTest prepares a service whose push sender records the selected
+// subscriptions, and a call from alice to bob.
+func newCallPushTest(t *testing.T) (*Service, *mockPushService, *calls.Call) {
+	t.Helper()
+
+	s := newPushTestService(t)
+	mock := &mockPushService{
+		sent: make(chan []byte, 1),
+		subs: make(chan []model.PushSubscription, 1),
+	}
+	s.push = mock
+
+	alice := registerPushTestUser(t, s, "alice")
+	bob := registerPushTestUser(t, s, "bob")
+
+	return s, mock, &calls.Call{
+		ID:       "call-1",
+		CallerID: alice.ID,
+		CalleeID: bob.ID,
+		ChatID:   "chat-1",
+	}
+}
+
+func TestCallPushNotifiesOnlyOfflineSessions(t *testing.T) {
+	s, mock, call := newCallPushTest(t)
+	ctx := context.Background()
+
+	for _, sessionID := range []string{"s-online", "s-offline"} {
+		if _, err := s.store.AddPushSubscriptionForSession(
+			ctx, call.CalleeID, sessionID,
+			"https://fcm.googleapis.com/fcm/send/"+sessionID, "dGVzdA==", "aHVl",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s.store.AddConnectionForSession(call.CalleeID, "s-online")
+
+	s.sendCallPush(ctx, call)
+
+	select {
+	case subs := <-mock.subs:
+		if len(subs) != 1 || subs[0].SessionID != "s-offline" {
+			t.Fatalf("pushed subscriptions = %+v, want only the offline session", subs)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected a call push for the offline session")
+	}
+}
+
+func TestCallPushSkipsOnlineCallee(t *testing.T) {
+	s, mock, call := newCallPushTest(t)
+	ctx := context.Background()
+
+	if _, err := s.store.AddPushSubscriptionForSession(
+		ctx, call.CalleeID, "s-online",
+		"https://fcm.googleapis.com/fcm/send/online", "dGVzdA==", "aHVl",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	s.store.AddConnectionForSession(call.CalleeID, "s-online")
+
+	s.sendCallPush(ctx, call)
+
+	select {
+	case subs := <-mock.subs:
+		t.Fatalf("online callee must not get a call push: %+v", subs)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 func TestIsValidPushEndpoint(t *testing.T) {
