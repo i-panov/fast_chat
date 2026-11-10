@@ -113,6 +113,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 
 	if err := db.AutoMigrate(
 		&model.User{},
+		&model.Session{},
 		&model.Chat{},
 		&ChatMember{},
 		&model.Message{},
@@ -144,6 +145,10 @@ func InitDB(dsn string) (*gorm.DB, error) {
 	// in place so existing sessions survive the switch to hashed storage.
 	if err := migrateLegacyTokens(db); err != nil {
 		return nil, fmt.Errorf("migrate legacy tokens: %w", err)
+	}
+
+	if err := backfillSessions(db); err != nil {
+		return nil, fmt.Errorf("backfill sessions: %w", err)
 	}
 
 	// Split the overloaded messages.chat_id into chat_id + thread_id before
