@@ -38,6 +38,12 @@ vi.mock("../api.ts", () => ({
 	getKeyBackup: vi.fn(() => {
 		throw new Error("http 404: no key backup");
 	}),
+	getSessions: vi.fn(() =>
+		Promise.resolve({
+			currentSessionId: "s1",
+			sessions: [{ id: "s1", current: true }],
+		}),
+	),
 	setKeyBackup: vi.fn(),
 	deleteKeyBackup: vi.fn(),
 }));

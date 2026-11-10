@@ -7,6 +7,7 @@ import type {
 	FileInfo,
 	ICEConfig,
 	Message,
+	SessionsResponse,
 	SyncResponse,
 	Thread,
 	User,
@@ -82,27 +83,63 @@ export function sendCode(email: string) {
 	);
 }
 
-export function verifyCode(email: string, code: string) {
+export interface DevicePayload {
+	deviceId?: string;
+	deviceName?: string;
+}
+
+export function verifyCode(
+	email: string,
+	code: string,
+	device: DevicePayload = {},
+) {
 	return request<VerifyCodeResult>("/api/auth/verify-code", undefined, {
 		method: "POST",
-		body: JSON.stringify({ email, code }),
+		body: JSON.stringify({ email, code, ...device }),
 	});
 }
 
-export function completeRegistration(setupToken: string, nick: string) {
-	return request<{ user: User; token: string; expiresAt: string }>(
-		"/api/auth/complete-registration",
-		undefined,
-		{ method: "POST", body: JSON.stringify({ setupToken, nick }) },
-	);
+export function completeRegistration(
+	setupToken: string,
+	nick: string,
+	device: DevicePayload = {},
+) {
+	return request<{
+		user: User;
+		token: string;
+		expiresAt: string;
+		sessionId?: string;
+		deviceId?: string;
+	}>("/api/auth/complete-registration", undefined, {
+		method: "POST",
+		body: JSON.stringify({ setupToken, nick, ...device }),
+	});
 }
 
 export function refreshToken(token: string) {
-	return request<{ token: string; expiresAt: string }>(
+	return request<{ token: string; expiresAt: string; sessionId?: string }>(
 		"/api/auth/refresh-token",
 		token,
 		{ method: "POST" },
 	);
+}
+
+export function getSessions(token: string) {
+	return request<SessionsResponse>("/api/sessions", token);
+}
+
+export function revokeDeviceSession(token: string, sessionId: string) {
+	return request<{ status: string }>(
+		`/api/sessions/${encodeURIComponent(sessionId)}`,
+		token,
+		{ method: "DELETE" },
+	);
+}
+
+export function logoutAllSessions(token: string) {
+	return request<{ status: string }>("/api/auth/logout-all", token, {
+		method: "POST",
+	});
 }
 
 // revokeSession revokes the session token on the server. The local session

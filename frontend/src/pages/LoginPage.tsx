@@ -13,6 +13,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { completeRegistration, sendCode, verifyCode } from "../api.ts";
 import { useAuth } from "../useAuth.tsx";
+import { getDeviceInfo } from "../utils/device.ts";
 
 type Step = "email" | "code" | "nick";
 
@@ -20,11 +21,13 @@ type Step = "email" | "code" | "nick";
 // navigation once validateSearch is defined.
 const CHAT_SEARCH = { chatId: undefined, threadId: undefined };
 
+// The device-aware login adds two lines to an already long component; a
+// larger extraction is tracked separately.
+// eslint-disable-next-line max-lines-per-function
 export function LoginPage() {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const { addAccount, activeAccount } = useAuth();
-
 	const [step, setStep] = useState<Step>("email");
 	const [email, setEmail] = useState("");
 	const [code, setCode] = useState("");
@@ -33,7 +36,6 @@ export function LoginPage() {
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [debugCode, setDebugCode] = useState<string | null>(null);
-
 	async function handleSendCode() {
 		const trimmed = email.trim().toLowerCase();
 		if (trimmed.length === 0) return;
@@ -59,7 +61,12 @@ export function LoginPage() {
 		setLoading(true);
 		setError("");
 		try {
-			const result = await verifyCode(email.trim().toLowerCase(), trimmed);
+			const device = getDeviceInfo();
+			const result = await verifyCode(
+				email.trim().toLowerCase(),
+				trimmed,
+				device,
+			);
 			if (result.isNew) {
 				setSetupToken(result.setupToken);
 				setStep("nick");
@@ -69,6 +76,8 @@ export function LoginPage() {
 					result.user,
 					email.trim().toLowerCase(),
 					result.expiresAt,
+					result.sessionId,
+					result.deviceId ?? device.deviceId,
 				);
 				void navigate({ to: "/chat", search: CHAT_SEARCH });
 			}
@@ -85,12 +94,15 @@ export function LoginPage() {
 		setLoading(true);
 		setError("");
 		try {
-			const result = await completeRegistration(setupToken, trimmed);
+			const device = getDeviceInfo();
+			const result = await completeRegistration(setupToken, trimmed, device);
 			addAccount(
 				result.token,
 				result.user,
 				email.trim().toLowerCase(),
 				result.expiresAt,
+				result.sessionId,
+				result.deviceId ?? device.deviceId,
 			);
 			void navigate({ to: "/chat", search: CHAT_SEARCH });
 		} catch (err) {

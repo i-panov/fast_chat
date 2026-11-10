@@ -5,6 +5,7 @@ import {
 	discardRecoveryAndGenerate,
 	ensureAccountKeys,
 	getMyKeyPair,
+	MultiDeviceKeyRequiredError,
 	RecoveryRequiredError,
 	restoreKeyPairFromBackup,
 	uploadKeyBackup,
@@ -15,6 +16,7 @@ import {
 let backupOnServer: string | null;
 let failGetKeyBackupWith: Error | null = null;
 let uploadCount = 0;
+let otherDevice = false;
 
 vi.mock("../api.ts", () => ({
 	uploadPublicKey: vi.fn(() => {
@@ -28,6 +30,17 @@ vi.mock("../api.ts", () => ({
 		}
 		return { backup: backupOnServer };
 	}),
+	getSessions: vi.fn(() =>
+		Promise.resolve({
+			currentSessionId: "s1",
+			sessions: otherDevice
+				? [
+						{ id: "s1", current: true },
+						{ id: "s2", current: false },
+					]
+				: [{ id: "s1", current: true }],
+		}),
+	),
 	setKeyBackup: vi.fn((_token: string, backup: string) => {
 		backupOnServer = backup;
 	}),
@@ -49,6 +62,7 @@ describe("key server backup integration", () => {
 		backupOnServer = null;
 		failGetKeyBackupWith = null;
 		uploadCount = 0;
+		otherDevice = false;
 	});
 
 	afterEach(() => {
@@ -60,6 +74,16 @@ describe("key server backup integration", () => {
 		expect(kp.publicKey).toBeTruthy();
 		expect(kp.privateKey).toBeTruthy();
 		expect(await getMyKeyPair()).not.toBeNull();
+	});
+
+	it("refuses to generate a new key when other devices exist", async () => {
+		otherDevice = true;
+
+		await expect(ensureAccountKeys("token")).rejects.toBeInstanceOf(
+			MultiDeviceKeyRequiredError,
+		);
+		expect(await getMyKeyPair()).toBeNull();
+		expect(uploadCount).toBe(0);
 	});
 
 	it("is single-flight: concurrent calls share one key pair", async () => {
