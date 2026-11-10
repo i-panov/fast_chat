@@ -57,7 +57,7 @@ func testAPIConfig() *config.Config {
 	return &config.Config{
 		Server:           config.ServerConfig{Domain: "localhost:8080", Port: 8080},
 		CORS:             config.CORSConfig{Origin: "*"},
-		Auth:             config.AuthConfig{TokenExpiry: 24 * time.Hour, TokenExpiryWarning: 5 * time.Minute},
+		Auth:             config.AuthConfig{TokenExpiry: 24 * time.Hour, TokenExpiryWarning: 5 * time.Minute, MaxSessionsPerUser: 50},
 		Email:            config.EmailConfig{DebugMode: false},
 		MessageEditTTL:   300,
 		MessageDeleteTTL: 0,

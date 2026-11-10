@@ -76,7 +76,7 @@ func RegisterPush(api huma.API, st *store.Store, pushPublicKey func() (string, b
 		Summary:     "Register a web-push subscription",
 		Security:    []map[string][]string{{bearerScheme: {}}},
 	}, func(ctx context.Context, input *subscribePushInput) (*subscribePushOutput, error) {
-		user, ok := userFromContext(ctx)
+		user, ok := sessionFromContext(ctx)
 		if !ok {
 			return nil, errUnauthorized
 		}
@@ -115,7 +115,9 @@ func RegisterPush(api huma.API, st *store.Store, pushPublicKey func() (string, b
 			return nil, &statusError{ErrorMessage: "too many push subscriptions", code: http.StatusBadRequest}
 		}
 
-		sub, err := st.AddPushSubscription(ctx, user.ID, input.Body.Endpoint, input.Body.P256DH, input.Body.Auth)
+		sub, err := st.AddPushSubscriptionForSession(
+			ctx, user.ID, user.SessionID, input.Body.Endpoint, input.Body.P256DH, input.Body.Auth,
+		)
 		if err != nil {
 			slog.Error("failed to save push subscription", "err", err)
 			return nil, &statusError{ErrorMessage: "failed to save subscription", code: http.StatusInternalServerError}
@@ -134,9 +136,15 @@ func RegisterPush(api huma.API, st *store.Store, pushPublicKey func() (string, b
 		Summary:     "Remove a web-push subscription",
 		Security:    []map[string][]string{{bearerScheme: {}}},
 	}, func(ctx context.Context, input *unsubscribePushInput) (*statusOutput, error) {
-		user, ok := userFromContext(ctx)
+		// The endpoint is unique per user, so deleting it removes the row of
+		// the requesting device. Legacy sessionless contexts still fall back
+		// to the user alone.
+		user, ok := sessionFromContext(ctx)
 		if !ok {
-			return nil, errUnauthorized
+			user, ok = userFromContext(ctx)
+			if !ok {
+				return nil, errUnauthorized
+			}
 		}
 
 		if input.Body.Endpoint == "" {

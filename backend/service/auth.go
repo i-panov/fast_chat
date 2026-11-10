@@ -75,17 +75,19 @@ func (s *Service) SendCode(input string) (*SendCodeResult, error) {
 }
 
 // VerifyCodeResult is the outcome of confirming a code: either an existing
-// user logs back in (with a freshly refreshed token) or a setup token is
-// issued to complete registration.
+// user logs back in on a new device session or a setup token is issued to
+// complete registration.
 type VerifyCodeResult struct {
 	IsNew      bool
 	User       *model.User
+	Session    *model.Session
+	Token      string
 	SetupToken string
 }
 
-// VerifyCode checks the code and returns a refreshed session for an existing
-// user or a setup token for a brand new one.
-func (s *Service) VerifyCode(ctx context.Context, input, code string) (*VerifyCodeResult, error) {
+// VerifyCode checks the code and returns a new session for an existing user
+// or a setup token for a brand new one.
+func (s *Service) VerifyCode(ctx context.Context, input, code string, device DeviceInfo) (*VerifyCodeResult, error) {
 	email := normalizeEmail(input)
 	code = strings.TrimSpace(code)
 
@@ -95,22 +97,36 @@ func (s *Service) VerifyCode(ctx context.Context, input, code string) (*VerifyCo
 
 	user, exists := s.store.GetUserByEmail(ctx, email)
 	if exists {
-		user, err := s.store.RefreshUserToken(ctx, user.ID, s.cfg.Auth.TokenExpiry)
+		device = normalizeDevice(device)
+
+		session, token, err := s.store.CreateSession(
+			ctx, user.ID, device.ID, device.Name, device.UserAgent, s.sessionTTL(),
+		)
 		if err != nil {
-			log().Error("failed to refresh token", "err", err)
+			log().Error("failed to create session", "err", err)
 			return nil, err
 		}
 
-		return &VerifyCodeResult{User: user}, nil
+		s.trimSessions(ctx, user.ID, session.ID)
+
+		return &VerifyCodeResult{User: user, Session: session, Token: token}, nil
 	}
 
 	setupToken := s.store.Codes().CreateSetupToken(email, emailCodeTTL)
 	return &VerifyCodeResult{IsNew: true, SetupToken: setupToken}, nil
 }
 
+// RegistrationResult is the outcome of a completed registration: the new
+// account, its first device session and the session token.
+type RegistrationResult struct {
+	User    *model.User
+	Session *model.Session
+	Token   string
+}
+
 // CompleteRegistration validates the nick and setup token, then creates the
-// user and their private self-chat.
-func (s *Service) CompleteRegistration(ctx context.Context, setupToken, nick string) (*model.User, error) {
+// user, their first session and their private self-chat.
+func (s *Service) CompleteRegistration(ctx context.Context, setupToken, nick string, device DeviceInfo) (*RegistrationResult, error) {
 	nick = strings.TrimSpace(nick)
 	if nick == "" || utf8.RuneCountInString(nick) > nickMaxRunes {
 		return nil, ErrNickInvalid
@@ -125,7 +141,12 @@ func (s *Service) CompleteRegistration(ctx context.Context, setupToken, nick str
 		return nil, ErrInvalidSetupToken
 	}
 
-	user, err := s.store.CreateUser(ctx, email, nick, s.cfg.Server.Domain, s.cfg.Auth.TokenExpiry)
+	device = normalizeDevice(device)
+
+	user, session, token, err := s.store.CreateUserWithSession(
+		ctx, email, nick, s.cfg.Server.Domain,
+		device.ID, device.Name, device.UserAgent, s.sessionTTL(),
+	)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNicknameTaken):
@@ -143,18 +164,7 @@ func (s *Service) CompleteRegistration(ctx context.Context, setupToken, nick str
 		return nil, err
 	}
 
-	return user, nil
-}
-
-// RefreshToken issues a fresh token for the given user.
-func (s *Service) RefreshToken(ctx context.Context, userID string) (*model.User, error) {
-	user, err := s.store.RefreshUserToken(ctx, userID, s.cfg.Auth.TokenExpiry)
-	if err != nil {
-		log().Error("failed to refresh token", "err", err)
-		return nil, err
-	}
-
-	return user, nil
+	return &RegistrationResult{User: user, Session: session, Token: token}, nil
 }
 
 func normalizeEmail(email string) string {

@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -41,8 +40,10 @@ type sendCodeOutput struct {
 
 type verifyCodeInput struct {
 	Body struct {
-		Email string `json:"email,omitempty"`
-		Code  string `json:"code,omitempty"`
+		Email      string `json:"email,omitempty"`
+		Code       string `json:"code,omitempty"`
+		DeviceID   string `json:"deviceId,omitempty"`
+		DeviceName string `json:"deviceName,omitempty"`
 	}
 }
 
@@ -53,6 +54,8 @@ type verifyCodeOutput struct {
 		User       *model.PublicUser `json:"user,omitempty"`
 		Token      string            `json:"token,omitempty"`
 		ExpiresAt  string            `json:"expiresAt,omitempty"`
+		SessionID  string            `json:"sessionId,omitempty"`
+		DeviceID   string            `json:"deviceId,omitempty"`
 	}
 }
 
@@ -60,6 +63,8 @@ type completeRegistrationInput struct {
 	Body struct {
 		SetupToken string `json:"setupToken,omitempty"`
 		Nick       string `json:"nick,omitempty"`
+		DeviceID   string `json:"deviceId,omitempty"`
+		DeviceName string `json:"deviceName,omitempty"`
 	}
 }
 
@@ -68,6 +73,8 @@ type completeRegistrationOutput struct {
 		User      *model.PublicUser `json:"user"`
 		Token     string            `json:"token"`
 		ExpiresAt string            `json:"expiresAt"`
+		SessionID string            `json:"sessionId"`
+		DeviceID  string            `json:"deviceId"`
 	}
 }
 
@@ -75,6 +82,7 @@ type refreshTokenOutput struct {
 	Body struct {
 		Token     string `json:"token"`
 		ExpiresAt string `json:"expiresAt"`
+		SessionID string `json:"sessionId"`
 	}
 }
 
@@ -111,7 +119,13 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 		Path:        "/api/auth/verify-code",
 		Summary:     "Verify a code and log in or get a setup token",
 	}, func(ctx context.Context, input *verifyCodeInput) (*verifyCodeOutput, error) {
-		res, err := svc.VerifyCode(ctx, input.Body.Email, input.Body.Code)
+		device := service.DeviceInfo{
+			ID:        input.Body.DeviceID,
+			Name:      input.Body.DeviceName,
+			UserAgent: userAgentFromContext(ctx),
+		}
+
+		res, err := svc.VerifyCode(ctx, input.Body.Email, input.Body.Code, device)
 		if err != nil {
 			return nil, mapServerError(err)
 		}
@@ -125,8 +139,13 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 			out.Body.IsNew = false
 			pub := res.User.Public()
 			out.Body.User = &pub
-			out.Body.Token = res.User.Token
-			out.Body.ExpiresAt = res.User.TokenExpiresAt.Format(time.RFC3339)
+			out.Body.Token = res.Token
+
+			if res.Session != nil {
+				out.Body.ExpiresAt = res.Session.ExpiresAt.Format(time.RFC3339)
+				out.Body.SessionID = res.Session.ID
+				out.Body.DeviceID = res.Session.DeviceID
+			}
 		}
 
 		return out, nil
@@ -138,24 +157,30 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 		Path:        "/api/auth/complete-registration",
 		Summary:     "Finish registration with a setup token and nick",
 	}, func(ctx context.Context, input *completeRegistrationInput) (*completeRegistrationOutput, error) {
-		user, err := svc.CompleteRegistration(ctx, input.Body.SetupToken, input.Body.Nick)
+		device := service.DeviceInfo{
+			ID:        input.Body.DeviceID,
+			Name:      input.Body.DeviceName,
+			UserAgent: userAgentFromContext(ctx),
+		}
+
+		res, err := svc.CompleteRegistration(ctx, input.Body.SetupToken, input.Body.Nick, device)
 		if err != nil {
 			return nil, mapServerError(err)
 		}
 
-		pub := user.Public()
+		pub := res.User.Public()
 
-		return &completeRegistrationOutput{
-			Body: struct {
-				User      *model.PublicUser `json:"user"`
-				Token     string            `json:"token"`
-				ExpiresAt string            `json:"expiresAt"`
-			}{
-				User:      &pub,
-				Token:     user.Token,
-				ExpiresAt: user.TokenExpiresAt.Format(time.RFC3339),
-			},
-		}, nil
+		out := &completeRegistrationOutput{}
+		out.Body.User = &pub
+		out.Body.Token = res.Token
+
+		if res.Session != nil {
+			out.Body.ExpiresAt = res.Session.ExpiresAt.Format(time.RFC3339)
+			out.Body.SessionID = res.Session.ID
+			out.Body.DeviceID = res.Session.DeviceID
+		}
+
+		return out, nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -165,54 +190,73 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 		Summary:     "Refresh the current session token",
 		Security:    []map[string][]string{{bearerScheme: {}}},
 	}, func(ctx context.Context, _ *struct{}) (*refreshTokenOutput, error) {
-		user, ok := userFromContext(ctx)
+		user, ok := sessionFromContext(ctx)
 		if !ok {
 			return nil, errUnauthorized
 		}
 
-		refreshed, err := svc.RefreshToken(ctx, user.ID)
+		session, token, err := svc.RefreshSession(ctx, user.SessionID)
 		if err != nil {
 			return nil, mapServerError(err)
 		}
 
-		return &refreshTokenOutput{
-			Body: struct {
-				Token     string `json:"token"`
-				ExpiresAt string `json:"expiresAt"`
-			}{
-				Token:     refreshed.Token,
-				ExpiresAt: refreshed.TokenExpiresAt.Format(time.RFC3339),
-			},
-		}, nil
+		out := &refreshTokenOutput{}
+		out.Body.Token = token
+		out.Body.ExpiresAt = session.ExpiresAt.Format(time.RFC3339)
+		out.Body.SessionID = session.ID
+
+		return out, nil
 	})
 
 	registerSSEAuth(api, svc, st, hub)
-	registerLogout(api, st)
+	registerLogout(api, svc)
+	registerLogoutAll(api, svc)
+	RegisterSessions(api, svc)
 }
 
-// registerLogout adds the logout operation. It revokes the token on the
-// server: without it a token that leaked stays usable until it expires, and
-// logging out of the interface would only hide the session locally.
-//
-// The account has one session: the token belongs to the account, not to the
-// device, so the logout ends the session of the account on every device.
-// Sessions per device would need their own table and are a separate task.
-func registerLogout(api huma.API, st *store.Store) {
+// registerLogout adds the logout operation. It revokes only the current
+// session: the other devices of the account keep their tokens, so logging out
+// on a laptop does not sign the user out on a phone.
+func registerLogout(api huma.API, svc *service.Service) {
 	huma.Register(api, huma.Operation{
 		OperationID: "logout",
 		Method:      http.MethodPost,
 		Path:        "/api/auth/logout",
-		Summary:     "Revoke the session token of the account",
+		Summary:     "Revoke the current session token",
 		Security:    []map[string][]string{{bearerScheme: {}}},
 	}, func(ctx context.Context, _ *struct{}) (*statusOutput, error) {
-		user, ok := userFromContext(ctx)
+		user, ok := sessionFromContext(ctx)
 		if !ok {
 			return nil, errUnauthorized
 		}
 
-		if err := st.RevokeUserToken(ctx, user.ID); err != nil {
-			slog.Error("failed to revoke token", "err", err)
-			return nil, errInternal
+		if err := svc.Logout(ctx, user.SessionID, user.ID); err != nil {
+			return nil, mapServerError(err)
+		}
+
+		return &statusOutput{Body: struct {
+			Status string `example:"ok" json:"status"`
+		}{Status: "ok"}}, nil
+	})
+}
+
+// registerLogoutAll adds the logout-everywhere operation: every device of the
+// account loses its token and its realtime streams.
+func registerLogoutAll(api huma.API, svc *service.Service) {
+	huma.Register(api, huma.Operation{
+		OperationID: "logout-all",
+		Method:      http.MethodPost,
+		Path:        "/api/auth/logout-all",
+		Summary:     "Revoke every session of the account",
+		Security:    []map[string][]string{{bearerScheme: {}}},
+	}, func(ctx context.Context, _ *struct{}) (*statusOutput, error) {
+		user, ok := sessionFromContext(ctx)
+		if !ok {
+			return nil, errUnauthorized
+		}
+
+		if err := svc.LogoutAll(ctx, user.ID); err != nil {
+			return nil, mapServerError(err)
 		}
 
 		return &statusOutput{Body: struct {
@@ -281,11 +325,15 @@ type APIConfig struct {
 type authContextKey struct{}
 
 type authUser struct {
-	ID   string
-	Nick string
+	ID        string
+	Nick      string
+	SessionID string
+	DeviceID  string
 }
 
-// WithAuthUser stores the authenticated user in the context.
+// WithAuthUser stores the authenticated user in the context. It is the
+// sessionless form used by tests and internal callers; handlers that need the
+// device session must resolve it through AuthMiddleware.
 func WithAuthUser(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, authContextKey{}, &authUser{ID: userID})
 }
@@ -296,6 +344,28 @@ func WithAuthUser(ctx context.Context, userID string) context.Context {
 func userFromContext(ctx context.Context) (*authUser, bool) {
 	u, ok := ctx.Value(authContextKey{}).(*authUser)
 	return u, ok
+}
+
+// sessionFromContext retrieves the authenticated device session. It reports
+// false for the sessionless WithAuthUser form, so device-scoped handlers
+// reject contexts that cannot be tied to a session.
+func sessionFromContext(ctx context.Context) (*authUser, bool) {
+	u, ok := userFromContext(ctx)
+	if !ok || u.SessionID == "" {
+		return nil, false
+	}
+
+	return u, true
+}
+
+// userAgentFromContext returns the User-Agent of the raw request stashed by
+// requestStashMiddleware.
+func userAgentFromContext(ctx context.Context) string {
+	if r, ok := requestFromContext(ctx); ok {
+		return r.UserAgent()
+	}
+
+	return ""
 }
 
 var errUnauthorized = &statusError{ErrorMessage: "unauthorized", code: http.StatusUnauthorized}
@@ -357,8 +427,8 @@ func AuthMiddleware(st *store.Store) func(ctx huma.Context, next func(huma.Conte
 			return
 		}
 
-		user, ok := st.GetUserByToken(ctx.Context(), token)
-		if !ok || time.Now().After(user.TokenExpiresAt) {
+		session, user, ok := st.GetSessionByToken(ctx.Context(), token)
+		if !ok {
 			ctx.SetHeader("Content-Type", "application/json")
 			ctx.SetStatus(http.StatusUnauthorized)
 			ctx.BodyWriter().Write([]byte(`{"error":"unauthorized"}`)) //nolint:errcheck,gosec // best-effort: auth rejection
@@ -366,6 +436,11 @@ func AuthMiddleware(st *store.Store) func(ctx huma.Context, next func(huma.Conte
 			return
 		}
 
-		next(huma.WithValue(ctx, authContextKey{}, &authUser{ID: user.ID, Nick: user.Nick}))
+		next(huma.WithValue(ctx, authContextKey{}, &authUser{
+			ID:        user.ID,
+			Nick:      user.Nick,
+			SessionID: session.ID,
+			DeviceID:  session.DeviceID,
+		}))
 	}
 }

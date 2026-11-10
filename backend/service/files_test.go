@@ -32,6 +32,7 @@ func newTestService(t *testing.T) *Service {
 		Auth: config.AuthConfig{
 			TokenExpiry:        24 * time.Hour,
 			TokenExpiryWarning: 5 * time.Minute,
+			MaxSessionsPerUser: 50,
 		},
 	}
 
