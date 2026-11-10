@@ -109,8 +109,35 @@ func IsValidPushEndpoint(endpoint string) bool {
 	return false
 }
 
-// SendPushForMessage sends a push notification for a message to an offline
-// recipient. It is a no-op when push is disabled or the recipient is online.
+// offlinePushSubscriptions returns the subscriptions that should receive a
+// push: the ones whose session is offline. A legacy subscription without a
+// session id counts as offline only while the whole user is offline.
+func (s *Service) offlinePushSubscriptions(ctx context.Context, userID string) []model.PushSubscription {
+	subs, err := s.store.GetPushSubscriptionsByUser(ctx, userID)
+	if err != nil {
+		return nil
+	}
+
+	out := make([]model.PushSubscription, 0, len(subs))
+	for _, sub := range subs {
+		if sub.SessionID == "" {
+			if s.store.IsOnline(userID) {
+				continue
+			}
+			out = append(out, sub)
+			continue
+		}
+		if s.store.IsSessionOnline(sub.SessionID) {
+			continue
+		}
+		out = append(out, sub)
+	}
+	return out
+}
+
+// SendPushForMessage sends a push notification for a message to the recipient
+// sessions that are offline. It is a no-op when push is disabled or every
+// session of the recipient is online.
 func (s *Service) SendPushForMessage(
 	ctx context.Context,
 	chat *model.Chat,
@@ -119,7 +146,12 @@ func (s *Service) SendPushForMessage(
 	recipientID string,
 ) {
 
-	if s.push == nil || s.store.IsOnline(recipientID) {
+	if s.push == nil {
+		return
+	}
+
+	subs := s.offlinePushSubscriptions(ctx, recipientID)
+	if len(subs) == 0 {
 		return
 	}
 
@@ -138,11 +170,6 @@ func (s *Service) SendPushForMessage(
 
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return
-	}
-
-	subs, err := s.store.GetPushSubscriptionsByUser(ctx, recipientID)
-	if err != nil || len(subs) == 0 {
 		return
 	}
 

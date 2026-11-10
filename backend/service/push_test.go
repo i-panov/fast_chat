@@ -116,6 +116,33 @@ func TestSendPushForMessageOfflineWithSubscriptions(t *testing.T) {
 	}
 }
 
+func TestOfflinePushSubscriptionsSkipsOnlineSession(t *testing.T) {
+	s := newPushTestService(t)
+	ctx := context.Background()
+	alice := registerPushTestUser(t, s, "alice")
+
+	if _, err := s.store.AddPushSubscriptionForSession(
+		ctx, alice.ID, "s1", "https://fcm.googleapis.com/fcm/send/one", "dGVzdA==", "aHVl",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.AddPushSubscriptionForSession(
+		ctx, alice.ID, "s2", "https://fcm.googleapis.com/fcm/send/two", "dGVzdA==", "aHVl",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	s.store.AddConnectionForSession(alice.ID, "s1")
+
+	subs := s.offlinePushSubscriptions(ctx, alice.ID)
+	if len(subs) != 1 {
+		t.Fatalf("subscriptions = %+v, want only the offline s2", subs)
+	}
+	if subs[0].SessionID != "s2" {
+		t.Fatalf("session = %q, want s2", subs[0].SessionID)
+	}
+}
+
 func registerPushTestUser(t *testing.T, s *Service, nick string) *model.User {
 	t.Helper()
 

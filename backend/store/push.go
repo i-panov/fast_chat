@@ -9,10 +9,18 @@ import (
 	"fast_chat/model"
 )
 
-func (s *Store) AddPushSubscription(ctx context.Context, userID, endpoint, p256dh, auth string) (*model.PushSubscription, error) {
+// AddPushSubscriptionForSession creates or refreshes the subscription of a
+// session. The endpoint is unique across the table: the same browser endpoint
+// re-subscribing for another session moves the row to that session.
+func (s *Store) AddPushSubscriptionForSession(
+	ctx context.Context,
+	userID, sessionID, endpoint, p256dh, auth string,
+) (*model.PushSubscription, error) {
+
 	sub := &model.PushSubscription{
 		ID:        GenerateID(),
 		UserID:    userID,
+		SessionID: sessionID,
 		Endpoint:  endpoint,
 		P256DH:    p256dh,
 		Auth:      auth,
@@ -22,9 +30,10 @@ func (s *Store) AddPushSubscription(ctx context.Context, userID, endpoint, p256d
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "endpoint"}},
 		DoUpdates: clause.Assignments(map[string]any{
-			"user_id": userID,
-			"p256_dh": p256dh,
-			"auth":    auth,
+			"user_id":    userID,
+			"session_id": sessionID,
+			"p256_dh":    p256dh,
+			"auth":       auth,
 		}),
 	}).Create(sub).Error; err != nil {
 		return nil, err
@@ -39,6 +48,12 @@ func (s *Store) AddPushSubscription(ctx context.Context, userID, endpoint, p256d
 	}
 
 	return &stored, nil
+}
+
+// AddPushSubscription is the legacy user-only form. It writes a subscription
+// with an empty session id, which is delivered only while the user is offline.
+func (s *Store) AddPushSubscription(ctx context.Context, userID, endpoint, p256dh, auth string) (*model.PushSubscription, error) {
+	return s.AddPushSubscriptionForSession(ctx, userID, "", endpoint, p256dh, auth)
 }
 
 func (s *Store) GetPushSubscriptionsByUser(ctx context.Context, userID string) ([]model.PushSubscription, error) {
@@ -56,4 +71,17 @@ func (s *Store) DeletePushSubscription(ctx context.Context, userID, endpoint str
 
 func (s *Store) DeletePushSubscriptionByEndpoint(ctx context.Context, endpoint string) error {
 	return s.db.WithContext(ctx).Where("endpoint = ?", endpoint).Delete(&model.PushSubscription{}).Error
+}
+
+// DeletePushSubscriptionsBySession removes the subscriptions of one device
+// session, leaving the other sessions of the user subscribed.
+func (s *Store) DeletePushSubscriptionsBySession(ctx context.Context, sessionID string) error {
+	return s.db.WithContext(ctx).Where("session_id = ?", sessionID).Delete(&model.PushSubscription{}).Error
+}
+
+// DeleteAllPushSubscriptions removes every subscription of the user, for
+// every device. It is the logout-everywhere counterpart of
+// DeletePushSubscriptionsBySession.
+func (s *Store) DeleteAllPushSubscriptions(ctx context.Context, userID string) error {
+	return s.db.WithContext(ctx).Where("user_id = ?", userID).Delete(&model.PushSubscription{}).Error
 }

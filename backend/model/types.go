@@ -170,12 +170,16 @@ type DeletedChat struct {
 }
 
 type PushSubscription struct {
-	ID        string    `gorm:"primaryKey"           json:"id"`
-	UserID    string    `gorm:"index;not null"       json:"userId"`
-	Endpoint  string    `gorm:"uniqueIndex;not null" json:"endpoint"`
-	P256DH    string    `gorm:"not null"             json:"p256dh"` //nolint:tagliatelle // field names fixed by the Web Push protocol
-	Auth      string    `gorm:"not null"             json:"auth"`
-	CreatedAt time.Time `gorm:"not null"             json:"createdAt"`
+	ID     string `gorm:"primaryKey"     json:"id"`
+	UserID string `gorm:"index;not null" json:"userId"`
+	// SessionID is the device session the subscription belongs to. An empty
+	// value marks a legacy subscription written before sessions existed; it
+	// is only delivered while the whole user is offline.
+	SessionID string    `gorm:"index;not null;default:''" json:"sessionId"`
+	Endpoint  string    `gorm:"uniqueIndex;not null"      json:"endpoint"`
+	P256DH    string    `gorm:"not null"                  json:"p256dh"` //nolint:tagliatelle // field names fixed by the Web Push protocol
+	Auth      string    `gorm:"not null"                  json:"auth"`
+	CreatedAt time.Time `gorm:"not null"                  json:"createdAt"`
 }
 
 type Thread struct {
