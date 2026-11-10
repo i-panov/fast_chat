@@ -185,7 +185,7 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 	}
 
 	if err := db.AutoMigrate(
-		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{},
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{},
@@ -336,7 +336,7 @@ func TestShutdownEndsCallsBeforeTheHub(t *testing.T) {
 	}
 
 	if err := db.AutoMigrate(
-		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{},
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{},
@@ -411,7 +411,7 @@ func TestShutdownDrainsWithAnOpenSSEStream(t *testing.T) {
 	}
 
 	if err := db.AutoMigrate(
-		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{},
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{},
@@ -687,7 +687,7 @@ func newTestStore(t *testing.T, dir string) *store.Store {
 	}
 
 	if err := db.AutoMigrate(
-		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{},
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{},

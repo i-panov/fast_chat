@@ -27,7 +27,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 	}
 
 	if err := db.AutoMigrate(
-		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{},
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{},

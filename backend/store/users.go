@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	"fast_chat/internal/ids"
 	"fast_chat/model"
 )
@@ -53,7 +55,9 @@ func escapeLike(value string) string {
 	return r.Replace(value)
 }
 
-func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string, tokenExpiry time.Duration) (*model.User, error) {
+// CreateUserWithSession creates the account and its first session in one
+// transaction. The returned token is plaintext and sent to the client once.
+func (s *Store) CreateUserWithSession(ctx context.Context, email, nick, serverDomain, deviceID, deviceName, userAgent string, ttl time.Duration) (*model.User, *model.Session, string, error) {
 	fullID := nick + ":" + serverDomain
 	now := time.Now().UTC()
 	token := GenerateID()
@@ -63,10 +67,30 @@ func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string
 		Email:          email,
 		Nick:           nick,
 		Token:          hashToken(token),
-		TokenExpiresAt: now.Add(tokenExpiry),
+		TokenExpiresAt: now.Add(ttl),
+	}
+	session := &model.Session{
+		ID:         GenerateID(),
+		UserID:     fullID,
+		DeviceID:   deviceID,
+		DeviceName: truncateDeviceName(deviceName),
+		TokenHash:  hashToken(token),
+		UserAgent:  truncateUserAgent(userAgent),
+		CreatedAt:  now,
+		LastSeenAt: now,
+		ExpiresAt:  now.Add(ttl),
+	}
+	if session.DeviceID == "" {
+		session.DeviceID = "legacy-" + GenerateID()
 	}
 
-	if err := s.db.WithContext(ctx).Create(user).Error; err != nil {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(user).Error; err != nil {
+			return err
+		}
+		return tx.Create(session).Error
+	})
+	if err != nil {
 		// Match the column with or without table qualification
 		// ("users.email" and bare "email" both occur across sqlite driver
 		// versions): an unqualified Contains("email") would also misclassify
@@ -76,29 +100,34 @@ func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string
 		if strings.Contains(msg, "UNIQUE constraint failed") {
 			switch {
 			case strings.Contains(msg, ".email") || strings.Contains(msg, ": email"):
-				return nil, ErrEmailTaken
+				return nil, nil, "", ErrEmailTaken
 			case strings.Contains(msg, ".nick") || strings.Contains(msg, ": nick"):
-				return nil, ErrNicknameTaken
+				return nil, nil, "", ErrNicknameTaken
 			}
 		}
 
-		return nil, err
+		return nil, nil, "", err
 	}
 
 	// Return the plaintext token to the caller (it is sent to the client
 	// exactly once); only the hash is persisted.
 	user.Token = token
 
-	return user, nil
+	return user, session, token, nil
 }
 
-func (s *Store) GetUserByToken(ctx context.Context, token string) (*model.User, bool) {
-	var user model.User
-	if err := s.db.WithContext(ctx).Where("token = ?", hashToken(token)).First(&user).Error; err != nil {
-		return nil, false
-	}
+// CreateUser keeps the pre-session signature working for callers that do not
+// have device information: it creates the account with a legacy session.
+func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string, tokenExpiry time.Duration) (*model.User, error) {
+	user, _, _, err := s.CreateUserWithSession(ctx, email, nick, serverDomain, legacyDeviceID, "Legacy session", "", tokenExpiry)
+	return user, err
+}
 
-	return &user, true
+// GetUserByToken resolves a bearer token through the sessions table, so only
+// active, unexpired sessions authenticate.
+func (s *Store) GetUserByToken(ctx context.Context, token string) (*model.User, bool) {
+	_, user, ok := s.GetSessionByToken(ctx, token)
+	return user, ok
 }
 
 func (s *Store) GetUserByID(ctx context.Context, id string) (*model.User, bool) {

@@ -15,6 +15,38 @@ func newSessionTestStore(t *testing.T) *Store {
 	return newTestStore(t)
 }
 
+// createTestUserWithoutSessions drops the legacy session CreateUser now writes,
+// for tests that manage session rows themselves.
+func createTestUserWithoutSessions(t *testing.T, s *Store, nick string) *model.User {
+	t.Helper()
+
+	user := createTestUser(t, s, nick)
+	if err := s.DB().Where("user_id = ?", user.ID).Delete(&model.Session{}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	return user
+}
+
+func TestCreateUserWithSessionReturnsWorkingToken(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+
+	user, sess, token, err := s.CreateUserWithSession(ctx, "bob@test.local", "bob", "test", "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.ID != "bob:test" {
+		t.Fatalf("user ID = %s", user.ID)
+	}
+	if sess.UserID != user.ID || sess.DeviceID != "dev-1" {
+		t.Fatalf("session = %+v", sess)
+	}
+	if _, gotUser, ok := s.GetSessionByToken(ctx, token); !ok || gotUser.ID != user.ID {
+		t.Fatal("token must resolve to the new user")
+	}
+}
+
 func TestBackfillSessionsFromUserToken(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
@@ -87,7 +119,7 @@ func TestBackfillSessionsNormalizesExpiryToUTC(t *testing.T) {
 func TestBackfillSessionsSkipsExistingTokenHash(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
-	user := createTestUser(t, s, "alice")
+	user := createTestUserWithoutSessions(t, s, "alice")
 
 	now := time.Now().UTC()
 	deviceSession := &model.Session{
@@ -377,7 +409,7 @@ func TestRefreshSessionRotatesOnlyOne(t *testing.T) {
 func TestListSessionsExcludesRevoked(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
-	user := createTestUser(t, s, "alice")
+	user := createTestUserWithoutSessions(t, s, "alice")
 
 	first, _, _ := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
 	if _, _, err := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour); err != nil {
@@ -425,7 +457,7 @@ func TestGetSessionByIDKeepsRevokedSessionVisible(t *testing.T) {
 func TestRevokeAllSessionsRevokesEveryDevice(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
-	user := createTestUser(t, s, "alice")
+	user := createTestUserWithoutSessions(t, s, "alice")
 
 	_, firstToken, _ := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
 	_, secondToken, _ := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour)
@@ -456,7 +488,7 @@ func TestRevokeAllSessionsRevokesEveryDevice(t *testing.T) {
 func TestTrimSessionsRevokesOldestAndKeepsGivenSession(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
-	user := createTestUser(t, s, "alice")
+	user := createTestUserWithoutSessions(t, s, "alice")
 
 	oldest, _, _ := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
 	middle, _, _ := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour)
@@ -502,7 +534,7 @@ func TestTrimSessionsRevokesOldestAndKeepsGivenSession(t *testing.T) {
 func TestDeleteOldSessionsRemovesOnlyStaleRows(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
-	user := createTestUser(t, s, "alice")
+	user := createTestUserWithoutSessions(t, s, "alice")
 
 	longAgo := time.Now().UTC().Add(-48 * time.Hour)
 	cutoff := time.Now().UTC().Add(-24 * time.Hour)

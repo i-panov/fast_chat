@@ -24,7 +24,7 @@ func newFedTestService(t *testing.T) *Service {
 	}
 
 	if err := db.AutoMigrate(
-		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{},
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{}, &model.FederationOp{}, &model.FederationCursor{},
@@ -37,6 +37,10 @@ func newFedTestService(t *testing.T) *Service {
 		Server:   config.ServerConfig{Domain: "localhost:8080", Port: 8080},
 		CORS:     config.CORSConfig{Origin: "*"},
 		Database: config.DatabaseConfig{Path: ":memory:"},
+		Auth: config.AuthConfig{
+			TokenExpiry:        24 * time.Hour,
+			TokenExpiryWarning: 5 * time.Minute,
+		},
 	}
 
 	return New(store.New(db), cfg, sse.NewHub(time.Minute), nil)
