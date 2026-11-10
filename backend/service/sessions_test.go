@@ -2,8 +2,12 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"fast_chat/sse"
 )
 
 // loginDevice stores a fresh code and verifies it for one device. The code
@@ -208,5 +212,87 @@ func TestCompleteRegistrationCreatesSession(t *testing.T) {
 
 	if _, _, ok := s.store.GetSessionByToken(ctx, res.Token); !ok {
 		t.Error("the registration token must authenticate")
+	}
+}
+
+// Logout must release the realtime resources of the session it revokes and
+// leave the other devices of the account untouched: otherwise a logged-out
+// device keeps an SSE stream and push subscriptions alive.
+func TestLogoutReleasesSessionResources(t *testing.T) {
+	s := newTestService(t)
+	hub := sse.NewHub(time.Minute)
+	t.Cleanup(hub.Close)
+	s.hub = hub
+
+	ctx := context.Background()
+
+	user, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := loginDevice(t, s, user.Email, "dev-1")
+	second := loginDevice(t, s, user.Email, "dev-2")
+
+	const (
+		firstEndpoint  = "https://fcm.googleapis.com/fcm/send/one"
+		secondEndpoint = "https://fcm.googleapis.com/fcm/send/two"
+	)
+	if _, err := s.store.AddPushSubscriptionForSession(ctx, user.ID, first.Session.ID, firstEndpoint, "p256dh", "auth"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.AddPushSubscriptionForSession(ctx, user.ID, second.Session.ID, secondEndpoint, "p256dh", "auth"); err != nil {
+		t.Fatal(err)
+	}
+
+	hub.Register("c1")
+	if err := hub.AuthenticateSession("c1", user.ID, first.Session.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	hub.Register("c2")
+	if err := hub.AuthenticateSession("c2", user.ID, second.Session.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Logout(ctx, first.Session.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if hub.GetConnection("c1") != nil {
+		t.Error("the logged-out session must lose its SSE connection")
+	}
+	if hub.GetConnection("c2") == nil {
+		t.Error("the other session must keep its SSE connection")
+	}
+
+	subs, err := s.store.GetPushSubscriptionsByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 1 || subs[0].SessionID != second.Session.ID {
+		t.Fatalf("subscriptions = %+v, want only the other session's", subs)
+	}
+}
+
+func TestNormalizeDeviceCapsAndKeepsValidUTF8(t *testing.T) {
+	device := normalizeDevice(DeviceInfo{
+		ID:        strings.Repeat("d", 200),
+		Name:      strings.Repeat("\u044f", 40),  // 80 bytes.
+		UserAgent: strings.Repeat("\u044f", 300), // 600 bytes.
+	})
+
+	if len(device.ID) != maxDeviceIDBytes {
+		t.Fatalf("device ID length = %d, want %d", len(device.ID), maxDeviceIDBytes)
+	}
+	if len(device.Name) > maxDeviceNameBytes || !utf8.ValidString(device.Name) {
+		t.Fatalf("device name %q is longer than %d bytes or invalid UTF-8", device.Name, maxDeviceNameBytes)
+	}
+	if len(device.UserAgent) > maxDeviceUserAgentBytes || !utf8.ValidString(device.UserAgent) {
+		t.Fatalf("user agent is longer than %d bytes or invalid UTF-8 (len=%d)", maxDeviceUserAgentBytes, len(device.UserAgent))
+	}
+
+	generated := normalizeDevice(DeviceInfo{})
+	if !strings.HasPrefix(generated.ID, "legacy-") {
+		t.Fatalf("generated device ID = %q, want a legacy- prefix", generated.ID)
 	}
 }

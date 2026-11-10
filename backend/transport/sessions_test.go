@@ -299,3 +299,30 @@ func TestCompleteRegistrationReturnsSession(t *testing.T) {
 		t.Fatalf("registration token does not authenticate: %+v", session)
 	}
 }
+
+// Revoking must be scoped to the authenticated user: one account cannot log
+// another account's device out even when it knows the session id.
+func TestRevokeSessionOfAnotherUserIsNotFound(t *testing.T) {
+	api, st := newAuthTestServer(t, &APIConfig{})
+	ctx := context.Background()
+
+	alice := createTestUser(t, st)
+	bob, err := st.CreateUser(ctx, "bob@test.local", "bob", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bobSession, _, ok := st.GetSessionByToken(ctx, bob.Token)
+	if !ok {
+		t.Fatal("bob has no session")
+	}
+
+	rec := authedRequest(t, api, http.MethodDelete, "/api/sessions/"+bobSession.ID, alice.Token, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+
+	if _, _, ok := st.GetSessionByToken(ctx, bob.Token); !ok {
+		t.Fatal("another user's revoke must not touch bob's session")
+	}
+}

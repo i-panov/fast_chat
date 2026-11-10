@@ -3,9 +3,18 @@ package service
 import (
 	"context"
 	"time"
+	"unicode/utf8"
 
 	"fast_chat/model"
 	"fast_chat/store"
+)
+
+// Device field caps, in bytes. They match the session columns, so a client
+// cannot store more than the schema intends (and device_id is indexed).
+const (
+	maxDeviceIDBytes        = 128
+	maxDeviceNameBytes      = 64
+	maxDeviceUserAgentBytes = 512
 )
 
 // DeviceInfo identifies the client that owns a session.
@@ -22,15 +31,26 @@ func normalizeDevice(in DeviceInfo) DeviceInfo {
 		in.ID = "legacy-" + store.GenerateID()
 	}
 
-	if len(in.Name) > 64 {
-		in.Name = in.Name[:64]
-	}
-
-	if len(in.UserAgent) > 512 {
-		in.UserAgent = in.UserAgent[:512]
-	}
+	in.ID = truncateUTF8(in.ID, maxDeviceIDBytes)
+	in.Name = truncateUTF8(in.Name, maxDeviceNameBytes)
+	in.UserAgent = truncateUTF8(in.UserAgent, maxDeviceUserAgentBytes)
 
 	return in
+}
+
+// truncateUTF8 cuts s to at most max bytes without splitting a UTF-8 rune, so
+// a truncated value never reaches the database as invalid text.
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+
+	return value[:cut]
 }
 
 // sessionTTL keeps tests and partially configured servers from issuing

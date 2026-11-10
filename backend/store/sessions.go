@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
@@ -98,12 +99,23 @@ func (s *Store) GetSessionByToken(ctx context.Context, token string) (*model.Ses
 // mirrorUserToken keeps the legacy users.token columns in step with the
 // session token they describe. Nothing authenticates against them any more,
 // but they remain the source for users that predate the sessions table, so a
-// stale value is exactly what a restart would resurrect.
-func (s *Store) mirrorUserToken(ctx context.Context, userID, tokenHash string, expiresAt time.Time) error {
-	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+// stale value is exactly what a restart would resurrect. It writes through the
+// caller's transaction, so the session change and the mirror commit together.
+func mirrorUserToken(tx *gorm.DB, userID, tokenHash string, expiresAt time.Time) error {
+	return tx.Model(&model.User{}).Where("id = ?", userID).
 		Updates(map[string]any{
 			fieldToken:         tokenHash,
 			fieldTokenExpireAt: expiresAt.UTC(),
+		}).Error
+}
+
+// revokeUserToken invalidates the legacy users.token columns through the
+// caller's transaction.
+func revokeUserToken(tx *gorm.DB, userID string) error {
+	return tx.Model(&model.User{}).Where("id = ?", userID).
+		Updates(map[string]any{
+			fieldToken:         hashToken(GenerateID()),
+			fieldTokenExpireAt: time.Now().UTC(),
 		}).Error
 }
 
@@ -127,52 +139,56 @@ func (s *Store) CreateSession(
 	now := time.Now().UTC()
 	expiresAt := now.Add(ttl)
 	tokenHash := hashToken(token)
+	deviceName = truncateDeviceName(deviceName)
+	userAgent = truncateUserAgent(userAgent)
 
 	var session model.Session
-	err := s.db.WithContext(ctx).
-		Where("user_id = ? AND device_id = ?", userID, deviceID).
-		First(&session).Error
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		err := tx.Where("user_id = ? AND device_id = ?", userID, deviceID).
+			First(&session).Error
 
-	switch {
-	case errors.Is(err, gorm.ErrRecordNotFound):
-		session = model.Session{
-			ID:         GenerateID(),
-			UserID:     userID,
-			DeviceID:   deviceID,
-			DeviceName: truncateDeviceName(deviceName),
-			TokenHash:  tokenHash,
-			UserAgent:  truncateUserAgent(userAgent),
-			CreatedAt:  now,
-			LastSeenAt: now,
-			ExpiresAt:  expiresAt,
-		}
-		if err := s.db.WithContext(ctx).Create(&session).Error; err != nil {
-			return nil, "", err
-		}
-	case err != nil:
-		return nil, "", err
-	default:
-		if err := s.db.WithContext(ctx).Model(&model.Session{}).
-			Where("id = ?", session.ID).
-			Updates(map[string]any{
-				fieldTokenHash: tokenHash,
-				"device_name":  truncateDeviceName(deviceName),
-				"user_agent":   truncateUserAgent(userAgent),
-				fieldExpiresAt: expiresAt,
-				"last_seen_at": now,
-				fieldRevokedAt: nil,
-			}).Error; err != nil {
-			return nil, "", err
-		}
-		session.DeviceName = truncateDeviceName(deviceName)
-		session.UserAgent = truncateUserAgent(userAgent)
-		session.TokenHash = tokenHash
-		session.ExpiresAt = expiresAt
-		session.LastSeenAt = now
-		session.RevokedAt = nil
-	}
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			session = model.Session{
+				ID:         GenerateID(),
+				UserID:     userID,
+				DeviceID:   deviceID,
+				DeviceName: deviceName,
+				TokenHash:  tokenHash,
+				UserAgent:  userAgent,
+				CreatedAt:  now,
+				LastSeenAt: now,
+				ExpiresAt:  expiresAt,
+			}
 
-	if err := s.mirrorUserToken(ctx, userID, tokenHash, expiresAt); err != nil {
+			return tx.Create(&session).Error
+		case err != nil:
+			return err
+		default:
+			if err := tx.Model(&model.Session{}).
+				Where("id = ?", session.ID).
+				Updates(map[string]any{
+					fieldTokenHash: tokenHash,
+					"device_name":  deviceName,
+					"user_agent":   userAgent,
+					fieldExpiresAt: expiresAt,
+					"last_seen_at": now,
+					fieldRevokedAt: nil,
+				}).Error; err != nil {
+				return err
+			}
+
+			session.DeviceName = deviceName
+			session.UserAgent = userAgent
+			session.TokenHash = tokenHash
+			session.ExpiresAt = expiresAt
+			session.LastSeenAt = now
+			session.RevokedAt = nil
+
+			return nil
+		}
+	})
+	if err != nil {
 		return nil, "", err
 	}
 
@@ -197,26 +213,33 @@ func (s *Store) RefreshSession(ctx context.Context, sessionID string, ttl time.D
 
 	now := time.Now().UTC()
 	token := GenerateID()
-	res := s.db.WithContext(ctx).Model(&model.Session{}).
-		Where("id = ? AND revoked_at IS NULL AND expires_at > ?", sessionID, now).
-		Updates(map[string]any{
-			fieldTokenHash: hashToken(token),
-			fieldExpiresAt: now.Add(ttl),
-			"last_seen_at": now,
-		})
-	if res.Error != nil {
-		return nil, "", res.Error
-	}
-	if res.RowsAffected == 0 {
-		return nil, "", ErrSessionNotFound
-	}
 
 	var session model.Session
-	if err := s.db.WithContext(ctx).First(&session, "id = ?", sessionID).Error; err != nil {
-		return nil, "", err
-	}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&model.Session{}).
+			Where("id = ? AND revoked_at IS NULL AND expires_at > ?", sessionID, now).
+			Updates(map[string]any{
+				fieldTokenHash: hashToken(token),
+				fieldExpiresAt: now.Add(ttl),
+				"last_seen_at": now,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrSessionNotFound
+		}
 
-	if err := s.mirrorUserToken(ctx, session.UserID, session.TokenHash, session.ExpiresAt); err != nil {
+		if err := tx.First(&session, "id = ?", sessionID).Error; err != nil {
+			return err
+		}
+		if session.RevokedAt != nil {
+			return ErrSessionNotFound
+		}
+
+		return mirrorUserToken(tx, session.UserID, session.TokenHash, session.ExpiresAt)
+	})
+	if err != nil {
 		return nil, "", err
 	}
 
@@ -226,23 +249,26 @@ func (s *Store) RefreshSession(ctx context.Context, sessionID string, ttl time.D
 // RevokeSession invalidates one session of the user.
 func (s *Store) RevokeSession(ctx context.Context, userID, sessionID string) error {
 	now := time.Now().UTC()
-	res := s.db.WithContext(ctx).Model(&model.Session{}).
-		Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessionID, userID).
-		Updates(map[string]any{
-			fieldRevokedAt: now,
-			fieldExpiresAt: now,
-			fieldTokenHash: hashToken(GenerateID()),
-		})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return ErrSessionNotFound
-	}
 
-	// users.token is no longer authoritative, but clearing it keeps a stale
-	// value from becoming a resurrection source for an old database.
-	return s.RevokeUserToken(ctx, userID)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&model.Session{}).
+			Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessionID, userID).
+			Updates(map[string]any{
+				fieldRevokedAt: now,
+				fieldExpiresAt: now,
+				fieldTokenHash: hashToken(GenerateID()),
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrSessionNotFound
+		}
+
+		// users.token is no longer authoritative, but clearing it keeps a
+		// stale value from becoming a resurrection source for an old database.
+		return revokeUserToken(tx, userID)
+	})
 }
 
 // RevokeAllSessions invalidates every active session of the user.
@@ -253,30 +279,34 @@ func (s *Store) RevokeSession(ctx context.Context, userID, sessionID string) err
 func (s *Store) RevokeAllSessions(ctx context.Context, userID string) (int64, error) {
 	now := time.Now().UTC()
 
-	var sessions []model.Session
-	if err := s.db.WithContext(ctx).Select("id").
-		Where("user_id = ? AND revoked_at IS NULL", userID).
-		Find(&sessions).Error; err != nil {
-		return 0, err
-	}
-
 	var revoked int64
-	for idx := range sessions {
-		res := s.db.WithContext(ctx).Model(&model.Session{}).
-			Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessions[idx].ID, userID).
-			Updates(map[string]any{
-				fieldRevokedAt: now,
-				fieldExpiresAt: now,
-				fieldTokenHash: hashToken(GenerateID()),
-			})
-		if res.Error != nil {
-			return revoked, res.Error
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var sessions []model.Session
+		if err := tx.Select("id").
+			Where("user_id = ? AND revoked_at IS NULL", userID).
+			Find(&sessions).Error; err != nil {
+			return err
 		}
-		revoked += res.RowsAffected
-	}
 
-	// The legacy columns must not keep a token that no longer has a session.
-	if err := s.RevokeUserToken(ctx, userID); err != nil {
+		revoked = 0
+		for idx := range sessions {
+			res := tx.Model(&model.Session{}).
+				Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessions[idx].ID, userID).
+				Updates(map[string]any{
+					fieldRevokedAt: now,
+					fieldExpiresAt: now,
+					fieldTokenHash: hashToken(GenerateID()),
+				})
+			if res.Error != nil {
+				return res.Error
+			}
+			revoked += res.RowsAffected
+		}
+
+		// The legacy columns must not keep a token that no longer has a session.
+		return revokeUserToken(tx, userID)
+	})
+	if err != nil {
 		return revoked, err
 	}
 
@@ -337,16 +367,24 @@ func (s *Store) DeleteOldSessions(ctx context.Context, before time.Time) (int64,
 }
 
 func truncateDeviceName(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) > 64 {
-		return s[:64]
-	}
-	return s
+	return truncateUTF8(strings.TrimSpace(s), 64)
 }
 
 func truncateUserAgent(s string) string {
-	if len(s) > 512 {
-		return s[:512]
+	return truncateUTF8(s, 512)
+}
+
+// truncateUTF8 cuts s to at most max bytes without splitting a UTF-8 rune, so
+// a stored device name or user agent is always valid text.
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
 	}
-	return s
+
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+
+	return value[:cut]
 }

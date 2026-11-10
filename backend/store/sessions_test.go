@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
@@ -362,6 +364,15 @@ func TestGetSessionByTokenRejectsExpiredAndRevoked(t *testing.T) {
 
 func TestBackfillSessionsIsIdempotent(t *testing.T) {
 	db := newTestDBForMigration(t)
+
+	// newTestDBForMigration creates the user's legacy session through
+	// CreateUser. Drop it so these calls exercise the real migration path:
+	// the first backfill creates the row, the second one skips it because the
+	// user already has a session.
+	if err := db.Where("1 = 1").Delete(&model.Session{}).Error; err != nil {
+		t.Fatal(err)
+	}
+
 	if err := backfillSessions(db); err != nil {
 		t.Fatal(err)
 	}
@@ -704,4 +715,26 @@ func newTestDBForMigration(t *testing.T) *gorm.DB {
 		t.Fatal(err)
 	}
 	return s.DB()
+}
+
+func TestCreateSessionTruncatesFieldsOnRuneBoundary(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	// 40 two-byte runes = 80 bytes: a naive 64-byte cut would split rune 32.
+	name := strings.Repeat("\u044f", 40)
+	agent := strings.Repeat("\u044f", 300) // 600 bytes.
+
+	session, _, err := s.CreateSession(ctx, user.ID, "dev-1", name, agent, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(session.DeviceName) > 64 || !utf8.ValidString(session.DeviceName) {
+		t.Fatalf("device name %q is longer than 64 bytes or invalid UTF-8", session.DeviceName)
+	}
+	if len(session.UserAgent) > 512 || !utf8.ValidString(session.UserAgent) {
+		t.Fatalf("user agent is longer than 512 bytes or invalid UTF-8 (len=%d)", len(session.UserAgent))
+	}
 }

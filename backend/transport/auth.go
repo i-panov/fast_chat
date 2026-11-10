@@ -198,7 +198,7 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 
 		session, token, err := svc.RefreshSession(ctx, user.SessionID)
 		if err != nil {
-			return nil, mapServerError(err)
+			return nil, mapSessionError(err)
 		}
 
 		out := &refreshTokenOutput{}
@@ -232,13 +232,7 @@ func registerLogout(api huma.API, svc *service.Service) {
 		}
 
 		if err := svc.Logout(ctx, user.SessionID, user.ID); err != nil {
-			// A concurrent double-revoke already reached the goal: answer as
-			// if the session was still there instead of a 500.
-			if errors.Is(err, store.ErrSessionNotFound) {
-				return nil, errUnauthorized
-			}
-
-			return nil, mapServerError(err)
+			return nil, mapSessionError(err)
 		}
 
 		return &statusOutput{Body: struct {
@@ -376,6 +370,17 @@ func userAgentFromContext(ctx context.Context) string {
 }
 
 var errUnauthorized = &statusError{ErrorMessage: "unauthorized", code: http.StatusUnauthorized}
+
+// mapSessionError answers a revoked or unknown session as an authentication
+// failure: logout and refresh race a concurrent revoke, which is not a server
+// error. Every other error keeps the generic service mapping.
+func mapSessionError(err error) huma.StatusError { //nolint:ireturn // huma.StatusError is the required interface
+	if errors.Is(err, store.ErrSessionNotFound) {
+		return errUnauthorized
+	}
+
+	return mapServerError(err)
+}
 
 // errInternal is the generic 500 for unmapped service failures, matching the
 // pre-migration transport's "internal error".

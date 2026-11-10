@@ -194,44 +194,13 @@ func (s *Store) DeleteKeyBackup(ctx context.Context, userID string) error {
 		Updates(map[string]any{fieldKeyBackup: "", fieldKeyBackupAt: nil}).Error
 }
 
-func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry time.Duration) (*model.User, error) {
-	user, ok := s.GetUserByID(ctx, userID)
-	if !ok {
-		return nil, ErrUserNotFound
-	}
-
-	token := GenerateID()
-	expiresAt := time.Now().UTC().Add(tokenExpiry)
-
-	// Update only the session columns: Save would overwrite the whole row
-	// from a stale snapshot and lose a concurrent UpdatePublicKey.
-	if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
-		Updates(map[string]any{
-			fieldToken:         hashToken(token),
-			fieldTokenExpireAt: expiresAt,
-		}).Error; err != nil {
-		return nil, err
-	}
-
-	user.TokenExpiresAt = expiresAt
-
-	// Return the plaintext token to the caller; only the hash is persisted.
-	user.Token = token
-
-	return user, nil
-}
-
 // RevokeUserToken invalidates the legacy users.token columns. The stored
 // token is replaced with the hash of a fresh random value and its expiry is
 // pulled back to now, so a stale value cannot resurrect a revoked session if
 // the database is ever backfilled again. Session authentication itself no
 // longer reads these columns.
 func (s *Store) RevokeUserToken(ctx context.Context, userID string) error {
-	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
-		Updates(map[string]any{
-			fieldToken:         hashToken(GenerateID()),
-			fieldTokenExpireAt: time.Now().UTC(),
-		}).Error
+	return revokeUserToken(s.db.WithContext(ctx), userID)
 }
 
 func (s *Store) GetUsersByIDs(ctx context.Context, userIDs []string) map[string]string {
