@@ -621,7 +621,6 @@ func (s *Store) TrimSessions(ctx context.Context, userID string, max int, keepID
 
 	excess := len(sessions) - max
 	revoked := make([]string, 0, excess)
-	now := time.Now().UTC()
 	for i := range sessions {
 		if excess == 0 {
 			break
@@ -1370,11 +1369,13 @@ func userAgentFromContext(ctx context.Context) string {
 }
 ```
 
-В ответе:
+В ответе, только для существующего пользователя:
 
 ```go
-out.Body.SessionID = res.Session.ID
-out.Body.DeviceID = res.Session.DeviceID
+if res.Session != nil {
+	out.Body.SessionID = res.Session.ID
+	out.Body.DeviceID = res.Session.DeviceID
+}
 ```
 
 В `complete-registration` использовать `RegistrationResult` и вернуть
