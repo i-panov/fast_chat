@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -292,5 +293,106 @@ func TestSSEAuthRejectsRevokedSession(t *testing.T) {
 	}
 	if st.IsSessionOnline(session.ID) {
 		t.Error("revoked session must not be marked online")
+	}
+}
+
+// The frontend retries sse-auth on the same connection. Repeating the auth for
+// the same session must not increment presence again: otherwise the single
+// disconnect never takes the session offline.
+func TestSSEAuthIsIdempotentForPresence(t *testing.T) {
+	api, st, hub := newAuthTestServerWithHub(t, &APIConfig{})
+	t.Cleanup(hub.Close)
+	ctx := context.Background()
+
+	user := createTestUser(t, st)
+	session, _, ok := st.GetSessionByToken(ctx, user.Token)
+	if !ok {
+		t.Fatal("test user has no session")
+	}
+
+	hub.Register("c1")
+
+	auth := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/auth/sse-auth",
+			strings.NewReader(`{"connectionId":"c1","token":"`+user.Token+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Adapter().ServeHTTP(rec, req)
+
+		return rec
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		if rec := auth(); rec.Code != http.StatusOK {
+			t.Fatalf("sse-auth attempt %d = %d: %s", attempt, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Presence was counted once, so removing the only connection must take
+	// the user and the session offline.
+	if !st.RemoveConnectionForSession(user.ID, session.ID) {
+		t.Fatal("one connection removal must be the last one for the user")
+	}
+	if st.IsSessionOnline(session.ID) {
+		t.Error("session must be offline after the only connection is removed")
+	}
+	if st.IsOnline(user.ID) {
+		t.Error("user must be offline after the only connection is removed")
+	}
+}
+
+// A connection already bound to one session must not be rebound to another:
+// the presence of the first binding would leak.
+func TestSSEAuthRejectsRebindingToAnotherSession(t *testing.T) {
+	api, st, hub := newAuthTestServerWithHub(t, &APIConfig{})
+	t.Cleanup(hub.Close)
+	ctx := context.Background()
+
+	user := createTestUser(t, st)
+	first, _, ok := st.GetSessionByToken(ctx, user.Token)
+	if !ok {
+		t.Fatal("test user has no session")
+	}
+
+	second, secondToken, err := st.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hub.Register("c1")
+
+	auth := func(token string) int {
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/auth/sse-auth",
+			strings.NewReader(`{"connectionId":"c1","token":"`+token+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Adapter().ServeHTTP(rec, req)
+
+		return rec.Code
+	}
+
+	if code := auth(user.Token); code != http.StatusOK {
+		t.Fatalf("first sse-auth = %d, want 200", code)
+	}
+	if code := auth(secondToken); code != http.StatusConflict {
+		t.Fatalf("rebinding sse-auth = %d, want 409", code)
+	}
+
+	conn := hub.GetConnection("c1")
+	if conn == nil {
+		t.Fatal("connection missing")
+	}
+	conn.Lock()
+	sessionID := conn.SessionID
+	conn.Unlock()
+	if sessionID != first.ID {
+		t.Fatalf("connection sessionID = %q, want the first session %q", sessionID, first.ID)
+	}
+
+	if !st.RemoveConnectionForSession(user.ID, first.ID) {
+		t.Fatal("presence must still belong to exactly the first session")
+	}
+	if st.IsSessionOnline(second.ID) {
+		t.Error("the rejected rebind must not mark the second session online")
 	}
 }

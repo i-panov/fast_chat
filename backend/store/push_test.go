@@ -3,6 +3,9 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
+
+	"fast_chat/model"
 )
 
 func TestPushSubscriptionSessionUpsert(t *testing.T) {
@@ -156,5 +159,145 @@ func TestDeleteAllPushSubscriptions(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	} else if len(subs) != 1 {
 		t.Fatalf("bob subscriptions = %d, want 1", len(subs))
+	}
+}
+
+func TestRevokeSessionDeletesItsPushSubscriptions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	user := createTestUserWithoutSessions(t, s, "alice")
+
+	first, _, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, session := range []*model.Session{first, second} {
+		if _, err := s.AddPushSubscriptionForSession(
+			ctx, user.ID, session.ID,
+			"https://fcm.googleapis.com/fcm/send/"+session.DeviceID, "p256dh", "auth",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.RevokeSession(ctx, user.ID, first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	subs, err := s.GetPushSubscriptionsByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 1 || subs[0].SessionID != second.ID {
+		t.Fatalf("subscriptions = %+v, want only the other session's", subs)
+	}
+}
+
+func TestRevokeAllSessionsDeletesSessionPushSubscriptions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	user := createTestUserWithoutSessions(t, s, "alice")
+
+	first, _, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, session := range []*model.Session{first, second} {
+		if _, err := s.AddPushSubscriptionForSession(
+			ctx, user.ID, session.ID,
+			"https://fcm.googleapis.com/fcm/send/"+session.DeviceID, "p256dh", "auth",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A legacy row has no session and is not the store's to remove here; the
+	// service-level logout-all still deletes it.
+	if _, err := s.AddPushSubscription(ctx, user.ID, "https://fcm.googleapis.com/fcm/send/legacy", "p256dh", "auth"); err != nil {
+		t.Fatal(err)
+	}
+
+	revoked, err := s.RevokeAllSessions(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revoked != 2 {
+		t.Fatalf("revoked = %d, want 2", revoked)
+	}
+
+	subs, err := s.GetPushSubscriptionsByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 1 || subs[0].SessionID != "" {
+		t.Fatalf("subscriptions = %+v, want only the legacy row", subs)
+	}
+}
+
+func TestDeleteOldSessionsDeletesPushSubscriptions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	user := createTestUserWithoutSessions(t, s, "alice")
+
+	session, _, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddPushSubscriptionForSession(
+		ctx, user.ID, session.ID, "https://fcm.googleapis.com/fcm/send/one", "p256dh", "auth",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	old := time.Now().UTC().Add(-48 * time.Hour)
+	if err := s.DB().Model(&model.Session{}).Where("id = ?", session.ID).
+		Update("expires_at", old).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := s.DeleteOldSessions(ctx, time.Now().UTC().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+
+	subs, err := s.GetPushSubscriptionsByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 0 {
+		t.Fatalf("subscriptions = %+v, want none for the deleted session", subs)
+	}
+}
+
+func TestDeletePushSubscriptionsBySessionEmptyIsNoop(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddPushSubscription(ctx, testAlice, "https://fcm.googleapis.com/fcm/send/legacy", "p256dh", "auth"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeletePushSubscriptionsBySession(ctx, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	subs, err := s.GetPushSubscriptionsByUser(ctx, testAlice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("subscriptions = %+v, want the legacy row untouched", subs)
 	}
 }

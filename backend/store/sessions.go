@@ -15,6 +15,9 @@ import (
 const (
 	legacyDeviceID = "legacy"
 
+	// sessionTouchInterval throttles last_seen_at writes on the request path.
+	sessionTouchInterval = 5 * time.Minute
+
 	fieldTokenHash = "token_hash"
 	fieldExpiresAt = "expires_at"
 	fieldRevokedAt = "revoked_at"
@@ -248,7 +251,22 @@ func (s *Store) RefreshSession(ctx context.Context, sessionID string, ttl time.D
 	return &session, token, nil
 }
 
-// RevokeSession invalidates one session of the user.
+// TouchSession advances last_seen_at when the recorded value is older than
+// the throttle window. The conditional update keeps authenticated requests
+// from writing the sessions row on every call.
+func (s *Store) TouchSession(ctx context.Context, sessionID string, now time.Time) error {
+	if sessionID == "" {
+		return nil
+	}
+
+	return s.db.WithContext(ctx).Model(&model.Session{}).
+		Where("id = ? AND unixepoch(last_seen_at) < unixepoch(?)", sessionID, now.Add(-sessionTouchInterval)).
+		Update("last_seen_at", now.UTC()).Error
+}
+
+// RevokeSession invalidates one session of the user and drops its push
+// subscriptions in the same transaction, so a revoked device cannot receive
+// another push even if the caller fails afterwards.
 func (s *Store) RevokeSession(ctx context.Context, userID, sessionID string) error {
 	now := time.Now().UTC()
 
@@ -265,6 +283,10 @@ func (s *Store) RevokeSession(ctx context.Context, userID, sessionID string) err
 		}
 		if res.RowsAffected == 0 {
 			return ErrSessionNotFound
+		}
+
+		if err := tx.Where("session_id = ?", sessionID).Delete(&model.PushSubscription{}).Error; err != nil {
+			return err
 		}
 
 		// users.token is no longer authoritative, but clearing it keeps a
@@ -291,6 +313,7 @@ func (s *Store) RevokeAllSessions(ctx context.Context, userID string) (int64, er
 		}
 
 		revoked = 0
+		revokedIDs := make([]string, 0, len(sessions))
 		for idx := range sessions {
 			res := tx.Model(&model.Session{}).
 				Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessions[idx].ID, userID).
@@ -302,7 +325,16 @@ func (s *Store) RevokeAllSessions(ctx context.Context, userID string) (int64, er
 			if res.Error != nil {
 				return res.Error
 			}
-			revoked += res.RowsAffected
+			if res.RowsAffected > 0 {
+				revokedIDs = append(revokedIDs, sessions[idx].ID)
+				revoked += res.RowsAffected
+			}
+		}
+
+		if len(revokedIDs) > 0 {
+			if err := tx.Where("session_id IN ?", revokedIDs).Delete(&model.PushSubscription{}).Error; err != nil {
+				return err
+			}
 		}
 
 		// The legacy columns must not keep a token that no longer has a session.
@@ -362,12 +394,36 @@ func (s *Store) TrimSessions(ctx context.Context, userID string, limit int, keep
 	return revoked, nil
 }
 
-// DeleteOldSessions removes sessions that expired or were revoked long ago.
+// DeleteOldSessions removes sessions that expired or were revoked long ago,
+// together with their push subscriptions, in one transaction.
 func (s *Store) DeleteOldSessions(ctx context.Context, before time.Time) (int64, error) {
-	res := s.db.WithContext(ctx).
-		Where("(revoked_at IS NOT NULL AND revoked_at < ?) OR expires_at < ?", before, before).
-		Delete(&model.Session{})
-	return res.RowsAffected, res.Error
+	var deleted int64
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var ids []string
+		if err := tx.Model(&model.Session{}).
+			Where("(revoked_at IS NOT NULL AND revoked_at < ?) OR expires_at < ?", before, before).
+			Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+
+		if err := tx.Where("session_id IN ?", ids).Delete(&model.PushSubscription{}).Error; err != nil {
+			return err
+		}
+
+		res := tx.Where("id IN ?", ids).Delete(&model.Session{})
+		deleted = res.RowsAffected
+
+		return res.Error
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	return deleted, nil
 }
 
 func truncateDeviceName(s string) string {

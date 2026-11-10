@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"fast_chat/model"
 )
@@ -110,8 +111,9 @@ func IsValidPushEndpoint(endpoint string) bool {
 }
 
 // offlinePushSubscriptions returns the subscriptions that should receive a
-// push: the ones whose session is offline. A legacy subscription without a
-// session id counts as offline only while the whole user is offline.
+// push: the ones whose session is offline and still active. A legacy
+// subscription without a session id counts as offline only while the whole
+// user is offline.
 func (s *Service) offlinePushSubscriptions(ctx context.Context, userID string) []model.PushSubscription {
 	subs, err := s.store.GetPushSubscriptionsByUser(ctx, userID)
 	if err != nil {
@@ -127,6 +129,13 @@ func (s *Service) offlinePushSubscriptions(ctx context.Context, userID string) [
 			out = append(out, sub)
 			continue
 		}
+		// A revoked or expired session must never receive a push, even when
+		// its subscription row survived the revocation.
+		session, ok := s.store.GetSessionByID(ctx, sub.SessionID)
+		if !ok || !session.Active(time.Now().UTC()) {
+			continue
+		}
+
 		if s.store.IsSessionOnline(sub.SessionID) {
 			continue
 		}

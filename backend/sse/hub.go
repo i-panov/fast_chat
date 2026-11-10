@@ -23,7 +23,13 @@ const (
 	hubAuthTimeout = 30 * time.Second
 )
 
-var ErrConnectionNotFound = errors.New("connection not found")
+var (
+	ErrConnectionNotFound = errors.New("connection not found")
+	// ErrConnectionInUse reports an attempt to rebind an already authorized
+	// connection to another user or session. Rebinding would leak the
+	// presence bookkeeping of the first binding.
+	ErrConnectionInUse = errors.New("connection already authorized to another session")
+)
 
 type Event struct {
 	Event string
@@ -209,6 +215,11 @@ func (h *Hub) AuthenticateSession(connectionID, userID, sessionID string, expire
 	}
 
 	conn.mu.Lock()
+	if conn.Authorized && (conn.UserID != userID || conn.SessionID != sessionID) {
+		conn.mu.Unlock()
+		return ErrConnectionInUse
+	}
+
 	conn.UserID = userID
 	conn.SessionID = sessionID
 	conn.ExpiresAt = expiresAt
@@ -301,6 +312,13 @@ func (h *Hub) Send(userID string, event Event) {
 		}
 
 		conn.mu.Lock()
+		// The user index is keyed by userID, but verify the binding anyway:
+		// a stale entry must never leak one user's events to another.
+		if conn.UserID != userID {
+			conn.mu.Unlock()
+
+			continue
+		}
 		if !conn.Authorized || time.Now().After(conn.ExpiresAt) {
 			conn.Authorized = false
 			conn.mu.Unlock()

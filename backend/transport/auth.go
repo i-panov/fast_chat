@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -285,7 +286,35 @@ func registerSSEAuth(api huma.API, svc *service.Service, st *store.Store, hub *s
 			return nil, errConnectionNotFound
 		}
 
+		conn.Lock()
+		alreadyAuthorized := conn.Authorized
+		sameSession := alreadyAuthorized && conn.UserID == user.ID && conn.SessionID == session.ID
+		conn.Unlock()
+
+		// Rebinding one connection to another user or session would leak the
+		// presence count of the first binding: reject it instead.
+		if alreadyAuthorized && !sameSession {
+			return nil, errConnectionInUse
+		}
+
+		out := &sseAuthOutput{}
+		out.Body.Status = "ok"
+
+		// The frontend retries sse-auth on the same connection. A repeated
+		// auth for the same session must only refresh the expiry: calling
+		// AddConnectionForSession again would double-count presence.
+		if sameSession {
+			hub.UpdateSessionExpiry(session.ID, session.ExpiresAt)
+			touchSession(ctx, st, session.ID)
+
+			return out, nil
+		}
+
 		if err := hub.AuthenticateSession(input.Body.ConnectionID, user.ID, session.ID, session.ExpiresAt); err != nil {
+			if errors.Is(err, sse.ErrConnectionInUse) {
+				return nil, errConnectionInUse
+			}
+
 			return nil, errConnectionNotFound
 		}
 
@@ -293,9 +322,9 @@ func registerSSEAuth(api huma.API, svc *service.Service, st *store.Store, hub *s
 			svc.BroadcastUserStatus(ctx, user.ID, true)
 		}
 
-		return &sseAuthOutput{Body: struct {
-			Status string `example:"ok" json:"status"`
-		}{Status: "ok"}}, nil
+		touchSession(ctx, st, session.ID)
+
+		return out, nil
 	})
 }
 
@@ -312,7 +341,10 @@ type sseAuthOutput struct {
 	}
 }
 
-var errConnectionNotFound = &statusError{ErrorMessage: "connection not found", code: http.StatusNotFound}
+var (
+	errConnectionNotFound = &statusError{ErrorMessage: "connection not found", code: http.StatusNotFound}
+	errConnectionInUse    = &statusError{ErrorMessage: "connection already authorized", code: http.StatusConflict}
+)
 
 // APIConfig holds transport-layer configuration needed by Huma operations.
 type APIConfig struct {
@@ -357,6 +389,14 @@ func sessionFromContext(ctx context.Context) (*authUser, bool) {
 	}
 
 	return u, true
+}
+
+// touchSession advances the session's last_seen_at, throttled by the store.
+// Presence bookkeeping must never fail a request, so errors are only logged.
+func touchSession(ctx context.Context, st *store.Store, sessionID string) {
+	if err := st.TouchSession(ctx, sessionID, time.Now().UTC()); err != nil {
+		slog.Warn("failed to touch session", "sessionID", sessionID, "err", err)
+	}
 }
 
 // userAgentFromContext returns the User-Agent of the raw request stashed by
@@ -447,6 +487,8 @@ func AuthMiddleware(st *store.Store) func(ctx huma.Context, next func(huma.Conte
 
 			return
 		}
+
+		touchSession(ctx.Context(), st, session.ID)
 
 		next(huma.WithValue(ctx, authContextKey{}, &authUser{
 			ID:        user.ID,

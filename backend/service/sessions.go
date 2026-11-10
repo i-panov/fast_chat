@@ -150,9 +150,10 @@ func (s *Service) trimSessions(ctx context.Context, userID, keepID string) {
 
 	revoked, err := s.store.TrimSessions(ctx, userID, s.cfg.Auth.MaxSessionsPerUser, keepID)
 	if err != nil {
+		// TrimSessions reports the sessions it already revoked before the
+		// failure: clean them up instead of leaving their SSE streams and
+		// push subscriptions behind.
 		log().Warn("failed to trim sessions", "userID", userID, "err", err)
-
-		return
 	}
 
 	for _, sessionID := range revoked {

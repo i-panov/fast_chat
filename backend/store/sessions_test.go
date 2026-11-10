@@ -780,3 +780,60 @@ func TestCreateSessionMirrorsLegacyToken(t *testing.T) {
 	}
 	assertMirror(replaced, replacedToken)
 }
+
+func TestTouchSessionAdvancesStaleTimestampOnly(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	session, _, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stale := time.Now().UTC().Add(-time.Hour)
+	if err := s.DB().Model(&model.Session{}).Where("id = ?", session.ID).
+		Update("last_seen_at", stale).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	touchAt := time.Now().UTC()
+	if err := s.TouchSession(ctx, session.ID, touchAt); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := s.GetSessionByID(ctx, session.ID)
+	if !ok {
+		t.Fatal("session missing")
+	}
+	if !got.LastSeenAt.Equal(touchAt) {
+		t.Fatalf("last_seen_at = %v, want %v", got.LastSeenAt, touchAt)
+	}
+
+	// A fresh timestamp is inside the throttle window: the second touch must
+	// not rewrite the row.
+	next := touchAt.Add(time.Minute)
+	if err := s.TouchSession(ctx, session.ID, next); err != nil {
+		t.Fatal(err)
+	}
+	got, ok = s.GetSessionByID(ctx, session.ID)
+	if !ok {
+		t.Fatal("session missing")
+	}
+	if !got.LastSeenAt.Equal(touchAt) {
+		t.Fatalf("fresh last_seen_at was rewritten: %v, want %v", got.LastSeenAt, touchAt)
+	}
+
+	// Once the window has passed the timestamp advances again.
+	later := touchAt.Add(sessionTouchInterval + time.Minute)
+	if err := s.TouchSession(ctx, session.ID, later); err != nil {
+		t.Fatal(err)
+	}
+	got, ok = s.GetSessionByID(ctx, session.ID)
+	if !ok {
+		t.Fatal("session missing")
+	}
+	if !got.LastSeenAt.Equal(later) {
+		t.Fatalf("last_seen_at = %v, want %v after the throttle window", got.LastSeenAt, later)
+	}
+}

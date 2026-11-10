@@ -88,6 +88,13 @@ func RegisterSessions(api huma.API, svc *service.Service) {
 			return nil, errUnauthorized
 		}
 
+		// Revoking the current session is a logout: keep the two operations
+		// distinct so the caller cannot log itself out through the device
+		// list and lose the response.
+		if input.ID == user.SessionID {
+			return nil, &statusError{ErrorMessage: "cannot revoke the current session", code: http.StatusBadRequest}
+		}
+
 		if err := svc.RevokeSession(ctx, user.ID, input.ID); err != nil {
 			if errors.Is(err, store.ErrSessionNotFound) {
 				return nil, &statusError{ErrorMessage: "session not found", code: http.StatusNotFound}

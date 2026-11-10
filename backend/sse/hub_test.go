@@ -417,3 +417,61 @@ func TestCloseExpiredUnauthenticated(t *testing.T) {
 		t.Error("fresh and authenticated connections must survive the reap")
 	}
 }
+
+func TestAuthenticateSessionRejectsRebinding(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	conn := h.Register("c1")
+	exp := time.Now().Add(time.Hour)
+	if err := h.AuthenticateSession("c1", "u1", "s1", exp); err != nil {
+		t.Fatalf("AuthenticateSession: %v", err)
+	}
+
+	// A different user and the same user with another session are both
+	// rebindings: accepting either would leak presence from the first bind.
+	if err := h.AuthenticateSession("c1", "u2", "s2", exp); !errors.Is(err, ErrConnectionInUse) {
+		t.Errorf("rebind to another user = %v, want ErrConnectionInUse", err)
+	}
+	if err := h.AuthenticateSession("c1", "u1", "s2", exp); !errors.Is(err, ErrConnectionInUse) {
+		t.Errorf("rebind to another session = %v, want ErrConnectionInUse", err)
+	}
+
+	conn.Lock()
+	userID := conn.UserID
+	sessionID := conn.SessionID
+	conn.Unlock()
+	if userID != "u1" || sessionID != "s1" {
+		t.Fatalf("binding changed to %s/%s, want u1/s1", userID, sessionID)
+	}
+
+	// Replaying the same binding stays idempotent.
+	if err := h.AuthenticateSession("c1", "u1", "s1", exp); err != nil {
+		t.Fatalf("same-session replay: %v", err)
+	}
+	if len(h.userConns["u1"]) != 1 || len(h.userConns["u2"]) != 0 {
+		t.Errorf("userConns = %v, want only one u1 entry", h.userConns)
+	}
+}
+
+func TestSendIgnoresStaleUserIndexEntry(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	conn := h.Register("c1")
+	if err := h.AuthenticateSession("c1", "u2", "s2", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("AuthenticateSession: %v", err)
+	}
+
+	// Simulate a stale index entry pointing at a connection bound to another
+	// user: Send must verify the binding instead of trusting the index.
+	h.userConns["u1"] = append(h.userConns["u1"], "c1")
+
+	h.Send("u1", Event{Event: "message", Data: "secret"})
+
+	select {
+	case got := <-conn.Channel:
+		t.Fatalf("event leaked to another user's connection: %+v", got)
+	default:
+	}
+}

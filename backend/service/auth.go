@@ -107,6 +107,13 @@ func (s *Service) VerifyCode(ctx context.Context, input, code string, device Dev
 			return nil, err
 		}
 
+		// A re-login on the same device rotates the token and extends the
+		// expiry of the session row; an SSE stream already bound to it must
+		// learn the new deadline instead of expiring at the old one.
+		if s.hub != nil {
+			s.hub.UpdateSessionExpiry(session.ID, session.ExpiresAt)
+		}
+
 		s.trimSessions(ctx, user.ID, session.ID)
 
 		return &VerifyCodeResult{User: user, Session: session, Token: token}, nil

@@ -326,3 +326,25 @@ func TestRevokeSessionOfAnotherUserIsNotFound(t *testing.T) {
 		t.Fatal("another user's revoke must not touch bob's session")
 	}
 }
+
+// Revoking the caller's own session is a logout: the device list must reject
+// it so the response is not lost with the session.
+func TestRevokeCurrentSessionRejected(t *testing.T) {
+	api, st := newAuthTestServer(t, &APIConfig{})
+	ctx := context.Background()
+	user := createTestUser(t, st)
+
+	session, _, ok := st.GetSessionByToken(ctx, user.Token)
+	if !ok {
+		t.Fatal("test user has no session")
+	}
+
+	rec := authedRequest(t, api, http.MethodDelete, "/api/sessions/"+session.ID, user.Token, "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+
+	if _, _, ok := st.GetSessionByToken(ctx, user.Token); !ok {
+		t.Error("the current session must survive the rejected revoke")
+	}
+}

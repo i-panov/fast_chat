@@ -584,6 +584,10 @@ func checkSSEHeartbeat(ctx context.Context, conn *sse.Connection, st *store.Stor
 				conn.Authorized = false
 				conn.Unlock()
 				expired = true
+			} else {
+				// A long-lived stream is activity too: keep last_seen_at
+				// fresh (the store throttles the write).
+				touchSession(ctx, st, sessionID)
 			}
 		} else if token != "" {
 			// Legacy path for connections authenticated before sessions

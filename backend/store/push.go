@@ -98,6 +98,12 @@ func (s *Store) DeletePushSubscriptionByEndpoint(ctx context.Context, endpoint s
 // DeletePushSubscriptionsBySession removes the subscriptions of one device
 // session, leaving the other sessions of the user subscribed.
 func (s *Store) DeletePushSubscriptionsBySession(ctx context.Context, sessionID string) error {
+	// An empty session id identifies legacy rows of every user: never let it
+	// widen into a delete-all.
+	if sessionID == "" {
+		return nil
+	}
+
 	return s.db.WithContext(ctx).Where("session_id = ?", sessionID).Delete(&model.PushSubscription{}).Error
 }
 

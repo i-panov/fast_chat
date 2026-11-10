@@ -132,25 +132,63 @@ func TestOfflinePushSubscriptionsSkipsOnlineSession(t *testing.T) {
 	ctx := context.Background()
 	alice := registerPushTestUser(t, s, "alice")
 
-	if _, err := s.store.AddPushSubscriptionForSession(
-		ctx, alice.ID, "s1", "https://fcm.googleapis.com/fcm/send/one", "dGVzdA==", "aHVl",
-	); err != nil {
+	online, _, err := s.store.CreateSession(ctx, alice.ID, "dev-online", "Chrome", "ua", time.Hour)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.store.AddPushSubscriptionForSession(
-		ctx, alice.ID, "s2", "https://fcm.googleapis.com/fcm/send/two", "dGVzdA==", "aHVl",
-	); err != nil {
+	offline, _, err := s.store.CreateSession(ctx, alice.ID, "dev-offline", "Phone", "ua", time.Hour)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	s.store.AddConnectionForSession(alice.ID, "s1")
+	for _, session := range []*model.Session{online, offline} {
+		if _, err := s.store.AddPushSubscriptionForSession(
+			ctx, alice.ID, session.ID,
+			"https://fcm.googleapis.com/fcm/send/"+session.DeviceID, "dGVzdA==", "aHVl",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s.store.AddConnectionForSession(alice.ID, online.ID)
 
 	subs := s.offlinePushSubscriptions(ctx, alice.ID)
 	if len(subs) != 1 {
-		t.Fatalf("subscriptions = %+v, want only the offline s2", subs)
+		t.Fatalf("subscriptions = %+v, want only the offline device", subs)
 	}
-	if subs[0].SessionID != "s2" {
-		t.Fatalf("session = %q, want s2", subs[0].SessionID)
+	if subs[0].SessionID != offline.ID {
+		t.Fatalf("session = %q, want %q", subs[0].SessionID, offline.ID)
+	}
+}
+
+// A subscription whose session was revoked (or never existed) must never
+// receive a push, even when its row survived the cleanup.
+func TestOfflinePushSubscriptionsSkipsDeadSession(t *testing.T) {
+	s := newPushTestService(t)
+	ctx := context.Background()
+	alice := registerPushTestUser(t, s, "alice")
+
+	session, _, err := s.store.CreateSession(ctx, alice.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.RevokeSession(ctx, alice.ID, session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	for sessionID, endpoint := range map[string]string{
+		session.ID:        "https://fcm.googleapis.com/fcm/send/dead",
+		"missing-session": "https://fcm.googleapis.com/fcm/send/ghost",
+	} {
+		if _, err := s.store.AddPushSubscriptionForSession(
+			ctx, alice.ID, sessionID, endpoint, "dGVzdA==", "aHVl",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if subs := s.offlinePushSubscriptions(ctx, alice.ID); len(subs) != 0 {
+		t.Fatalf("subscriptions = %+v, want none for dead sessions", subs)
 	}
 }
 
@@ -192,22 +230,31 @@ func TestCallPushNotifiesOnlyOfflineSessions(t *testing.T) {
 	s, mock, call := newCallPushTest(t)
 	ctx := context.Background()
 
-	for _, sessionID := range []string{"s-online", "s-offline"} {
+	online, _, err := s.store.CreateSession(ctx, call.CalleeID, "dev-online", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offline, _, err := s.store.CreateSession(ctx, call.CalleeID, "dev-offline", "Phone", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, session := range []*model.Session{online, offline} {
 		if _, err := s.store.AddPushSubscriptionForSession(
-			ctx, call.CalleeID, sessionID,
-			"https://fcm.googleapis.com/fcm/send/"+sessionID, "dGVzdA==", "aHVl",
+			ctx, call.CalleeID, session.ID,
+			"https://fcm.googleapis.com/fcm/send/"+session.DeviceID, "dGVzdA==", "aHVl",
 		); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	s.store.AddConnectionForSession(call.CalleeID, "s-online")
+	s.store.AddConnectionForSession(call.CalleeID, online.ID)
 
 	s.sendCallPush(ctx, call)
 
 	select {
 	case subs := <-mock.subs:
-		if len(subs) != 1 || subs[0].SessionID != "s-offline" {
+		if len(subs) != 1 || subs[0].SessionID != offline.ID {
 			t.Fatalf("pushed subscriptions = %+v, want only the offline session", subs)
 		}
 	case <-time.After(time.Second):
@@ -219,14 +266,19 @@ func TestCallPushSkipsOnlineCallee(t *testing.T) {
 	s, mock, call := newCallPushTest(t)
 	ctx := context.Background()
 
+	online, _, err := s.store.CreateSession(ctx, call.CalleeID, "dev-online", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if _, err := s.store.AddPushSubscriptionForSession(
-		ctx, call.CalleeID, "s-online",
+		ctx, call.CalleeID, online.ID,
 		"https://fcm.googleapis.com/fcm/send/online", "dGVzdA==", "aHVl",
 	); err != nil {
 		t.Fatal(err)
 	}
 
-	s.store.AddConnectionForSession(call.CalleeID, "s-online")
+	s.store.AddConnectionForSession(call.CalleeID, online.ID)
 
 	s.sendCallPush(ctx, call)
 
