@@ -161,7 +161,9 @@ func (s *Store) CreateSession(
 				ExpiresAt:  expiresAt,
 			}
 
-			return tx.Create(&session).Error
+			if err := tx.Create(&session).Error; err != nil {
+				return err
+			}
 		case err != nil:
 			return err
 		default:
@@ -184,9 +186,9 @@ func (s *Store) CreateSession(
 			session.ExpiresAt = expiresAt
 			session.LastSeenAt = now
 			session.RevokedAt = nil
-
-			return nil
 		}
+
+		return mirrorUserToken(tx, userID, tokenHash, expiresAt)
 	})
 	if err != nil {
 		return nil, "", err
@@ -307,7 +309,9 @@ func (s *Store) RevokeAllSessions(ctx context.Context, userID string) (int64, er
 		return revokeUserToken(tx, userID)
 	})
 	if err != nil {
-		return revoked, err
+		// The transaction rolled back, so report no revocations rather than a
+		// partial count for rows that were never committed.
+		return 0, err
 	}
 
 	return revoked, nil

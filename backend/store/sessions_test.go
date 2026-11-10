@@ -738,3 +738,45 @@ func TestCreateSessionTruncatesFieldsOnRuneBoundary(t *testing.T) {
 		t.Fatalf("user agent is longer than 512 bytes or invalid UTF-8 (len=%d)", len(session.UserAgent))
 	}
 }
+
+// Every login must leave users.token describing the newest session: the
+// backfill reads those legacy columns, so a stale mirror can resurrect an old
+// token after a restart.
+func TestCreateSessionMirrorsLegacyToken(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	assertMirror := func(session *model.Session, token string) {
+		t.Helper()
+
+		stored, ok := s.GetUserByID(ctx, user.ID)
+		if !ok {
+			t.Fatal("user missing")
+		}
+		if stored.Token != hashToken(token) {
+			t.Errorf("users.token = %q, want the hash of the new session token", stored.Token)
+		}
+		if !stored.TokenExpiresAt.Equal(session.ExpiresAt) {
+			t.Errorf("users.token_expires_at = %v, want %v", stored.TokenExpiresAt, session.ExpiresAt)
+		}
+		if !stored.TokenExpiresAt.After(time.Now()) {
+			t.Errorf("users.token_expires_at = %v, want a future instant", stored.TokenExpiresAt)
+		}
+	}
+
+	created, token, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMirror(created, token)
+
+	replaced, replacedToken, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.ID != created.ID {
+		t.Fatalf("re-login must reuse the session row: %s != %s", replaced.ID, created.ID)
+	}
+	assertMirror(replaced, replacedToken)
+}
