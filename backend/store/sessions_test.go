@@ -257,6 +257,325 @@ func TestBackfillSessionsIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestCreateSessionTwiceSameDeviceReplacesToken(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	first, firstToken, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, secondToken, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.ID != second.ID {
+		t.Fatalf("same device must reuse the session row: %s != %s", first.ID, second.ID)
+	}
+	if firstToken == secondToken {
+		t.Fatal("token must rotate")
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, firstToken); ok {
+		t.Fatal("old token must stop working")
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, secondToken); !ok {
+		t.Fatal("new token must work")
+	}
+}
+
+func TestCreateSessionRevivesRevokedDevice(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	first, _, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeSession(ctx, user.ID, first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	second, token, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("login on a logged-out device must reuse the row: %s != %s", first.ID, second.ID)
+	}
+	if second.RevokedAt != nil {
+		t.Fatal("relogin must clear revoked_at")
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, token); !ok {
+		t.Fatal("token of the revived session must work")
+	}
+}
+
+func TestCreateSessionForAnotherDeviceKeepsFirstSession(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	_, firstToken, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, ok := s.GetSessionByToken(ctx, firstToken); !ok {
+		t.Fatal("login on a second device must not invalidate the first session")
+	}
+}
+
+func TestRevokeSessionOnlyRevokesOne(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	first, firstToken, _ := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	_, secondToken, _ := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour)
+
+	if err := s.RevokeSession(ctx, user.ID, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, firstToken); ok {
+		t.Fatal("revoked session must not authenticate")
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, secondToken); !ok {
+		t.Fatal("other session must survive")
+	}
+}
+
+func TestRefreshSessionRotatesOnlyOne(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	first, firstToken, _ := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	_, secondToken, _ := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour)
+
+	_, newFirstToken, err := s.RefreshSession(ctx, first.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, firstToken); ok {
+		t.Fatal("old first token must be rotated")
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, newFirstToken); !ok {
+		t.Fatal("new first token must work")
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, secondToken); !ok {
+		t.Fatal("second session must survive")
+	}
+}
+
+func TestListSessionsExcludesRevoked(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	first, _, _ := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if _, _, err := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeSession(ctx, user.ID, first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := s.ListSessions(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].DeviceID != "dev-2" {
+		t.Fatalf("sessions = %+v, want only dev-2", sessions)
+	}
+}
+
+func TestGetSessionByIDKeepsRevokedSessionVisible(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	session, _, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeSession(ctx, user.ID, session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := s.GetSessionByID(ctx, session.ID)
+	if !ok {
+		t.Fatal("revoked session must still be found by id")
+	}
+	if got.RevokedAt == nil {
+		t.Fatal("revoked session must carry revoked_at")
+	}
+
+	if _, ok := s.GetSessionByID(ctx, "missing"); ok {
+		t.Fatal("unknown session must not be found")
+	}
+}
+
+func TestRevokeAllSessionsRevokesEveryDevice(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	_, firstToken, _ := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	_, secondToken, _ := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour)
+
+	revoked, err := s.RevokeAllSessions(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revoked != 2 {
+		t.Fatalf("revoked = %d, want 2", revoked)
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, firstToken); ok {
+		t.Fatal("first session must be revoked")
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, secondToken); ok {
+		t.Fatal("second session must be revoked")
+	}
+
+	revoked, err = s.RevokeAllSessions(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revoked != 0 {
+		t.Fatalf("second revoke = %d, want 0", revoked)
+	}
+}
+
+func TestTrimSessionsRevokesOldestAndKeepsGivenSession(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	oldest, _, _ := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	middle, _, _ := s.CreateSession(ctx, user.ID, "dev-2", "Phone", "ua", time.Hour)
+	newest, _, _ := s.CreateSession(ctx, user.ID, "dev-3", "Tablet", "ua", time.Hour)
+
+	base := time.Now().UTC().Add(-time.Hour)
+	for i, session := range []*model.Session{oldest, middle, newest} {
+		if err := s.DB().Model(&model.Session{}).Where("id = ?", session.ID).
+			Update("last_seen_at", base.Add(time.Duration(i)*time.Minute)).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	revoked, err := s.TrimSessions(ctx, user.ID, 2, newest.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revoked) != 1 || revoked[0] != oldest.ID {
+		t.Fatalf("revoked = %v, want only %s", revoked, oldest.ID)
+	}
+
+	sessions, err := s.ListSessions(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("active sessions = %d, want 2", len(sessions))
+	}
+
+	// keepID is never revoked even when it is the oldest active session, so
+	// the next-oldest session pays the price instead.
+	if _, err := s.TrimSessions(ctx, user.ID, 1, middle.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := s.GetSessionByID(ctx, middle.ID); !ok || got.RevokedAt != nil {
+		t.Fatal("keepID session must survive trimming")
+	}
+	if got, ok := s.GetSessionByID(ctx, newest.ID); !ok || got.RevokedAt == nil {
+		t.Fatal("trimming must revoke another session when keepID is skipped")
+	}
+}
+
+func TestDeleteOldSessionsRemovesOnlyStaleRows(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	longAgo := time.Now().UTC().Add(-48 * time.Hour)
+	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+
+	stale := []model.Session{
+		{
+			ID:         GenerateID(),
+			UserID:     user.ID,
+			DeviceID:   "expired-long-ago",
+			TokenHash:  hashToken("expired-long-ago"),
+			CreatedAt:  longAgo,
+			LastSeenAt: longAgo,
+			ExpiresAt:  longAgo.Add(time.Hour),
+		},
+		{
+			ID:         GenerateID(),
+			UserID:     user.ID,
+			DeviceID:   "revoked-long-ago",
+			TokenHash:  hashToken("revoked-long-ago"),
+			CreatedAt:  longAgo,
+			LastSeenAt: longAgo,
+			ExpiresAt:  longAgo.Add(time.Hour),
+			RevokedAt:  &longAgo,
+		},
+	}
+	fresh := []model.Session{
+		{
+			ID:         GenerateID(),
+			UserID:     user.ID,
+			DeviceID:   "active",
+			TokenHash:  hashToken("active"),
+			CreatedAt:  cutoff,
+			LastSeenAt: cutoff,
+			ExpiresAt:  cutoff.Add(24 * time.Hour),
+		},
+		{
+			ID:         GenerateID(),
+			UserID:     user.ID,
+			DeviceID:   "revoked-recently",
+			TokenHash:  hashToken("revoked-recently"),
+			CreatedAt:  cutoff,
+			LastSeenAt: cutoff,
+			ExpiresAt:  cutoff.Add(24 * time.Hour),
+			RevokedAt:  &cutoff,
+		},
+	}
+
+	rows := make([]model.Session, 0, len(stale)+len(fresh))
+	rows = append(rows, stale...)
+	rows = append(rows, fresh...)
+	for i := range rows {
+		if err := s.DB().Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleted, err := s.DeleteOldSessions(ctx, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+
+	var count int64
+	if err := s.DB().Model(&model.Session{}).Where("user_id = ?", user.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("remaining sessions = %d, want 2", count)
+	}
+}
+
 func newTestDBForMigration(t *testing.T) *gorm.DB {
 	t.Helper()
 	s := newTestStore(t)
