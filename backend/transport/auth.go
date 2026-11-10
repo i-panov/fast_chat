@@ -230,8 +230,8 @@ func registerSSEAuth(api huma.API, svc *service.Service, st *store.Store, hub *s
 		Path:        "/api/auth/sse-auth",
 		Summary:     "Authenticate an SSE connection",
 	}, func(ctx context.Context, input *sseAuthInput) (*sseAuthOutput, error) {
-		user, ok := st.GetUserByToken(ctx, input.Body.Token)
-		if !ok || time.Now().After(user.TokenExpiresAt) {
+		session, user, ok := st.GetSessionByToken(ctx, input.Body.Token)
+		if !ok {
 			return nil, errUnauthorized
 		}
 
@@ -240,11 +240,11 @@ func registerSSEAuth(api huma.API, svc *service.Service, st *store.Store, hub *s
 			return nil, errConnectionNotFound
 		}
 
-		if err := hub.Authenticate(input.Body.ConnectionID, user.ID, input.Body.Token, user.TokenExpiresAt); err != nil {
+		if err := hub.AuthenticateSession(input.Body.ConnectionID, user.ID, session.ID, session.ExpiresAt); err != nil {
 			return nil, errConnectionNotFound
 		}
 
-		if st.AddConnection(user.ID) {
+		if st.AddConnectionForSession(user.ID, session.ID) {
 			svc.BroadcastUserStatus(ctx, user.ID, true)
 		}
 

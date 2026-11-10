@@ -217,6 +217,180 @@ func TestRegisterDeduplicatesUserConnsOnReconnect(t *testing.T) {
 	}
 }
 
+func TestCloseSessionClosesOnlyItsConnections(t *testing.T) {
+	h := NewHub(time.Minute)
+	defer h.Close()
+
+	first := h.Register("c1")
+	second := h.Register("c2")
+	if err := h.AuthenticateSession("c1", "u1", "s1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.AuthenticateSession("c2", "u1", "s2", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	h.CloseSession("s1")
+
+	select {
+	case _, ok := <-first.Channel:
+		if ok {
+			t.Fatal("first channel must be closed")
+		}
+	default:
+		t.Fatal("first channel must be closed synchronously")
+	}
+	select {
+	case _, ok := <-second.Channel:
+		if !ok {
+			t.Fatal("second channel must stay open")
+		}
+	default:
+	}
+}
+
+func TestAuthenticateSessionBindsSession(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	conn := h.Register("c1")
+	exp := time.Now().Add(time.Hour)
+
+	if err := h.AuthenticateSession("missing", "u1", "s1", exp); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("expected ErrConnectionNotFound, got %v", err)
+	}
+
+	if err := h.AuthenticateSession("c1", "u1", "s1", exp); err != nil {
+		t.Fatalf("AuthenticateSession: %v", err)
+	}
+
+	conn.Lock()
+	authorized := conn.Authorized
+	userID := conn.UserID
+	sessionID := conn.SessionID
+	connExpiry := conn.ExpiresAt
+	conn.Unlock()
+
+	if !authorized || userID != "u1" || sessionID != "s1" || !connExpiry.Equal(exp) {
+		t.Errorf("connection not populated with the session: %+v", conn)
+	}
+
+	// Replaying auth for the same connection must not duplicate the entry.
+	if err := h.AuthenticateSession("c1", "u1", "s1", exp); err != nil {
+		t.Fatalf("re-auth: %v", err)
+	}
+	if len(h.userConns["u1"]) != 1 {
+		t.Errorf("duplicate user connection entry: %v", h.userConns["u1"])
+	}
+}
+
+func TestCloseUserSessionsClosesOnlyThatUsersConnections(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	first := h.Register("c1")
+	second := h.Register("c2")
+	other := h.Register("c3")
+	if err := h.AuthenticateSession("c1", "u1", "s1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.AuthenticateSession("c2", "u1", "s2", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.AuthenticateSession("c3", "u2", "s3", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	h.CloseUserSessions("u1")
+
+	for id, conn := range map[string]*Connection{"c1": first, "c2": second} {
+		select {
+		case _, open := <-conn.Channel:
+			if open {
+				t.Errorf("%s channel must be closed", id)
+			}
+		default:
+			t.Errorf("%s channel must be closed synchronously", id)
+		}
+	}
+
+	select {
+	case _, open := <-other.Channel:
+		if !open {
+			t.Fatal("another user's channel must stay open")
+		}
+	default:
+	}
+}
+
+func TestCloseSessionIgnoresEmptyAndUnknownIDs(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	conn := h.Register("c1")
+	if err := h.AuthenticateSession("c1", "u1", "s1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	h.CloseSession("")
+	h.CloseSession("unknown")
+
+	if h.GetConnection("c1") != conn {
+		t.Error("connection must survive an empty or unknown session close")
+	}
+
+	h.CloseSession("s1")
+
+	if h.GetConnection("c1") != nil {
+		t.Error("connection must be removed by CloseSession")
+	}
+}
+
+func TestUpdateSessionExpiryOnlyAffectsItsSession(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	first := h.Register("c1")
+	second := h.Register("c2")
+	exp := time.Now().Add(time.Hour)
+	if err := h.AuthenticateSession("c1", "u1", "s1", exp); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.AuthenticateSession("c2", "u1", "s2", exp); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshed := exp.Add(time.Hour)
+	h.UpdateSessionExpiry("s1", refreshed)
+
+	first.Lock()
+	firstExpiry := first.ExpiresAt
+	first.Unlock()
+
+	second.Lock()
+	secondExpiry := second.ExpiresAt
+	second.Unlock()
+
+	if !firstExpiry.Equal(refreshed) {
+		t.Errorf("s1 expiry = %v, want %v", firstExpiry, refreshed)
+	}
+	if !secondExpiry.Equal(exp) {
+		t.Errorf("s2 expiry = %v, want it untouched at %v", secondExpiry, exp)
+	}
+
+	// No-op for empty and unknown ids (must not touch any connection).
+	h.UpdateSessionExpiry("", exp.Add(-time.Hour))
+	h.UpdateSessionExpiry("unknown", exp.Add(-time.Hour))
+
+	first.Lock()
+	firstExpiry = first.ExpiresAt
+	first.Unlock()
+
+	if !firstExpiry.Equal(refreshed) {
+		t.Errorf("empty/unknown session id changed the expiry: %v", firstExpiry)
+	}
+}
+
 func TestCloseExpiredUnauthenticated(t *testing.T) {
 	h := NewHub(time.Hour)
 	defer h.Close()

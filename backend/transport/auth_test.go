@@ -10,10 +10,19 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"fast_chat/sse"
 	"fast_chat/store"
 )
 
 func newAuthTestServer(t *testing.T, cfg *APIConfig) (huma.API, *store.Store) { //nolint:ireturn // huma.API is the required interface
+	t.Helper()
+
+	api, st, _ := newAuthTestServerWithHub(t, cfg)
+
+	return api, st
+}
+
+func newAuthTestServerWithHub(t *testing.T, cfg *APIConfig) (huma.API, *store.Store, *sse.Hub) { //nolint:ireturn // huma.API is the required interface
 	t.Helper()
 
 	st := newTestStore(t)
@@ -23,7 +32,7 @@ func newAuthTestServer(t *testing.T, cfg *APIConfig) (huma.API, *store.Store) { 
 	api.UseMiddleware(AuthMiddleware(st))
 	RegisterAuth(api, svc, st, hub, cfg)
 
-	return api, st
+	return api, st, hub
 }
 
 func TestSendCodeValidation(t *testing.T) {
@@ -185,5 +194,103 @@ func TestLogoutRevokesTheToken(t *testing.T) {
 
 	if _, ok := st.GetUserByToken(context.Background(), user.Token); ok {
 		t.Fatal("the token still works after the logout")
+	}
+}
+
+// sse-auth must bind the connection to the session the token belongs to, not
+// merely to the user: closing one device's session must leave the other
+// devices alone.
+func TestSSEAuthBindsConnectionToSession(t *testing.T) {
+	api, st, hub := newAuthTestServerWithHub(t, &APIConfig{})
+	t.Cleanup(hub.Close)
+
+	user := createTestUser(t, st)
+
+	session, _, ok := st.GetSessionByToken(context.Background(), user.Token)
+	if !ok {
+		t.Fatal("test user has no session")
+	}
+
+	hub.Register("c1")
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/auth/sse-auth",
+		strings.NewReader(`{"connectionId":"c1","token":"`+user.Token+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	api.Adapter().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	conn := hub.GetConnection("c1")
+	if conn == nil {
+		t.Fatal("connection missing after sse-auth")
+	}
+
+	conn.Lock()
+	sessionID := conn.SessionID
+	authorized := conn.Authorized
+	conn.Unlock()
+
+	if sessionID != session.ID {
+		t.Errorf("connection sessionID = %q, want %q", sessionID, session.ID)
+	}
+	if !authorized {
+		t.Error("connection must be authorized after sse-auth")
+	}
+	if !st.IsSessionOnline(session.ID) {
+		t.Error("session must be online after sse-auth")
+	}
+	if !st.IsOnline(user.ID) {
+		t.Error("user must be online after sse-auth")
+	}
+}
+
+// A revoked session must not authenticate a new SSE stream, even when the
+// user's other sessions are alive.
+func TestSSEAuthRejectsRevokedSession(t *testing.T) {
+	api, st, hub := newAuthTestServerWithHub(t, &APIConfig{})
+	t.Cleanup(hub.Close)
+
+	user := createTestUser(t, st)
+
+	session, _, ok := st.GetSessionByToken(context.Background(), user.Token)
+	if !ok {
+		t.Fatal("test user has no session")
+	}
+
+	if err := st.RevokeSession(context.Background(), user.ID, session.ID); err != nil {
+		t.Fatalf("RevokeSession: %v", err)
+	}
+
+	hub.Register("c1")
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/auth/sse-auth",
+		strings.NewReader(`{"connectionId":"c1","token":"`+user.Token+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	api.Adapter().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	conn := hub.GetConnection("c1")
+	if conn == nil {
+		t.Fatal("connection missing after rejected sse-auth")
+	}
+
+	conn.Lock()
+	authorized := conn.Authorized
+	conn.Unlock()
+
+	if authorized {
+		t.Error("revoked session must not authorize the connection")
+	}
+	if st.IsSessionOnline(session.ID) {
+		t.Error("revoked session must not be marked online")
 	}
 }
