@@ -93,7 +93,14 @@ func (s *Store) RemoveConnectionForSession(userID, sessionID string) bool {
 			delete(s.conns, userID)
 		}
 		if sessionID != "" {
-			delete(s.sessionConns, sessionID)
+			// A duplicate disconnect is still one connection of this
+			// session gone: decrement instead of clearing the count, or
+			// the remaining connections would look offline.
+			if s.sessionConns[sessionID] <= 1 {
+				delete(s.sessionConns, sessionID)
+			} else {
+				s.sessionConns[sessionID]--
+			}
 		}
 		s.connMu.Unlock()
 		return false

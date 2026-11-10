@@ -1064,6 +1064,27 @@ func TestSessionPresenceIsIndependentOfUserPresence(t *testing.T) {
 	}
 }
 
+// A session may hold several connections (one per browser tab). Removing one
+// of them has to release a single connection, not clear the whole session
+// while another connection of the same session is still alive.
+func TestRemoveConnectionForSessionKeepsOtherConnection(t *testing.T) {
+	s := newTestStore(t)
+	s.AddConnectionForSession(testAlice, "s1")
+	s.AddConnectionForSession(testAlice, "s1")
+
+	s.RemoveConnectionForSession(testAlice, "s1")
+
+	if !s.IsSessionOnline("s1") || !s.IsOnline(testAlice) {
+		t.Fatal("s1 and the user must stay online while one connection is left")
+	}
+
+	s.RemoveConnectionForSession(testAlice, "s1")
+
+	if s.IsSessionOnline("s1") || s.IsOnline(testAlice) {
+		t.Fatal("s1 and the user must be offline after the last connection")
+	}
+}
+
 func TestOfflineSince(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")

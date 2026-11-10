@@ -57,7 +57,10 @@ func escapeLike(value string) string {
 
 // CreateUserWithSession creates the account and its first session in one
 // transaction. The returned token is plaintext and sent to the client once.
-func (s *Store) CreateUserWithSession(ctx context.Context, email, nick, serverDomain, deviceID, deviceName, userAgent string, ttl time.Duration) (*model.User, *model.Session, string, error) {
+func (s *Store) CreateUserWithSession(
+	ctx context.Context, email, nick, serverDomain, deviceID, deviceName, userAgent string, ttl time.Duration,
+) (*model.User, *model.Session, string, error) {
+
 	fullID := nick + ":" + serverDomain
 	now := time.Now().UTC()
 	token := GenerateID()
