@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getConfig } from "./api.ts";
 import { BackupSettingsModal } from "./components/chat/BackupSettingsModal.tsx";
+import { SessionsModal } from "./components/chat/SessionsModal.tsx";
 import type { KeyPair } from "./e2ee/crypto.ts";
 import { getMyKeyPair } from "./e2ee/keys.ts";
 import i18n, { getCurrentLocale, SUPPORTED_LANGS } from "./i18n.ts";
@@ -159,12 +160,13 @@ function AccountList({
 
 export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const { t } = useTranslation();
-	const { accounts, activeAccount, switchAccount } = useAuth();
+	const { accounts, activeAccount, switchAccount, logoutAll } = useAuth();
 	const navigate = useNavigate();
 	const [confirmLogout, setConfirmLogout] = useState(false);
 	const [confirmClearData, setConfirmClearData] = useState(false);
 	const [clearDataLoading, setClearDataLoading] = useState(false);
 	const [backupOpen, setBackupOpen] = useState(false);
+	const [sessionsOpen, setSessionsOpen] = useState(false);
 	const [keyPair, setKeyPair] = useState<KeyPair | null>(null);
 	const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
@@ -258,6 +260,14 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 				</Button>
 				<Button
 					variant="outline"
+					style={{ width: "100%", marginBottom: "8px" }}
+					onClick={() => setSessionsOpen(true)}
+					disabled={activeAccount === null}
+				>
+					{t("sessions.open")}
+				</Button>
+				<Button
+					variant="outline"
 					style={{
 						width: "100%",
 						borderStyle: "dashed",
@@ -334,6 +344,14 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					void handleClearData();
 				}}
 			/>
+			{activeAccount !== null && (
+				<SessionsModal
+					open={sessionsOpen}
+					onClose={() => setSessionsOpen(false)}
+					token={activeAccount.token}
+					onLogoutAll={logoutAll}
+				/>
+			)}
 			{activeAccount !== null && (
 				<BackupSettingsModal
 					open={backupOpen}

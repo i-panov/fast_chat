@@ -12,8 +12,12 @@ import (
 type Store struct {
 	db     *gorm.DB
 	codes  *CodeStore
-	connMu sync.Mutex
+	connMu sync.RWMutex
 	conns  map[string]int
+	// sessionConns counts the open connections of each session. A session is
+	// online while it holds at least one connection, independently of the
+	// other sessions of the same user.
+	sessionConns map[string]int
 
 	onlineMu sync.RWMutex
 	online   map[string]struct{}
@@ -29,6 +33,7 @@ func New(db *gorm.DB) *Store {
 		db:           db,
 		codes:        NewCodeStore(),
 		conns:        make(map[string]int),
+		sessionConns: make(map[string]int),
 		online:       make(map[string]struct{}),
 		offlineSince: make(map[string]time.Time),
 	}
@@ -52,10 +57,16 @@ func (s *Store) Codes() *CodeStore {
 	return s.codes
 }
 
-func (s *Store) AddConnection(userID string) bool {
+// AddConnectionForSession records a connection of a session. It reports
+// whether this connection made the user go online. An empty sessionID is a
+// legacy connection that only tracks the user presence.
+func (s *Store) AddConnectionForSession(userID, sessionID string) bool {
 	s.connMu.Lock()
 	s.conns[userID]++
 	prev := s.conns[userID] - 1
+	if sessionID != "" {
+		s.sessionConns[sessionID]++
+	}
 	s.connMu.Unlock()
 
 	if prev == 0 {
@@ -68,7 +79,10 @@ func (s *Store) AddConnection(userID string) bool {
 	return false
 }
 
-func (s *Store) RemoveConnection(userID string) bool {
+// RemoveConnectionForSession drops a connection of a session. It reports
+// whether this was the last connection of the user. An empty sessionID is a
+// legacy connection that only tracks the user presence.
+func (s *Store) RemoveConnectionForSession(userID, sessionID string) bool {
 	s.connMu.Lock()
 	connCount, ok := s.conns[userID]
 	if !ok || connCount <= 0 {
@@ -77,6 +91,16 @@ func (s *Store) RemoveConnection(userID string) bool {
 		// and without growing the map.
 		if ok {
 			delete(s.conns, userID)
+		}
+		if sessionID != "" {
+			// A duplicate disconnect is still one connection of this
+			// session gone: decrement instead of clearing the count, or
+			// the remaining connections would look offline.
+			if s.sessionConns[sessionID] <= 1 {
+				delete(s.sessionConns, sessionID)
+			} else {
+				s.sessionConns[sessionID]--
+			}
 		}
 		s.connMu.Unlock()
 		return false
@@ -90,6 +114,14 @@ func (s *Store) RemoveConnection(userID string) bool {
 		s.conns[userID] = connCount
 	}
 
+	if sessionID != "" {
+		if s.sessionConns[sessionID] <= 1 {
+			delete(s.sessionConns, sessionID)
+		} else {
+			s.sessionConns[sessionID]--
+		}
+	}
+
 	s.connMu.Unlock()
 
 	if remaining == 0 {
@@ -100,6 +132,35 @@ func (s *Store) RemoveConnection(userID string) bool {
 		return true
 	}
 	return false
+}
+
+// IsSessionOnline reports whether the session holds an open connection. An
+// empty session id is never online: it does not identify a session.
+func (s *Store) IsSessionOnline(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+
+	s.connMu.RLock()
+	defer s.connMu.RUnlock()
+
+	return s.sessionConns[sessionID] > 0
+}
+
+// AddConnection is the legacy user-only presence hook.
+// AddConnection is a legacy helper for tests and pre-session callers.
+//
+// Deprecated: use AddConnectionForSession.
+func (s *Store) AddConnection(userID string) bool {
+	return s.AddConnectionForSession(userID, "")
+}
+
+// RemoveConnection is the legacy user-only presence hook.
+// RemoveConnection is a legacy helper for tests and pre-session callers.
+//
+// Deprecated: use RemoveConnectionForSession.
+func (s *Store) RemoveConnection(userID string) bool {
+	return s.RemoveConnectionForSession(userID, "")
 }
 
 func (s *Store) IsOnline(userID string) bool {
@@ -123,6 +184,7 @@ func (s *Store) OfflineSince(userID string) time.Time {
 func (s *Store) Close() {
 	s.connMu.Lock()
 	s.conns = make(map[string]int)
+	s.sessionConns = make(map[string]int)
 	s.connMu.Unlock()
 
 	s.onlineMu.Lock()

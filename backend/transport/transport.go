@@ -459,9 +459,10 @@ func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Stor
 		hub.Unregister(connectionID, conn)
 		conn.Lock()
 		uid := conn.UserID
+		sid := conn.SessionID
 		conn.Unlock()
 
-		if uid != "" && st != nil && svc != nil && st.RemoveConnection(uid) {
+		if uid != "" && st != nil && svc != nil && st.RemoveConnectionForSession(uid, sid) {
 			svc.BroadcastUserStatus(context.Background(), uid, false)
 		}
 	}()
@@ -567,16 +568,39 @@ func checkSSEHeartbeat(ctx context.Context, conn *sse.Connection, st *store.Stor
 	}
 
 	authorized := conn.Authorized
+	sessionID := conn.SessionID
 	token := conn.Token
 	expiresAt := conn.ExpiresAt
 	conn.Unlock()
 
-	if authorized && !expired && st != nil && token != "" {
-		if user, ok := st.GetUserByToken(ctx, token); !ok || time.Now().After(user.TokenExpiresAt) {
-			conn.Lock()
-			conn.Authorized = false
-			conn.Unlock()
-			expired = true
+	if authorized && !expired && st != nil {
+		if sessionID != "" {
+			// The session is the source of truth: logout and per-device
+			// revocation invalidate the stream even when its recorded expiry
+			// is still in the future.
+			session, ok := st.GetSessionByID(ctx, sessionID)
+			if !ok || !session.Active(time.Now().UTC()) {
+				conn.Lock()
+				conn.Authorized = false
+				conn.Unlock()
+				expired = true
+			} else {
+				// A long-lived stream is activity too: keep last_seen_at
+				// fresh (the store throttles the write).
+				touchSession(ctx, st, sessionID)
+			}
+		} else if token != "" {
+			// Legacy path for connections authenticated before sessions
+			// existed (and for tests using Hub.Authenticate).
+			// GetUserByToken resolves the session and already enforces its
+			// expiry, so the legacy users.token expiry must not be checked
+			// again here.
+			if _, ok := st.GetUserByToken(ctx, token); !ok {
+				conn.Lock()
+				conn.Authorized = false
+				conn.Unlock()
+				expired = true
+			}
 		}
 	}
 

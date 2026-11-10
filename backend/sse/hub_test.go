@@ -2,6 +2,8 @@ package sse
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -217,6 +219,180 @@ func TestRegisterDeduplicatesUserConnsOnReconnect(t *testing.T) {
 	}
 }
 
+func TestCloseSessionClosesOnlyItsConnections(t *testing.T) {
+	h := NewHub(time.Minute)
+	defer h.Close()
+
+	first := h.Register("c1")
+	second := h.Register("c2")
+	if err := h.AuthenticateSession("c1", "u1", "s1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.AuthenticateSession("c2", "u1", "s2", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	h.CloseSession("s1")
+
+	select {
+	case _, ok := <-first.Channel:
+		if ok {
+			t.Fatal("first channel must be closed")
+		}
+	default:
+		t.Fatal("first channel must be closed synchronously")
+	}
+	select {
+	case _, ok := <-second.Channel:
+		if !ok {
+			t.Fatal("second channel must stay open")
+		}
+	default:
+	}
+}
+
+func TestAuthenticateSessionBindsSession(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	conn := h.Register("c1")
+	exp := time.Now().Add(time.Hour)
+
+	if err := h.AuthenticateSession("missing", "u1", "s1", exp); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("expected ErrConnectionNotFound, got %v", err)
+	}
+
+	if err := h.AuthenticateSession("c1", "u1", "s1", exp); err != nil {
+		t.Fatalf("AuthenticateSession: %v", err)
+	}
+
+	conn.Lock()
+	authorized := conn.Authorized
+	userID := conn.UserID
+	sessionID := conn.SessionID
+	connExpiry := conn.ExpiresAt
+	conn.Unlock()
+
+	if !authorized || userID != "u1" || sessionID != "s1" || !connExpiry.Equal(exp) {
+		t.Errorf("connection not populated with the session: %+v", conn)
+	}
+
+	// Replaying auth for the same connection must not duplicate the entry.
+	if err := h.AuthenticateSession("c1", "u1", "s1", exp); err != nil {
+		t.Fatalf("re-auth: %v", err)
+	}
+	if len(h.userConns["u1"]) != 1 {
+		t.Errorf("duplicate user connection entry: %v", h.userConns["u1"])
+	}
+}
+
+func TestCloseUserSessionsClosesOnlyThatUsersConnections(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	first := h.Register("c1")
+	second := h.Register("c2")
+	other := h.Register("c3")
+	if err := h.AuthenticateSession("c1", "u1", "s1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.AuthenticateSession("c2", "u1", "s2", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.AuthenticateSession("c3", "u2", "s3", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	h.CloseUserSessions("u1")
+
+	for id, conn := range map[string]*Connection{"c1": first, "c2": second} {
+		select {
+		case _, open := <-conn.Channel:
+			if open {
+				t.Errorf("%s channel must be closed", id)
+			}
+		default:
+			t.Errorf("%s channel must be closed synchronously", id)
+		}
+	}
+
+	select {
+	case _, open := <-other.Channel:
+		if !open {
+			t.Fatal("another user's channel must stay open")
+		}
+	default:
+	}
+}
+
+func TestCloseSessionIgnoresEmptyAndUnknownIDs(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	conn := h.Register("c1")
+	if err := h.AuthenticateSession("c1", "u1", "s1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	h.CloseSession("")
+	h.CloseSession("unknown")
+
+	if h.GetConnection("c1") != conn {
+		t.Error("connection must survive an empty or unknown session close")
+	}
+
+	h.CloseSession("s1")
+
+	if h.GetConnection("c1") != nil {
+		t.Error("connection must be removed by CloseSession")
+	}
+}
+
+func TestUpdateSessionExpiryOnlyAffectsItsSession(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	first := h.Register("c1")
+	second := h.Register("c2")
+	exp := time.Now().Add(time.Hour)
+	if err := h.AuthenticateSession("c1", "u1", "s1", exp); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.AuthenticateSession("c2", "u1", "s2", exp); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshed := exp.Add(time.Hour)
+	h.UpdateSessionExpiry("s1", refreshed)
+
+	first.Lock()
+	firstExpiry := first.ExpiresAt
+	first.Unlock()
+
+	second.Lock()
+	secondExpiry := second.ExpiresAt
+	second.Unlock()
+
+	if !firstExpiry.Equal(refreshed) {
+		t.Errorf("s1 expiry = %v, want %v", firstExpiry, refreshed)
+	}
+	if !secondExpiry.Equal(exp) {
+		t.Errorf("s2 expiry = %v, want it untouched at %v", secondExpiry, exp)
+	}
+
+	// No-op for empty and unknown ids (must not touch any connection).
+	h.UpdateSessionExpiry("", exp.Add(-time.Hour))
+	h.UpdateSessionExpiry("unknown", exp.Add(-time.Hour))
+
+	first.Lock()
+	firstExpiry = first.ExpiresAt
+	first.Unlock()
+
+	if !firstExpiry.Equal(refreshed) {
+		t.Errorf("empty/unknown session id changed the expiry: %v", firstExpiry)
+	}
+}
+
 func TestCloseExpiredUnauthenticated(t *testing.T) {
 	h := NewHub(time.Hour)
 	defer h.Close()
@@ -241,5 +417,141 @@ func TestCloseExpiredUnauthenticated(t *testing.T) {
 
 	if h.GetConnection("fresh") == nil || h.GetConnection("auth") == nil {
 		t.Error("fresh and authenticated connections must survive the reap")
+	}
+}
+
+func TestAuthenticateSessionRejectsRebinding(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	conn := h.Register("c1")
+	exp := time.Now().Add(time.Hour)
+	if err := h.AuthenticateSession("c1", "u1", "s1", exp); err != nil {
+		t.Fatalf("AuthenticateSession: %v", err)
+	}
+
+	// A different user and the same user with another session are both
+	// rebindings: accepting either would leak presence from the first bind.
+	if err := h.AuthenticateSession("c1", "u2", "s2", exp); !errors.Is(err, ErrConnectionInUse) {
+		t.Errorf("rebind to another user = %v, want ErrConnectionInUse", err)
+	}
+	if err := h.AuthenticateSession("c1", "u1", "s2", exp); !errors.Is(err, ErrConnectionInUse) {
+		t.Errorf("rebind to another session = %v, want ErrConnectionInUse", err)
+	}
+
+	conn.Lock()
+	userID := conn.UserID
+	sessionID := conn.SessionID
+	conn.Unlock()
+	if userID != "u1" || sessionID != "s1" {
+		t.Fatalf("binding changed to %s/%s, want u1/s1", userID, sessionID)
+	}
+
+	// Replaying the same binding stays idempotent.
+	if err := h.AuthenticateSession("c1", "u1", "s1", exp); err != nil {
+		t.Fatalf("same-session replay: %v", err)
+	}
+	if len(h.userConns["u1"]) != 1 || len(h.userConns["u2"]) != 0 {
+		t.Errorf("userConns = %v, want only one u1 entry", h.userConns)
+	}
+}
+
+func TestSendIgnoresStaleUserIndexEntry(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	conn := h.Register("c1")
+	if err := h.AuthenticateSession("c1", "u2", "s2", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("AuthenticateSession: %v", err)
+	}
+
+	// Simulate a stale index entry pointing at a connection bound to another
+	// user: Send must verify the binding instead of trusting the index.
+	h.userConns["u1"] = append(h.userConns["u1"], "c1")
+
+	h.Send("u1", Event{Event: "message", Data: "secret"})
+
+	select {
+	case got := <-conn.Channel:
+		t.Fatalf("event leaked to another user's connection: %+v", got)
+	default:
+	}
+}
+
+func TestBindSessionReportsNewBindingOnce(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	if _, err := h.BindSession("missing", "u1", "s1", time.Now().Add(time.Hour)); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("missing connection = %v, want ErrConnectionNotFound", err)
+	}
+
+	conn := h.Register("c1")
+	exp := time.Now().Add(time.Hour)
+	newBinding, err := h.BindSession("c1", "u1", "s1", exp)
+	if err != nil || !newBinding {
+		t.Fatalf("first bind = %v/%v, want true/nil", newBinding, err)
+	}
+
+	// An expiry race can flip Authorized off for the very same binding; that
+	// is still a replay and must only refresh the expiry.
+	conn.Lock()
+	conn.Authorized = false
+	conn.Unlock()
+
+	replayExpiry := exp.Add(time.Minute)
+	newBinding, err = h.BindSession("c1", "u1", "s1", replayExpiry)
+	if err != nil || newBinding {
+		t.Fatalf("replay = %v/%v, want false/nil", newBinding, err)
+	}
+
+	conn.Lock()
+	authorized := conn.Authorized
+	gotExpiry := conn.ExpiresAt
+	conn.Unlock()
+	if !authorized || !gotExpiry.Equal(replayExpiry) {
+		t.Fatalf("replay did not refresh the binding: authorized=%v expiry=%v", authorized, gotExpiry)
+	}
+	if len(h.userConns["u1"]) != 1 {
+		t.Fatalf("userConns = %v, want one entry", h.userConns["u1"])
+	}
+}
+
+func TestBindSessionConcurrentReplaysCreateOneBinding(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+	h.Register("c1")
+
+	const workers = 8
+
+	var (
+		wg    sync.WaitGroup
+		count atomic.Int64
+		errs  = make(chan error, workers)
+	)
+	for range workers {
+		wg.Go(func() {
+			newBinding, err := h.BindSession("c1", "u1", "s1", time.Now().Add(time.Hour))
+			if err != nil {
+				errs <- err
+
+				return
+			}
+			if newBinding {
+				count.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Errorf("BindSession: %v", err)
+	}
+	if count.Load() != 1 {
+		t.Fatalf("new bindings = %d, want exactly 1", count.Load())
+	}
+	if len(h.userConns["u1"]) != 1 {
+		t.Fatalf("userConns = %v, want one entry", h.userConns["u1"])
 	}
 }

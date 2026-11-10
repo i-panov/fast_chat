@@ -9,6 +9,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
+	"fast_chat/calls"
 	"fast_chat/config"
 	"fast_chat/model"
 	"fast_chat/sse"
@@ -24,7 +25,7 @@ func newPushTestService(t *testing.T) *Service {
 	}
 
 	if err := db.AutoMigrate(
-		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{},
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{},
@@ -37,6 +38,10 @@ func newPushTestService(t *testing.T) *Service {
 		Server:   config.ServerConfig{Domain: "localhost:8080", Port: 8080},
 		CORS:     config.CORSConfig{Origin: "*"},
 		Database: config.DatabaseConfig{Path: ":memory:"},
+		Auth: config.AuthConfig{
+			TokenExpiry:        24 * time.Hour,
+			TokenExpiryWarning: 5 * time.Minute,
+		},
 	}
 
 	return New(store.New(db), cfg, sse.NewHub(time.Minute), nil)
@@ -44,9 +49,19 @@ func newPushTestService(t *testing.T) *Service {
 
 type mockPushService struct {
 	sent chan []byte
+	// subs, when set, receives the subscriptions passed to SendToUser so a
+	// test can assert which sessions were selected.
+	subs chan []model.PushSubscription
 }
 
-func (m *mockPushService) SendToUser(payload []byte, _ []model.PushSubscription) {
+func (m *mockPushService) SendToUser(payload []byte, subs []model.PushSubscription) {
+	if m.subs != nil {
+		select {
+		case m.subs <- subs:
+		default:
+		}
+	}
+
 	select {
 	case m.sent <- payload:
 	default:
@@ -112,6 +127,100 @@ func TestSendPushForMessageOfflineWithSubscriptions(t *testing.T) {
 	}
 }
 
+func TestOfflinePushSubscriptionsSkipsOnlineSession(t *testing.T) {
+	s := newPushTestService(t)
+	ctx := context.Background()
+	alice := registerPushTestUser(t, s, "alice")
+
+	online, _, err := s.store.CreateSession(ctx, alice.ID, "dev-online", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offline, _, err := s.store.CreateSession(ctx, alice.ID, "dev-offline", "Phone", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, session := range []*model.Session{online, offline} {
+		if _, err := s.store.AddPushSubscriptionForSession(
+			ctx, alice.ID, session.ID,
+			"https://fcm.googleapis.com/fcm/send/"+session.DeviceID, "dGVzdA==", "aHVl",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s.store.AddConnectionForSession(alice.ID, online.ID)
+
+	subs := s.offlinePushSubscriptions(ctx, alice.ID)
+	if len(subs) != 1 {
+		t.Fatalf("subscriptions = %+v, want only the offline device", subs)
+	}
+	if subs[0].SessionID != offline.ID {
+		t.Fatalf("session = %q, want %q", subs[0].SessionID, offline.ID)
+	}
+}
+
+// An expired session is no longer usable for auth, but the device must still
+// be notified: the user may simply have closed the app for longer than the
+// token TTL, and the token is refreshed when the app opens again.
+func TestOfflinePushSubscriptionsIncludesExpiredSession(t *testing.T) {
+	s := newPushTestService(t)
+	ctx := context.Background()
+	alice := registerPushTestUser(t, s, "alice")
+
+	session, _, err := s.store.CreateSession(ctx, alice.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.AddPushSubscriptionForSession(
+		ctx, alice.ID, session.ID, "https://fcm.googleapis.com/fcm/send/expired", "dGVzdA==", "aHVl",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.store.DB().Model(&model.Session{}).Where("id = ?", session.ID).
+		Update("expires_at", time.Now().UTC().Add(-time.Hour)).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	subs := s.offlinePushSubscriptions(ctx, alice.ID)
+	if len(subs) != 1 || subs[0].SessionID != session.ID {
+		t.Fatalf("subscriptions = %+v, want the expired session to receive push", subs)
+	}
+}
+
+// A subscription whose session was revoked (or never existed) must never
+// receive a push, even when its row survived the cleanup.
+func TestOfflinePushSubscriptionsSkipsDeadSession(t *testing.T) {
+	s := newPushTestService(t)
+	ctx := context.Background()
+	alice := registerPushTestUser(t, s, "alice")
+
+	session, _, err := s.store.CreateSession(ctx, alice.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.RevokeSession(ctx, alice.ID, session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	for sessionID, endpoint := range map[string]string{
+		session.ID:        "https://fcm.googleapis.com/fcm/send/dead",
+		"missing-session": "https://fcm.googleapis.com/fcm/send/ghost",
+	} {
+		if _, err := s.store.AddPushSubscriptionForSession(
+			ctx, alice.ID, sessionID, endpoint, "dGVzdA==", "aHVl",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if subs := s.offlinePushSubscriptions(ctx, alice.ID); len(subs) != 0 {
+		t.Fatalf("subscriptions = %+v, want none for dead sessions", subs)
+	}
+}
+
 func registerPushTestUser(t *testing.T, s *Service, nick string) *model.User {
 	t.Helper()
 
@@ -121,6 +230,92 @@ func registerPushTestUser(t *testing.T, s *Service, nick string) *model.User {
 	}
 
 	return user
+}
+
+// newCallPushTest prepares a service whose push sender records the selected
+// subscriptions, and a call from alice to bob.
+func newCallPushTest(t *testing.T) (*Service, *mockPushService, *calls.Call) {
+	t.Helper()
+
+	s := newPushTestService(t)
+	mock := &mockPushService{
+		sent: make(chan []byte, 1),
+		subs: make(chan []model.PushSubscription, 1),
+	}
+	s.push = mock
+
+	alice := registerPushTestUser(t, s, "alice")
+	bob := registerPushTestUser(t, s, "bob")
+
+	return s, mock, &calls.Call{
+		ID:       "call-1",
+		CallerID: alice.ID,
+		CalleeID: bob.ID,
+		ChatID:   "chat-1",
+	}
+}
+
+func TestCallPushNotifiesOnlyOfflineSessions(t *testing.T) {
+	s, mock, call := newCallPushTest(t)
+	ctx := context.Background()
+
+	online, _, err := s.store.CreateSession(ctx, call.CalleeID, "dev-online", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offline, _, err := s.store.CreateSession(ctx, call.CalleeID, "dev-offline", "Phone", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, session := range []*model.Session{online, offline} {
+		if _, err := s.store.AddPushSubscriptionForSession(
+			ctx, call.CalleeID, session.ID,
+			"https://fcm.googleapis.com/fcm/send/"+session.DeviceID, "dGVzdA==", "aHVl",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s.store.AddConnectionForSession(call.CalleeID, online.ID)
+
+	s.sendCallPush(ctx, call)
+
+	select {
+	case subs := <-mock.subs:
+		if len(subs) != 1 || subs[0].SessionID != offline.ID {
+			t.Fatalf("pushed subscriptions = %+v, want only the offline session", subs)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected a call push for the offline session")
+	}
+}
+
+func TestCallPushSkipsOnlineCallee(t *testing.T) {
+	s, mock, call := newCallPushTest(t)
+	ctx := context.Background()
+
+	online, _, err := s.store.CreateSession(ctx, call.CalleeID, "dev-online", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.store.AddPushSubscriptionForSession(
+		ctx, call.CalleeID, online.ID,
+		"https://fcm.googleapis.com/fcm/send/online", "dGVzdA==", "aHVl",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	s.store.AddConnectionForSession(call.CalleeID, online.ID)
+
+	s.sendCallPush(ctx, call)
+
+	select {
+	case subs := <-mock.subs:
+		t.Fatalf("online callee must not get a call push: %+v", subs)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 func TestIsValidPushEndpoint(t *testing.T) {

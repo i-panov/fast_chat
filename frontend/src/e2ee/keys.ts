@@ -2,6 +2,7 @@ import {
 	deleteKeyBackup,
 	getKeyBackup,
 	getPublicKey,
+	getSessions,
 	setKeyBackup,
 	uploadPublicKey,
 } from "../api.ts";
@@ -31,6 +32,17 @@ const PUBLIC_KEY_UPLOADED_META = "e2ee.publicKeyUploaded";
 export class RecoveryRequiredError extends Error {
 	constructor() {
 		super("account keys are recoverable from a server backup");
+	}
+}
+
+// Raised when a device has no local key and no server backup, but the account
+// is active on other devices. Generating a fresh pair here would silently
+// rotate the public key and make the other devices unable to read new
+// messages, so the UI must ask the user to restore a backup or sign out
+// everywhere first.
+export class MultiDeviceKeyRequiredError extends Error {
+	constructor() {
+		super("account has other active devices and no key backup");
 	}
 }
 
@@ -110,6 +122,7 @@ async function serverBackupState(token: string): Promise<BackupState> {
 }
 
 const RECOVERY_NEEDED_EVENT = "e2ee:recovery-needed";
+const MULTI_DEVICE_KEY_EVENT = "e2ee:multi-device-key-required";
 
 // Emitted when the active account has no local keys but a backup exists on
 // the server. The UI listens and shows a recovery prompt.
@@ -125,6 +138,22 @@ export function onRecoveryNeeded(fn: (token: string) => void): () => void {
 	};
 	window.addEventListener(RECOVERY_NEEDED_EVENT, handler);
 	return () => window.removeEventListener(RECOVERY_NEEDED_EVENT, handler);
+}
+
+function emitMultiDeviceKeyRequired(token: string) {
+	window.dispatchEvent(
+		new CustomEvent<string>(MULTI_DEVICE_KEY_EVENT, { detail: token }),
+	);
+}
+
+export function onMultiDeviceKeyRequired(
+	fn: (token: string) => void,
+): () => void {
+	const handler = (e: Event) => {
+		fn((e as CustomEvent<string>).detail);
+	};
+	window.addEventListener(MULTI_DEVICE_KEY_EVENT, handler);
+	return () => window.removeEventListener(MULTI_DEVICE_KEY_EVENT, handler);
 }
 
 // uploadKeyBackup encrypts the given key pair under the password and
@@ -236,6 +265,23 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 					emitRecoveryNeeded(token);
 				}
 				throw new RecoveryRequiredError();
+			}
+
+			// No local key, no backup. Before creating a new identity, make
+			// sure this is not a second device of an existing account: a new
+			// public key would silently break decryption on the other devices.
+			// Fail closed if the session list cannot be checked.
+			let otherDevices = 0;
+			try {
+				const sessions = await getSessions(token);
+				otherDevices = sessions.sessions.filter((s) => !s.current).length;
+			} catch {
+				emitMultiDeviceKeyRequired(token);
+				throw new MultiDeviceKeyRequiredError();
+			}
+			if (otherDevices > 0) {
+				emitMultiDeviceKeyRequired(token);
+				throw new MultiDeviceKeyRequiredError();
 			}
 
 			const kp = await generateKeyPair();

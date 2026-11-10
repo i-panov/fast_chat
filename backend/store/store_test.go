@@ -28,7 +28,7 @@ func newTestStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 
-	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &ChatMember{}, &model.Message{}, &model.Thread{}, &model.File{}, &model.MessageFile{}, &model.DeletedMessage{}, &model.DeletedChat{}, &model.FederationOp{}, &model.FederationCursor{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Session{}, &model.Chat{}, &ChatMember{}, &model.Message{}, &model.Thread{}, &model.File{}, &model.MessageFile{}, &model.DeletedMessage{}, &model.DeletedChat{}, &model.PushSubscription{}, &model.FederationOp{}, &model.FederationCursor{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1040,6 +1040,48 @@ func TestAddConnectionMultiple(t *testing.T) {
 
 	if s.IsOnline(testAlice) {
 		t.Error("expected user to be offline after all connections removed")
+	}
+}
+
+func TestSessionPresenceIsIndependentOfUserPresence(t *testing.T) {
+	s := newTestStore(t)
+	s.AddConnectionForSession(testAlice, "s1")
+	s.AddConnectionForSession(testAlice, "s2")
+
+	if !s.IsOnline(testAlice) {
+		t.Fatal("user must be online")
+	}
+	if !s.IsSessionOnline("s1") || !s.IsSessionOnline("s2") {
+		t.Fatal("both sessions must be online")
+	}
+
+	s.RemoveConnectionForSession(testAlice, "s1")
+	if s.IsSessionOnline("s1") {
+		t.Fatal("s1 must be offline")
+	}
+	if !s.IsSessionOnline("s2") || !s.IsOnline(testAlice) {
+		t.Fatal("s2 and the user must stay online")
+	}
+}
+
+// A session may hold several connections (one per browser tab). Removing one
+// of them has to release a single connection, not clear the whole session
+// while another connection of the same session is still alive.
+func TestRemoveConnectionForSessionKeepsOtherConnection(t *testing.T) {
+	s := newTestStore(t)
+	s.AddConnectionForSession(testAlice, "s1")
+	s.AddConnectionForSession(testAlice, "s1")
+
+	s.RemoveConnectionForSession(testAlice, "s1")
+
+	if !s.IsSessionOnline("s1") || !s.IsOnline(testAlice) {
+		t.Fatal("s1 and the user must stay online while one connection is left")
+	}
+
+	s.RemoveConnectionForSession(testAlice, "s1")
+
+	if s.IsSessionOnline("s1") || s.IsOnline(testAlice) {
+		t.Fatal("s1 and the user must be offline after the last connection")
 	}
 }
 

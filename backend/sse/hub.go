@@ -23,7 +23,13 @@ const (
 	hubAuthTimeout = 30 * time.Second
 )
 
-var ErrConnectionNotFound = errors.New("connection not found")
+var (
+	ErrConnectionNotFound = errors.New("connection not found")
+	// ErrConnectionInUse reports an attempt to rebind an already authorized
+	// connection to another user or session. Rebinding would leak the
+	// presence bookkeeping of the first binding.
+	ErrConnectionInUse = errors.New("connection already authorized to another session")
+)
 
 type Event struct {
 	Event string
@@ -31,9 +37,12 @@ type Event struct {
 }
 
 type Connection struct {
-	mu         sync.Mutex
-	ID         string
-	UserID     string
+	mu        sync.Mutex
+	ID        string
+	UserID    string
+	SessionID string
+	// Deprecated: production connections are bound by SessionID; Token is
+	// only set by the test-only Authenticate wrapper.
 	Token      string
 	ExpiresAt  time.Time
 	Authorized bool
@@ -197,18 +206,41 @@ func (h *Hub) GetConnection(connectionID string) *Connection {
 	return h.connections[connectionID]
 }
 
-func (h *Hub) Authenticate(connectionID, userID, token string, expiresAt time.Time) error {
+// BindSession atomically binds a connection to a session. It reports whether
+// this call created a new binding: a replay for the same user and session only
+// refreshes the expiry, so the caller must not count presence again.
+//
+// A connection already authorized to another user or session is rejected with
+// ErrConnectionInUse instead of being rebound.
+func (h *Hub) BindSession(connectionID, userID, sessionID string, expiresAt time.Time) (bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	conn, ok := h.connections[connectionID]
 	if !ok {
-		return ErrConnectionNotFound
+		return false, ErrConnectionNotFound
 	}
 
 	conn.mu.Lock()
+
+	// Compare the binding, not Authorized: an expiry race may have flipped
+	// Authorized off for the very same binding, and that is still a replay.
+	switch {
+	case conn.UserID == userID && conn.SessionID == sessionID:
+		conn.ExpiresAt = expiresAt
+		conn.Authorized = true
+		conn.Warned = false
+		conn.mu.Unlock()
+
+		return false, nil
+	case conn.Authorized:
+		conn.mu.Unlock()
+
+		return false, ErrConnectionInUse
+	}
+
 	conn.UserID = userID
-	conn.Token = token
+	conn.SessionID = sessionID
 	conn.ExpiresAt = expiresAt
 	conn.Authorized = true
 	conn.Warned = false
@@ -216,13 +248,84 @@ func (h *Hub) Authenticate(connectionID, userID, token string, expiresAt time.Ti
 
 	// Avoid duplicate entries if sseAuth is replayed for the same
 	// connection (e.g. a retried auth request).
-	if slices.Contains(h.userConns[userID], connectionID) {
-		return nil
+	if !slices.Contains(h.userConns[userID], connectionID) {
+		h.userConns[userID] = append(h.userConns[userID], connectionID)
 	}
 
-	h.userConns[userID] = append(h.userConns[userID], connectionID)
+	return true, nil
+}
+
+// AuthenticateSession binds a connection to a user session. It keeps the
+// pre-BindSession API; callers that must count presence use BindSession to
+// learn whether the binding is new.
+func (h *Hub) AuthenticateSession(connectionID, userID, sessionID string, expiresAt time.Time) error {
+	_, err := h.BindSession(connectionID, userID, sessionID, expiresAt)
+
+	return err
+}
+
+// Deprecated: use BindSession. Authenticate is kept for tests and pre-session
+// callers: it binds the connection to the user without a session and records
+// the legacy token.
+func (h *Hub) Authenticate(connectionID, userID, token string, expiresAt time.Time) error {
+	if err := h.AuthenticateSession(connectionID, userID, "", expiresAt); err != nil {
+		return err
+	}
+
+	conn := h.GetConnection(connectionID)
+	if conn != nil {
+		conn.Lock()
+		conn.Token = token
+		conn.Unlock()
+	}
 
 	return nil
+}
+
+// CloseSession closes every SSE stream of one session, leaving the other
+// sessions of the user untouched.
+func (h *Hub) CloseSession(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+
+	for _, id := range h.sessionConnectionIDs(sessionID) {
+		if conn := h.GetConnection(id); conn != nil {
+			h.Unregister(id, conn)
+		}
+	}
+}
+
+// CloseUserSessions closes every SSE stream of the user.
+func (h *Hub) CloseUserSessions(userID string) {
+	h.mu.RLock()
+	ids := append([]string(nil), h.userConns[userID]...)
+	h.mu.RUnlock()
+
+	for _, id := range ids {
+		if conn := h.GetConnection(id); conn != nil {
+			h.Unregister(id, conn)
+		}
+	}
+}
+
+// UpdateSessionExpiry propagates a refreshed session expiry to its live
+// streams, so the heartbeat does not warn or expire them early.
+func (h *Hub) UpdateSessionExpiry(sessionID string, expiresAt time.Time) {
+	if sessionID == "" {
+		return
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, conn := range h.connections {
+		conn.mu.Lock()
+		if conn.SessionID == sessionID {
+			conn.ExpiresAt = expiresAt
+		}
+		conn.mu.Unlock()
+	}
 }
 
 func (h *Hub) Send(userID string, event Event) {
@@ -236,6 +339,13 @@ func (h *Hub) Send(userID string, event Event) {
 		}
 
 		conn.mu.Lock()
+		// The user index is keyed by userID, but verify the binding anyway:
+		// a stale entry must never leak one user's events to another.
+		if conn.UserID != userID {
+			conn.mu.Unlock()
+
+			continue
+		}
 		if !conn.Authorized || time.Now().After(conn.ExpiresAt) {
 			conn.Authorized = false
 			conn.mu.Unlock()
@@ -250,6 +360,25 @@ func (h *Hub) Send(userID string, event Event) {
 			slog.Info("SSE channel full, dropping event", "userID", userID)
 		}
 	}
+}
+
+// sessionConnectionIDs returns the ids of the connections bound to sessionID.
+func (h *Hub) sessionConnectionIDs(sessionID string) []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	ids := make([]string, 0)
+	for id, conn := range h.connections {
+		conn.mu.Lock()
+		match := conn.SessionID == sessionID
+		conn.mu.Unlock()
+
+		if match {
+			ids = append(ids, id)
+		}
+	}
+
+	return ids
 }
 
 // reapStaleUnauthenticatedLocked closes unauthenticated connections that

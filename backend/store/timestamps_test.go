@@ -65,8 +65,8 @@ func columnDefaults(t *testing.T, db *gorm.DB, table string) map[string]*string 
 }
 
 // newTimestampTestStore builds a store over the full schema, the same way
-// InitDB does. The shared newTestStore omits push_subscriptions and
-// message_read_statuses, which the timestamp migration walks.
+// InitDB does. The shared newTestStore omits message_read_statuses, which the
+// timestamp migration walks.
 func newTimestampTestStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -76,7 +76,7 @@ func newTimestampTestStore(t *testing.T) *Store {
 	}
 
 	if err := db.AutoMigrate(
-		&model.User{}, &model.Chat{}, &ChatMember{},
+		&model.User{}, &model.Session{}, &model.Chat{}, &ChatMember{},
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{}, &model.FederationOp{}, &model.FederationCursor{},

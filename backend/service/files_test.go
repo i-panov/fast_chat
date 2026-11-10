@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -20,7 +21,7 @@ func newTestService(t *testing.T) *Service {
 		t.Fatal(err)
 	}
 
-	if err := db.AutoMigrate(&model.User{}, &model.Chat{}, &store.ChatMember{}, &model.Message{}, &model.Thread{}, &model.File{}, &model.MessageFile{}, &model.DeletedMessage{}, &model.DeletedChat{}, &model.PushSubscription{},
+	if err := db.AutoMigrate(&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{}, &model.Message{}, &model.Thread{}, &model.File{}, &model.MessageFile{}, &model.DeletedMessage{}, &model.DeletedChat{}, &model.PushSubscription{},
 		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{}); err != nil {
 		t.Fatal(err)
 	}
@@ -28,6 +29,11 @@ func newTestService(t *testing.T) *Service {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Domain: "localhost:8080", Port: 8080},
 		CORS:   config.CORSConfig{Origin: "*"},
+		Auth: config.AuthConfig{
+			TokenExpiry:        24 * time.Hour,
+			TokenExpiryWarning: 5 * time.Minute,
+			MaxSessionsPerUser: 50,
+		},
 	}
 
 	return New(store.New(db), cfg, nil, nil)

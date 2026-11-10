@@ -105,6 +105,11 @@ auth:
     token_expiry: 24h
     # When to warn the client that the token is about to expire.
     token_expiry_warning: 5m
+    # Maximum active devices per account. 0 means the default 50 and a
+    # negative value is rejected; unlimited mode is not supported. When the
+    # cap is exceeded, the oldest session is revoked on login (its SSE stream
+    # is closed and its push subscriptions are removed).
+    max_sessions_per_user: 50
 
 rate_limits:
     send_code:

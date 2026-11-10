@@ -1,6 +1,6 @@
 import { MantineProvider } from "@mantine/core";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "../useAuth.tsx";
 import { LoginPage } from "./LoginPage.tsx";
 
@@ -50,6 +50,12 @@ function submit(): HTMLButtonElement {
 	return btn;
 }
 
+afterEach(async () => {
+	// Mantine transitions schedule a timer on unmount; let it fire while jsdom
+	// still provides window instead of leaking into the next test file.
+	await new Promise((resolve) => setTimeout(resolve, 50));
+});
+
 beforeEach(() => {
 	localStorage.clear();
 	sessionStorage.clear();
@@ -90,6 +96,8 @@ describe("login page", () => {
 			user: { id: "a:test", nick: "alice", online: true },
 			token: "tok",
 			expiresAt: "2027-01-01T00:00:00Z",
+			sessionId: "s1",
+			deviceId: "dev-1",
 		});
 		renderPage();
 
@@ -108,7 +116,11 @@ describe("login page", () => {
 				search: { chatId: undefined, threadId: undefined },
 			});
 		});
+		const call = vi.mocked(verifyCode).mock.calls[0];
+		expect(typeof call?.[2]?.deviceId).toBe("string");
+		expect(typeof call?.[2]?.deviceName).toBe("string");
 		expect(localStorage.getItem("accounts")).toContain("tok");
+		expect(localStorage.getItem("accounts")).toContain("s1");
 	});
 
 	it("registers a new account through the nick step", async () => {
@@ -133,7 +145,11 @@ describe("login page", () => {
 		fireEvent.click(submit());
 
 		await waitFor(() => {
-			expect(completeRegistration).toHaveBeenCalledWith("st", "bob");
+			const call = vi.mocked(completeRegistration).mock.calls[0];
+			expect(call?.[0]).toBe("st");
+			expect(call?.[1]).toBe("bob");
+			expect(typeof call?.[2]?.deviceId).toBe("string");
+			expect(typeof call?.[2]?.deviceName).toBe("string");
 			expect(navigate).toHaveBeenCalledWith({
 				to: "/chat",
 				search: { chatId: undefined, threadId: undefined },

@@ -46,7 +46,7 @@ func newTransportTestServerWithHub(t *testing.T, rl *RateLimiters) (*Transport, 
 	}
 
 	if err := db.AutoMigrate(
-		&model.User{}, &model.Chat{}, &store.ChatMember{},
+		&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{},
 		&model.Message{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{}, &model.FederationOp{}, &model.FederationCursor{},
@@ -331,6 +331,11 @@ func TestFallbackSSEPresenceCleanup(t *testing.T) {
 	h, st, _ := newFallbackTestServer(t)
 	user := createTestUser(t, st)
 
+	session, _, ok := st.GetSessionByToken(context.Background(), user.Token)
+	if !ok {
+		t.Fatal("test user has no session")
+	}
+
 	ts := httptest.NewServer(h)
 	defer ts.Close()
 
@@ -373,6 +378,9 @@ func TestFallbackSSEPresenceCleanup(t *testing.T) {
 	if !st.IsOnline(user.ID) {
 		t.Fatal("expected user to be online after sse-auth")
 	}
+	if !st.IsSessionOnline(session.ID) {
+		t.Fatal("expected session to be online after sse-auth")
+	}
 
 	// Close the stream; the deferred cleanup must remove presence.
 	cancel()
@@ -380,7 +388,7 @@ func TestFallbackSSEPresenceCleanup(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if !st.IsOnline(user.ID) {
+		if !st.IsOnline(user.ID) && !st.IsSessionOnline(session.ID) {
 			return
 		}
 
@@ -521,6 +529,156 @@ func TestFallbackSSEUnauthorizedNoEvents(t *testing.T) {
 	case <-done:
 		t.Fatal("unauthorized connection received an event")
 	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+// The heartbeat validates the session by ID, so a revoked session expires its
+// stream even when the connection's recorded expiry is still in the future.
+func TestSSEHeartbeatRevalidatesSession(t *testing.T) {
+	st := newTestStore(t)
+	hub := newTestHub()
+	t.Cleanup(hub.Close)
+	cfg := testAPIConfig()
+	user := createTestUser(t, st)
+
+	session, _, ok := st.GetSessionByToken(context.Background(), user.Token)
+	if !ok {
+		t.Fatal("test user has no session")
+	}
+
+	conn := hub.Register("c1")
+	if err := hub.AuthenticateSession("c1", user.ID, session.ID, session.ExpiresAt); err != nil {
+		t.Fatal(err)
+	}
+
+	if expired, warn, _ := checkSSEHeartbeat(context.Background(), conn, st, cfg); expired || warn {
+		t.Fatalf("live session: expired=%v warn=%v", expired, warn)
+	}
+
+	if err := st.RevokeSession(context.Background(), user.ID, session.ID); err != nil {
+		t.Fatalf("RevokeSession: %v", err)
+	}
+
+	if expired, _, _ := checkSSEHeartbeat(context.Background(), conn, st, cfg); !expired {
+		t.Fatal("revoked session must expire the stream")
+	}
+}
+
+// Connections authenticated through the legacy Hub.Authenticate (no session
+// ID) keep validating their token instead of being expired immediately.
+func TestSSEHeartbeatLegacyTokenFallback(t *testing.T) {
+	st := newTestStore(t)
+	hub := newTestHub()
+	t.Cleanup(hub.Close)
+	cfg := testAPIConfig()
+	user := createTestUser(t, st)
+
+	session, _, ok := st.GetSessionByToken(context.Background(), user.Token)
+	if !ok {
+		t.Fatal("test user has no session")
+	}
+
+	conn := hub.Register("c1")
+	if err := hub.Authenticate("c1", user.ID, user.Token, user.TokenExpiresAt); err != nil {
+		t.Fatal(err)
+	}
+
+	conn.Lock()
+	legacySessionID := conn.SessionID
+	conn.Unlock()
+
+	if legacySessionID != "" {
+		t.Fatalf("legacy Authenticate must not set a session ID, got %q", legacySessionID)
+	}
+
+	if expired, warn, _ := checkSSEHeartbeat(context.Background(), conn, st, cfg); expired || warn {
+		t.Fatalf("live legacy token: expired=%v warn=%v", expired, warn)
+	}
+
+	if err := st.RevokeSession(context.Background(), user.ID, session.ID); err != nil {
+		t.Fatalf("RevokeSession: %v", err)
+	}
+
+	if expired, _, _ := checkSSEHeartbeat(context.Background(), conn, st, cfg); !expired {
+		t.Fatal("legacy token path must expire when the token stops working")
+	}
+}
+
+// Closing the session ends its live stream and removes its presence.
+func TestSSECloseSessionEndsStream(t *testing.T) {
+	h, st, hub := newFallbackTestServer(t)
+	user := createTestUser(t, st)
+
+	session, _, ok := st.GetSessionByToken(context.Background(), user.Token)
+	if !ok {
+		t.Fatal("test user has no session")
+	}
+
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/events?connectionId=session-close", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+
+	event, _ := readSSEEvent(t, reader)
+	if event != "connected" {
+		t.Fatalf("first SSE event = %q, want connected", event)
+	}
+
+	authBody := fmt.Sprintf(`{"connectionId":"session-close","token":%q}`, user.Token)
+	authReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/auth/sse-auth", strings.NewReader(authBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authReq.Header.Set("Content-Type", "application/json")
+	authResp, err := http.DefaultClient.Do(authReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authResp.Body.Close()
+
+	if authResp.StatusCode != http.StatusOK {
+		t.Fatalf("sse-auth: expected 200, got %d", authResp.StatusCode)
+	}
+
+	hub.CloseSession(session.ID)
+
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := reader.ReadString('\n')
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected the stream to end after its session was closed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream did not end after its session was closed")
+	}
+
+	if st.IsSessionOnline(session.ID) {
+		t.Error("session presence must be removed when its stream ends")
+	}
+	if st.IsOnline(user.ID) {
+		t.Error("user presence must be removed with the last stream")
 	}
 }
 

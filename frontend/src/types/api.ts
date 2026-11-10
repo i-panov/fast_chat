@@ -117,11 +117,34 @@ export interface AppConfig {
 	commit?: string;
 }
 
+export interface DeviceInfo {
+	deviceId: string;
+	deviceName: string;
+}
+
+export interface SessionInfo {
+	id: string;
+	deviceId: string;
+	deviceName: string;
+	userAgent?: string;
+	createdAt: string;
+	lastSeenAt: string;
+	expiresAt: string;
+	current: boolean;
+}
+
+export interface SessionsResponse {
+	currentSessionId: string;
+	sessions: SessionInfo[];
+}
+
 interface VerifyCodeExisting {
 	isNew: false;
 	user: User;
 	token: string;
 	expiresAt: string;
+	sessionId?: string;
+	deviceId?: string;
 }
 
 interface VerifyCodeNew {

@@ -6,6 +6,7 @@ package service
 
 import (
 	"log/slog"
+	"sync"
 
 	"fast_chat/calls"
 	"fast_chat/config"
@@ -51,6 +52,10 @@ type Service struct {
 	// calls is the registry of the ongoing calls. It is optional: without it
 	// the call domain is disabled.
 	calls *calls.Manager
+	// authMu serializes the per-account login + trim step. Without it two
+	// concurrent logins can both pass the session cap before either trims,
+	// or race the same-device SELECT→INSERT.
+	authMu sync.Mutex
 }
 
 // eventSender is the part of the SSE hub the service uses.

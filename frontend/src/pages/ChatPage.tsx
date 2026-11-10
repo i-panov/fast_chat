@@ -17,6 +17,7 @@ import { IncomingCallSection } from "../components/chat/IncomingCallOverlay.tsx"
 import { InputBar } from "../components/chat/InputBar.tsx";
 import { LocationPickerModal } from "../components/chat/LocationPickerModal.tsx";
 import { MessageList } from "../components/chat/MessageList.tsx";
+import { MultiDeviceKeyModal } from "../components/chat/MultiDeviceKeyModal.tsx";
 import { RecoveryModal } from "../components/chat/RecoveryModal.tsx";
 import { SearchBox } from "../components/chat/SearchBox.tsx";
 import { ThreadView } from "../components/chat/ThreadView.tsx";
@@ -423,6 +424,7 @@ export function ChatPage() {
 	return (
 		<ChatContext.Provider value={s}>
 			<Stack h="100%" gap={0}>
+				<MultiDeviceKeyModal activeToken={s.activeAccount?.token ?? null} />
 				<AccountSwitcher
 					open={s.switcherOpen}
 					onClose={() => s.setSwitcherOpen(false)}

@@ -6,7 +6,7 @@ import {
 	useEffect,
 	useState,
 } from "react";
-import { revokeSession } from "./api.ts";
+import { logoutAllSessions, revokeSession } from "./api.ts";
 import { setActiveAccountKey } from "./db/init.ts";
 import { getRouter } from "./router.tsx";
 import { onUnauthorized } from "./utils/authEvents.ts";
@@ -25,6 +25,8 @@ interface StoredAccount {
 	user: StoredUser;
 	email: string;
 	expiresAt: string;
+	sessionId?: string;
+	deviceId?: string;
 }
 
 interface AuthContextValue {
@@ -36,6 +38,8 @@ interface AuthContextValue {
 		user: StoredUser,
 		email: string,
 		expiresAt: string,
+		sessionId?: string,
+		deviceId?: string,
 	) => void;
 	removeAccount: (token: string) => void;
 	updateAccountToken: (
@@ -44,6 +48,7 @@ interface AuthContextValue {
 		newExpiresAt: string,
 	) => void;
 	logout: () => void;
+	logoutAll: () => void;
 }
 
 const ACCOUNTS_KEY = "accounts";
@@ -219,11 +224,18 @@ function useAuthState() {
 	}, []);
 
 	const addAccount = useCallback(
-		(token: string, user: StoredUser, email: string, expiresAt: string) => {
+		(
+			token: string,
+			user: StoredUser,
+			email: string,
+			expiresAt: string,
+			sessionId?: string,
+			deviceId?: string,
+		) => {
 			// Re-read storage at write time and merge by user id so an account
 			// added concurrently from another tab is not overwritten.
 			const updated = mergeAccounts(readAccounts(), [
-				{ token, user, email, expiresAt },
+				{ token, user, email, expiresAt, sessionId, deviceId },
 			]);
 			writeAccounts(updated);
 			setAccounts(updated);
@@ -306,6 +318,22 @@ function useAuthState() {
 		}
 	}, [activeToken, accounts, removeAccount]);
 
+	const logoutAll = useCallback(() => {
+		const token = activeToken;
+		const leaving = accounts.find((a) => a.token === token) ?? null;
+		removeAccount(token ?? "");
+		clearAccountSwitchState();
+		if (leaving !== null) {
+			void deleteAccountDB(leaving.user.id);
+		}
+		if (token !== null) {
+			void logoutAllSessions(token).catch(() => {
+				// The local session is gone either way; a failed network call
+				// leaves other devices to expire normally.
+			});
+		}
+	}, [activeToken, accounts, removeAccount]);
+
 	const activeAccount =
 		activeToken !== null
 			? (accounts.find((a) => a.token === activeToken) ?? null)
@@ -323,6 +351,7 @@ function useAuthState() {
 		removeAccount,
 		updateAccountToken,
 		logout,
+		logoutAll,
 	};
 }
 
