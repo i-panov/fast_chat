@@ -42,6 +42,9 @@ database:
 	if cfg.Auth.TokenExpiry != 24*time.Hour {
 		t.Errorf("expected TokenExpiry=24h, got %v", cfg.Auth.TokenExpiry)
 	}
+	if cfg.Auth.MaxSessionsPerUser != 50 {
+		t.Errorf("expected MaxSessionsPerUser=50, got %d", cfg.Auth.MaxSessionsPerUser)
+	}
 	if cfg.RateLimits.General.Limit != 600 {
 		t.Errorf("expected General.Limit=600, got %d", cfg.RateLimits.General.Limit)
 	}
@@ -111,15 +114,16 @@ database:
   path: /tmp/test.db
 `
 	cases := map[string]string{
-		"bad port":       "server:\n  host: localhost\n  port: 99999\ndatabase:\n  path: /tmp/test.db\n",
-		"bad scheme":     header + "federation:\n  scheme: ftp\n",
-		"bad timeout":    header + "federation:\n  timeout: -5\n",
-		"bad rate limit": header + "rate_limits:\n  general:\n    limit: -1\n",
-		"bad token warn": header + "auth:\n  token_expiry: 5m\n  token_expiry_warning: 10m\n",
-		"bad cors":       header + "cors:\n  origin: 'ftp://evil'\n",
-		"bad turn urls":  header + "ice:\n  turn:\n    - urls: []\n",
-		"bad vapid":      header + "push:\n  vapid_subject: not-a-url\n",
-		"negative ttl":   header + "message_edit_ttl: -1\n",
+		"bad port":          "server:\n  host: localhost\n  port: 99999\ndatabase:\n  path: /tmp/test.db\n",
+		"bad scheme":        header + "federation:\n  scheme: ftp\n",
+		"bad timeout":       header + "federation:\n  timeout: -5\n",
+		"bad rate limit":    header + "rate_limits:\n  general:\n    limit: -1\n",
+		"bad token warn":    header + "auth:\n  token_expiry: 5m\n  token_expiry_warning: 10m\n",
+		"negative sessions": header + "auth:\n  max_sessions_per_user: -1\n",
+		"bad cors":          header + "cors:\n  origin: 'ftp://evil'\n",
+		"bad turn urls":     header + "ice:\n  turn:\n    - urls: []\n",
+		"bad vapid":         header + "push:\n  vapid_subject: not-a-url\n",
+		"negative ttl":      header + "message_edit_ttl: -1\n",
 	}
 
 	for name, doc := range cases {

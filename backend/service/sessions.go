@@ -121,6 +121,26 @@ func (s *Service) RefreshSession(ctx context.Context, sessionID string) (*model.
 	return session, token, nil
 }
 
+// RunSessionCleanup removes sessions that expired or were revoked long ago.
+func (s *Service) RunSessionCleanup(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().UTC().Add(-30 * 24 * time.Hour)
+			if removed, err := s.store.DeleteOldSessions(ctx, cutoff); err != nil {
+				log().Warn("session cleanup failed", "err", err)
+			} else if removed > 0 {
+				log().Info("removed old sessions", "count", removed)
+			}
+		}
+	}
+}
+
 // trimSessions revokes the oldest sessions above the configured cap and
 // releases their realtime resources.
 func (s *Service) trimSessions(ctx context.Context, userID, keepID string) {

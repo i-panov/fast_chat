@@ -26,6 +26,16 @@ backfill и отката. Сессия привязывается к `deviceId`,
 4 (service), 5 (transport), 8 (calls push), 9, 10. Если идти строго по
 номерам, методы из 6/7 появятся позже, чем их вызовы в 4.
 
+> **Implementation note (final backfill rule):** the shipped backfill in
+> `backend/store/sessions.go` supersedes the Task 1 snippet. It skips any user
+> who has at least one row in `sessions` — active, revoked or legacy — and
+> creates a `legacy` session only for users with **zero** session rows. Once a
+> user has any session row, `sessions` is authoritative and `users.token` is
+> ignored; reconciling from the legacy mirror would let a restart resurrect a
+> session after logout or refresh. `CreateSession`/`RefreshSession` still mirror
+> the newest session into `users.token`, and `RevokeSession`/`RevokeAllSessions`
+> invalidate that mirror, but authentication reads only `sessions`.
+
 ---
 
 ## File map
@@ -2232,7 +2242,9 @@ Expected: PASS.
 **Files:**
 - Modify: `backend/config/config.go`
 - Modify: `backend/main.go`
-- Modify: `backend/service/service.go`
+- Modify: `backend/service/sessions.go`
+- Modify: `backend/transport/transport.go` (drop the redundant
+  `users.token_expires_at` check from the legacy SSE heartbeat path)
 - Modify: `config/dev.yaml`
 - Modify: `config/prod.yaml.example`
 - Modify: `README.md`
@@ -2249,6 +2261,9 @@ auth:
     token_expiry_warning: 5m
     max_sessions_per_user: 50
 ```
+
+`0` трактуется как значение по умолчанию 50, отрицательное значение
+отклоняется, безлимитного режима нет.
 
 - [ ] **Step 2: Cleanup worker**
 

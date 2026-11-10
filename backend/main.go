@@ -611,6 +611,10 @@ func startWorkers(
 		callManager.Run(ctx, callSweepInterval)
 	})
 
+	workers.Go(func() {
+		svc.RunSessionCleanup(ctx, time.Hour)
+	})
+
 	return &workers
 }
 

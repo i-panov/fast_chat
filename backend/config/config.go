@@ -27,7 +27,7 @@ var (
 	ErrInvalidTokenExpiry   = errors.New("auth.token_expiry must be > 0")
 	ErrInvalidTokenWarning  = errors.New("auth.token_expiry_warning must be > 0")
 	ErrTokenWarningTooLarge = errors.New("auth.token_expiry_warning must be less than auth.token_expiry")
-	ErrInvalidMaxSessions   = errors.New("auth.max_sessions_per_user must be >= 0")
+	ErrInvalidMaxSessions   = errors.New("auth.max_sessions_per_user must be >= 0 (0 means the default 50)")
 	ErrInvalidRateLimit     = errors.New("rate_limits entry must have limit > 0 and window > 0")
 	ErrInvalidVAPIDSubject  = errors.New("push.vapid_subject must be a mailto: or http(s):// URL")
 	ErrInvalidTURNConfig    = errors.New("ice.turn entry must list at least one non-empty url")
@@ -137,7 +137,8 @@ type AuthConfig struct {
 	TokenExpiry        time.Duration `yaml:"token_expiry"`
 	TokenExpiryWarning time.Duration `yaml:"token_expiry_warning"`
 	// MaxSessionsPerUser caps the active devices of one account. The oldest
-	// sessions above the cap are revoked on login.
+	// sessions above the cap are revoked on login. Zero means the default 50;
+	// a negative value is invalid and unlimited is not supported.
 	MaxSessionsPerUser int `yaml:"max_sessions_per_user"`
 }
 
