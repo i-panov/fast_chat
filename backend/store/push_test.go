@@ -66,6 +66,67 @@ func TestDeletePushSubscriptionsBySession(t *testing.T) {
 	}
 }
 
+func TestDeletePushSubscriptionForSession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const (
+		ownEndpoint     = "https://fcm.googleapis.com/fcm/send/own"
+		otherEndpoint   = "https://fcm.googleapis.com/fcm/send/other"
+		legacyEndpoint  = "https://fcm.googleapis.com/fcm/send/legacy"
+		otherSessionID  = "s2"
+		requestSession  = "s1"
+		legacySessionID = ""
+	)
+
+	if _, err := s.AddPushSubscriptionForSession(ctx, testAlice, requestSession, ownEndpoint, "p256dh", "auth"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddPushSubscriptionForSession(ctx, testAlice, otherSessionID, otherEndpoint, "p256dh", "auth"); err != nil {
+		t.Fatal(err)
+	}
+	// A subscription written before sessions existed carries no session id.
+	if _, err := s.AddPushSubscriptionForSession(ctx, testAlice, legacySessionID, legacyEndpoint, "p256dh", "auth"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeletePushSubscriptionForSession(ctx, testAlice, requestSession, ownEndpoint); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	subs, err := s.GetPushSubscriptionsByUser(ctx, testAlice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 2 {
+		t.Fatalf("subscriptions = %+v, want the other device and the legacy row", subs)
+	}
+
+	// One device must not delete another device's subscription.
+	if err := s.DeletePushSubscriptionForSession(ctx, testAlice, requestSession, otherEndpoint); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	subs, err = s.GetPushSubscriptionsByUser(ctx, testAlice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 2 {
+		t.Fatalf("subscriptions = %+v, want the other device untouched", subs)
+	}
+
+	// The legacy fallback removes the sessionless row of the same endpoint.
+	if err := s.DeletePushSubscriptionForSession(ctx, testAlice, requestSession, legacyEndpoint); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	subs, err = s.GetPushSubscriptionsByUser(ctx, testAlice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 1 || subs[0].SessionID != otherSessionID {
+		t.Fatalf("subscriptions = %+v, want only the other device", subs)
+	}
+}
+
 func TestDeleteAllPushSubscriptions(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

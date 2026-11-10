@@ -136,9 +136,9 @@ func RegisterPush(api huma.API, st *store.Store, pushPublicKey func() (string, b
 		Summary:     "Remove a web-push subscription",
 		Security:    []map[string][]string{{bearerScheme: {}}},
 	}, func(ctx context.Context, input *unsubscribePushInput) (*statusOutput, error) {
-		// The endpoint is unique per user, so deleting it removes the row of
-		// the requesting device. Legacy sessionless contexts still fall back
-		// to the user alone.
+		// The session guard keeps one device from deleting the subscription
+		// of another; a legacy sessionless context falls back to the user
+		// alone.
 		user, ok := sessionFromContext(ctx)
 		if !ok {
 			user, ok = userFromContext(ctx)
@@ -151,7 +151,7 @@ func RegisterPush(api huma.API, st *store.Store, pushPublicKey func() (string, b
 			return nil, &statusError{ErrorMessage: "endpoint is required", code: http.StatusBadRequest}
 		}
 
-		if err := st.DeletePushSubscription(ctx, user.ID, input.Body.Endpoint); err != nil {
+		if err := st.DeletePushSubscriptionForSession(ctx, user.ID, user.SessionID, input.Body.Endpoint); err != nil {
 			slog.Error("failed to delete push subscription", "err", err)
 			return nil, &statusError{ErrorMessage: "failed to delete subscription", code: http.StatusInternalServerError}
 		}

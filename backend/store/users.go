@@ -221,9 +221,11 @@ func (s *Store) RefreshUserToken(ctx context.Context, userID string, tokenExpiry
 	return user, nil
 }
 
-// RevokeUserToken invalidates the session of the user. The stored token is
-// replaced with the hash of a fresh random value, so the token the client
-// holds stops working immediately instead of at the end of its lifetime.
+// RevokeUserToken invalidates the legacy users.token columns. The stored
+// token is replaced with the hash of a fresh random value and its expiry is
+// pulled back to now, so a stale value cannot resurrect a revoked session if
+// the database is ever backfilled again. Session authentication itself no
+// longer reads these columns.
 func (s *Store) RevokeUserToken(ctx context.Context, userID string) error {
 	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
 		Updates(map[string]any{

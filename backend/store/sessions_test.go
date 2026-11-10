@@ -116,28 +116,23 @@ func TestBackfillSessionsNormalizesExpiryToUTC(t *testing.T) {
 	}
 }
 
-func TestBackfillSessionsSkipsExistingTokenHash(t *testing.T) {
+func TestBackfillSessionsSkipsUserWithExistingSession(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
 	user := createTestUserWithoutSessions(t, s, "alice")
 
-	now := time.Now().UTC()
-	deviceSession := &model.Session{
-		ID:         GenerateID(),
-		UserID:     user.ID,
-		DeviceID:   "dev-1",
-		DeviceName: "Chrome",
-		TokenHash:  hashToken(user.Token),
-		CreatedAt:  now,
-		LastSeenAt: now,
-		ExpiresAt:  now.Add(time.Hour),
-	}
-	if err := s.DB().Create(deviceSession).Error; err != nil {
+	// A real device session whose token differs from users.token models a
+	// database written before session writes mirrored the legacy columns.
+	_, token, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	// No legacy row for this user: the only session is the real device one.
-	if err := s.DB().Where("user_id = ? AND device_id = ?", user.ID, "legacy").Delete(&model.Session{}).Error; err != nil {
+	staleToken := "stale-users-token"
+	if err := s.DB().Model(&model.User{}).Where("id = ?", user.ID).
+		Updates(map[string]any{
+			"token":            hashToken(staleToken),
+			"token_expires_at": time.Now().Add(time.Hour).UTC(),
+		}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -150,10 +145,10 @@ func TestBackfillSessionsSkipsExistingTokenHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	if count != 1 {
-		t.Fatalf("session count = %d, want 1", count)
+		t.Fatalf("session count = %d, want the existing device session only", count)
 	}
 
-	sess, gotUser, ok := s.GetSessionByToken(ctx, user.Token)
+	sess, gotUser, ok := s.GetSessionByToken(ctx, token)
 	if !ok {
 		t.Fatal("token of the existing session must keep working")
 	}
@@ -163,9 +158,15 @@ func TestBackfillSessionsSkipsExistingTokenHash(t *testing.T) {
 	if sess.DeviceID != "dev-1" {
 		t.Fatalf("deviceID = %q, want dev-1", sess.DeviceID)
 	}
+
+	if _, _, ok := s.GetSessionByToken(ctx, staleToken); ok {
+		t.Fatal("users.token must not authenticate once the user has a session")
+	}
 }
 
-func TestBackfillSessionsReconcilesRotatedToken(t *testing.T) {
+// Once a user has any session row, users.token is ignored: a rotated value
+// written by an older build must not overwrite the authoritative session.
+func TestBackfillSessionsDoesNotOverrideSessionWithUserToken(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
 	user := createTestUser(t, s, "alice")
@@ -198,22 +199,110 @@ func TestBackfillSessionsReconcilesRotatedToken(t *testing.T) {
 	if sessions[0].DeviceID != "legacy" {
 		t.Fatalf("deviceID = %q, want legacy", sessions[0].DeviceID)
 	}
-	if sessions[0].TokenHash != hashToken(rotatedToken) {
-		t.Fatal("legacy session must carry the rotated token hash")
-	}
-	if !sessions[0].ExpiresAt.Equal(newExpiry) {
-		t.Fatalf("expiresAt = %v, want %v", sessions[0].ExpiresAt, newExpiry)
+	if sessions[0].TokenHash != hashToken(user.Token) {
+		t.Fatal("backfill must not overwrite the session token from users.token")
 	}
 
-	sess, gotUser, ok := s.GetSessionByToken(ctx, rotatedToken)
-	if !ok {
-		t.Fatal("rotated token must resolve through the reconciled legacy session")
+	if _, _, ok := s.GetSessionByToken(ctx, user.Token); !ok {
+		t.Fatal("the session token must keep working")
 	}
-	if gotUser.ID != user.ID || sess.ID != sessions[0].ID {
-		t.Fatalf("resolved user/session = %s/%s, want %s/%s", gotUser.ID, sess.ID, user.ID, sessions[0].ID)
+	if _, _, ok := s.GetSessionByToken(ctx, rotatedToken); ok {
+		t.Fatal("users.token must not authenticate once the user has a session")
+	}
+}
+
+// After a session refresh the legacy columns mirror the new hash, so a
+// backfill neither creates a second legacy row nor restores the old token.
+func TestBackfillSessionsKeepsRefreshedSession(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	legacy, _, ok := s.GetSessionByToken(ctx, user.Token)
+	if !ok {
+		t.Fatal("legacy session missing")
+	}
+
+	_, refreshedToken, err := s.RefreshSession(ctx, legacy.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stored, ok := s.GetUserByID(ctx, user.ID)
+	if !ok || stored.Token != hashToken(refreshedToken) {
+		t.Fatal("RefreshSession must mirror the new token into users.token")
+	}
+
+	if err := backfillSessions(s.DB()); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int64
+	if err := s.DB().Model(&model.Session{}).Where("user_id = ?", user.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("session count = %d, want 1", count)
+	}
+
+	if _, _, ok := s.GetSessionByToken(ctx, refreshedToken); !ok {
+		t.Fatal("the refreshed token must survive the restart")
 	}
 	if _, _, ok := s.GetSessionByToken(ctx, user.Token); ok {
-		t.Fatal("old token must stop working after reconciliation")
+		t.Fatal("the old token must stay revoked after a restart")
+	}
+}
+
+func TestBackfillSessionsDoesNotResurrectRevokedSession(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+
+	legacy, _, ok := s.GetSessionByToken(ctx, user.Token)
+	if !ok {
+		t.Fatal("legacy session missing")
+	}
+	if err := s.RevokeSession(ctx, user.ID, legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, ok := s.GetUserByID(ctx, user.ID)
+	if !ok {
+		t.Fatal("user missing")
+	}
+	if stored.Token == hashToken(user.Token) {
+		t.Fatal("RevokeSession must clear the legacy token")
+	}
+
+	// Model a database written by an older build: users.token still carries
+	// the revoked token with a future expiry.
+	if err := s.DB().Model(&model.User{}).Where("id = ?", user.ID).
+		Updates(map[string]any{
+			"token":            hashToken(user.Token),
+			"token_expires_at": time.Now().Add(time.Hour).UTC(),
+		}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := backfillSessions(s.DB()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, ok := s.GetSessionByToken(ctx, user.Token); ok {
+		t.Fatal("backfill must not resurrect a revoked session from users.token")
+	}
+
+	var count int64
+	if err := s.DB().Model(&model.Session{}).Where("user_id = ?", user.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("session count = %d, want the revoked row only", count)
+	}
+
+	got, ok := s.GetSessionByID(ctx, legacy.ID)
+	if !ok || got.RevokedAt == nil {
+		t.Fatal("backfill must leave the revoked session revoked")
 	}
 }
 

@@ -69,6 +69,28 @@ func (s *Store) DeletePushSubscription(ctx context.Context, userID, endpoint str
 	return s.db.WithContext(ctx).Where("user_id = ? AND endpoint = ?", userID, endpoint).Delete(&model.PushSubscription{}).Error
 }
 
+// DeletePushSubscriptionForSession removes the subscription of one device.
+// The endpoint is unique across the table, so it identifies the row, while the
+// session guard keeps one device from deleting another device's subscription.
+// When the endpoint has no row for the given session, a legacy subscription
+// with an empty session id is removed instead.
+func (s *Store) DeletePushSubscriptionForSession(ctx context.Context, userID, sessionID, endpoint string) error {
+	res := s.db.WithContext(ctx).
+		Where("user_id = ? AND endpoint = ? AND session_id = ?", userID, endpoint, sessionID).
+		Delete(&model.PushSubscription{})
+	if res.Error != nil {
+		return res.Error
+	}
+
+	if res.RowsAffected > 0 || sessionID == "" {
+		return nil
+	}
+
+	return s.db.WithContext(ctx).
+		Where("user_id = ? AND endpoint = ? AND session_id = ''", userID, endpoint).
+		Delete(&model.PushSubscription{}).Error
+}
+
 func (s *Store) DeletePushSubscriptionByEndpoint(ctx context.Context, endpoint string) error {
 	return s.db.WithContext(ctx).Where("endpoint = ?", endpoint).Delete(&model.PushSubscription{}).Error
 }

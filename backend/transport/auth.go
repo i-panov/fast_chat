@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -231,6 +232,12 @@ func registerLogout(api huma.API, svc *service.Service) {
 		}
 
 		if err := svc.Logout(ctx, user.SessionID, user.ID); err != nil {
+			// A concurrent double-revoke already reached the goal: answer as
+			// if the session was still there instead of a 500.
+			if errors.Is(err, store.ErrSessionNotFound) {
+				return nil, errUnauthorized
+			}
+
 			return nil, mapServerError(err)
 		}
 
