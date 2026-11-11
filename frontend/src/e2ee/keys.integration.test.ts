@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setActiveAccountKey } from "../db/init.ts";
 import { generateKeyPair } from "./crypto.ts";
 import {
+	confirmNewKey,
 	discardRecoveryAndGenerate,
 	ensureAccountKeys,
 	getMyKeyPair,
 	MultiDeviceKeyRequiredError,
+	NewKeyConfirmationRequiredError,
 	RecoveryRequiredError,
 	restoreKeyPairFromBackup,
 	uploadKeyBackup,
@@ -69,7 +71,19 @@ describe("key server backup integration", () => {
 		vi.clearAllMocks();
 	});
 
+	it("asks before creating the first key", async () => {
+		await expect(ensureAccountKeys("token")).rejects.toBeInstanceOf(
+			NewKeyConfirmationRequiredError,
+		);
+		expect(await getMyKeyPair()).toBeNull();
+
+		confirmNewKey();
+		const kp = await ensureAccountKeys("token");
+		expect(kp.privateKey).toBeTruthy();
+	});
+
 	it("generates a fresh pair when the server has no backup", async () => {
+		confirmNewKey();
 		const kp = await ensureAccountKeys("token");
 		expect(kp.publicKey).toBeTruthy();
 		expect(kp.privateKey).toBeTruthy();
@@ -87,6 +101,7 @@ describe("key server backup integration", () => {
 	});
 
 	it("is single-flight: concurrent calls share one key pair", async () => {
+		confirmNewKey();
 		// Two racing callers with no backup must converge on a single pair
 		// and generate/upload exactly once (no divergent duplicates).
 		const [a, b] = await Promise.all([

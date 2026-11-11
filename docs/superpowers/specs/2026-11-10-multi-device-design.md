@@ -2,8 +2,9 @@
 
 Дата: 2026-11-10
 Статус: Phase A реализована: backend-сессии, frontend deviceId/sessionId,
-список устройств, E2EE guard и e2e с двумя браузерами. Остались
-cross-tab refresh-координация и Phase B (ключ на устройство).
+список устройств, E2EE guard, cross-tab refresh через Web Locks/
+BroadcastChannel и e2e с двумя браузерами. Осталась Phase B (ключ на
+устройство).
 Область: одновременный вход одного аккаунта с нескольких устройств,
 управление сессиями и сохранение E2EE при нескольких устройствах.
 
@@ -564,7 +565,7 @@ push не уходит вообще, потому что `IsOnline(userID)` ис
 1. Backend: модель, store, миграция, middleware, API.
 2. Backend: SSE, push, presence, звонки.
 3. Frontend: deviceId, sessionId, список устройств — реализовано.
-   Cross-tab refresh-координация (Web Locks/BroadcastChannel) — остаётся.
+   Cross-tab refresh-координация (Web Locks/BroadcastChannel) — реализовано.
 4. Frontend: E2EE guard (общий ключ, запрет молчаливого нового ключа) —
    реализовано.
 5. Тесты и e2e в двух браузерах — реализовано

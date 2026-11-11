@@ -13,7 +13,7 @@ import type {
 	User,
 	VerifyCodeResult,
 } from "./types/api.ts";
-import { emitUnauthorized } from "./utils/authEvents.ts";
+import { emitUnauthorized, replacementToken } from "./utils/authEvents.ts";
 
 const HTTP_UNAUTHORIZED = 401;
 const KEY_BACKUP_ENDPOINT = "/api/users/key-backup";
@@ -39,6 +39,7 @@ async function request<T>(
 	path: string,
 	token: string | undefined,
 	init?: RequestInit,
+	retryOnRotatedToken = true,
 ): Promise<T> {
 	const headers: Record<string, string> = {};
 	if (token !== undefined) {
@@ -57,6 +58,18 @@ async function request<T>(
 	const mergedHeaders = { ...initHeaders, ...headers };
 	const res = await fetch(path, { ...init, headers: mergedHeaders });
 	if (res.status === HTTP_UNAUTHORIZED) {
+		const replacement =
+			token === undefined ? undefined : replacementToken(token);
+		if (
+			retryOnRotatedToken &&
+			token !== undefined &&
+			replacement !== undefined &&
+			replacement !== token
+		) {
+			// Another tab refreshed the same session while this request was
+			// in flight. Retry once with the token it stored.
+			return request(path, replacement, init, false);
+		}
 		if (token !== undefined) {
 			emitUnauthorized(token);
 		}

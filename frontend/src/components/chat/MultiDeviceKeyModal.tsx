@@ -1,56 +1,87 @@
 import { Alert, Button, Group, Modal, Stack, Text } from "@mantine/core";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { onMultiDeviceKeyRequired } from "../../e2ee/keys.ts";
+import {
+	confirmNewKey,
+	ensureAccountKeys,
+	onMultiDeviceKeyRequired,
+	onNewKeyConfirmationNeeded,
+} from "../../e2ee/keys.ts";
 import { useAuth } from "../../useAuth.tsx";
 
 interface Props {
 	activeToken: string | null;
 }
 
+type Mode = "multi-device" | "new-key";
+
 export function MultiDeviceKeyModal({ activeToken }: Props) {
 	const { t } = useTranslation();
 	const { logoutAll } = useAuth();
-	const [open, setOpen] = useState(false);
+	const [mode, setMode] = useState<Mode | null>(null);
 
 	useEffect(() => {
-		return onMultiDeviceKeyRequired((token) => {
-			if (token === activeToken) {
-				setOpen(true);
-			}
+		const offMulti = onMultiDeviceKeyRequired((token) => {
+			if (token === activeToken) setMode("multi-device");
 		});
+		const offNew = onNewKeyConfirmationNeeded((token) => {
+			if (token === activeToken) setMode("new-key");
+		});
+		return () => {
+			offMulti();
+			offNew();
+		};
 	}, [activeToken]);
 
-	if (!open) return null;
+	if (mode === null) return null;
+
+	const multi = mode === "multi-device";
 
 	return (
 		<Modal
-			opened={open}
-			onClose={() => setOpen(false)}
-			title={t("backup.multiDeviceTitle")}
+			opened
+			onClose={() => setMode(null)}
+			title={t(multi ? "backup.multiDeviceTitle" : "backup.newKeyTitle")}
 			size="sm"
 			centered
 		>
 			<Stack gap="md">
-				<Alert color="yellow" title={t("backup.multiDeviceAlertTitle")}>
-					<Text size="sm">{t("backup.multiDevicePrompt")}</Text>
+				<Alert
+					color={multi ? "yellow" : "orange"}
+					title={t(
+						multi ? "backup.multiDeviceAlertTitle" : "backup.newKeyAlertTitle",
+					)}
+				>
+					<Text size="sm">
+						{t(multi ? "backup.multiDevicePrompt" : "backup.newKeyPrompt")}
+					</Text>
 					<Text size="sm" mt="xs">
-						{t("backup.multiDeviceWarning")}
+						{t(multi ? "backup.multiDeviceWarning" : "backup.newKeyWarning")}
 					</Text>
 				</Alert>
-				<Text size="sm">{t("backup.multiDeviceAdvice")}</Text>
+				<Text size="sm">
+					{t(multi ? "backup.multiDeviceAdvice" : "backup.newKeyAdvice")}
+				</Text>
 				<Group justify="flex-end" gap="xs">
-					<Button variant="default" onClick={() => setOpen(false)}>
+					<Button variant="default" onClick={() => setMode(null)}>
 						{t("backup.close")}
 					</Button>
 					<Button
-						color="red"
+						color={multi ? "red" : "orange"}
 						onClick={() => {
-							setOpen(false);
-							logoutAll();
+							setMode(null);
+							if (multi) {
+								logoutAll();
+								return;
+							}
+							confirmNewKey();
+							void ensureAccountKeys(activeToken ?? undefined).then(
+								() => window.location.reload(),
+								() => undefined,
+							);
 						}}
 					>
-						{t("backup.multiDeviceLogoutAll")}
+						{t(multi ? "backup.multiDeviceLogoutAll" : "backup.newKeyConfirm")}
 					</Button>
 				</Group>
 			</Stack>

@@ -154,6 +154,18 @@ async function createChat(
 	}
 }
 
+// dismissKeyPrompt closes the first-run E2EE prompt. Calls do not need
+// message encryption, so the prompt is not part of this suite.
+async function dismissKeyPrompt(page: Page): Promise<void> {
+	const close = page.getByRole("button", { name: "Close" });
+	await expect(close)
+		.toBeVisible({ timeout: 10_000 })
+		.catch(() => undefined);
+	if (await close.isVisible().catch(() => false)) {
+		await close.click();
+	}
+}
+
 // open signs the page in and opens the private chat with the peer: the call
 // button lives in the header of an existing chat.
 async function open(
@@ -191,7 +203,14 @@ async function open(
 
 	await page.goto("/chat");
 	await stream;
-	await page.getByRole("button", { name: `@${peer.user.nick}` }).click();
+
+	await dismissKeyPrompt(page);
+
+	const peerButton = page.getByRole("button", {
+		name: `@${peer.user.nick}`,
+	});
+	await expect(peerButton).toBeVisible();
+	await peerButton.click();
 
 	return { account, context, page };
 }
@@ -328,6 +347,7 @@ test("a second tab of the caller does not end the call", async ({
 		// server. It must leave it alone: the call of the first page goes on.
 		const second = await pair.caller.context.newPage();
 		await second.goto("/chat");
+		await dismissKeyPrompt(second);
 		await second
 			.getByRole("button", { name: `@${pair.callee.account.user.nick}` })
 			.click();

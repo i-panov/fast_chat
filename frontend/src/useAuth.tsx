@@ -6,14 +6,27 @@ import {
 	useEffect,
 	useState,
 } from "react";
-import { logoutAllSessions, revokeSession } from "./api.ts";
+import {
+	getSessions,
+	logoutAllSessions,
+	refreshToken,
+	revokeSession,
+} from "./api.ts";
 import { setActiveAccountKey } from "./db/init.ts";
 import { getRouter } from "./router.tsx";
-import { onUnauthorized } from "./utils/authEvents.ts";
+import {
+	broadcastTokenRotation,
+	onTokenRotation,
+} from "./utils/authChannel.ts";
+import {
+	onUnauthorized,
+	registerTokenReplacement,
+} from "./utils/authEvents.ts";
 import {
 	clearAccountSwitchState,
 	deleteAccountDB,
 } from "./utils/clearAllData.ts";
+import { getDeviceId, getDeviceName } from "./utils/device.ts";
 
 interface StoredUser {
 	id: string;
@@ -27,6 +40,7 @@ interface StoredAccount {
 	expiresAt: string;
 	sessionId?: string;
 	deviceId?: string;
+	deviceName?: string;
 }
 
 interface AuthContextValue {
@@ -40,6 +54,7 @@ interface AuthContextValue {
 		expiresAt: string,
 		sessionId?: string,
 		deviceId?: string,
+		deviceName?: string,
 	) => void;
 	removeAccount: (token: string) => void;
 	updateAccountToken: (
@@ -49,6 +64,10 @@ interface AuthContextValue {
 	) => void;
 	logout: () => void;
 	logoutAll: () => void;
+	refreshAccountToken: (
+		userId: string,
+		oldToken: string,
+	) => Promise<{ token: string; expiresAt: string }>;
 }
 
 const ACCOUNTS_KEY = "accounts";
@@ -143,6 +162,137 @@ function resolveActiveToken(stored: StoredAccount[]): string | null {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+// Web Locks serializes refreshes across tabs of the same origin. Without the
+// API (older webviews, tests) the caller still refreshes, just without the
+// cross-tab mutex.
+function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+	const locks = (
+		navigator as Navigator & { locks?: { request: LockManager["request"] } }
+	).locks;
+	if (locks === undefined) return fn();
+	return locks.request("fastchat-token-refresh", fn);
+}
+
+function useTokenRotationSync(
+	setAccounts: (accounts: StoredAccount[]) => void,
+	setActiveToken: (token: string) => void,
+) {
+	useEffect(() => {
+		return onTokenRotation((message) => {
+			const stored = readAccounts();
+			let changed = false;
+			const updated = stored.map((a) => {
+				if (a.user.id !== message.userId || a.token !== message.oldToken) {
+					return a;
+				}
+				changed = true;
+				return { ...a, token: message.token, expiresAt: message.expiresAt };
+			});
+			if (changed) {
+				writeAccounts(updated);
+				setAccounts(updated);
+			}
+			registerTokenReplacement(message.oldToken, message.token);
+			if (readActiveToken() === message.oldToken) {
+				setActiveToken(message.token);
+				writeActiveToken(message.token);
+				if (readLastActiveToken() === message.oldToken) {
+					writeLastActiveToken(message.token);
+				}
+			}
+		});
+	}, [setAccounts, setActiveToken]);
+}
+
+function useUnauthorizedSync(
+	activeToken: string | null,
+	setAccounts: (accounts: StoredAccount[]) => void,
+	setActiveToken: (token: string | null) => void,
+) {
+	useEffect(() => {
+		return onUnauthorized((token) => {
+			const leaving = readAccounts().find((a) => a.token === token) ?? null;
+			const updated = readAccounts().filter((a) => a.token !== token);
+			writeAccounts(updated);
+			setAccounts(updated);
+			if (readLastActiveToken() === token) {
+				removeLastActiveToken();
+			}
+			if (
+				leaving !== null &&
+				!updated.some((a) => a.user.id === leaving.user.id)
+			) {
+				void deleteAccountDB(leaving.user.id);
+			}
+			clearAccountSwitchState();
+			if (activeToken === token) {
+				const next = updated[0]?.token ?? null;
+				setActiveToken(next);
+				if (next === null) {
+					removeActiveToken();
+					void getRouter().navigate({
+						to: "/login",
+						search: { add: undefined },
+					});
+				} else {
+					writeActiveToken(next);
+				}
+			}
+		});
+	}, [activeToken, setAccounts, setActiveToken]);
+}
+
+// Accounts stored before multi-device do not carry a session id. Resolve the
+// current one lazily: the devices list and the E2EE guard need it.
+function useSessionHydration(
+	activeAccount: StoredAccount | null,
+	setAccounts: (accounts: StoredAccount[]) => void,
+) {
+	useEffect(() => {
+		if (
+			activeAccount === null ||
+			activeAccount.sessionId !== undefined ||
+			activeAccount.sessionId === ""
+		) {
+			return;
+		}
+
+		const token = activeAccount.token;
+		const userID = activeAccount.user.id;
+		let cancelled = false;
+		try {
+			void getSessions(token)
+				.then((result) => {
+					if (cancelled) return;
+					const stored = readAccounts();
+					const updated = stored.map((a) =>
+						a.user.id === userID
+							? {
+									...a,
+									sessionId: result.currentSessionId,
+									deviceId: a.deviceId ?? getDeviceId(),
+									deviceName: a.deviceName ?? getDeviceName(),
+								}
+							: a,
+					);
+					writeAccounts(updated);
+					setAccounts(updated);
+				})
+				.catch(() => {
+					// The next refresh retries; the devices list remains usable
+					// without a stored session id.
+				});
+		} catch {
+			// Partial API mocks in unit tests may omit this function; real
+			// builds always provide it.
+		}
+
+		return () => {
+			cancelled = true;
+		};
+	}, [activeAccount, setAccounts]);
+}
+
 function useAuthState() {
 	const [accounts, setAccounts] = useState<StoredAccount[]>(readAccounts);
 	const [activeToken, setActiveToken] = useState<string | null>(() =>
@@ -181,42 +331,8 @@ function useAuthState() {
 		return () => window.removeEventListener("storage", handleStorage);
 	}, []);
 
-	useEffect(() => {
-		const unsub = onUnauthorized((token) => {
-			const leaving = readAccounts().find((a) => a.token === token) ?? null;
-			const updated = readAccounts().filter((a) => a.token !== token);
-			writeAccounts(updated);
-			setAccounts(updated);
-			// Scrub the last-active pointer too, or a restart would keep a
-			// stale reference to the revoked session.
-			if (readLastActiveToken() === token) {
-				removeLastActiveToken();
-			}
-			// Like logout: wipe the evicted account's IDB unless another
-			// live session of the same user still shares it.
-			if (
-				leaving !== null &&
-				!updated.some((a) => a.user.id === leaving.user.id)
-			) {
-				void deleteAccountDB(leaving.user.id);
-			}
-			clearAccountSwitchState();
-			if (activeToken === token) {
-				const next = updated[0]?.token ?? null;
-				setActiveToken(next);
-				if (next === null) {
-					removeActiveToken();
-					void getRouter().navigate({
-						to: "/login",
-						search: { add: undefined },
-					});
-				} else {
-					writeActiveToken(next);
-				}
-			}
-		});
-		return unsub;
-	}, [activeToken]);
+	useUnauthorizedSync(activeToken, setAccounts, setActiveToken);
+	useTokenRotationSync(setAccounts, setActiveToken);
 
 	const switchAccount = useCallback((token: string) => {
 		setActiveToken(token);
@@ -231,11 +347,12 @@ function useAuthState() {
 			expiresAt: string,
 			sessionId?: string,
 			deviceId?: string,
+			deviceName?: string,
 		) => {
 			// Re-read storage at write time and merge by user id so an account
 			// added concurrently from another tab is not overwritten.
 			const updated = mergeAccounts(readAccounts(), [
-				{ token, user, email, expiresAt, sessionId, deviceId },
+				{ token, user, email, expiresAt, sessionId, deviceId, deviceName },
 			]);
 			writeAccounts(updated);
 			setAccounts(updated);
@@ -276,7 +393,9 @@ function useAuthState() {
 
 	const updateAccountToken = useCallback(
 		(oldToken: string, newToken: string, newExpiresAt: string) => {
-			const updated = readAccounts().map((a) =>
+			const stored = readAccounts();
+			const account = stored.find((a) => a.token === oldToken);
+			const updated = stored.map((a) =>
 				a.token === oldToken
 					? { ...a, token: newToken, expiresAt: newExpiresAt }
 					: a,
@@ -290,8 +409,41 @@ function useAuthState() {
 					writeLastActiveToken(newToken);
 				}
 			}
+			if (account !== undefined) {
+				registerTokenReplacement(oldToken, newToken);
+				broadcastTokenRotation({
+					type: "token-rotated",
+					userId: account.user.id,
+					oldToken,
+					token: newToken,
+					expiresAt: newExpiresAt,
+				});
+			}
 		},
 		[],
+	);
+
+	const refreshAccountToken = useCallback(
+		(userId: string, oldToken: string) => {
+			return withRefreshLock(async () => {
+				// Another tab may have rotated the token while this tab was
+				// waiting for the lock. Re-read storage instead of refreshing
+				// the same session twice.
+				const stored = readAccounts();
+				const account = stored.find((a) => a.user.id === userId);
+				if (account === undefined) {
+					throw new Error("account is no longer stored");
+				}
+				if (account.token !== oldToken) {
+					return { token: account.token, expiresAt: account.expiresAt };
+				}
+
+				const result = await refreshToken(oldToken);
+				updateAccountToken(oldToken, result.token, result.expiresAt);
+				return { token: result.token, expiresAt: result.expiresAt };
+			});
+		},
+		[updateAccountToken],
 	);
 
 	const switchAccountWithCleanup = useCallback(
@@ -343,6 +495,8 @@ function useAuthState() {
 		setActiveAccountKey(activeAccount?.user.id ?? null);
 	}, [activeAccount]);
 
+	useSessionHydration(activeAccount, setAccounts);
+
 	return {
 		accounts,
 		activeAccount,
@@ -352,6 +506,7 @@ function useAuthState() {
 		updateAccountToken,
 		logout,
 		logoutAll,
+		refreshAccountToken,
 	};
 }
 

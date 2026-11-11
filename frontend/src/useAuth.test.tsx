@@ -1,9 +1,20 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { emitUnauthorized } from "./utils/authEvents.ts";
 
 const navigate = vi.hoisted(() => vi.fn());
+
+const api = vi.hoisted(() => ({
+	getSessions: vi.fn(() =>
+		Promise.resolve({ currentSessionId: "s1", sessions: [] }),
+	),
+	refreshToken: vi.fn(),
+	revokeSession: vi.fn(() => Promise.resolve()),
+	logoutAllSessions: vi.fn(() => Promise.resolve({ status: "ok" })),
+}));
+
+vi.mock("./api.ts", () => api);
 
 vi.mock("./router.tsx", () => ({
 	getRouter: () => ({ navigate }),
@@ -211,6 +222,36 @@ describe("useAuth", () => {
 			to: "/login",
 			search: { add: undefined },
 		});
+	});
+
+	it("hydrates session metadata for a legacy account", async () => {
+		localStorage.setItem("accounts", JSON.stringify([account("t1", "a")]));
+
+		const { result } = renderHook(() => useAuth(), { wrapper });
+
+		await waitFor(() => {
+			expect(result.current.activeAccount?.sessionId).toBe("s1");
+		});
+		expect(result.current.activeAccount?.deviceId).toBeTruthy();
+	});
+
+	it("refreshes the account token and activates the rotated one", async () => {
+		localStorage.setItem("accounts", JSON.stringify([account("t1", "a")]));
+		sessionStorage.setItem("activeToken", "t1");
+		api.refreshToken.mockResolvedValue({
+			token: "t2",
+			expiresAt: "2028",
+		});
+
+		const { result } = renderHook(() => useAuth(), { wrapper });
+
+		await act(async () => {
+			const rotated = await result.current.refreshAccountToken("a:test", "t1");
+			expect(rotated.token).toBe("t2");
+		});
+
+		expect(result.current.activeAccount?.token).toBe("t2");
+		expect(sessionStorage.getItem("activeToken")).toBe("t2");
 	});
 
 	it("rotates tokens and follows the active session", () => {

@@ -5,7 +5,7 @@ import { messagesRepo } from "../db/messagesRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
 import type { KeyPair } from "../e2ee/crypto.ts";
-import { ensureAccountKeys } from "../e2ee/keys.ts";
+import { confirmNewKey, ensureAccountKeys } from "../e2ee/keys.ts";
 import { encryptMessageText } from "../e2ee/message.ts";
 import type { Message, Thread } from "../types/api.ts";
 import { onNotification } from "../utils/notify.ts";
@@ -83,6 +83,7 @@ beforeEach(async () => {
 	vi.clearAllMocks();
 	mockApi().getThreads.mockResolvedValue({ threads: [] });
 	mockApi().getThreadMessages.mockResolvedValue({ messages: [] });
+	confirmNewKey();
 	keys = await ensureAccountKeys("tok");
 });
 

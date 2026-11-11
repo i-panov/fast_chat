@@ -78,6 +78,7 @@ export function LoginPage() {
 					result.expiresAt,
 					result.sessionId,
 					result.deviceId ?? device.deviceId,
+					device.deviceName,
 				);
 				void navigate({ to: "/chat", search: CHAT_SEARCH });
 			}
@@ -103,6 +104,7 @@ export function LoginPage() {
 				result.expiresAt,
 				result.sessionId,
 				result.deviceId ?? device.deviceId,
+				device.deviceName,
 			);
 			void navigate({ to: "/chat", search: CHAT_SEARCH });
 		} catch (err) {

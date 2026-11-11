@@ -9,7 +9,7 @@ import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import type { StoredMessage } from "../db/schema.ts";
 import type { KeyPair } from "../e2ee/crypto.ts";
 import { generateKeyPair } from "../e2ee/crypto.ts";
-import { clearLocalKeys } from "../e2ee/keys.ts";
+import { clearLocalKeys, confirmNewKey } from "../e2ee/keys.ts";
 import { decryptMessage } from "../e2ee/message.ts";
 import type { PendingFile } from "../types/api.ts";
 
@@ -80,6 +80,7 @@ function pendingFile(): PendingFile {
 
 beforeEach(async () => {
 	setActiveAccountKey("alice:test");
+	confirmNewKey();
 	keyStore.alice = await generateKeyPair();
 	keyStore.bob = await generateKeyPair();
 

@@ -177,5 +177,11 @@
 	"backup.multiDevicePrompt": "This account has other active devices, but this device has no encryption key and no backup.",
 	"backup.multiDeviceWarning": "Creating a new key here would make the other devices unable to read new messages.",
 	"backup.multiDeviceAdvice": "Open the app on another device, enable the key backup, then return here. If you cannot access the other devices, sign out everywhere to create a new key; old history will stay unreadable.",
-	"backup.multiDeviceLogoutAll": "Sign out everywhere"
+	"backup.multiDeviceLogoutAll": "Sign out everywhere",
+	"backup.newKeyTitle": "Create a new key?",
+	"backup.newKeyAlertTitle": "Old messages will become unreadable",
+	"backup.newKeyPrompt": "This device has no encryption key and no backup.",
+	"backup.newKeyWarning": "A new key cannot decrypt the old history. This cannot be undone.",
+	"backup.newKeyAdvice": "If another device still has the key, enable its backup and recover there first. Continue only if you accept losing access to old messages.",
+	"backup.newKeyConfirm": "Create new key"
 }

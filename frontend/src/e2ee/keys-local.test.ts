@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setActiveAccountKey } from "../db/init.ts";
 import { metaRepo } from "../db/metaRepo.ts";
-import { ensureAccountKeys, getMyKeyPair } from "./keys.ts";
+import { confirmNewKey, ensureAccountKeys, getMyKeyPair } from "./keys.ts";
 
 vi.mock("../api.ts", () => ({
 	uploadPublicKey: vi.fn(),
@@ -52,6 +52,7 @@ describe("keys local handling", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.mocked(uploadPublicKey).mockRejectedValueOnce(new Error("down"));
 
+		confirmNewKey();
 		const kp = await ensureAccountKeys("tok");
 
 		expect(kp.publicKey).toBeTruthy();
@@ -61,6 +62,7 @@ describe("keys local handling", () => {
 
 	it("retries a previously failed upload", async () => {
 		vi.mocked(uploadPublicKey).mockRejectedValueOnce(new Error("down"));
+		confirmNewKey();
 		const kp = await ensureAccountKeys("tok");
 
 		vi.mocked(uploadPublicKey).mockResolvedValue({ status: "ok" });

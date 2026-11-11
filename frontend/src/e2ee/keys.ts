@@ -46,6 +46,14 @@ export class MultiDeviceKeyRequiredError extends Error {
 	}
 }
 
+// Raised for the first key on a single-device account. Generating it makes
+// old history unreadable, so the UI must ask before doing it.
+export class NewKeyConfirmationRequiredError extends Error {
+	constructor() {
+		super("creating a new key pair needs an explicit confirmation");
+	}
+}
+
 function pubKeyCacheKey(userId: string): string {
 	return `e2ee.pubkey.${userId}`;
 }
@@ -123,6 +131,8 @@ async function serverBackupState(token: string): Promise<BackupState> {
 
 const RECOVERY_NEEDED_EVENT = "e2ee:recovery-needed";
 const MULTI_DEVICE_KEY_EVENT = "e2ee:multi-device-key-required";
+const NEW_KEY_EVENT = "e2ee:new-key-confirmation-needed";
+const confirmedNewKey = new Set<string>();
 
 // Emitted when the active account has no local keys but a backup exists on
 // the server. The UI listens and shows a recovery prompt.
@@ -154,6 +164,28 @@ export function onMultiDeviceKeyRequired(
 	};
 	window.addEventListener(MULTI_DEVICE_KEY_EVENT, handler);
 	return () => window.removeEventListener(MULTI_DEVICE_KEY_EVENT, handler);
+}
+
+function emitNewKeyConfirmation(token: string) {
+	window.dispatchEvent(
+		new CustomEvent<string>(NEW_KEY_EVENT, { detail: token }),
+	);
+}
+
+export function onNewKeyConfirmationNeeded(
+	fn: (token: string) => void,
+): () => void {
+	const handler = (e: Event) => {
+		fn((e as CustomEvent<string>).detail);
+	};
+	window.addEventListener(NEW_KEY_EVENT, handler);
+	return () => window.removeEventListener(NEW_KEY_EVENT, handler);
+}
+
+// confirmNewKey records the user's explicit choice for the active account.
+// The next ensureAccountKeys call may generate the pair.
+export function confirmNewKey() {
+	confirmedNewKey.add(accountScope());
 }
 
 // uploadKeyBackup encrypts the given key pair under the password and
@@ -200,6 +232,7 @@ export async function discardRecoveryAndGenerate(
 	token: string,
 ): Promise<KeyPair> {
 	await clearServerKeyBackup(token);
+	confirmNewKey();
 	return ensureAccountKeys(token);
 }
 
@@ -284,6 +317,11 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 				throw new MultiDeviceKeyRequiredError();
 			}
 
+			if (!confirmedNewKey.has(scope)) {
+				emitNewKeyConfirmation(token);
+				throw new NewKeyConfirmationRequiredError();
+			}
+
 			const kp = await generateKeyPair();
 			// Save locally first so decryption works even if the server
 			// is unreachable; the upload is retried on later calls.
@@ -332,6 +370,7 @@ export async function clearLocalKeys(): Promise<void> {
 	const scope = accountScope();
 	keyCacheByAccount.delete(scope);
 	inFlightByAccount.delete(scope);
+	confirmedNewKey.delete(scope);
 	const db = await getDB();
 	await Promise.all([
 		db.delete("meta", PUBLIC_KEY_META),

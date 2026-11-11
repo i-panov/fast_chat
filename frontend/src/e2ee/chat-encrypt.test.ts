@@ -9,6 +9,7 @@ import {
 	encryptFileStream,
 	generateFileKey,
 } from "./file-crypto.ts";
+import { confirmNewKey } from "./keys.ts";
 import { decryptMessage } from "./message.ts";
 
 // Mutable holder for the keys generated per test. vi.mock factories are
@@ -68,6 +69,7 @@ function toMessage(id: string, encrypted: EncryptResult): Message {
 describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () => {
 	beforeEach(async () => {
 		setActiveAccountKey("alice:test");
+		confirmNewKey();
 		keyStore.alice = await generateKeyPair();
 		keyStore.bob = await generateKeyPair();
 

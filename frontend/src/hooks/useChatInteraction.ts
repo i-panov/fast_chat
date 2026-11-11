@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { refreshToken } from "../api.ts";
 import type { CallManager } from "../calls/callManager.ts";
 import { ensureAccountKeys, RecoveryRequiredError } from "../e2ee/keys.ts";
 import {
@@ -29,13 +28,13 @@ import { useTyping } from "./useTyping";
 
 interface ChatLifecycleDeps {
 	token: string | undefined;
+	userId: string | undefined;
 	addTypingUser: (payload: TypingPayload) => void;
 	clearTyping: (chatId: string, userId: string) => void;
-	updateAccountToken: (
+	refreshAccountToken: (
+		userId: string,
 		oldToken: string,
-		newToken: string,
-		newExpiresAt: string,
-	) => void;
+	) => Promise<{ token: string; expiresAt: string }>;
 	logout: () => void;
 	// callManager receives the signaling events of the call domain.
 	callManager?: CallManager;
@@ -43,9 +42,10 @@ interface ChatLifecycleDeps {
 
 function useChatLifecycle({
 	token,
+	userId,
 	addTypingUser,
 	clearTyping,
-	updateAccountToken,
+	refreshAccountToken,
 	logout,
 	callManager,
 }: ChatLifecycleDeps) {
@@ -75,9 +75,12 @@ function useChatLifecycle({
 		addTypingUser,
 		clearTyping,
 		onTokenExpiring: async (currentToken: string) => {
+			if (userId === undefined) {
+				logout();
+				return;
+			}
 			try {
-				const { token: newToken, expiresAt } = await refreshToken(currentToken);
-				updateAccountToken(currentToken, newToken, expiresAt);
+				await refreshAccountToken(userId, currentToken);
 			} catch {
 				logout();
 			}
@@ -268,7 +271,7 @@ function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 const MAX_DRAFTS = 50;
 
 export function useChatPage(): ChatPageState {
-	const { activeAccount, logout, updateAccountToken } = useAuth();
+	const { activeAccount, logout, refreshAccountToken } = useAuth();
 	const user = activeAccount?.user ?? null;
 	const token = activeAccount?.token;
 	const { config } = useServerConfig(token);
@@ -330,9 +333,10 @@ export function useChatPage(): ChatPageState {
 
 	useChatLifecycle({
 		token,
+		userId: user?.id,
 		addTypingUser: typing.addTypingUser,
 		clearTyping: typing.clearTyping,
-		updateAccountToken,
+		refreshAccountToken,
 		logout,
 		callManager: call.manager ?? undefined,
 	});
