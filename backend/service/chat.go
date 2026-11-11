@@ -258,10 +258,15 @@ func (s *Service) CreateGroupChat(ctx context.Context, ownerID, name string, mem
 		cleaned = append(cleaned, memberID)
 	}
 
+	remoteDomains := make(map[string]struct{})
 	for _, memberID := range cleaned {
 		remoteServer := s.remoteServerFromID(memberID)
 		if remoteServer != "" && remoteServer != s.cfg.Server.Domain {
-			return ChatView{}, ErrGroupRemoteMemb
+			if s.fed == nil {
+				return ChatView{}, ErrGroupRemoteMemb
+			}
+			remoteDomains[remoteServer] = struct{}{}
+			continue
 		}
 
 		if _, ok := s.store.GetUserByID(ctx, memberID); !ok {
@@ -277,6 +282,18 @@ func (s *Service) CreateGroupChat(ctx context.Context, ownerID, name string, mem
 	view := s.EnrichChat(ctx, chat)
 	for _, memberID := range chat.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventChatCreated, Data: view})
+	}
+	for domain := range remoteDomains {
+		body := map[string]any{
+			"chatId":  chat.ID,
+			"name":    chat.Name,
+			"ownerId": ownerID,
+			"members": chat.Members,
+		}
+		groupURL := s.fed.URL(domain, "/api/federated/groups")
+		if _, err := s.fed.Request(ctx, "POST", groupURL, body); err != nil {
+			log().Warn("federated group create failed", "server", domain, "err", err)
+		}
 	}
 
 	return view, nil

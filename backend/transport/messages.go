@@ -115,7 +115,7 @@ func registerMessageMutations(api huma.API, svc *service.Service, st *store.Stor
 			return nil, err
 		}
 
-		out, err := sendMessage(ctx, svc, fed, chat, threadID, user, &service.SendMessageInput{
+		out, err := sendMessage(ctx, svc, fed, cfg.Federation.AllowPrivateAddresses, chat, threadID, user, &service.SendMessageInput{
 			ID:               input.Body.ID,
 			Text:             input.Body.Text,
 			ReplyToID:        input.Body.ReplyToID,
@@ -322,7 +322,7 @@ func registerThreadMessages(api huma.API, svc *service.Service, st *store.Store,
 			return nil, err
 		}
 
-		out, err := sendMessage(ctx, svc, fed, chat, threadID, user, &service.SendMessageInput{
+		out, err := sendMessage(ctx, svc, fed, cfg.Federation.AllowPrivateAddresses, chat, threadID, user, &service.SendMessageInput{
 			ID:               input.Body.ID,
 			Text:             input.Body.Text,
 			ReplyToID:        input.Body.ReplyToID,
@@ -463,6 +463,7 @@ func sendMessage(
 	ctx context.Context,
 	svc *service.Service,
 	fed *federation.Client,
+	allowPrivate bool,
 	chat *model.Chat,
 	threadID string,
 	user *authUser,
@@ -486,7 +487,7 @@ func sendMessage(
 		// with an attachment therefore reaches the peer without it. Sending
 		// the file is a separate feature: it needs an endpoint, a size
 		// policy and a transfer of the encrypted content.
-		fedPost(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages", map[string]any{
+		payload := map[string]any{
 			"id":               msg.ID,
 			"fromId":           msg.FromID,
 			"fromNick":         msg.FromNick,
@@ -495,7 +496,23 @@ func sendMessage(
 			"location":         input.Location,
 			"encrypted":        msg.Encrypted,
 			"encryptedPayload": msg.EncryptedPayload,
-		})
+		}
+		if chat.Type == "group" && chat.RemoteServer == "" {
+			seen := make(map[string]struct{})
+			for _, memberID := range chat.Members {
+				domain := service.RemoteServerFromIDFor(memberID, allowPrivate)
+				if domain == "" || domain == svc.ServerDomain() {
+					continue
+				}
+				if _, ok := seen[domain]; ok {
+					continue
+				}
+				seen[domain] = struct{}{}
+				fedPost(ctx, fed, domain, "/api/federated/chats/"+chat.ID+"/messages", payload)
+			}
+		} else {
+			fedPost(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages", payload)
+		}
 	}
 
 	for _, memberID := range chat.Members {

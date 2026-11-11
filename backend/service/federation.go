@@ -266,6 +266,9 @@ func (s *Service) SendFederatedMessage(
 			s.sendEvent(memberID, sse.Event{Event: eventNewMessage, Data: msg})
 		}
 	}
+	if msg.ThreadID == "" {
+		s.forwardFederatedGroupMessage(ctx, chat, in)
+	}
 
 	return msg, nil
 }
@@ -511,4 +514,91 @@ func (s *Service) federatedChats(ctx context.Context, chatIDs []string) []Federa
 	}
 
 	return out
+}
+
+// CreateFederatedGroup stores the owner-server replica of a group on a
+// participant's server. The owner is authoritative; this server only keeps the
+// members it needs to deliver events and accepts the owner's chat id.
+func (s *Service) CreateFederatedGroup(
+	ctx context.Context,
+	chatID, name, ownerID string,
+	members []string,
+	ownerServer, localServer string,
+) (ChatView, bool, error) {
+
+	if chatID == "" || name == "" || ownerID == "" || len(members) == 0 {
+		return ChatView{}, false, ErrFederatedMembersNotValid
+	}
+	if !UserIDBelongsToServer(ownerID, ownerServer) {
+		return ChatView{}, false, ErrFederatedMembersNotValid
+	}
+	local := false
+	for _, memberID := range members {
+		if UserIDBelongsToServer(memberID, localServer) {
+			local = true
+			break
+		}
+	}
+	if !local {
+		return ChatView{}, false, ErrFederatedMembersNotValid
+	}
+	if existing, ok := s.store.GetChat(ctx, chatID); ok {
+		if existing.RemoteServer == ownerServer && existing.OwnerID == ownerID {
+			return ChatView{}, true, nil
+		}
+		return ChatView{}, false, ErrFederatedMembersNotValid
+	}
+
+	chat := &model.Chat{
+		ID:           chatID,
+		Type:         "group",
+		Name:         name,
+		OwnerID:      ownerID,
+		Members:      members,
+		CreatedAt:    time.Now().UTC(),
+		RemoteServer: ownerServer,
+	}
+	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
+		return ChatView{}, false, err
+	}
+	enriched := s.EnrichChat(ctx, chat)
+	for _, memberID := range chat.Members {
+		s.sendEvent(memberID, sse.Event{Event: eventChatCreated, Data: enriched})
+	}
+	return enriched, false, nil
+}
+
+// forwardFederatedGroupMessage relays a message accepted on the owner server
+// to the other participant servers. The sender server is skipped: it already
+// has the message.
+func (s *Service) forwardFederatedGroupMessage(ctx context.Context, chat *model.Chat, in *FederatedInboundMessage) {
+	if s.fed == nil || s.cfg == nil || chat.RemoteServer != "" {
+		return
+	}
+	senderDomain := RemoteServerFromID(in.FromID)
+	seen := make(map[string]struct{})
+	for _, memberID := range chat.Members {
+		domain := s.remoteServerFromID(memberID)
+		if domain == "" || domain == s.cfg.Server.Domain || domain == senderDomain {
+			continue
+		}
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		body := map[string]any{
+			"id":               in.ID,
+			"fromId":           in.FromID,
+			"fromNick":         in.FromNick,
+			"text":             in.Text,
+			"replyToId":        in.ReplyToID,
+			"location":         in.Location,
+			"encrypted":        in.Encrypted,
+			"encryptedPayload": in.EncryptedPayload,
+		}
+		url := s.fed.URL(domain, "/api/federated/chats/"+chat.ID+"/messages")
+		if _, err := s.fed.Request(ctx, "POST", url, body); err != nil {
+			log().Warn("federated group fan-out failed", "server", domain, "err", err)
+		}
+	}
 }

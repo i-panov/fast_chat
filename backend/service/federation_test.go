@@ -427,3 +427,93 @@ func TestSyncIncludesFederatedMessage(t *testing.T) {
 		t.Fatalf("sync delta omitted the federated message, got %d messages", len(resp.Messages))
 	}
 }
+
+func TestCreateFederatedGroupReplica(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+
+	view, already, err := s.CreateFederatedGroup(
+		ctx, "group-1", "Trip", "owner:remote.test",
+		[]string{"owner:remote.test", "alice:localhost:8080"},
+		"remote.test", "localhost:8080",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if already || view.ID != "group-1" {
+		t.Fatalf("view = %+v already=%v", view, already)
+	}
+	chat, ok := s.store.GetChat(ctx, "group-1")
+	if !ok || chat.Type != "group" || chat.RemoteServer != "remote.test" {
+		t.Fatalf("chat = %+v", chat)
+	}
+
+	if _, already, err := s.CreateFederatedGroup(
+		ctx, "group-1", "Trip", "owner:remote.test",
+		[]string{"owner:remote.test", "alice:localhost:8080"},
+		"remote.test", "localhost:8080",
+	); err != nil || !already {
+		t.Fatalf("second create: already=%v err=%v", already, err)
+	}
+}
+
+func TestCreateGroupChatReplicatesToOwner(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fed := &fakeFederationClient{}
+	s.SetFederationClient(fed)
+
+	view, err := s.CreateGroupChat(ctx, owner.ID, "Remote group", []string{"bob:remote.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Members) != 2 {
+		t.Fatalf("members = %v", view.Members)
+	}
+	if len(fed.requests) != 1 || fed.requests[0] != "https://remote.test/api/federated/groups" {
+		t.Fatalf("federation requests = %v", fed.requests)
+	}
+	chat, ok := s.store.GetChat(ctx, view.ID)
+	if !ok || chat.Type != "group" || chat.RemoteServer != "" {
+		t.Fatalf("owner chat = %+v", chat)
+	}
+}
+
+func TestForwardFederatedGroupMessageSkipsSenderReplica(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fed := &fakeFederationClient{}
+	s.SetFederationClient(fed)
+
+	view, err := s.CreateGroupChat(ctx, owner.ID, "Remote group", []string{
+		"bob:remote.test",
+		"carol:other.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fed.requests = nil
+
+	chat, ok := s.store.GetChat(ctx, view.ID)
+	if !ok {
+		t.Fatal("group missing")
+	}
+	s.forwardFederatedGroupMessage(ctx, chat, &FederatedInboundMessage{
+		ID:       "m1",
+		FromID:   "bob:remote.test",
+		FromNick: "bob",
+		Text:     "hello",
+	})
+
+	if len(fed.requests) != 1 || fed.requests[0] != "https://other.test/api/federated/chats/"+view.ID+"/messages" {
+		t.Fatalf("forward requests = %v", fed.requests)
+	}
+}

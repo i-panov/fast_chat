@@ -58,6 +58,14 @@ type Service struct {
 	authMu sync.Mutex
 }
 
+// ServerDomain returns the local federation domain.
+func (s *Service) ServerDomain() string {
+	if s.cfg == nil {
+		return ""
+	}
+	return s.cfg.Server.Domain
+}
+
 // eventSender is the part of the SSE hub the service uses.
 type eventSender interface {
 	Send(userID string, event sse.Event)

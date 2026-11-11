@@ -110,6 +110,35 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 	})
 
 	huma.Register(api, huma.Operation{
+		OperationID: "federated-create-group",
+		Method:      http.MethodPost,
+		Path:        "/api/federated/groups",
+		Summary:     "Create a federated group replica on behalf of its owner",
+		Security:    fedSecurity,
+	}, func(ctx context.Context, input *federatedCreateGroupInput) (*federatedCreateGroupOutput, error) {
+		server := federatedServerFromContext(ctx)
+		if server == "" || input.Body.ChatID == "" || input.Body.OwnerID == "" {
+			return nil, &statusError{ErrorMessage: "invalid federated group", code: http.StatusBadRequest}
+		}
+		view, alreadyExists, err := svc.CreateFederatedGroup(
+			ctx, input.Body.ChatID, input.Body.Name, input.Body.OwnerID,
+			input.Body.Members, server, fm.ServerDomain(),
+		)
+		if err != nil {
+			return nil, federatedOrInternalError(err)
+		}
+		var out federatedCreateGroupOutput
+		if alreadyExists {
+			out.Status = http.StatusOK
+			out.Body.Status = "already exists"
+			return &out, nil
+		}
+		out.Status = http.StatusCreated
+		out.Body.Chat = &view
+		return &out, nil
+	})
+
+	huma.Register(api, huma.Operation{
 		OperationID: "federated-send-message",
 		Method:      http.MethodPost,
 		Path:        "/api/federated/chats/{id}/messages",
@@ -420,4 +449,21 @@ type federatedSyncInput struct {
 
 type federatedSyncOutput struct {
 	Body service.SyncFederatedResponse
+}
+
+type federatedCreateGroupInput struct {
+	Body struct {
+		ChatID  string   `json:"chatId"`
+		Name    string   `json:"name"`
+		OwnerID string   `json:"ownerId"`
+		Members []string `json:"members"`
+	}
+}
+
+type federatedCreateGroupOutput struct {
+	Status int
+	Body   struct {
+		Status string            `json:"status,omitempty"`
+		Chat   *service.ChatView `json:"chat,omitempty"`
+	}
 }
