@@ -105,6 +105,9 @@ func (s *Service) StartCall(ctx context.Context, callerID, chatID, offer string)
 	if calleeID == "" {
 		return nil, ErrCallWithSelf
 	}
+	if s.IsBlockedBetween(ctx, callerID, calleeID) {
+		return nil, ErrUserBlocked
+	}
 
 	// A callee from another server cannot be reached: the signaling has no
 	// route to that server. The domain is taken from the identifier itself:

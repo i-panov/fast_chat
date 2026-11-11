@@ -36,6 +36,7 @@ export interface MessageBubbleProps {
 	text: string;
 	isOwn: boolean;
 	fromNick?: string;
+	fromId?: string;
 	time: string;
 	chatId: string;
 	msgId: string;
@@ -60,6 +61,7 @@ export interface MessageBubbleProps {
 	onOpenThread?: (threadId: string) => void;
 	onPin?: (chatId: string, messageId: string) => void;
 	isPinned?: boolean;
+	onBlock?: (fromId: string) => void;
 	threadId?: string;
 	threadMessageCount?: number;
 	isInThread?: boolean;
@@ -267,6 +269,9 @@ function BubbleLightboxes({
 	);
 }
 
+// The bubble keeps its layout and menu wiring together; splitting it would
+// scatter the action callbacks.
+// eslint-disable-next-line max-lines-per-function
 export const MessageBubble = memo(function MessageBubble({
 	text,
 	isOwn,
@@ -289,6 +294,8 @@ export const MessageBubble = memo(function MessageBubble({
 	onOpenThread,
 	onPin,
 	isPinned = false,
+	onBlock,
+	fromId = "",
 	threadId,
 	threadMessageCount,
 	isInThread,
@@ -333,6 +340,12 @@ export const MessageBubble = memo(function MessageBubble({
 		onReply !== undefined && status !== "queued" && status !== "failed";
 	const canPin =
 		onPin !== undefined && status !== "queued" && status !== "failed";
+	const canBlock =
+		!isOwn &&
+		fromId !== "" &&
+		onBlock !== undefined &&
+		status !== "queued" &&
+		status !== "failed";
 	const canCreateThread =
 		onCreateThread !== undefined &&
 		threadId === undefined &&
@@ -442,10 +455,12 @@ export const MessageBubble = memo(function MessageBubble({
 				canCreateThread={canCreateThread}
 				canPin={canPin}
 				isPinned={isPinned}
+				canBlock={canBlock}
 				status={status}
 				text={text}
 				chatId={chatId}
 				msgId={msgId}
+				fromId={fromId}
 				files={files}
 				threadId={threadId}
 				onStartEdit={onStartEdit}
@@ -454,6 +469,7 @@ export const MessageBubble = memo(function MessageBubble({
 				onReply={onReply}
 				onCreateThread={onCreateThread}
 				onPin={onPin}
+				onBlock={onBlock}
 				onDelete={onDelete}
 				onClose={closeMenu}
 				menuRef={menuRef}

@@ -959,3 +959,49 @@ func TestChatPinEndpoints(t *testing.T) {
 		t.Fatalf("unpin = %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestUserBlockEndpoints(t *testing.T) {
+	ts := newDomainTestServer(t)
+	h := ts.Handler
+	st := ts.Store
+	alice := createTestUser(t, st)
+	bob, err := st.CreateUser(context.Background(), "bob-block@test.local", "bobblock", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/blocks/"+url.PathEscape(bob.ID), alice.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("block = %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeBody(t, rec)
+	users, _ := resp["users"].([]any)
+	if len(users) != 1 {
+		t.Fatalf("blocks = %v", resp["users"])
+	}
+
+	// Blocked users disappear from search in both directions.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodGet, "/api/users/search?q=bobblock", alice.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search = %d: %s", rec.Code, rec.Body.String())
+	}
+	search := decodeBody(t, rec)
+	if got, _ := search["users"].([]any); len(got) != 0 {
+		t.Fatalf("blocked user still searchable: %v", search["users"])
+	}
+
+	// A private chat and a call are refused.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/chats", alice.Token, `{"type":"private","withUserId":"`+bob.ID+`"}`))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("chat with blocked = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodDelete, "/api/blocks/"+url.PathEscape(bob.ID), alice.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unblock = %d: %s", rec.Code, rec.Body.String())
+	}
+}

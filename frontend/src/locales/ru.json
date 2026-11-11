@@ -203,5 +203,10 @@
 	"pins.encrypted": "Зашифрованное сообщение",
 	"pins.unpin": "Открепить",
 	"message.pin": "Закрепить",
-	"message.unpin": "Открепить"
+	"message.unpin": "Открепить",
+	"blocks.open": "Заблокированные",
+	"blocks.title": "Заблокированные пользователи",
+	"blocks.empty": "Вы никого не блокировали.",
+	"blocks.unblock": "Разблокировать",
+	"message.block": "Заблокировать пользователя"
 }

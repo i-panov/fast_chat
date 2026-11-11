@@ -27,6 +27,7 @@ func RegisterUsers(api huma.API, st *store.Store, fed *federation.Client, cfg *c
 	registerUserKeys(api, st, fed, cfg)
 	registerKeyBackup(api, st)
 	registerUserAvatar(api, st)
+	registerUserBlocks(api, st)
 }
 
 // registerClientConfig registers a subset of the operations.
@@ -72,10 +73,7 @@ func registerUserSearch(api huma.API, st *store.Store, fed *federation.Client, c
 			}{Users: []model.PublicUser{}}}, nil
 		}
 
-		users := st.SearchUsers(ctx, query, user.ID)
-		if users == nil {
-			users = []model.PublicUser{}
-		}
+		users := filterBlockedUsers(ctx, st, user.ID, st.SearchUsers(ctx, query, user.ID))
 
 		return &searchUsersOutput{Body: struct {
 			Users []model.PublicUser `json:"users"`
@@ -349,10 +347,7 @@ func searchFederated(
 	}
 
 	if remoteDomain == localDomain {
-		users := st.SearchUsers(ctx, remoteNick, callerID)
-		if users == nil {
-			users = []model.PublicUser{}
-		}
+		users := filterBlockedUsers(ctx, st, callerID, st.SearchUsers(ctx, remoteNick, callerID))
 
 		return &searchUsersOutput{Body: struct {
 			Users []model.PublicUser `json:"users"`
@@ -386,6 +381,7 @@ func searchFederated(
 	if len(result.Users) > maxFederatedSearchResults {
 		result.Users = result.Users[:maxFederatedSearchResults]
 	}
+	result.Users = filterBlockedUsers(ctx, st, callerID, result.Users)
 
 	// Strip trailing ":domain" from ID for display purposes.
 	for idx := range result.Users {

@@ -1,5 +1,6 @@
 import { Menu } from "@mantine/core";
 import {
+	Ban,
 	Copy,
 	CornerUpLeft,
 	MessageCircle,
@@ -22,6 +23,7 @@ interface Props {
 	canCreateThread: boolean;
 	canPin: boolean;
 	isPinned: boolean;
+	canBlock: boolean;
 	hasText: boolean;
 	status?: "sent" | "queued" | "failed";
 	onCopy: () => void;
@@ -31,6 +33,7 @@ interface Props {
 	onReply: () => void;
 	onCreateThread: () => void;
 	onPin: () => void;
+	onBlock: () => void;
 	onDelete: () => void | Promise<void>;
 	onClose: () => void;
 	menuRef: React.RefObject<HTMLDivElement | null>;
@@ -47,6 +50,7 @@ export function MessageContextMenu({
 	canCreateThread,
 	canPin,
 	isPinned,
+	canBlock,
 	hasText,
 	status,
 	onCopy,
@@ -56,6 +60,7 @@ export function MessageContextMenu({
 	onReply,
 	onCreateThread,
 	onPin,
+	onBlock,
 	onDelete,
 	onClose,
 	menuRef,
@@ -123,6 +128,11 @@ export function MessageContextMenu({
 						onClick={onCreateThread}
 					>
 						{t("message.createThread")}
+					</Menu.Item>
+				)}
+				{canBlock && (
+					<Menu.Item leftSection={<Ban size={14} />} onClick={onBlock}>
+						{t("message.block")}
 					</Menu.Item>
 				)}
 				{canPin && (

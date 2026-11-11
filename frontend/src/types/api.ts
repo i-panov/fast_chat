@@ -1,5 +1,12 @@
 import type { FileKey } from "../e2ee/file-crypto.ts";
 
+export interface BlockedUser {
+	id: string;
+	nick: string;
+	online?: boolean;
+	avatarUrl?: string;
+}
+
 export interface User {
 	id: string;
 	nick: string;

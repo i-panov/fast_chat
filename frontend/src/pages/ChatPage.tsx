@@ -8,7 +8,12 @@ import type * as React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
-import { getPinnedMessages, pinMessage, unpinMessage } from "../api.ts";
+import {
+	blockUser,
+	getPinnedMessages,
+	pinMessage,
+	unpinMessage,
+} from "../api.ts";
 import { ActiveCallOverlay } from "../components/chat/ActiveCallOverlay.tsx";
 import { AppHeader } from "../components/chat/AppHeader.tsx";
 import { AudioPlayerBar } from "../components/chat/AudioPlayerBar.tsx";
@@ -421,6 +426,9 @@ function ActiveChatView({ s, userId }: { s: ChatPageState; userId: string }) {
 				}}
 				onPin={(chatId, messageId) => {
 					void togglePin(chatId, messageId);
+				}}
+				onBlock={(fromId) => {
+					if (token !== undefined) void blockUser(token, fromId);
 				}}
 				pinnedIds={pinnedIds}
 				showAuthorForGroup={showAuthorForGroup}

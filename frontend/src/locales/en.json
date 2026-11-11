@@ -201,5 +201,10 @@
 	"pins.encrypted": "Encrypted message",
 	"pins.unpin": "Unpin",
 	"message.pin": "Pin",
-	"message.unpin": "Unpin"
+	"message.unpin": "Unpin",
+	"blocks.open": "Blocked users",
+	"blocks.title": "Blocked users",
+	"blocks.empty": "You have not blocked anyone.",
+	"blocks.unblock": "Unblock",
+	"message.block": "Block user"
 }

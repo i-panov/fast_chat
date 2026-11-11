@@ -448,6 +448,13 @@ func (s *Service) SendMessage(
 	if err := s.ValidateSendInput(input); err != nil {
 		return nil, err
 	}
+	if chat.Type == "private" {
+		for _, memberID := range chat.Members {
+			if memberID != fromID && s.IsBlockedBetween(ctx, fromID, memberID) {
+				return nil, ErrUserBlocked
+			}
+		}
+	}
 
 	// Resolve the attachments the sender is allowed to use. The client sends
 	// file ids for uploads it just made and content hashes for files it

@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getConfig } from "./api.ts";
 import { BackupSettingsModal } from "./components/chat/BackupSettingsModal.tsx";
+import { BlockedUsersModal } from "./components/chat/BlockedUsersModal.tsx";
 import { ProfileModal } from "./components/chat/ProfileModal.tsx";
 import { SessionsModal } from "./components/chat/SessionsModal.tsx";
 import { UserAvatar } from "./components/shared/UserAvatar.tsx";
@@ -169,6 +170,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const [backupOpen, setBackupOpen] = useState(false);
 	const [sessionsOpen, setSessionsOpen] = useState(false);
 	const [profileOpen, setProfileOpen] = useState(false);
+	const [blocksOpen, setBlocksOpen] = useState(false);
 	const [keyPair, setKeyPair] = useState<KeyPair | null>(null);
 	const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
@@ -278,6 +280,14 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 				</Button>
 				<Button
 					variant="outline"
+					style={{ width: "100%", marginBottom: "8px" }}
+					onClick={() => setBlocksOpen(true)}
+					disabled={activeAccount === null}
+				>
+					{t("blocks.open")}
+				</Button>
+				<Button
+					variant="outline"
 					style={{
 						width: "100%",
 						borderStyle: "dashed",
@@ -354,6 +364,13 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					void handleClearData();
 				}}
 			/>
+			{activeAccount !== null && (
+				<BlockedUsersModal
+					open={blocksOpen}
+					onClose={() => setBlocksOpen(false)}
+					token={activeAccount.token}
+				/>
+			)}
 			{activeAccount !== null && (
 				<ProfileModal
 					open={profileOpen}

@@ -3,6 +3,7 @@
 /* eslint-disable max-lines */
 import type {
 	AppConfig,
+	BlockedUser,
 	CallInfo,
 	Chat,
 	CreateChatOptions,
@@ -178,6 +179,26 @@ export function sseAuth(connectionId: string, token: string) {
 		method: "POST",
 		body: JSON.stringify({ connectionId, token }),
 	});
+}
+
+export function getBlockedUsers(token: string) {
+	return request<{ users: BlockedUser[] }>("/api/blocks", token);
+}
+
+export function blockUser(token: string, userId: string) {
+	return request<{ users: BlockedUser[] }>(
+		`/api/blocks/${encodeURIComponent(userId)}`,
+		token,
+		{ method: "POST" },
+	);
+}
+
+export function unblockUser(token: string, userId: string) {
+	return request<{ users: BlockedUser[] }>(
+		`/api/blocks/${encodeURIComponent(userId)}`,
+		token,
+		{ method: "DELETE" },
+	);
 }
 
 export function uploadUserAvatar(token: string, fileId: string) {

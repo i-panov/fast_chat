@@ -297,7 +297,8 @@ func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []mode
 	out := make([]model.PublicUser, 0, len(users))
 	for i := range users {
 		_, online := s.online[users[i].ID]
-		out = append(out, model.PublicUser{ID: users[i].ID, Nick: users[i].Nick, Online: online})
+		users[i].Online = online
+		out = append(out, users[i].Public())
 	}
 
 	return out

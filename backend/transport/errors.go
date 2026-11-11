@@ -257,6 +257,14 @@ var sentinelErrors = []sentinelErrPair{
 		target:   &statusError{ErrorMessage: "invalid reaction", code: http.StatusBadRequest},
 	},
 	{
+		sentinel: service.ErrUserBlocked,
+		target:   &statusError{ErrorMessage: "user is blocked", code: http.StatusForbidden},
+	},
+	{
+		sentinel: service.ErrCannotBlockSelf,
+		target:   &statusError{ErrorMessage: "cannot block yourself", code: http.StatusBadRequest},
+	},
+	{
 		sentinel: service.ErrEmptyMessage,
 		target:   &statusError{ErrorMessage: "empty message", code: http.StatusBadRequest},
 	},

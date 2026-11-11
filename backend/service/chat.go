@@ -201,6 +201,9 @@ func (s *Service) CreatePrivateChat(ctx context.Context, userID, withUserID stri
 	if withUserID == userID {
 		return ChatView{}, ErrChatWithSelf
 	}
+	if s.IsBlockedBetween(ctx, userID, withUserID) {
+		return ChatView{}, ErrUserBlocked
+	}
 
 	remoteServer := s.remoteServerFromID(withUserID)
 	if remoteServer == s.cfg.Server.Domain {
@@ -250,6 +253,10 @@ func (s *Service) CreateGroupChat(ctx context.Context, ownerID, name string, mem
 
 		if _, ok := seen[memberID]; ok {
 			continue
+		}
+
+		if s.IsBlockedBetween(ctx, ownerID, memberID) {
+			return ChatView{}, ErrUserBlocked
 		}
 
 		seen[memberID] = struct{}{}

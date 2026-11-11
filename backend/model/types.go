@@ -184,6 +184,14 @@ type MessageReaction struct {
 	CreatedAt time.Time `gorm:"not null"   json:"createdAt"`
 }
 
+// UserBlock is a local block: blocker does not want content or calls from
+// blocked. Composite key makes the relation idempotent.
+type UserBlock struct {
+	BlockerID string    `gorm:"primaryKey" json:"blockerId"`
+	BlockedID string    `gorm:"primaryKey" json:"blockedId"`
+	CreatedAt time.Time `gorm:"not null"   json:"createdAt"`
+}
+
 // ChatPin is a message pinned in a chat. Composite key: one pin per message.
 type ChatPin struct {
 	ChatID    string    `gorm:"primaryKey" json:"chatId"`
