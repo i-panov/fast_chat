@@ -258,6 +258,7 @@ export async function restoreKeyPairFromDeviceBackup(
 	await metaRepo.setNoNotify(PRIVATE_KEY_META, kp.privateKey);
 	await metaRepo.setNoNotify(PUBLIC_KEY_UPLOADED_META, true);
 	keyCacheByAccount.set(accountScope(), kp);
+	deviceKeyRegistered.delete(`${accountScope()}:${token}`);
 	await ensureDeviceKey(token, kp.publicKey);
 	return kp;
 }
