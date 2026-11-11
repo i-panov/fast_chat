@@ -101,7 +101,7 @@ func New(deps *Deps) *Transport {
 	RegisterPush(api, deps.Store, deps.PushPublicKey)
 	RegisterChats(api, deps.Svc, deps.FedClient, cfg)
 	RegisterMessages(api, deps.Svc, deps.Store, deps.FedClient, cfg)
-	RegisterFiles(api, deps.Store, deps.Svc, cfg)
+	RegisterFiles(api, deps.Store, deps.Svc, deps.FedClient, cfg)
 	RegisterSync(api, deps.Svc)
 	RegisterFederated(api, deps.Store, deps.Svc, deps.FedManager, cfg)
 

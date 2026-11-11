@@ -496,6 +496,7 @@ func sendMessage(
 			"location":         input.Location,
 			"encrypted":        msg.Encrypted,
 			"encryptedPayload": msg.EncryptedPayload,
+			"files":            msg.Files,
 		}
 		if chat.Type == "group" && chat.RemoteServer == "" {
 			seen := make(map[string]struct{})

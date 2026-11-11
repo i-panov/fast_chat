@@ -517,3 +517,41 @@ func TestForwardFederatedGroupMessageSkipsSenderReplica(t *testing.T) {
 		t.Fatalf("forward requests = %v", fed.requests)
 	}
 }
+
+func TestSendFederatedMessageStoresRemoteAttachment(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+	view, _, err := s.CreateFederatedChat(ctx, "fed-file-chat",
+		[]string{"alice:localhost:8080", "bob:remote.test"}, "remote.test", "localhost:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, ok := s.store.GetChat(ctx, view.ID)
+	if !ok {
+		t.Fatal("chat missing")
+	}
+
+	msg, err := s.SendFederatedMessage(ctx, chat, &FederatedInboundMessage{
+		ID:       "m-file",
+		FromID:   "bob:remote.test",
+		FromNick: "bob",
+		Text:     "",
+		Files: []model.FileInfo{{
+			ID:           "f1",
+			Hash:         "hash",
+			MimeType:     "image/png",
+			Size:         42,
+			OriginalName: "photo.png",
+		}},
+	}, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.Files) != 1 || msg.Files[0].ID != "f1" {
+		t.Fatalf("message files = %+v", msg.Files)
+	}
+	file, err := s.store.GetFile(ctx, "f1")
+	if err != nil || file.RemoteServer != "remote.test" || file.StoragePath != "" {
+		t.Fatalf("file = %+v err=%v", file, err)
+	}
+}

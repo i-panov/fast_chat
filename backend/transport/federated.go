@@ -5,11 +5,15 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"strconv"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 
 	"fast_chat/config"
 	"fast_chat/federation"
+	"fast_chat/internal/filestage"
 	"fast_chat/model"
 	"fast_chat/service"
 	"fast_chat/store"
@@ -24,6 +28,7 @@ func RegisterFederated(api huma.API, st *store.Store, svc *service.Service, fm *
 	registerFederatedCalls(api, st, svc)
 	registerFederatedSync(api, svc)
 	registerFederatedDeviceKeys(api, st)
+	registerFederatedFiles(api, st, svc, cfg)
 }
 
 // fedSecurity is the security declaration for federation operations.
@@ -164,6 +169,7 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 			Location:         input.Body.Location,
 			Encrypted:        input.Body.Encrypted,
 			EncryptedPayload: input.Body.EncryptedPayload,
+			Files:            input.Body.Files,
 		}, maxLen)
 		if err != nil {
 			return nil, federatedOrInternalError(err)
@@ -384,14 +390,15 @@ func (o *federatedCreateChatOutput) GetStatus() int {
 }
 
 type federatedMessageBody struct {
-	ID               string          `json:"id,omitempty"`
-	FromID           string          `json:"fromId,omitempty"`
-	FromNick         string          `json:"fromNick,omitempty"`
-	Text             string          `json:"text,omitempty"`
-	ReplyToID        string          `json:"replyToId,omitempty"`
-	Location         *model.Location `json:"location,omitempty"`
-	Encrypted        bool            `json:"encrypted,omitempty"`
-	EncryptedPayload string          `json:"encryptedPayload,omitempty"`
+	ID               string           `json:"id,omitempty"`
+	FromID           string           `json:"fromId,omitempty"`
+	FromNick         string           `json:"fromNick,omitempty"`
+	Text             string           `json:"text,omitempty"`
+	ReplyToID        string           `json:"replyToId,omitempty"`
+	Location         *model.Location  `json:"location,omitempty"`
+	Encrypted        bool             `json:"encrypted,omitempty"`
+	EncryptedPayload string           `json:"encryptedPayload,omitempty"`
+	Files            []model.FileInfo `json:"files,omitempty"`
 }
 
 type federatedSendMessageInput struct {
@@ -466,4 +473,41 @@ type federatedCreateGroupOutput struct {
 		Status string            `json:"status,omitempty"`
 		Chat   *service.ChatView `json:"chat,omitempty"`
 	}
+}
+
+func registerFederatedFiles(api huma.API, st *store.Store, svc *service.Service, cfg *config.Config) {
+	huma.Register(api, huma.Operation{
+		OperationID: "federated-serve-file",
+		Method:      http.MethodGet,
+		Path:        "/api/federated/files/{fileId}",
+		Summary:     "Serve an attachment to a peer server",
+		Security:    fedSecurity,
+	}, func(ctx context.Context, input *federatedFileInput) (*huma.StreamResponse, error) {
+		server := federatedServerFromContext(ctx)
+		file, err := st.GetFile(ctx, input.FileID)
+		if err != nil || file.RemoteServer != "" || !svc.FileVisibleToServer(ctx, input.FileID, server) {
+			return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+		}
+
+		fullPath := filepath.Join(cfg.Uploads.Dir, file.StoragePath)
+		return &huma.StreamResponse{
+			Body: func(hctx huma.Context) {
+				r, w := humachi.Unwrap(hctx)
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+				w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+				w.Header().Set("Content-Type", file.MimeType)
+				disposition := "attachment"
+				if filestage.IsInlinableMIME(file.MimeType) {
+					disposition = "inline"
+				}
+				w.Header().Set("Content-Disposition", filestage.ContentDisposition(disposition, file.OriginalName))
+				w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(mimeCacheMaxAge))
+				http.ServeFile(w, r, fullPath)
+			},
+		}, nil
+	})
+}
+
+type federatedFileInput struct {
+	FileID string `path:"fileId"`
 }

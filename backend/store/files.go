@@ -292,3 +292,14 @@ func (s *Store) GetFileChats(ctx context.Context, fileID string) ([]string, erro
 
 	return chatIDs, nil
 }
+
+// CreateRemoteFile stores metadata for a file whose bytes remain on the
+// sender's server. StoragePath is intentionally empty: the transport serves
+// it through the federation proxy instead of the local uploads directory.
+func (s *Store) CreateRemoteFile(ctx context.Context, file *model.File) error {
+	file.StoragePath = ""
+	if file.CreatedAt.IsZero() {
+		file.CreatedAt = time.Now().UTC()
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(file).Error
+}

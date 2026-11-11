@@ -181,11 +181,14 @@ type FederatedInboundMessage struct {
 	Location         *model.Location
 	Encrypted        bool
 	EncryptedPayload string
+	Files            []model.FileInfo
 }
 
 // SendFederatedMessage validates and persists an inbound federated message,
 // enriching the reply snapshot, and fans out the new-message event. Returns
 // the stored message for the transport response.
+//
+//nolint:gocyclo,cyclop // validation, reply, files and fan-out share one transaction boundary.
 func (s *Service) SendFederatedMessage(
 	ctx context.Context,
 	chat *model.Chat,
@@ -206,10 +209,9 @@ func (s *Service) SendFederatedMessage(
 	}
 
 	in.Text = strings.TrimSpace(in.Text)
-	// Parity with local sends: an empty text is fine when a location is
-	// attached. Files are not carried over federation (the peer has no way to
-	// fetch them), so location is the only attachment that exempts the text.
-	if in.Text == "" && in.Location == nil {
+	// An empty text is fine when a location or a federated attachment is
+	// attached.
+	if in.Text == "" && in.Location == nil && len(in.Files) == 0 {
 		return nil, ErrEmptyMessage
 	}
 
@@ -254,6 +256,40 @@ func (s *Service) SendFederatedMessage(
 
 	if err := s.store.AddRawMessage(ctx, msg); err != nil {
 		return nil, err
+	}
+
+	if len(in.Files) > 0 {
+		fileIDs := make([]string, 0, len(in.Files))
+		for idx := range in.Files {
+			fileInfo := &in.Files[idx]
+			if fileInfo.ID == "" {
+				continue
+			}
+			sourceServer := chat.RemoteServer
+			if fromServer := RemoteServerFromID(in.FromID); fromServer != "" {
+				sourceServer = fromServer
+			}
+			if err := s.store.CreateRemoteFile(ctx, &model.File{
+				ID:           fileInfo.ID,
+				Hash:         fileInfo.Hash,
+				MimeType:     fileInfo.MimeType,
+				Size:         fileInfo.Size,
+				OriginalName: fileInfo.OriginalName,
+				UploadedBy:   in.FromID,
+				RemoteServer: sourceServer,
+			}); err != nil {
+				return nil, err
+			}
+			fileIDs = append(fileIDs, fileInfo.ID)
+		}
+		if err := s.store.SetMessageFiles(ctx, msg.ID, fileIDs); err != nil {
+			return nil, err
+		}
+		files, err := s.store.GetMessageFiles(ctx, msg.ID)
+		if err != nil {
+			log().Warn("failed to load federated message files", "err", err)
+		}
+		msg.Files = files
 	}
 
 	if msg.ThreadID != "" {
@@ -595,6 +631,7 @@ func (s *Service) forwardFederatedGroupMessage(ctx context.Context, chat *model.
 			"location":         in.Location,
 			"encrypted":        in.Encrypted,
 			"encryptedPayload": in.EncryptedPayload,
+			"files":            in.Files,
 		}
 		url := s.fed.URL(domain, "/api/federated/chats/"+chat.ID+"/messages")
 		if _, err := s.fed.Request(ctx, "POST", url, body); err != nil {

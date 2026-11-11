@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 
 	"fast_chat/config"
+	"fast_chat/federation"
 	"fast_chat/internal/filestage"
 	"fast_chat/model"
 	"fast_chat/service"
@@ -21,7 +23,7 @@ import (
 
 // RegisterFiles adds the file upload, download, and existence-check
 // operations.
-func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *config.Config) {
+func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, fed *federation.Client, cfg *config.Config) {
 	huma.Register(api, huma.Operation{
 		OperationID: "upload-file",
 		Method:      http.MethodPost,
@@ -67,9 +69,23 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 			return nil, &statusError{ErrorMessage: "not a member", code: http.StatusForbidden}
 		}
 
-		fullPath := filepath.Join(cfg.Uploads.Dir, fileRecord.StoragePath)
 		mimeType := fileRecord.MimeType
 		originalName := fileRecord.OriginalName
+
+		var remoteBody []byte
+		if fileRecord.RemoteServer != "" {
+			if fed == nil {
+				return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+			}
+			remoteURL := fed.URL(fileRecord.RemoteServer, "/api/federated/files/"+input.FileID)
+			body, err := fed.Request(ctx, http.MethodGet, remoteURL, nil)
+			if err != nil {
+				return nil, &statusError{ErrorMessage: "failed to fetch federated file", code: http.StatusBadGateway}
+			}
+			remoteBody = body
+		}
+
+		fullPath := filepath.Join(cfg.Uploads.Dir, fileRecord.StoragePath)
 
 		return &huma.StreamResponse{
 			Body: func(hctx huma.Context) {
@@ -89,6 +105,10 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 				w.Header().Set("Content-Disposition", filestage.ContentDisposition(disposition, originalName))
 				w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(mimeCacheMaxAge))
 
+				if fileRecord.RemoteServer != "" {
+					http.ServeContent(w, r, originalName, fileRecord.CreatedAt, bytes.NewReader(remoteBody))
+					return
+				}
 				http.ServeFile(w, r, fullPath)
 			},
 		}, nil

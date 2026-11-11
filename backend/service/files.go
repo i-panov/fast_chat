@@ -222,3 +222,28 @@ func (s *Service) ResolveMessageFiles(ctx context.Context, userID string, fileID
 
 	return out
 }
+
+// FileVisibleToServer reports whether a file is attached to a chat that has a
+// member on serverDomain. It is the access check for the federation file
+// proxy: the peer requests bytes on behalf of its local member.
+func (s *Service) FileVisibleToServer(ctx context.Context, fileID, serverDomain string) bool {
+	if serverDomain == "" {
+		return false
+	}
+	chatIDs, err := s.store.GetFileChats(ctx, fileID)
+	if err != nil {
+		return false
+	}
+	chats, err := s.store.GetChatsByIDs(ctx, chatIDs)
+	if err != nil {
+		return false
+	}
+	for i := range chats {
+		for _, memberID := range chats[i].Members {
+			if UserIDBelongsToServer(memberID, serverDomain) {
+				return true
+			}
+		}
+	}
+	return false
+}

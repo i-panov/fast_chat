@@ -78,8 +78,11 @@ type File struct {
 	// anyone re-attach a file and keep access to it after leaving a chat.
 	//
 	// An empty value marks a record written before the column existed.
-	UploadedBy string    `gorm:"index;not null;default:''" json:"-"`
-	CreatedAt  time.Time `gorm:"not null"                  json:"createdAt"`
+	UploadedBy string `gorm:"index;not null;default:''" json:"-"`
+	// RemoteServer is set on a metadata-only placeholder for a federated
+	// attachment. The bytes stay on that server and are proxied on demand.
+	RemoteServer string    `gorm:"not null;default:''" json:"-"`
+	CreatedAt    time.Time `gorm:"not null"            json:"createdAt"`
 }
 
 type MessageFile struct {
