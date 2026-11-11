@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	groupNameField  = "name"
 	groupNameMaxLen = 60
 )
 
@@ -285,10 +286,10 @@ func (s *Service) CreateGroupChat(ctx context.Context, ownerID, name string, mem
 	}
 	for domain := range remoteDomains {
 		body := map[string]any{
-			"chatId":  chat.ID,
-			"name":    chat.Name,
-			"ownerId": ownerID,
-			"members": chat.Members,
+			"chatId":       chat.ID,
+			groupNameField: chat.Name,
+			"ownerId":      ownerID,
+			"members":      chat.Members,
 		}
 		groupURL := s.fed.URL(domain, "/api/federated/groups")
 		if _, err := s.fed.Request(ctx, "POST", groupURL, body); err != nil {
@@ -316,14 +317,46 @@ func (s *Service) UpdateChatName(ctx context.Context, chatID, name string) (Chat
 	for _, memberID := range updated.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventChatUpdated, Data: view})
 	}
+	if updated.RemoteServer == "" && s.fed != nil {
+		seen := make(map[string]struct{})
+		for _, memberID := range updated.Members {
+			domain := s.remoteServerFromID(memberID)
+			if domain == "" || domain == s.cfg.Server.Domain {
+				continue
+			}
+			if _, ok := seen[domain]; ok {
+				continue
+			}
+			seen[domain] = struct{}{}
+			groupURL := s.fed.URL(domain, "/api/federated/groups/"+updated.ID)
+			if _, err := s.fed.Request(ctx, "PATCH", groupURL, map[string]string{groupNameField: updated.Name}); err != nil {
+				log().Warn("federated group rename failed", "server", domain, "err", err)
+			}
+		}
+	}
 
 	return view, nil
 }
 
 // DeleteChat removes a chat and notifies all former members.
 func (s *Service) DeleteChat(ctx context.Context, chat *model.Chat) error {
+	domains := make(map[string]struct{})
+	if chat.RemoteServer == "" && s.fed != nil {
+		for _, memberID := range chat.Members {
+			domain := s.remoteServerFromID(memberID)
+			if domain != "" && domain != s.cfg.Server.Domain {
+				domains[domain] = struct{}{}
+			}
+		}
+	}
 	if err := s.store.DeleteChat(ctx, chat.ID); err != nil {
 		return err
+	}
+	for domain := range domains {
+		groupURL := s.fed.URL(domain, "/api/federated/groups/"+chat.ID)
+		if _, err := s.fed.Request(ctx, "DELETE", groupURL, nil); err != nil {
+			log().Warn("federated group delete failed", "server", domain, "err", err)
+		}
 	}
 
 	for _, memberID := range chat.Members {
@@ -342,10 +375,10 @@ func (s *Service) AddChatMember(ctx context.Context, chatID, userID string) (Cha
 
 	remoteServer := s.remoteServerFromID(userID)
 	if remoteServer != "" && remoteServer != s.cfg.Server.Domain {
-		return ChatView{}, ErrRemoteMember
-	}
-
-	if _, ok := s.store.GetUserByID(ctx, userID); !ok {
+		if s.fed == nil {
+			return ChatView{}, ErrRemoteMember
+		}
+	} else if _, ok := s.store.GetUserByID(ctx, userID); !ok {
 		return ChatView{}, ErrUserNotFound
 	}
 
@@ -367,12 +400,29 @@ func (s *Service) AddChatMember(ctx context.Context, chatID, userID string) (Cha
 		}})
 	}
 
+	if remoteServer != "" && remoteServer != s.cfg.Server.Domain {
+		seen := make(map[string]struct{})
+		for _, memberID := range updated.Members {
+			domain := s.remoteServerFromID(memberID)
+			if domain == "" || domain == s.cfg.Server.Domain {
+				continue
+			}
+			if _, ok := seen[domain]; ok {
+				continue
+			}
+			seen[domain] = struct{}{}
+			s.replicateGroupMembership(ctx, updated, domain)
+		}
+	}
+
 	return view, nil
 }
 
 // RemoveChatMember removes a member (or lets them leave) and notifies the
 // group; the removed peer also receives a chat_deleted tombstone.
 func (s *Service) RemoveChatMember(ctx context.Context, chatID, targetUserID, actorID string) (ChatView, error) {
+	before, _ := s.store.GetChat(ctx, chatID)
+
 	if err := s.store.RemoveChatMember(ctx, chatID, targetUserID); err != nil {
 		return ChatView{}, err
 	}
@@ -394,6 +444,23 @@ func (s *Service) RemoveChatMember(ctx context.Context, chatID, targetUserID, ac
 
 	s.sendEvent(targetUserID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: chatID}})
 
+	if s.fed != nil && before.RemoteServer == "" {
+		seen := make(map[string]struct{})
+		for _, memberID := range before.Members {
+			domain := s.remoteServerFromID(memberID)
+			if domain == "" || domain == s.cfg.Server.Domain {
+				continue
+			}
+			if _, ok := seen[domain]; ok {
+				continue
+			}
+			seen[domain] = struct{}{}
+			groupURL := s.fed.URL(domain, "/api/federated/groups/"+chatID+"/members/"+url.PathEscape(targetUserID))
+			if _, err := s.fed.Request(ctx, "DELETE", groupURL, nil); err != nil {
+				log().Warn("federated group remove member failed", "server", domain, "err", err)
+			}
+		}
+	}
 	return view, nil
 }
 
@@ -671,4 +738,22 @@ func parseNumericIP(host string) net.IP {
 	}
 
 	return net.IPv4(addr[0], addr[1], addr[2], addr[3])
+}
+
+// replicateGroupMembership sends the authoritative member list to one peer.
+// The peer creates the replica or adds the members it is missing.
+func (s *Service) replicateGroupMembership(ctx context.Context, chat *model.Chat, domain string) {
+	if s.fed == nil {
+		return
+	}
+	body := map[string]any{
+		"chatId":       chat.ID,
+		groupNameField: chat.Name,
+		"ownerId":      chat.OwnerID,
+		"members":      chat.Members,
+	}
+	groupURL := s.fed.URL(domain, "/api/federated/groups")
+	if _, err := s.fed.Request(ctx, "POST", groupURL, body); err != nil {
+		log().Warn("federated group membership sync failed", "server", domain, "err", err)
+	}
 }

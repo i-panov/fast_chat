@@ -18,6 +18,7 @@ const (
 	msgFailedParseRemote = "failed to parse remote response"
 	msgSessionRequired   = "session required"
 	msgInvalidBackup     = "invalid backup"
+	msgNotGroup          = "not a group"
 )
 
 // statusError implements huma.StatusError using the pre-migration error

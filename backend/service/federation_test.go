@@ -555,3 +555,70 @@ func TestSendFederatedMessageStoresRemoteAttachment(t *testing.T) {
 		t.Fatalf("file = %+v err=%v", file, err)
 	}
 }
+
+func TestFederatedGroupMembershipFanout(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fed := &fakeFederationClient{}
+	s.SetFederationClient(fed)
+
+	view, err := s.CreateGroupChat(ctx, owner.ID, "Group", []string{"bob:remote.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fed.requests = nil
+
+	if _, err := s.AddChatMember(ctx, view.ID, "carol:other.test"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fed.requests) < 2 {
+		t.Fatalf("add member requests = %v", fed.requests)
+	}
+
+	fed.requests = nil
+	if _, err := s.RemoveChatMember(ctx, view.ID, "carol:other.test", owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(fed.requests) < 2 {
+		t.Fatalf("remove member requests = %v", fed.requests)
+	}
+}
+
+func TestFederatedGroupRenameAndDeleteFanout(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fed := &fakeFederationClient{}
+	s.SetFederationClient(fed)
+
+	view, err := s.CreateGroupChat(ctx, owner.ID, "Group", []string{"bob:remote.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fed.requests = nil
+	if _, err := s.UpdateChatName(ctx, view.ID, "Renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fed.requests) != 1 || fed.requests[0] != "https://remote.test/api/federated/groups/"+view.ID {
+		t.Fatalf("rename requests = %v", fed.requests)
+	}
+
+	fed.requests = nil
+	chat, ok := s.store.GetChat(ctx, view.ID)
+	if !ok {
+		t.Fatal("chat missing")
+	}
+	if err := s.DeleteChat(ctx, chat); err != nil {
+		t.Fatal(err)
+	}
+	if len(fed.requests) != 1 || fed.requests[0] != "https://remote.test/api/federated/groups/"+view.ID {
+		t.Fatalf("delete requests = %v", fed.requests)
+	}
+}

@@ -76,6 +76,8 @@ func registerFederatedChats(api huma.API, st *store.Store, svc *service.Service,
 }
 
 // registerFederatedChatMessages registers chat create/send operations.
+//
+//nolint:funlen // one function registers the closely coupled chat operations.
 func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.Service, fm *federation.Manager, cfg *config.Config) {
 	huma.Register(api, huma.Operation{
 		OperationID: "federated-create-chat",
@@ -141,6 +143,70 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 		out.Status = http.StatusCreated
 		out.Body.Chat = &view
 		return &out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "federated-rename-group",
+		Method:      http.MethodPatch,
+		Path:        "/api/federated/groups/{id}",
+		Summary:     "Apply an owner rename to a group replica",
+		Security:    fedSecurity,
+	}, func(ctx context.Context, input *federatedRenameGroupInput) (*federatedCreateGroupOutput, error) {
+		chat, err := federatedChatForSource(ctx, st, input.ID)
+		if err != nil {
+			return nil, err
+		}
+		if chat.Type != chatTypeGroup {
+			return nil, &statusError{ErrorMessage: msgNotGroup, code: http.StatusBadRequest}
+		}
+		view, err := svc.RenameFederatedGroup(ctx, input.ID, input.Body.Name)
+		if err != nil {
+			return nil, federatedOrInternalError(err)
+		}
+		var out federatedCreateGroupOutput
+		out.Status = http.StatusOK
+		out.Body.Chat = &view
+		return &out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "federated-delete-group",
+		Method:      http.MethodDelete,
+		Path:        "/api/federated/groups/{id}",
+		Summary:     "Delete a group replica",
+		Security:    fedSecurity,
+	}, func(ctx context.Context, input *federatedGroupIDInput) (*statusOutput, error) {
+		chat, err := federatedChatForSource(ctx, st, input.ID)
+		if err != nil {
+			return nil, err
+		}
+		if chat.Type != chatTypeGroup {
+			return nil, &statusError{ErrorMessage: msgNotGroup, code: http.StatusBadRequest}
+		}
+		if err := svc.DeleteFederatedGroup(ctx, chat); err != nil {
+			return nil, federatedOrInternalError(err)
+		}
+		return okStatus(), nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "federated-remove-group-member",
+		Method:      http.MethodDelete,
+		Path:        "/api/federated/groups/{id}/members/{userId}",
+		Summary:     "Remove a member from a federated group replica",
+		Security:    fedSecurity,
+	}, func(ctx context.Context, input *federatedGroupMemberInput) (*statusOutput, error) {
+		chat, err := federatedChatForSource(ctx, st, input.ID)
+		if err != nil {
+			return nil, err
+		}
+		if chat.Type != chatTypeGroup {
+			return nil, &statusError{ErrorMessage: msgNotGroup, code: http.StatusBadRequest}
+		}
+		if _, err := svc.RemoveChatMember(ctx, input.ID, input.UserID, ""); err != nil {
+			return nil, federatedOrInternalError(err)
+		}
+		return okStatus(), nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -510,4 +576,20 @@ func registerFederatedFiles(api huma.API, st *store.Store, svc *service.Service,
 
 type federatedFileInput struct {
 	FileID string `path:"fileId"`
+}
+
+type federatedGroupMemberInput struct {
+	ID     string `path:"id"`
+	UserID string `path:"userId"`
+}
+
+type federatedGroupIDInput struct {
+	ID string `path:"id"`
+}
+
+type federatedRenameGroupInput struct {
+	ID   string `path:"id"`
+	Body struct {
+		Name string `json:"name"`
+	}
 }

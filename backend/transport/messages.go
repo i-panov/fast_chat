@@ -498,7 +498,7 @@ func sendMessage(
 			"encryptedPayload": msg.EncryptedPayload,
 			"files":            msg.Files,
 		}
-		if chat.Type == "group" && chat.RemoteServer == "" {
+		if chat.Type == chatTypeGroup && chat.RemoteServer == "" {
 			seen := make(map[string]struct{})
 			for _, memberID := range chat.Members {
 				domain := service.RemoteServerFromIDFor(memberID, allowPrivate)

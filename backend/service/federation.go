@@ -552,6 +552,34 @@ func (s *Service) federatedChats(ctx context.Context, chatIDs []string) []Federa
 	return out
 }
 
+// RenameFederatedGroup applies an owner rename to a local replica.
+func (s *Service) RenameFederatedGroup(ctx context.Context, chatID, name string) (ChatView, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > groupNameMaxLen {
+		return ChatView{}, ErrGroupNameInvalid
+	}
+	updated, err := s.store.UpdateChatName(ctx, chatID, name)
+	if err != nil {
+		return ChatView{}, err
+	}
+	view := s.EnrichChat(ctx, updated)
+	for _, memberID := range updated.Members {
+		s.sendEvent(memberID, sse.Event{Event: eventChatUpdated, Data: view})
+	}
+	return view, nil
+}
+
+// DeleteFederatedGroup removes a local replica without federating back.
+func (s *Service) DeleteFederatedGroup(ctx context.Context, chat *model.Chat) error {
+	if err := s.store.DeleteChat(ctx, chat.ID); err != nil {
+		return err
+	}
+	for _, memberID := range chat.Members {
+		s.sendEvent(memberID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: chat.ID}})
+	}
+	return nil
+}
+
 // CreateFederatedGroup stores the owner-server replica of a group on a
 // participant's server. The owner is authoritative; this server only keeps the
 // members it needs to deliver events and accepts the owner's chat id.
@@ -579,10 +607,23 @@ func (s *Service) CreateFederatedGroup(
 		return ChatView{}, false, ErrFederatedMembersNotValid
 	}
 	if existing, ok := s.store.GetChat(ctx, chatID); ok {
-		if existing.RemoteServer == ownerServer && existing.OwnerID == ownerID {
-			return ChatView{}, true, nil
+		if existing.RemoteServer != ownerServer || existing.OwnerID != ownerID {
+			return ChatView{}, false, ErrFederatedMembersNotValid
 		}
-		return ChatView{}, false, ErrFederatedMembersNotValid
+		for _, memberID := range members {
+			if err := s.store.AddChatMember(ctx, chatID, memberID, 0); err != nil {
+				return ChatView{}, false, err
+			}
+		}
+		enriched := s.EnrichChat(ctx, existing)
+		for _, memberID := range members {
+			s.sendEvent(memberID, sse.Event{Event: eventChatMemberAdded, Data: map[string]any{
+				keyChatID: chatID,
+				keyUserID: memberID,
+				keyChat:   enriched,
+			}})
+		}
+		return ChatView{}, true, nil
 	}
 
 	chat := &model.Chat{
