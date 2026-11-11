@@ -19,6 +19,7 @@ import (
 func RegisterMessages(api huma.API, svc *service.Service, st *store.Store, fed *federation.Client, cfg *config.Config) {
 	registerMessagePages(api, svc)
 	registerMessageMutations(api, svc, st, fed, cfg)
+	registerMessageReactions(api, svc)
 	registerThreads(api, svc, st, fed, cfg)
 	registerTyping(api, svc, fed)
 }
@@ -293,7 +294,7 @@ func registerThreadMessages(api huma.API, svc *service.Service, st *store.Store,
 
 		limit := messageLimit(input.Limit)
 
-		messages, nextCursor, err := svc.GetThreadMessages(ctx, thread.ID, limit, input.Before)
+		messages, nextCursor, err := svc.GetThreadMessages(ctx, thread.ID, user.ID, limit, input.Before)
 		if err != nil {
 			return nil, errInternal
 		}

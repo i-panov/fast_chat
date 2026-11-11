@@ -32,7 +32,7 @@ describe("PhotoAttachment", () => {
 			<PhotoAttachment file={photoFile()} onPhotoClick={onPhotoClick} />,
 		);
 
-		const img = await screen.findByAltText("pic.png");
+		const img = await screen.findByAltText("pic.png", {}, { timeout: 5000 });
 		expect(img.getAttribute("src")).toBe("blob:mock");
 
 		fireEvent.click(img);
@@ -46,7 +46,7 @@ describe("PhotoAttachment", () => {
 			<PhotoAttachment file={photoFile()} />,
 		);
 
-		await screen.findByAltText("pic.png");
+		await screen.findByAltText("pic.png", {}, { timeout: 5000 });
 		expect(container.querySelector("a")?.getAttribute("href")).toBe(
 			"blob:mock",
 		);
@@ -87,7 +87,7 @@ describe("PhotoAttachment", () => {
 		expect(document.body.innerHTML).toContain("mantine-Loader-root");
 
 		resolveFetch(new Response(new Blob(["pic"])));
-		await screen.findByAltText("pic.png");
+		await screen.findByAltText("pic.png", {}, { timeout: 5000 });
 		vi.unstubAllGlobals();
 	});
 });

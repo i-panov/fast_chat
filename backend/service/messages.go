@@ -82,12 +82,14 @@ const (
 	eventMessageDeleted   = "message_deleted"
 	eventMessageRead      = "message_read"
 	eventThreadCreated    = "thread_created"
+	eventMessageReactions = "message_reactions_updated"
 
 	keyMessage   = "message"
 	keyMessageID = "messageId"
 	keyThreadID  = "threadId"
 	keyReaderID  = "readerId"
 	keyReadAt    = "readAt"
+	keyReactions = "reactions"
 )
 
 // MessageWithStatus extends a Message with delivery/read metadata shown to
@@ -336,6 +338,8 @@ func (s *Service) EnrichMessagesWithStatuses(
 		}
 	}
 
+	s.attachReactions(ctx, messages, userID)
+
 	// Only fetch statuses for messages that are missing from client cache.
 	statusIDs := ids
 	if len(missingIDs) > 0 {
@@ -401,7 +405,7 @@ func (s *Service) GetMessages(
 
 // GetThreadMessages returns a page of thread messages with files attached.
 // Storage failures propagate like in GetMessages.
-func (s *Service) GetThreadMessages(ctx context.Context, threadID string, limit int, before string) ([]model.Message, string, error) {
+func (s *Service) GetThreadMessages(ctx context.Context, threadID, userID string, limit int, before string) ([]model.Message, string, error) {
 	messages, nextCursor, _, err := s.store.GetThreadMessagesPaginatedE(ctx, threadID, limit, before)
 	if err != nil {
 		return nil, "", err
@@ -419,6 +423,7 @@ func (s *Service) GetThreadMessages(ctx context.Context, threadID string, limit 
 				messages[i].Files = filesByMsg[messages[i].ID]
 			}
 		}
+		s.attachReactions(ctx, messages, userID)
 	}
 
 	return messages, nextCursor, nil

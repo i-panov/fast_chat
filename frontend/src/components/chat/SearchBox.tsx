@@ -10,6 +10,8 @@ import { Plus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { User } from "../../types/api.ts";
+import { useAuth } from "../../useAuth.tsx";
+import { UserAvatar } from "../shared/UserAvatar.tsx";
 
 interface Props {
 	query: string;
@@ -29,6 +31,7 @@ export function SearchBox({
 	onCreateGroup,
 }: Props) {
 	const { t } = useTranslation();
+	const { activeAccount } = useAuth();
 	const boxRef = useRef<HTMLDivElement>(null);
 	const [dismissed, setDismissed] = useState(false);
 	const [activeIndex, setActiveIndex] = useState(-1);
@@ -156,12 +159,20 @@ export function SearchBox({
 									role="option"
 									aria-selected={i === activeIndex}
 								>
-									<Text size="sm">@{u.nick}</Text>
-									{u.online && (
-										<Text size="xs" c="dimmed" ml={4}>
-											{t("search.online")}
-										</Text>
-									)}
+									<Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
+										<UserAvatar
+											nick={u.nick}
+											avatarUrl={u.avatarUrl}
+											token={activeAccount?.token}
+											size={24}
+										/>
+										<Text size="sm">@{u.nick}</Text>
+										{u.online && (
+											<Text size="xs" c="dimmed" ml={4}>
+												{t("search.online")}
+											</Text>
+										)}
+									</Group>
 								</Button>
 							))}
 						</div>

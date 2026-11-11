@@ -16,16 +16,22 @@ type User struct {
 	PublicKey      string    `gorm:"not null;default:''"  json:"-"` // E2E X25519 public key (base64)
 	KeyBackup      string    `gorm:"not null;default:''"  json:"-"` // client-encrypted private key backup blob (base64)
 	KeyBackupAt    time.Time `gorm:"default:null"         json:"-"` // when the backup blob was last written
+	AvatarFileID   string    `gorm:"default:''"           json:"-"` // profile avatar file
 }
 
 type PublicUser struct {
-	ID     string `json:"id"`
-	Nick   string `json:"nick"`
-	Online bool   `json:"online"`
+	ID        string `json:"id"`
+	Nick      string `json:"nick"`
+	Online    bool   `json:"online"`
+	AvatarURL string `json:"avatarUrl,omitempty"`
 }
 
 func (u *User) Public() PublicUser {
-	return PublicUser{ID: u.ID, Nick: u.Nick, Online: u.Online}
+	out := PublicUser{ID: u.ID, Nick: u.Nick, Online: u.Online}
+	if u.AvatarFileID != "" {
+		out.AvatarURL = "/api/files/" + u.AvatarFileID
+	}
+	return out
 }
 
 func PublicUsers(users []User) []PublicUser {
@@ -146,18 +152,36 @@ type Message struct {
 	// that exist at that moment. Queries therefore use threadIDIsEmpty, which
 	// treats NULL as chat level. No index tag is needed because
 	// idx_messages_thread_created already leads with this column.
-	ThreadID         string       `json:"threadId,omitempty"`
-	FromID           string       `gorm:"not null"               json:"fromId"`
-	FromNick         string       `gorm:"not null"               json:"fromNick"`
-	Text             string       `gorm:"not null"               json:"text"`
-	Encrypted        bool         `gorm:"not null;default:false" json:"encrypted"`
-	EncryptedPayload string       `gorm:"not null;default:''"    json:"encryptedPayload"`
-	CreatedAt        time.Time    `gorm:"not null"               json:"createdAt"`
-	UpdatedAt        time.Time    `gorm:"not null"               json:"-"`
-	EditedAt         *time.Time   `json:"editedAt,omitempty"`
-	ReplyTo          *ReplyToInfo `gorm:"serializer:json"        json:"replyTo,omitempty"`
-	Location         *Location    `gorm:"serializer:json"        json:"location,omitempty"`
-	Files            []FileInfo   `gorm:"-"                      json:"files,omitempty"`
+	ThreadID         string            `json:"threadId,omitempty"`
+	FromID           string            `gorm:"not null"               json:"fromId"`
+	FromNick         string            `gorm:"not null"               json:"fromNick"`
+	Text             string            `gorm:"not null"               json:"text"`
+	Encrypted        bool              `gorm:"not null;default:false" json:"encrypted"`
+	EncryptedPayload string            `gorm:"not null;default:''"    json:"encryptedPayload"`
+	CreatedAt        time.Time         `gorm:"not null"               json:"createdAt"`
+	UpdatedAt        time.Time         `gorm:"not null"               json:"-"`
+	EditedAt         *time.Time        `json:"editedAt,omitempty"`
+	ReplyTo          *ReplyToInfo      `gorm:"serializer:json"        json:"replyTo,omitempty"`
+	Location         *Location         `gorm:"serializer:json"        json:"location,omitempty"`
+	Files            []FileInfo        `gorm:"-"                      json:"files,omitempty"`
+	Reactions        []ReactionSummary `gorm:"-"                      json:"reactions,omitempty"`
+}
+
+// ReactionSummary is the aggregate of one emoji on a message. Me tells the
+// requesting user whether their own reaction is part of the count.
+type ReactionSummary struct {
+	Emoji string `json:"emoji"`
+	Count int    `json:"count"`
+	Me    bool   `json:"me,omitempty"`
+}
+
+// MessageReaction is one user's emoji on one message. The composite primary
+// key makes "same emoji twice" idempotent.
+type MessageReaction struct {
+	MessageID string    `gorm:"primaryKey" json:"messageId"`
+	UserID    string    `gorm:"primaryKey" json:"userId"`
+	Emoji     string    `gorm:"primaryKey" json:"emoji"`
+	CreatedAt time.Time `gorm:"not null"   json:"createdAt"`
 }
 
 type DeletedMessage struct {

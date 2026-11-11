@@ -98,6 +98,12 @@ func (s *Service) UserCanAccessFile(ctx context.Context, userID, fileID string) 
 		return true
 	}
 
+	// Profile avatars are public to authenticated users: they are shown in
+	// search results and chat member lists outside any shared chat.
+	if ids, err := s.store.GetUsersByAvatarFileID(ctx, fileID); err == nil && len(ids) > 0 {
+		return true
+	}
+
 	return s.canReachFileThroughChat(ctx, userID, fileID)
 }
 

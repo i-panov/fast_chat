@@ -60,7 +60,7 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, cfg *con
 
 		fileRecord, err := st.GetFile(ctx, input.FileID)
 		if err != nil {
-			return nil, &statusError{ErrorMessage: "file not found", code: http.StatusNotFound}
+			return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
 		}
 
 		if !svc.UserCanAccessFile(ctx, user.ID, input.FileID) {

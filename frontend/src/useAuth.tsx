@@ -31,6 +31,7 @@ import { getDeviceId, getDeviceName } from "./utils/device.ts";
 interface StoredUser {
 	id: string;
 	nick: string;
+	avatarUrl?: string;
 }
 
 interface StoredAccount {
@@ -62,6 +63,7 @@ interface AuthContextValue {
 		newToken: string,
 		newExpiresAt: string,
 	) => void;
+	updateAccountUser: (user: StoredUser) => void;
 	logout: () => void;
 	logoutAll: () => void;
 	refreshAccountToken: (
@@ -423,6 +425,14 @@ function useAuthState() {
 		[],
 	);
 
+	const updateAccountUser = useCallback((user: StoredUser) => {
+		const updated = readAccounts().map((a) =>
+			a.user.id === user.id ? { ...a, user } : a,
+		);
+		writeAccounts(updated);
+		setAccounts(updated);
+	}, []);
+
 	const refreshAccountToken = useCallback(
 		(userId: string, oldToken: string) => {
 			return withRefreshLock(async () => {
@@ -504,6 +514,7 @@ function useAuthState() {
 		addAccount,
 		removeAccount,
 		updateAccountToken,
+		updateAccountUser,
 		logout,
 		logoutAll,
 		refreshAccountToken,

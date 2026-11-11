@@ -151,6 +151,12 @@
 	"sessions.logoutAll": "Sign out everywhere",
 	"sessions.close": "Close",
 	"sessions.errorTitle": "Failed to load devices",
+	"profile.open": "Profile",
+	"profile.title": "Profile",
+	"profile.avatarAlt": "Profile avatar",
+	"profile.errorTitle": "Failed to update avatar",
+	"profile.upload": "Upload avatar",
+	"profile.remove": "Remove avatar",
 	"backup.title": "Key backup",
 	"backup.warningTitle": "Important",
 	"backup.warningMessage": "If you do not set a recovery password, all old messages will become impossible to decrypt when you log in on a new device, change your browser, or clear your cache.",
@@ -183,5 +189,6 @@
 	"backup.newKeyPrompt": "This device has no encryption key and no backup.",
 	"backup.newKeyWarning": "A new key cannot decrypt the old history. This cannot be undone.",
 	"backup.newKeyAdvice": "If another device still has the key, enable its backup and recover there first. Continue only if you accept losing access to old messages.",
-	"backup.newKeyConfirm": "Create new key"
+	"backup.newKeyConfirm": "Create new key",
+	"reaction.add": "Add reaction"
 }

@@ -59,9 +59,10 @@ func (e *GroupMemberNotFoundError) Error() string { return "user not found: " + 
 // MemberView is the transport-neutral member descriptor used by chat views
 // and SSE events.
 type MemberView struct {
-	ID     string `json:"id"`
-	Nick   string `json:"nick"`
-	Online bool   `json:"online,omitempty"`
+	ID        string `json:"id"`
+	Nick      string `json:"nick"`
+	Online    bool   `json:"online,omitempty"`
+	AvatarURL string `json:"avatarUrl,omitempty"`
 }
 
 // ChatView is the transport-neutral enriched chat descriptor. Its JSON shape
@@ -117,17 +118,24 @@ func (s *Service) EnrichChatFromNicks(ctx context.Context, chat *model.Chat, nic
 
 	for _, member := range chat.Members {
 		nick, ok := nicks[member]
-		if !ok {
-			if nicks != nil {
-				nick = member
-			} else if u, found := s.store.GetUserByID(ctx, member); found {
+		avatarURL := ""
+		if u, found := s.store.GetUserByID(ctx, member); found {
+			if !ok {
 				nick = u.Nick
-			} else {
-				nick = member
 			}
+			if u.AvatarFileID != "" {
+				avatarURL = "/api/files/" + u.AvatarFileID
+			}
+		} else if !ok {
+			nick = member
 		}
 
-		view.Members = append(view.Members, MemberView{ID: member, Nick: nick, Online: s.store.IsOnline(member)})
+		view.Members = append(view.Members, MemberView{
+			ID:        member,
+			Nick:      nick,
+			Online:    s.store.IsOnline(member),
+			AvatarURL: avatarURL,
+		})
 	}
 
 	return view

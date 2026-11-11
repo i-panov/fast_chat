@@ -8,6 +8,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -832,5 +834,90 @@ func TestOpenAPIEndpointsServed(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET /schemas/openapi.json = %d, want 404 (route disabled)", rec.Code)
+	}
+}
+
+func TestUpdateUserAvatarAndFileAccess(t *testing.T) {
+	ts := newDomainTestServer(t)
+	h := ts.Handler
+	st := ts.Store
+	user := createTestUser(t, st)
+	other, err := st.CreateUser(context.Background(), "bob@test.local", "bob", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := st.SaveFile(context.Background(), "avatar-hash", "image/png", 12, "a.png", "a.png", user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ts.Cfg.Uploads.Dir, file.StoragePath), []byte("avatar"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/users/avatar", user.Token, `{"fileId":"`+file.ID+`"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set avatar = %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeBody(t, rec)
+	pub, _ := resp["user"].(map[string]any)
+	if pub["avatarUrl"] != "/api/files/"+file.ID {
+		t.Fatalf("avatarUrl = %v", pub["avatarUrl"])
+	}
+
+	// A profile avatar is readable by another authenticated user, even
+	// without a shared chat.
+	fileRec := httptest.NewRecorder()
+	h.ServeHTTP(fileRec, bearerReq(t, http.MethodGet, "/api/files/"+file.ID, other.Token, ""))
+	if fileRec.Code != http.StatusOK {
+		t.Fatalf("read avatar = %d: %s", fileRec.Code, fileRec.Body.String())
+	}
+
+	// A file uploaded by somebody else cannot be used as this user's avatar.
+	foreign, err := st.SaveFile(context.Background(), "foreign-hash", "image/png", 12, "b.png", "b.png", other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := httptest.NewRecorder()
+	h.ServeHTTP(bad, bearerReq(t, http.MethodPost, "/api/users/avatar", user.Token, `{"fileId":"`+foreign.ID+`"}`))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("foreign avatar = %d: %s", bad.Code, bad.Body.String())
+	}
+}
+
+func TestMessageReactionEndpoints(t *testing.T) {
+	ts := newDomainTestServer(t)
+	h := ts.Handler
+	st := ts.Store
+	user := createTestUser(t, st)
+	chat, err := st.EnsureSelfChat(context.Background(), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, _, err := st.AddMessage(context.Background(), chat.ID, "", user.ID, user.Nick, "hi", "m-reaction", "", nil, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := "/api/chats/" + chat.ID + "/messages/" + msg.ID + "/reactions"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPost, path, user.Token, `{"emoji":"👍"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add reaction = %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeBody(t, rec)
+	reactions, _ := resp["reactions"].([]any)
+	if len(reactions) != 1 {
+		t.Fatalf("reactions = %v", resp["reactions"])
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodDelete, path+"/"+url.PathEscape("👍"), user.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("remove reaction = %d: %s", rec.Code, rec.Body.String())
+	}
+	resp = decodeBody(t, rec)
+	if got, _ := resp["reactions"].([]any); len(got) != 0 {
+		t.Fatalf("reactions after remove = %v", resp["reactions"])
 	}
 }

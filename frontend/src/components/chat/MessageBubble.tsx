@@ -14,6 +14,7 @@ import type {
 	FileInfo,
 	Location,
 	MessageDeliveryStatus,
+	ReactionSummary,
 	ReplyToInfo,
 } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
@@ -27,6 +28,7 @@ import {
 import { MessageLocation } from "./bubble/MessageLocation.tsx";
 import { MessageReplyPreview } from "./bubble/MessageReplyPreview.tsx";
 import { MessageThreadLink } from "./bubble/MessageThreadLink.tsx";
+import { ReactionBar } from "./bubble/ReactionBar.tsx";
 import { ImageLightbox } from "./ImageLightbox.tsx";
 import { LocationLightbox } from "./LocationLightbox.tsx";
 
@@ -68,6 +70,7 @@ export interface MessageBubbleProps {
 	undecryptable?: boolean;
 	// fileKeys maps file ID to decryption key for encrypted files.
 	fileKeys?: Record<string, FileKey>;
+	reactions?: ReactionSummary[];
 }
 
 function isWithinTTL(createdAt: string, ttl: number): boolean {
@@ -131,7 +134,8 @@ function deepPropsEqual(
 		deepEq(prev.replyTo, next.replyTo) &&
 		deepEq(prev.files, next.files) &&
 		deepEq(prev.location, next.location) &&
-		deepEq(prev.fileKeys, next.fileKeys)
+		deepEq(prev.fileKeys, next.fileKeys) &&
+		deepEq(prev.reactions, next.reactions)
 	);
 }
 
@@ -291,6 +295,7 @@ export const MessageBubble = memo(function MessageBubble({
 	encrypted,
 	undecryptable,
 	fileKeys,
+	reactions,
 }: MessageBubbleProps) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
@@ -409,6 +414,12 @@ export const MessageBubble = memo(function MessageBubble({
 				</Paper>
 				<MessageMenuButton onOpen={openMenuAt} />
 			</div>
+			<ReactionBar
+				chatId={chatId}
+				messageId={msgId}
+				reactions={reactions}
+				disabled={status === "queued" || status === "failed"}
+			/>
 			<BubbleThreadLink
 				threadId={threadId}
 				threadMessageCount={threadMessageCount}

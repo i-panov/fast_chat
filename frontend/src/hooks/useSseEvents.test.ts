@@ -82,6 +82,27 @@ describe("useSseEvents", () => {
 		});
 	});
 
+	it("updates reaction aggregates in both stores", async () => {
+		await messagesRepo.upsertMany([msg("m1")]);
+		await threadMessagesRepo.upsert(msg("m1"), "th1");
+		renderHook(() => useSseEvents(baseParams()));
+		const h = handler();
+
+		await h("message_reactions_updated", {
+			messageId: "m1",
+			reactions: [{ emoji: "👍", count: 2, me: true }],
+		});
+
+		await waitFor(async () => {
+			expect((await messagesRepo.getById("c1", "m1"))?.reactions).toEqual([
+				{ emoji: "👍", count: 2, me: true },
+			]);
+			expect(
+				(await threadMessagesRepo.getById("th1", "m1"))?.reactions,
+			).toEqual([{ emoji: "👍", count: 2, me: true }]);
+		});
+	});
+
 	it("deletes messages from the chat or the thread", async () => {
 		await messagesRepo.upsertMany([msg("m1")]);
 		await threadMessagesRepo.upsert(msg("tm1"), "th1");

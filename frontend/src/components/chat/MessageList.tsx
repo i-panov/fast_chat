@@ -265,6 +265,7 @@ function MessageEntry(props: {
 				replyTo={msg.replyTo}
 				files={msg.files}
 				location={msg.location}
+				reactions={msg.reactions}
 				onReplyClick={onReplyClick}
 				onStartEdit={onStartEdit}
 				onDelete={onDelete}

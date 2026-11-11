@@ -104,6 +104,9 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 		threadMessages = []model.Message{}
 	}
 
+	s.attachReactions(ctx, messages, userID)
+	s.attachReactions(ctx, threadMessages, userID)
+
 	deletedMessages, deletedPage, err := s.buildDeletedMessages(ctx, chatIDs, since, sinceID, limit)
 	if err != nil {
 		return SyncResponse{}, err

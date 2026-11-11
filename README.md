@@ -95,6 +95,8 @@ make frontend:run   # Vite dev-сервер на :5173
   работать. Вкладки одного браузера сериализуют refresh через Web Locks и
   раздают новый токен через BroadcastChannel.
 - В интерфейсе список устройств открывается из меню аккаунта («Устройства»); там же можно отозвать чужую сессию или выйти на всех устройствах.
+- Аватар профиля загружается из меню аккаунта («Профиль»), хранится как обычный файл и виден в поиске и списке чатов.
+- Реакции на сообщения — эмодзи с агрегатом по сообщению; изменения приходят по SSE и сохраняются локально.
 - По умолчанию у аккаунта не больше 50 активных сессий
   (`auth.max_sessions_per_user`). `0` означает значение по умолчанию 50,
   отрицательное значение запрещено, безлимитного режима нет. При превышении
@@ -163,6 +165,7 @@ make frontend:run   # Vite dev-сервер на :5173
 | `DELETE`| `/api/sessions/{id}` | Bearer | Отозвать сессию устройства |
 | `GET`   | `/api/events` | sse-auth | SSE-поток |
 | `GET`   | `/api/users/search` | Bearer | Поиск пользователей (локальный или федеративный) |
+| `POST`  | `/api/users/avatar` | Bearer | Установить/сбросить аватар профиля (`{ fileId }`) |
 | `PUT`   | `/api/users/public-key` | Bearer | Загрузить свой публичный ключ |
 | `GET`   | `/api/users/{userId}/public-key` | Bearer | Получить публичный ключ пользователя |
 | `PUT`   | `/api/users/key-backup` | Bearer | Сохранить бэкап ключей |
@@ -179,6 +182,8 @@ make frontend:run   # Vite dev-сервер на :5173
 | `POST`  | `/api/chats/{id}/avatar` | Bearer | Загрузить аватар (только owner) |
 | `GET`   | `/api/chats/{id}/messages` | Bearer | Сообщения чата (с пагинацией) |
 | `POST`  | `/api/chats/{id}/messages` | Bearer | Отправить сообщение |
+| `POST`  | `/api/chats/{id}/messages/{messageId}/reactions` | Bearer | Поставить реакцию (`{ emoji }`) |
+| `DELETE`| `/api/chats/{id}/messages/{messageId}/reactions/{emoji}` | Bearer | Убрать реакцию |
 | `PATCH` | `/api/chats/{id}/messages/{mid}` | Bearer | Редактировать |
 | `DELETE`| `/api/chats/{id}/messages/{mid}` | Bearer | Удалить |
 | `POST`  | `/api/messages/read` | Bearer | Отметить сообщения как прочитанные |

@@ -1,3 +1,6 @@
+// The API client is a single flat module by design; splitting it would
+// scatter the shared request/error handling.
+/* eslint-disable max-lines */
 import type {
 	AppConfig,
 	CallInfo,
@@ -7,6 +10,7 @@ import type {
 	FileInfo,
 	ICEConfig,
 	Message,
+	ReactionSummary,
 	SessionsResponse,
 	SyncResponse,
 	Thread,
@@ -173,6 +177,13 @@ export function sseAuth(connectionId: string, token: string) {
 	return request<{ status: string }>("/api/auth/sse-auth", undefined, {
 		method: "POST",
 		body: JSON.stringify({ connectionId, token }),
+	});
+}
+
+export function uploadUserAvatar(token: string, fileId: string) {
+	return request<{ user: User }>("/api/users/avatar", token, {
+		method: "POST",
+		body: JSON.stringify({ fileId }),
 	});
 }
 
@@ -371,6 +382,32 @@ export function deleteMessage(
 ) {
 	return request<{ status: string }>(
 		`/api/chats/${chatId}/messages/${messageId}`,
+		token,
+		{ method: "DELETE" },
+	);
+}
+
+export function addMessageReaction(
+	token: string,
+	chatId: string,
+	messageId: string,
+	emoji: string,
+) {
+	return request<{ reactions: ReactionSummary[] }>(
+		`/api/chats/${chatId}/messages/${messageId}/reactions`,
+		token,
+		{ method: "POST", body: JSON.stringify({ emoji }) },
+	);
+}
+
+export function removeMessageReaction(
+	token: string,
+	chatId: string,
+	messageId: string,
+	emoji: string,
+) {
+	return request<{ reactions: ReactionSummary[] }>(
+		`/api/chats/${chatId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
 		token,
 		{ method: "DELETE" },
 	);

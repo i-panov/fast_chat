@@ -20,7 +20,7 @@ function ChatAvatar({
 }) {
 	const { activeAccount } = useAuth();
 	const { blobUrl, loading } = useFileUrl(
-		isGroup && avatarUrl ? avatarUrl : undefined,
+		!isSelf && avatarUrl ? avatarUrl : undefined,
 		activeAccount?.token,
 	);
 
@@ -31,7 +31,7 @@ function ChatAvatar({
 			</Avatar>
 		);
 	}
-	if (isGroup && avatarUrl && blobUrl) {
+	if (!isSelf && avatarUrl && blobUrl) {
 		return (
 			<img
 				src={blobUrl}
@@ -46,17 +46,14 @@ function ChatAvatar({
 			/>
 		);
 	}
-	if (isGroup && avatarUrl && loading) {
+	if (!isSelf && avatarUrl && loading) {
 		return <Loader size="sm" />;
 	}
-	if (isGroup) {
-		return (
-			<Avatar size={28} radius="xl" color="blue">
-				{title.charAt(0).toUpperCase() || "#"}
-			</Avatar>
-		);
-	}
-	return null;
+	return (
+		<Avatar size={28} radius="xl" color="blue">
+			{title.charAt(0).toUpperCase() || (isGroup ? "#" : "?")}
+		</Avatar>
+	);
 }
 
 interface Props {
@@ -109,7 +106,7 @@ export function ChatList({ chats, activeChatId, userId, onSelectChat }: Props) {
 					>
 						<Group gap={8} wrap="nowrap" style={{ width: "100%" }}>
 							<ChatAvatar
-								avatarUrl={chat.avatarUrl}
+								avatarUrl={isGroup ? chat.avatarUrl : otherMember?.avatarUrl}
 								title={title}
 								isGroup={isGroup}
 								isSelf={isSelf}

@@ -14,6 +14,7 @@ export function seedAccount() {
 				user: { id: "alice:test", nick: "alice" },
 				email: "a@example.com",
 				expiresAt: "2027-01-01T00:00:00Z",
+				sessionId: "test-session",
 			},
 		]),
 	);

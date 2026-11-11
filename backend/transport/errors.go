@@ -12,6 +12,8 @@ import (
 	"fast_chat/store"
 )
 
+const msgFileNotFound = "file not found"
+
 // statusError implements huma.StatusError using the pre-migration error
 // shape. Huma serializes errors via reflection on exported fields, so the
 // JSON output is `{"error": "<msg>"}` — matching the old writeError format.
@@ -238,7 +240,7 @@ var sentinelErrors = []sentinelErrPair{
 	},
 	{
 		sentinel: service.ErrFileNotFound,
-		target:   &statusError{ErrorMessage: "file not found", code: http.StatusNotFound},
+		target:   &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound},
 	},
 
 	// Message domain.
@@ -249,6 +251,10 @@ var sentinelErrors = []sentinelErrPair{
 	{
 		sentinel: service.ErrMessageNotFound,
 		target:   &statusError{ErrorMessage: "message not found", code: http.StatusNotFound},
+	},
+	{
+		sentinel: service.ErrInvalidReaction,
+		target:   &statusError{ErrorMessage: "invalid reaction", code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrEmptyMessage,

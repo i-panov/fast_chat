@@ -5,12 +5,14 @@ export interface User {
 	nick: string;
 	email?: string;
 	online: boolean;
+	avatarUrl?: string;
 }
 
 export interface MemberInfo {
 	id: string;
 	nick: string;
 	online?: boolean;
+	avatarUrl?: string;
 }
 
 export interface Chat {
@@ -21,6 +23,12 @@ export interface Chat {
 	avatarUrl?: string;
 	members: MemberInfo[];
 	createdAt: string;
+}
+
+export interface ReactionSummary {
+	emoji: string;
+	count: number;
+	me?: boolean;
 }
 
 export interface ReplyToInfo {
@@ -95,6 +103,7 @@ export interface Message {
 	replyTo?: ReplyToInfo;
 	files?: FileInfo[];
 	location?: Location;
+	reactions?: ReactionSummary[];
 	status?: MessageStatus;
 	deliveryStatus?: MessageDeliveryStatus;
 	readBy?: string[];

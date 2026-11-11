@@ -133,6 +133,33 @@ func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string
 	return user, err
 }
 
+// UpdateUserAvatar points the user at an uploaded file. An empty fileID
+// clears the avatar.
+func (s *Store) UpdateUserAvatar(ctx context.Context, userID, fileID string) (*model.User, error) {
+	var user model.User
+	if err := s.db.WithContext(ctx).First(&user, "id = ?", userID).Error; err != nil {
+		return nil, err
+	}
+	if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+		Update("avatar_file_id", fileID).Error; err != nil {
+		return nil, err
+	}
+	user.AvatarFileID = fileID
+	return &user, nil
+}
+
+// GetUsersByAvatarFileID returns the users who use fileID as their avatar.
+func (s *Store) GetUsersByAvatarFileID(ctx context.Context, fileID string) ([]string, error) {
+	if fileID == "" {
+		return nil, nil
+	}
+	var userIDs []string
+	err := s.db.WithContext(ctx).Model(&model.User{}).
+		Where("avatar_file_id = ?", fileID).
+		Pluck("id", &userIDs).Error
+	return userIDs, err
+}
+
 // GetUserByToken resolves a bearer token through the sessions table, so only
 // active, unexpired sessions authenticate.
 func (s *Store) GetUserByToken(ctx context.Context, token string) (*model.User, bool) {

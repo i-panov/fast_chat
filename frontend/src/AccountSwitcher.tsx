@@ -13,7 +13,9 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getConfig } from "./api.ts";
 import { BackupSettingsModal } from "./components/chat/BackupSettingsModal.tsx";
+import { ProfileModal } from "./components/chat/ProfileModal.tsx";
 import { SessionsModal } from "./components/chat/SessionsModal.tsx";
+import { UserAvatar } from "./components/shared/UserAvatar.tsx";
 import type { KeyPair } from "./e2ee/crypto.ts";
 import { getMyKeyPair } from "./e2ee/keys.ts";
 import i18n, { getCurrentLocale, SUPPORTED_LANGS } from "./i18n.ts";
@@ -69,7 +71,10 @@ function AccountRow({
 	isActive,
 	onClick,
 }: {
-	account: { token: string; user: { id: string; nick: string } };
+	account: {
+		token: string;
+		user: { id: string; nick: string; avatarUrl?: string };
+	};
 	isActive: boolean;
 	onClick: () => void;
 }) {
@@ -94,25 +99,12 @@ function AccountRow({
 			}}
 			onClick={onClick}
 		>
-			<div
-				style={{
-					width: "32px",
-					height: "32px",
-					borderRadius: "50%",
-					background: "var(--mantine-color-blue-8)",
-					display: "flex",
-					alignItems: "center",
-					justifyContent: "center",
-					flexShrink: 0,
-				}}
-			>
-				<Text
-					span
-					style={{ color: "white", fontSize: "14px", fontWeight: 700 }}
-				>
-					{(account.user.nick[0] ?? "").toUpperCase()}
-				</Text>
-			</div>
+			<UserAvatar
+				nick={account.user.nick}
+				avatarUrl={account.user.avatarUrl}
+				token={account.token}
+				size={32}
+			/>
 			<Text span style={{ flex: 1, fontSize: "14px", color: "white" }}>
 				@{account.user.nick}
 			</Text>
@@ -134,8 +126,14 @@ function AccountList({
 	onSwitchAccount,
 	onClose,
 }: {
-	accounts: { token: string; user: { id: string; nick: string } }[];
-	activeAccount: { token: string; user: { id: string; nick: string } } | null;
+	accounts: {
+		token: string;
+		user: { id: string; nick: string; avatarUrl?: string };
+	}[];
+	activeAccount: {
+		token: string;
+		user: { id: string; nick: string; avatarUrl?: string };
+	} | null;
 	onSwitchAccount: (token: string) => void;
 	onClose: () => void;
 }) {
@@ -158,6 +156,9 @@ function AccountList({
 	);
 }
 
+// The drawer grew with the profile and devices entries; extracting the
+// bottom action list is a separate cleanup.
+// eslint-disable-next-line max-lines-per-function
 export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const { t } = useTranslation();
 	const { accounts, activeAccount, switchAccount, logoutAll } = useAuth();
@@ -167,6 +168,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const [clearDataLoading, setClearDataLoading] = useState(false);
 	const [backupOpen, setBackupOpen] = useState(false);
 	const [sessionsOpen, setSessionsOpen] = useState(false);
+	const [profileOpen, setProfileOpen] = useState(false);
 	const [keyPair, setKeyPair] = useState<KeyPair | null>(null);
 	const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
@@ -268,6 +270,14 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 				</Button>
 				<Button
 					variant="outline"
+					style={{ width: "100%", marginBottom: "8px" }}
+					onClick={() => setProfileOpen(true)}
+					disabled={activeAccount === null}
+				>
+					{t("profile.open")}
+				</Button>
+				<Button
+					variant="outline"
 					style={{
 						width: "100%",
 						borderStyle: "dashed",
@@ -344,6 +354,14 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					void handleClearData();
 				}}
 			/>
+			{activeAccount !== null && (
+				<ProfileModal
+					open={profileOpen}
+					onClose={() => setProfileOpen(false)}
+					token={activeAccount.token}
+					user={activeAccount.user}
+				/>
+			)}
 			{activeAccount !== null && (
 				<SessionsModal
 					open={sessionsOpen}

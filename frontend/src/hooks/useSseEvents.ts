@@ -8,7 +8,13 @@ import { notify } from "../db/notify.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
-import type { Chat, Message, Thread, TypingPayload } from "../types/api.ts";
+import type {
+	Chat,
+	Message,
+	ReactionSummary,
+	Thread,
+	TypingPayload,
+} from "../types/api.ts";
 import { useSse } from "../useSse.ts";
 
 interface UseSseEventsParams {
@@ -60,6 +66,25 @@ async function applyReadEvent(data: { messageId: string; readerId: string }) {
 		});
 	}
 
+	await tx.done;
+	notify();
+}
+
+async function applyReactionsEvent(data: {
+	messageId: string;
+	reactions: ReactionSummary[];
+}) {
+	const db = await getDB();
+	const tx = db.transaction(["messages", "threadMessages"], "readwrite");
+	for (const storeName of ["messages", "threadMessages"] as const) {
+		const existing = await tx.objectStore(storeName).get(data.messageId);
+		if (existing === undefined) continue;
+		await tx.objectStore(storeName).put({
+			...existing,
+			reactions: data.reactions,
+			_updatedAt: new Date().toISOString(),
+		});
+	}
 	await tx.done;
 	notify();
 }
@@ -128,6 +153,12 @@ export function useSseEvents({
 				// queued/failed row (with its pending file references) until
 				// the outbox finishes, instead of flipping it to sent early.
 				await messagesRepo.upsert(msg);
+				return;
+			}
+			if (event === "message_reactions_updated") {
+				await applyReactionsEvent(
+					data as { messageId: string; reactions: ReactionSummary[] },
+				);
 				return;
 			}
 			if (event === "message_deleted") {

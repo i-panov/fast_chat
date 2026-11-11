@@ -26,6 +26,7 @@ func RegisterUsers(api huma.API, st *store.Store, fed *federation.Client, cfg *c
 	registerUserSearch(api, st, fed, cfg)
 	registerUserKeys(api, st, fed, cfg)
 	registerKeyBackup(api, st)
+	registerUserAvatar(api, st)
 }
 
 // registerClientConfig registers a subset of the operations.
@@ -397,4 +398,57 @@ func searchFederated(
 	return &searchUsersOutput{Body: struct {
 		Users []model.PublicUser `json:"users"`
 	}{Users: result.Users}}, nil
+}
+
+// registerUserAvatar lets a user set or clear their profile avatar. The file
+// must belong to the user and be an image; the file access rule in the
+// service makes it readable to authenticated users.
+func registerUserAvatar(api huma.API, st *store.Store) {
+	huma.Register(api, huma.Operation{
+		OperationID: "update-user-avatar",
+		Method:      http.MethodPost,
+		Path:        "/api/users/avatar",
+		Summary:     "Set the profile avatar by file ID",
+		Security:    []map[string][]string{{bearerScheme: {}}},
+	}, func(ctx context.Context, input *userAvatarInput) (*userAvatarOutput, error) {
+		user, ok := userFromContext(ctx)
+		if !ok {
+			return nil, errUnauthorized
+		}
+
+		fileID := input.Body.FileID
+		if fileID != "" {
+			file, err := st.GetFile(ctx, fileID)
+			if err != nil {
+				return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusBadRequest}
+			}
+			if file.UploadedBy != user.ID {
+				return nil, &statusError{ErrorMessage: "invalid avatar file", code: http.StatusBadRequest}
+			}
+			if !strings.HasPrefix(file.MimeType, "image/") {
+				return nil, &statusError{ErrorMessage: "avatar must be an image", code: http.StatusBadRequest}
+			}
+		}
+
+		updated, err := st.UpdateUserAvatar(ctx, user.ID, fileID)
+		if err != nil {
+			return nil, &statusError{ErrorMessage: "user not found", code: http.StatusNotFound}
+		}
+
+		var out userAvatarOutput
+		out.Body.User = updated.Public()
+		return &out, nil
+	})
+}
+
+type userAvatarInput struct {
+	Body struct {
+		FileID string `json:"fileId"`
+	}
+}
+
+type userAvatarOutput struct {
+	Body struct {
+		User model.PublicUser `json:"user"`
+	}
 }

@@ -5,6 +5,7 @@ import type {
 	Location,
 	MessageDeliveryStatus,
 	MessageStatus,
+	ReactionSummary,
 	ReplyToInfo,
 	Thread,
 } from "../types/api.ts";
@@ -26,6 +27,7 @@ export interface StoredMessage {
 	replyTo?: ReplyToInfo;
 	files?: FileInfo[];
 	location?: Location;
+	reactions?: ReactionSummary[];
 	status: MessageStatus | "deleted";
 	deliveryStatus?: MessageDeliveryStatus;
 	readBy?: string[];
@@ -50,6 +52,7 @@ export interface StoredThreadMessage {
 	replyTo?: ReplyToInfo;
 	files?: FileInfo[];
 	location?: Location;
+	reactions?: ReactionSummary[];
 	status: MessageStatus | "deleted";
 	deliveryStatus?: MessageDeliveryStatus;
 	readBy?: string[];
