@@ -206,5 +206,8 @@
 	"blocks.title": "Blocked users",
 	"blocks.empty": "You have not blocked anyone.",
 	"blocks.unblock": "Unblock",
-	"message.block": "Block user"
+	"message.block": "Block user",
+	"message.forward": "Forward",
+	"forward.title": "Forward message",
+	"forward.empty": "No chats to forward to."
 }

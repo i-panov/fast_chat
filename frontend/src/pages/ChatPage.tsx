@@ -21,6 +21,7 @@ import { CallButton } from "../components/chat/CallButton.tsx";
 import { ChatList } from "../components/chat/ChatList.tsx";
 import { CreateGroupModal } from "../components/chat/CreateGroupModal.tsx";
 import { EndedCallNotice } from "../components/chat/EndedCallNotice.tsx";
+import { ForwardModal } from "../components/chat/ForwardModal.tsx";
 import { GroupSettingsModal } from "../components/chat/GroupSettingsModal.tsx";
 import { IncomingCallSection } from "../components/chat/IncomingCallOverlay.tsx";
 import { InputBar } from "../components/chat/InputBar.tsx";
@@ -326,6 +327,7 @@ function ActiveChatView({ s, userId }: { s: ChatPageState; userId: string }) {
 	const [pinsOpen, setPinsOpen] = useState(false);
 	const [pins, setPins] = useState<Message[]>([]);
 	const [pinsLoading, setPinsLoading] = useState(false);
+	const [forwarding, setForwarding] = useState<Message | null>(null);
 	const chat = s.activeChat;
 	const token = s.activeAccount?.token;
 	const pinnedIds = new Set(chat?.pinnedMessageIds ?? []);
@@ -430,9 +432,26 @@ function ActiveChatView({ s, userId }: { s: ChatPageState; userId: string }) {
 				onBlock={(fromId) => {
 					if (token !== undefined) void blockUser(token, fromId);
 				}}
+				onForward={(_, messageId) => {
+					const message = s.activeMessages.find((m) => m.id === messageId);
+					if (message !== undefined) setForwarding(message);
+				}}
 				pinnedIds={pinnedIds}
 				showAuthorForGroup={showAuthorForGroup}
 				isOffline={!s.isOnline}
+			/>
+			<ForwardModal
+				open={forwarding !== null}
+				onClose={() => setForwarding(null)}
+				chats={s.chats}
+				userId={userId}
+				message={forwarding}
+				onForward={(targetChatId) => {
+					if (forwarding !== null) {
+						void s.handleForwardMessage(targetChatId, forwarding);
+					}
+					setForwarding(null);
+				}}
 			/>
 			<PinnedMessagesModal
 				open={pinsOpen}

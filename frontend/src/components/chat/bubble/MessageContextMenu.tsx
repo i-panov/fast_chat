@@ -3,6 +3,7 @@ import {
 	Ban,
 	Copy,
 	CornerUpLeft,
+	Forward,
 	MessageCircle,
 	Pencil,
 	Pin,
@@ -24,6 +25,7 @@ interface Props {
 	canPin: boolean;
 	isPinned: boolean;
 	canBlock: boolean;
+	canForward: boolean;
 	hasText: boolean;
 	status?: "sent" | "queued" | "failed";
 	onCopy: () => void;
@@ -34,6 +36,7 @@ interface Props {
 	onCreateThread: () => void;
 	onPin: () => void;
 	onBlock: () => void;
+	onForward: () => void;
 	onDelete: () => void | Promise<void>;
 	onClose: () => void;
 	menuRef: React.RefObject<HTMLDivElement | null>;
@@ -51,6 +54,7 @@ export function MessageContextMenu({
 	canPin,
 	isPinned,
 	canBlock,
+	canForward,
 	hasText,
 	status,
 	onCopy,
@@ -61,6 +65,7 @@ export function MessageContextMenu({
 	onCreateThread,
 	onPin,
 	onBlock,
+	onForward,
 	onDelete,
 	onClose,
 	menuRef,
@@ -128,6 +133,11 @@ export function MessageContextMenu({
 						onClick={onCreateThread}
 					>
 						{t("message.createThread")}
+					</Menu.Item>
+				)}
+				{canForward && (
+					<Menu.Item leftSection={<Forward size={14} />} onClick={onForward}>
+						{t("message.forward")}
 					</Menu.Item>
 				)}
 				{canBlock && (

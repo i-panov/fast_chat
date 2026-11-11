@@ -240,6 +240,16 @@ function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 		pendingChatNick: parts.search.pendingChatNick,
 		selectPendingChat: parts.search.selectPendingChat,
 		handleDeleteMessage: parts.sender.deleteMessage,
+		handleForwardMessage: (targetChatId, message) => {
+			if (message.undecryptable === true || message.text.trim() === "") {
+				return Promise.resolve(false);
+			}
+			return parts.sender.sendMessage({
+				chatId: targetChatId,
+				text: message.text,
+				location: message.location,
+			});
+		},
 		editingMessage: parts.editor.editingMessage,
 		handleStartEdit: parts.editor.handleStartEdit,
 		handleCancelEdit: parts.actions.handleCancelEdit,

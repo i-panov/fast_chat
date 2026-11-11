@@ -74,6 +74,7 @@ function state(overrides: Partial<ChatPageState> = {}): ChatPageState {
 		handleSend: () => Promise.resolve(),
 		handleSendThreadMessage: () => Promise.resolve(),
 		handleDeleteMessage: () => {},
+		handleForwardMessage: () => Promise.resolve(false),
 		editingMessage: null,
 		handleStartEdit: () => {},
 		handleCancelEdit: () => {},

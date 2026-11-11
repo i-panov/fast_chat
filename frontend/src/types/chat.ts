@@ -110,6 +110,10 @@ export interface ChatPageState {
 		messageId: string,
 		threadId?: string,
 	) => Promise<void>;
+	handleForwardMessage: (
+		targetChatId: string,
+		message: Message,
+	) => Promise<boolean>;
 	handleDeleteThreadMessage: (threadId: string, messageId: string) => void;
 	handleRetryThreadMessage: (
 		threadId: string,

@@ -88,6 +88,7 @@ interface Props {
 	onOpenThread?: (threadId: string) => void;
 	onPin?: (chatId: string, messageId: string) => void;
 	onBlock?: (fromId: string) => void;
+	onForward?: (chatId: string, messageId: string) => void;
 	pinnedIds?: Set<string>;
 	messageToThread?: Record<string, string>;
 	threads?: Record<string, Thread>;
@@ -217,6 +218,7 @@ function MessageEntry(props: {
 	onOpenThread?: Props["onOpenThread"];
 	onPin?: Props["onPin"];
 	onBlock?: Props["onBlock"];
+	onForward?: Props["onForward"];
 	pinnedIds?: Set<string>;
 	messageToThread?: Record<string, string>;
 	threads?: Record<string, Thread>;
@@ -238,6 +240,7 @@ function MessageEntry(props: {
 		onOpenThread,
 		onPin,
 		onBlock,
+		onForward,
 		pinnedIds,
 		messageToThread,
 		threads,
@@ -278,6 +281,7 @@ function MessageEntry(props: {
 				reactions={msg.reactions}
 				onPin={onPin}
 				onBlock={onBlock}
+				onForward={onForward}
 				isPinned={pinnedIds?.has(msg.id) === true}
 				onReplyClick={onReplyClick}
 				onStartEdit={onStartEdit}
@@ -325,6 +329,7 @@ export function MessageList({
 	onOpenThread,
 	onPin,
 	onBlock,
+	onForward,
 	pinnedIds,
 	messageToThread,
 	threads,
@@ -397,6 +402,7 @@ export function MessageList({
 				onOpenThread={onOpenThread}
 				onPin={onPin}
 				onBlock={onBlock}
+				onForward={onForward}
 				pinnedIds={pinnedIds}
 				messageToThread={messageToThread}
 				threads={threads}
@@ -418,6 +424,7 @@ export function MessageList({
 			onOpenThread,
 			onPin,
 			onBlock,
+			onForward,
 			pinnedIds,
 			messageToThread,
 			threads,

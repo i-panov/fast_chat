@@ -62,6 +62,7 @@ export interface MessageBubbleProps {
 	onPin?: (chatId: string, messageId: string) => void;
 	isPinned?: boolean;
 	onBlock?: (fromId: string) => void;
+	onForward?: (chatId: string, messageId: string) => void;
 	threadId?: string;
 	threadMessageCount?: number;
 	isInThread?: boolean;
@@ -271,7 +272,7 @@ function BubbleLightboxes({
 
 // The bubble keeps its layout and menu wiring together; splitting it would
 // scatter the action callbacks.
-// eslint-disable-next-line max-lines-per-function
+// eslint-disable-next-line max-lines-per-function, complexity
 export const MessageBubble = memo(function MessageBubble({
 	text,
 	isOwn,
@@ -295,6 +296,7 @@ export const MessageBubble = memo(function MessageBubble({
 	onPin,
 	isPinned = false,
 	onBlock,
+	onForward,
 	fromId = "",
 	threadId,
 	threadMessageCount,
@@ -340,6 +342,12 @@ export const MessageBubble = memo(function MessageBubble({
 		onReply !== undefined && status !== "queued" && status !== "failed";
 	const canPin =
 		onPin !== undefined && status !== "queued" && status !== "failed";
+	const canForward =
+		onForward !== undefined &&
+		status !== "queued" &&
+		status !== "failed" &&
+		undecryptable !== true &&
+		text.trim() !== "";
 	const canBlock =
 		!isOwn &&
 		fromId !== "" &&
@@ -456,6 +464,7 @@ export const MessageBubble = memo(function MessageBubble({
 				canPin={canPin}
 				isPinned={isPinned}
 				canBlock={canBlock}
+				canForward={canForward}
 				status={status}
 				text={text}
 				chatId={chatId}
@@ -470,6 +479,7 @@ export const MessageBubble = memo(function MessageBubble({
 				onCreateThread={onCreateThread}
 				onPin={onPin}
 				onBlock={onBlock}
+				onForward={onForward}
 				onDelete={onDelete}
 				onClose={closeMenu}
 				menuRef={menuRef}
