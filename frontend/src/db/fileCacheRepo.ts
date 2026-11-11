@@ -7,6 +7,23 @@ const MAX_CACHED_FILES = 200;
 export const MAX_CACHE_BYTES = 200 * 1024 * 1024;
 export const MAX_AUTO_CACHE_BYTES = 50 * 1024 * 1024;
 
+// Keep the cache inside the browser quota as well as the fixed cap. The
+// estimate API is advisory; when it is unavailable the fixed cap applies.
+async function cacheByteLimit(): Promise<number> {
+	try {
+		const estimate = await navigator.storage?.estimate?.();
+		if (estimate?.quota !== undefined && estimate.quota > 0) {
+			return Math.min(
+				MAX_CACHE_BYTES,
+				Math.max(MAX_AUTO_CACHE_BYTES, Math.floor(estimate.quota * 0.1)),
+			);
+		}
+	} catch {
+		// Private mode or a browser without storage.estimate.
+	}
+	return MAX_CACHE_BYTES;
+}
+
 export const fileCacheRepo = {
 	async get(url: string): Promise<CachedFile | undefined> {
 		const db = await getDB();
@@ -49,6 +66,7 @@ export const fileCacheRepo = {
 		const all = await db.getAll("fileCache");
 		if (all.length === 0) return;
 
+		const maxBytes = await cacheByteLimit();
 		let total = all.reduce((sum, entry) => sum + entry.size, 0);
 		// LRU: last AccessedAt first; older entries without it fall back to
 		// their insertion time.
@@ -60,7 +78,7 @@ export const fileCacheRepo = {
 		const toDelete: CachedFile[] = [];
 		let count = all.length;
 		for (const entry of all) {
-			if (count <= MAX_CACHED_FILES && total <= MAX_CACHE_BYTES) break;
+			if (count <= MAX_CACHED_FILES && total <= maxBytes) break;
 			toDelete.push(entry);
 			count--;
 			total -= entry.size;

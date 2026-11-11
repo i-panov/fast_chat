@@ -10,27 +10,65 @@ import (
 	"fast_chat/model"
 )
 
-// migrateLegacyTokens re-hashes plaintext bearer tokens left over from
-// before tokens were stored as SHA-256 digests. It is idempotent: only
-// rows whose token is not already a 64-char hex digest are touched.
-func migrateLegacyTokens(db *gorm.DB) error {
-	var users []model.User
-	if err := db.Select("id", "token").Find(&users).Error; err != nil {
+// migrateLegacyUserColumns is the one-way migration away from the
+// users.token legacy mirror. It runs after AutoMigrate has created the
+// sessions table and before the token index is removed: existing users with a
+// valid legacy token get a session, then the columns are dropped.
+//
+// It is a no-op on a fresh database and on a database that has already been
+// migrated.
+func migrateLegacyUserColumns(db *gorm.DB) error {
+	if !db.Migrator().HasColumn(&model.User{}, "token") {
+		return nil
+	}
+
+	var rows []struct {
+		ID             string
+		Token          string
+		TokenExpiresAt time.Time
+	}
+	if err := db.Raw("SELECT id, token, token_expires_at FROM users").Scan(&rows).Error; err != nil {
 		return err
 	}
 
-	for idx := range users {
-		if len(users[idx].Token) == 64 {
+	now := time.Now().UTC()
+	for _, row := range rows {
+		if row.Token == "" {
 			continue
 		}
-
-		if err := db.Model(&model.User{}).Where("id = ?", users[idx].ID).
-			Update("token", hashToken(users[idx].Token)).Error; err != nil {
+		var count int64
+		if err := db.Model(&model.Session{}).Where("user_id = ?", row.ID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		tokenHash := row.Token
+		if len(tokenHash) != 64 {
+			tokenHash = hashToken(tokenHash)
+		}
+		session := model.Session{
+			ID:         GenerateID(),
+			UserID:     row.ID,
+			DeviceID:   legacyDeviceID,
+			DeviceName: "Legacy session",
+			TokenHash:  tokenHash,
+			CreatedAt:  now,
+			LastSeenAt: now,
+			ExpiresAt:  row.TokenExpiresAt.UTC(),
+		}
+		if err := db.Create(&session).Error; err != nil {
 			return err
 		}
 	}
 
-	return nil
+	if err := db.Exec("DROP INDEX IF EXISTS idx_users_token").Error; err != nil {
+		return err
+	}
+	if err := db.Exec("ALTER TABLE users DROP COLUMN token").Error; err != nil {
+		return err
+	}
+	return db.Exec("ALTER TABLE users DROP COLUMN token_expires_at").Error
 }
 
 // createIndexes adds the secondary indexes that the hot read paths rely
@@ -65,10 +103,6 @@ func createIndexes(db *gorm.DB) error {
 		// needed for the N+1 batch fix to stay cheap as the table grows.
 		"CREATE INDEX IF NOT EXISTS idx_chat_members_user ON chat_members(user_id)",
 		"CREATE INDEX IF NOT EXISTS idx_chat_members_chat ON chat_members(chat_id)",
-
-		// Users: the auth middleware authenticates by token on every
-		// request, so it must be O(log n).
-		"CREATE INDEX IF NOT EXISTS idx_users_token ON users(token)",
 
 		// Files: UploadFile dedupes by sha256 hash on every upload.
 		"CREATE INDEX IF NOT EXISTS idx_files_hash ON files(hash)",
@@ -226,7 +260,7 @@ var utcTimestampColumns = map[string][]string{
 	"deleted_chats":         {"deleted_at"},
 	"message_read_statuses": {"read_at"},
 	"push_subscriptions":    {fieldCreatedAt},
-	"users":                 {fieldTokenExpireAt, fieldKeyBackupAt},
+	"users":                 {fieldKeyBackupAt},
 	// The outbox filters by next_attempt_at and orders by created_at, so
 	// both columns are compared in SQL like the ones above. The cursor of
 	// the catch-up is only compared in Go and stays out of the list.

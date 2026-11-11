@@ -142,16 +142,11 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("migrate users without email: %w", err)
 	}
 
-	// Migration: hash legacy plaintext tokens. Tokens are 32 hex chars
-	// (16 random bytes); their SHA-256 digest is 64 hex chars. Anything
-	// shorter than 64 is a legacy plaintext token and must be re-hashed
-	// in place so existing sessions survive the switch to hashed storage.
-	if err := migrateLegacyTokens(db); err != nil {
-		return nil, fmt.Errorf("migrate legacy tokens: %w", err)
-	}
-
-	if err := backfillSessions(db); err != nil {
-		return nil, fmt.Errorf("backfill sessions: %w", err)
+	// One-way migration away from the users.token mirror: backfill a
+	// session for legacy users and drop the columns. Must run after the
+	// sessions table exists and before createIndexes rebuilds indexes.
+	if err := migrateLegacyUserColumns(db); err != nil {
+		return nil, fmt.Errorf("migrate legacy user columns: %w", err)
 	}
 
 	// Split the overloaded messages.chat_id into chat_id + thread_id before

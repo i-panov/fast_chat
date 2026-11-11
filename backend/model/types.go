@@ -7,16 +7,14 @@ type User struct {
 	ID    string `gorm:"primaryKey"           json:"id"`
 	Email string `gorm:"uniqueIndex;not null" json:"email"`
 	Nick  string `gorm:"uniqueIndex;not null" json:"nick"`
-	// Token and TokenExpiresAt are legacy mirrors of the newest session token,
-	// kept for the one-time backfill of databases that predate sessions.
-	// Sessions are authoritative: authentication never reads these fields.
-	Token          string    `gorm:"uniqueIndex;not null" json:"-"`
-	TokenExpiresAt time.Time `gorm:"not null"             json:"-"`
-	Online         bool      `gorm:"default:false"        json:"online"`
-	PublicKey      string    `gorm:"not null;default:''"  json:"-"` // E2E X25519 public key (base64)
-	KeyBackup      string    `gorm:"not null;default:''"  json:"-"` // client-encrypted private key backup blob (base64)
-	KeyBackupAt    time.Time `gorm:"default:null"         json:"-"` // when the backup blob was last written
-	AvatarFileID   string    `gorm:"default:''"           json:"-"` // profile avatar file
+	// Token is the plaintext token returned once by CreateUserWithSession.
+	// It is deliberately not persisted: sessions hold only the hash.
+	Token        string    `gorm:"-"                   json:"-"`
+	Online       bool      `gorm:"default:false"       json:"online"`
+	PublicKey    string    `gorm:"not null;default:''" json:"-"` // E2E X25519 public key (base64)
+	KeyBackup    string    `gorm:"not null;default:''" json:"-"` // client-encrypted private key backup blob (base64)
+	KeyBackupAt  time.Time `gorm:"default:null"        json:"-"` // when the backup blob was last written
+	AvatarFileID string    `gorm:"default:''"          json:"-"` // profile avatar file
 }
 
 type PublicUser struct {

@@ -94,6 +94,7 @@ export async function saveFileOffline(
 	token: string | undefined,
 ): Promise<void> {
 	if (await fileCacheRepo.isCached(fileUrl)) return;
+	void navigator.storage?.persist?.().catch(() => false);
 
 	const headers: Record<string, string> = {};
 	if (token !== undefined) headers.Authorization = `Bearer ${token}`;

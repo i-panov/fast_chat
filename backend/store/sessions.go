@@ -30,52 +30,6 @@ var (
 	errInvalidTTL      = errors.New("session ttl must be positive")
 )
 
-// backfillSessions gives every legacy user that has no session rows at all a
-// legacy session, so tokens issued before the multi-device release keep
-// working after the upgrade.
-//
-// Once a user has any row in sessions — active, revoked, legacy or
-// real-device — the sessions table is authoritative and users.token is
-// ignored. Reconciling or reviving a session from users.token would let a
-// logout or refresh undone by a restart: the stored legacy token hash may be
-// stale after RefreshSession and still present after RevokeSession.
-func backfillSessions(db *gorm.DB) error {
-	now := time.Now().UTC()
-
-	// Only the columns needed below: users also carries the key backup blob.
-	// unixepoch keeps the comparison correct for legacy local-zone values.
-	// NOT EXISTS keeps this to one query instead of a COUNT per user.
-	var users []model.User
-	if err := db.Select("users.id", "users.token", "users.token_expires_at").
-		Where("users.token <> '' AND unixepoch(users.token_expires_at) > unixepoch(?)", now).
-		Where("NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = users.id)").
-		Find(&users).Error; err != nil {
-		return err
-	}
-	if len(users) == 0 {
-		return nil
-	}
-
-	sessions := make([]model.Session, 0, len(users))
-	for i := range users {
-		user := &users[i]
-		sessions = append(sessions, model.Session{
-			ID:         GenerateID(),
-			UserID:     user.ID,
-			DeviceID:   legacyDeviceID,
-			DeviceName: "Legacy session",
-			TokenHash:  user.Token,
-			CreatedAt:  now,
-			LastSeenAt: now,
-			ExpiresAt:  user.TokenExpiresAt.UTC(),
-		})
-	}
-
-	return db.Transaction(func(tx *gorm.DB) error {
-		return tx.CreateInBatches(sessions, 500).Error
-	})
-}
-
 // GetSessionByToken resolves a bearer token to an active session and its user.
 func (s *Store) GetSessionByToken(ctx context.Context, token string) (*model.Session, *model.User, bool) {
 	var session model.Session
@@ -92,29 +46,6 @@ func (s *Store) GetSessionByToken(ctx context.Context, token string) (*model.Ses
 	}
 
 	return &session, &user, true
-}
-
-// mirrorUserToken keeps the legacy users.token columns in step with the
-// session token they describe. Nothing authenticates against them any more,
-// but they remain the source for users that predate the sessions table, so a
-// stale value is exactly what a restart would resurrect. It writes through the
-// caller's transaction, so the session change and the mirror commit together.
-func mirrorUserToken(tx *gorm.DB, userID, tokenHash string, expiresAt time.Time) error {
-	return tx.Model(&model.User{}).Where("id = ?", userID).
-		Updates(map[string]any{
-			fieldToken:         tokenHash,
-			fieldTokenExpireAt: expiresAt.UTC(),
-		}).Error
-}
-
-// revokeUserToken invalidates the legacy users.token columns through the
-// caller's transaction.
-func revokeUserToken(tx *gorm.DB, userID string) error {
-	return tx.Model(&model.User{}).Where("id = ?", userID).
-		Updates(map[string]any{
-			fieldToken:         hashToken(GenerateID()),
-			fieldTokenExpireAt: time.Now().UTC(),
-		}).Error
 }
 
 // CreateSession creates or replaces the session of a device. It returns the
@@ -186,7 +117,7 @@ func (s *Store) CreateSession(
 			session.RevokedAt = nil
 		}
 
-		return mirrorUserToken(tx, userID, tokenHash, expiresAt)
+		return nil
 	})
 	if err != nil {
 		return nil, "", err
@@ -262,7 +193,7 @@ func (s *Store) RefreshSession(ctx context.Context, sessionID string, ttl time.D
 			return ErrSessionNotFound
 		}
 
-		return mirrorUserToken(tx, session.UserID, session.TokenHash, session.ExpiresAt)
+		return nil
 	})
 	if err != nil {
 		return nil, "", err
@@ -308,14 +239,8 @@ func (s *Store) RevokeSession(ctx context.Context, userID, sessionID string) err
 		// Delete this device's subscription and the legacy sessionless rows:
 		// after a logout no push must reach a row that cannot be attributed to
 		// an active session.
-		if err := tx.Where("user_id = ? AND (session_id = ? OR session_id = '')", userID, sessionID).
-			Delete(&model.PushSubscription{}).Error; err != nil {
-			return err
-		}
-
-		// users.token is no longer authoritative, but clearing it keeps a
-		// stale value from becoming a resurrection source for an old database.
-		return revokeUserToken(tx, userID)
+		return tx.Where("user_id = ? AND (session_id = ? OR session_id = '')", userID, sessionID).
+			Delete(&model.PushSubscription{}).Error
 	})
 }
 
@@ -353,12 +278,7 @@ func (s *Store) RevokeAllSessions(ctx context.Context, userID string) (int64, er
 
 		// Every subscription of the user is dead, including legacy rows with
 		// an empty session id; logout-all must not leave a notification path.
-		if err := tx.Where("user_id = ?", userID).Delete(&model.PushSubscription{}).Error; err != nil {
-			return err
-		}
-
-		// The legacy columns must not keep a token that no longer has a session.
-		return revokeUserToken(tx, userID)
+		return tx.Where("user_id = ?", userID).Delete(&model.PushSubscription{}).Error
 	})
 	if err != nil {
 		// The transaction rolled back, so report no revocations rather than a

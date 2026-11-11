@@ -16,10 +16,8 @@ import (
 )
 
 const (
-	fieldKeyBackup     = "key_backup"
-	fieldKeyBackupAt   = "key_backup_at"
-	fieldToken         = "token"
-	fieldTokenExpireAt = "token_expires_at"
+	fieldKeyBackup   = "key_backup"
+	fieldKeyBackupAt = "key_backup_at"
 )
 
 var (
@@ -70,11 +68,9 @@ func (s *Store) CreateUserWithSession(
 	token := GenerateID()
 
 	user := &model.User{
-		ID:             fullID,
-		Email:          email,
-		Nick:           nick,
-		Token:          hashToken(token),
-		TokenExpiresAt: now.Add(ttl),
+		ID:    fullID,
+		Email: email,
+		Nick:  nick,
 	}
 	session := &model.Session{
 		ID:         GenerateID(),
