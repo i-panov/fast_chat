@@ -133,13 +133,15 @@ func newFedInstance(t *testing.T, domain string) *fedInstance {
 	cfg := fedTestConfig(t, domain)
 	mgr := federation.New(key, domain, "http", fedTestTimeoutSec, false)
 	cli := federation.NewClient(mgr, domain, "http", fedTestTimeoutSec, false)
+	svc := service.New(st, cfg, hub, nil)
+	svc.SetFederationClient(cli)
 
 	return &fedInstance{
 		domain:  domain,
 		cfg:     cfg,
 		sqlDB:   sqlDB,
 		store:   st,
-		svc:     service.New(st, cfg, hub, nil),
+		svc:     svc,
 		hub:     hub,
 		manager: mgr,
 		client:  cli,
@@ -619,4 +621,51 @@ func TestFederationPairTamperedSignatureRejected(t *testing.T) {
 	if ctrlErr != nil {
 		t.Fatalf("valid control request: %v", ctrlErr)
 	}
+}
+
+func TestFederationPairGroupReplication(t *testing.T) {
+	t.Parallel()
+
+	pair := newFederationPair(t)
+	alice := pair.a.createUser(t, "alice")
+	bob := pair.b.createUser(t, "bob")
+
+	status, body := pair.a.doJSON(t, http.MethodPost, "/api/chats", alice.Token, map[string]any{
+		"type":      "group",
+		"name":      "Remote group",
+		"memberIDs": []string{bob.ID},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create group: status = %d body = %v", status, body)
+	}
+	chat, ok := body["chat"].(map[string]any)
+	if !ok {
+		t.Fatalf("create group: chat missing: %v", body)
+	}
+	chatID, _ := chat["id"].(string)
+	if chatID == "" {
+		t.Fatalf("create group: id missing: %v", body)
+	}
+
+	eventually(t, "group replica on B", func() bool {
+		replica, ok := pair.b.store.GetChat(context.Background(), chatID)
+		return ok && replica.RemoteServer == pair.a.domain && replica.Type == "group"
+	})
+
+	status, body = pair.a.doJSON(t, http.MethodPost, "/api/chats/"+chatID+"/messages", alice.Token, map[string]any{
+		"text": "hello group",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("send group message: status = %d body = %v", status, body)
+	}
+	message, _ := body["message"].(map[string]any)
+	messageID, _ := message["id"].(string)
+	if messageID == "" {
+		t.Fatalf("send group message: id missing: %v", body)
+	}
+
+	eventually(t, "group message on B", func() bool {
+		_, err := pair.b.store.GetMessage(context.Background(), chatID, messageID)
+		return err == nil
+	})
 }
