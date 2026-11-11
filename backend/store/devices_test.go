@@ -41,3 +41,26 @@ func TestUserDevices(t *testing.T) {
 		t.Fatalf("after revoke = %+v", devices)
 	}
 }
+
+func TestDeviceKeyFollowsSessionRevocation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, s, "alice")
+	session, _, ok := s.GetSessionByToken(ctx, user.Token)
+	if !ok {
+		t.Fatal("session missing")
+	}
+	if err := s.UpsertUserDevice(ctx, user.ID, session.ID, "pk"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeSession(ctx, user.ID, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := s.ListUserDevices(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 0 {
+		t.Fatalf("device key survived session revocation: %+v", devices)
+	}
+}

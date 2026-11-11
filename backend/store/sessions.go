@@ -240,8 +240,14 @@ func (s *Store) RevokeSession(ctx context.Context, userID, sessionID string) err
 		// Delete this device's subscription and the legacy sessionless rows:
 		// after a logout no push must reach a row that cannot be attributed to
 		// an active session.
-		return tx.Where("user_id = ? AND (session_id = ? OR session_id = '')", userID, sessionID).
-			Delete(&model.PushSubscription{}).Error
+		if err := tx.Where("user_id = ? AND (session_id = ? OR session_id = '')", userID, sessionID).
+			Delete(&model.PushSubscription{}).Error; err != nil {
+			return err
+		}
+
+		return tx.Model(&model.UserDevice{}).
+			Where("id = ? AND user_id = ?", sessionID, userID).
+			Update("revoked_at", now).Error
 	})
 }
 
@@ -279,7 +285,13 @@ func (s *Store) RevokeAllSessions(ctx context.Context, userID string) (int64, er
 
 		// Every subscription of the user is dead, including legacy rows with
 		// an empty session id; logout-all must not leave a notification path.
-		return tx.Where("user_id = ?", userID).Delete(&model.PushSubscription{}).Error
+		if err := tx.Where("user_id = ?", userID).Delete(&model.PushSubscription{}).Error; err != nil {
+			return err
+		}
+
+		return tx.Model(&model.UserDevice{}).
+			Where("user_id = ? AND revoked_at IS NULL", userID).
+			Update("revoked_at", now).Error
 	})
 	if err != nil {
 		// The transaction rolled back, so report no revocations rather than a
@@ -354,6 +366,9 @@ func (s *Store) DeleteOldSessions(ctx context.Context, before time.Time) (int64,
 			end := min(start+500, len(ids))
 			chunk := ids[start:end]
 			if err := tx.Where("session_id IN ?", chunk).Delete(&model.PushSubscription{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", chunk).Delete(&model.UserDevice{}).Error; err != nil {
 				return err
 			}
 			res := tx.Where("id IN ?", chunk).Delete(&model.Session{})
