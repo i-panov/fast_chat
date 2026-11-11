@@ -223,7 +223,7 @@ func TestSendIcePassesTheCandidateObjectToThePeer(t *testing.T) {
 	chatID := createCallChat(t, st, "alice:localhost:8080", "bob:localhost:8080")
 
 	conn := hub.Register("conn-bob")
-	if err := hub.Authenticate("conn-bob", "bob:localhost:8080", "token", time.Now().Add(time.Hour)); err != nil {
+	if err := hub.AuthenticateSession("conn-bob", "bob:localhost:8080", "", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 

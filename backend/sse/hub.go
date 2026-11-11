@@ -37,13 +37,10 @@ type Event struct {
 }
 
 type Connection struct {
-	mu        sync.Mutex
-	ID        string
-	UserID    string
-	SessionID string
-	// Deprecated: production connections are bound by SessionID; Token is
-	// only set by the test-only Authenticate wrapper.
-	Token      string
+	mu         sync.Mutex
+	ID         string
+	UserID     string
+	SessionID  string
 	ExpiresAt  time.Time
 	Authorized bool
 	Warned     bool
@@ -280,24 +277,6 @@ func (h *Hub) AuthenticateSession(connectionID, userID, sessionID string, expire
 	_, err := h.BindSession(connectionID, userID, sessionID, expiresAt)
 
 	return err
-}
-
-// Deprecated: use BindSession. Authenticate is kept for tests and pre-session
-// callers: it binds the connection to the user without a session and records
-// the legacy token.
-func (h *Hub) Authenticate(connectionID, userID, token string, expiresAt time.Time) error {
-	if err := h.AuthenticateSession(connectionID, userID, "", expiresAt); err != nil {
-		return err
-	}
-
-	conn := h.GetConnection(connectionID)
-	if conn != nil {
-		conn.Lock()
-		conn.Token = token
-		conn.Unlock()
-	}
-
-	return nil
 }
 
 // CloseSession closes every SSE stream of one session, leaving the other

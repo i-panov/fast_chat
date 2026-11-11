@@ -364,7 +364,7 @@ func TestShutdownEndsCallsBeforeTheHub(t *testing.T) {
 
 	// A connection of one of the participants, so the ending reaches it.
 	conn := hub.Register("conn-1")
-	if err := hub.Authenticate("conn-1", "alice:localhost:8080", "token", time.Now().Add(time.Hour)); err != nil {
+	if err := hub.AuthenticateSession("conn-1", "alice:localhost:8080", "", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 

@@ -569,7 +569,6 @@ func checkSSEHeartbeat(ctx context.Context, conn *sse.Connection, st *store.Stor
 
 	authorized := conn.Authorized
 	sessionID := conn.SessionID
-	token := conn.Token
 	expiresAt := conn.ExpiresAt
 	conn.Unlock()
 
@@ -588,18 +587,6 @@ func checkSSEHeartbeat(ctx context.Context, conn *sse.Connection, st *store.Stor
 				// A long-lived stream is activity too: keep last_seen_at
 				// fresh (the store throttles the write).
 				touchSession(ctx, st, sessionID)
-			}
-		} else if token != "" {
-			// Legacy path for connections authenticated before sessions
-			// existed (and for tests using Hub.Authenticate).
-			// GetUserByToken resolves the session and already enforces its
-			// expiry, so the legacy users.token expiry must not be checked
-			// again here.
-			if _, ok := st.GetUserByToken(ctx, token); !ok {
-				conn.Lock()
-				conn.Authorized = false
-				conn.Unlock()
-				expired = true
 			}
 		}
 	}

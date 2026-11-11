@@ -224,7 +224,7 @@ func (f *fedInstance) listenSSE(t *testing.T, userID string) *sse.Connection {
 	connID := "it-" + userID
 	conn := f.hub.Register(connID)
 
-	if err := f.hub.Authenticate(connID, userID, "integration-test", time.Now().Add(time.Hour)); err != nil {
+	if err := f.hub.AuthenticateSession(connID, userID, "", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("authenticate sse connection: %v", err)
 	}
 

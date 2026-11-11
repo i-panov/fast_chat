@@ -337,7 +337,7 @@ func TestCreateFederatedChatBroadcastsChatCreated(t *testing.T) {
 		connID := "conn-" + member
 		conn := s.hub.Register(connID)
 
-		if err := s.hub.Authenticate(connID, member, "t", time.Now().Add(time.Hour)); err != nil {
+		if err := s.hub.AuthenticateSession(connID, member, "", time.Now().Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 

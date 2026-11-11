@@ -543,7 +543,7 @@ func TestCatchupSendsTombstoneToRemovedMembers(t *testing.T) {
 
 	connID := "conn-bob"
 	conn := s.hub.Register(connID)
-	if err := s.hub.Authenticate(connID, "bob:remote.test", "t", time.Now().Add(time.Hour)); err != nil {
+	if err := s.hub.AuthenticateSession(connID, "bob:remote.test", "", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 

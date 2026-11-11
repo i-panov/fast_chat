@@ -564,46 +564,6 @@ func TestSSEHeartbeatRevalidatesSession(t *testing.T) {
 	}
 }
 
-// Connections authenticated through the legacy Hub.Authenticate (no session
-// ID) keep validating their token instead of being expired immediately.
-func TestSSEHeartbeatLegacyTokenFallback(t *testing.T) {
-	st := newTestStore(t)
-	hub := newTestHub()
-	t.Cleanup(hub.Close)
-	cfg := testAPIConfig()
-	user := createTestUser(t, st)
-
-	session, _, ok := st.GetSessionByToken(context.Background(), user.Token)
-	if !ok {
-		t.Fatal("test user has no session")
-	}
-
-	conn := hub.Register("c1")
-	if err := hub.Authenticate("c1", user.ID, user.Token, user.TokenExpiresAt); err != nil {
-		t.Fatal(err)
-	}
-
-	conn.Lock()
-	legacySessionID := conn.SessionID
-	conn.Unlock()
-
-	if legacySessionID != "" {
-		t.Fatalf("legacy Authenticate must not set a session ID, got %q", legacySessionID)
-	}
-
-	if expired, warn, _ := checkSSEHeartbeat(context.Background(), conn, st, cfg); expired || warn {
-		t.Fatalf("live legacy token: expired=%v warn=%v", expired, warn)
-	}
-
-	if err := st.RevokeSession(context.Background(), user.ID, session.ID); err != nil {
-		t.Fatalf("RevokeSession: %v", err)
-	}
-
-	if expired, _, _ := checkSSEHeartbeat(context.Background(), conn, st, cfg); !expired {
-		t.Fatal("legacy token path must expire when the token stops working")
-	}
-}
-
 // Closing the session ends its live stream and removes its presence.
 func TestSSECloseSessionEndsStream(t *testing.T) {
 	h, st, hub := newFallbackTestServer(t)

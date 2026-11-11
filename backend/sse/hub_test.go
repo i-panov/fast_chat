@@ -30,7 +30,7 @@ func TestUnregisterRemovesAndClosesChannel(t *testing.T) {
 	defer h.Close()
 
 	conn := h.Register("c1")
-	h.Authenticate("c1", "u1", "tok", time.Now().Add(time.Hour))
+	h.AuthenticateSession("c1", "u1", "", time.Now().Add(time.Hour))
 
 	h.Unregister("c1", conn)
 
@@ -53,22 +53,22 @@ func TestAuthenticate(t *testing.T) {
 	h := NewHub(time.Hour)
 	defer h.Close()
 
-	if err := h.Authenticate("nope", "u1", "t", time.Now()); !errors.Is(err, ErrConnectionNotFound) {
+	if err := h.AuthenticateSession("nope", "u1", "", time.Now()); !errors.Is(err, ErrConnectionNotFound) {
 		t.Fatalf("expected ErrConnectionNotFound, got %v", err)
 	}
 
 	conn := h.Register("c1")
 	exp := time.Now().Add(time.Hour)
-	if err := h.Authenticate("c1", "u1", "tok", exp); err != nil {
+	if err := h.AuthenticateSession("c1", "u1", "", exp); err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
 
-	if !conn.Authorized || conn.UserID != "u1" || conn.Token != "tok" || !conn.ExpiresAt.Equal(exp) {
+	if !conn.Authorized || conn.UserID != "u1" || !conn.ExpiresAt.Equal(exp) {
 		t.Errorf("connection not populated: %+v", conn)
 	}
 
 	// Replaying auth for the same connection must not duplicate the entry.
-	if err := h.Authenticate("c1", "u1", "tok2", exp); err != nil {
+	if err := h.AuthenticateSession("c1", "u1", "", exp); err != nil {
 		t.Fatalf("re-auth: %v", err)
 	}
 	if len(h.userConns["u1"]) != 1 {
@@ -82,7 +82,7 @@ func TestSendDeliversOnlyToAuthorizedCurrentUsers(t *testing.T) {
 
 	// Authorized connection.
 	a := h.Register("a")
-	h.Authenticate("a", "u1", "tok", time.Now().Add(time.Hour))
+	h.AuthenticateSession("a", "u1", "", time.Now().Add(time.Hour))
 
 	// Unregistered connection (never authenticated).
 	b := h.Register("b")
@@ -115,7 +115,7 @@ func TestSendSkipsExpiredTokens(t *testing.T) {
 	defer h.Close()
 
 	conn := h.Register("c1")
-	h.Authenticate("c1", "u1", "tok", time.Now().Add(-time.Minute)) // expired
+	h.AuthenticateSession("c1", "u1", "", time.Now().Add(-time.Minute)) // expired
 
 	h.Send("u1", Event{Event: "m", Data: "x"})
 
@@ -200,11 +200,11 @@ func TestRegisterDeduplicatesUserConnsOnReconnect(t *testing.T) {
 	defer h.Close()
 
 	first := h.Register("c1")
-	h.Authenticate("c1", "u1", "t1", time.Now().Add(time.Hour))
+	h.AuthenticateSession("c1", "u1", "", time.Now().Add(time.Hour))
 
 	// Reconnect with the same id replaces the old connection.
 	second := h.Register("c1")
-	h.Authenticate("c1", "u1", "t2", time.Now().Add(time.Hour))
+	h.AuthenticateSession("c1", "u1", "", time.Now().Add(time.Hour))
 
 	if h.GetConnection("c1") != second {
 		t.Error("GetConnection should return the new connection")
@@ -400,7 +400,7 @@ func TestCloseExpiredUnauthenticated(t *testing.T) {
 	stale := h.Register("stale")
 	h.Register("fresh")
 	h.Register("auth")
-	h.Authenticate("auth", "u1", "tok", time.Now().Add(time.Hour))
+	h.AuthenticateSession("auth", "u1", "", time.Now().Add(time.Hour))
 
 	// Age only the stale connection past the auth deadline.
 	stale.mu.Lock()

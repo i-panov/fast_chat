@@ -100,7 +100,7 @@ func subscribe(t *testing.T, hub *sse.Hub, userID string) chan sse.Event {
 	connID := "conn-" + userID
 	hub.Register(connID)
 
-	if err := hub.Authenticate(connID, userID, "token", time.Now().Add(time.Hour)); err != nil {
+	if err := hub.AuthenticateSession(connID, userID, "", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("Authenticate(%s): %v", userID, err)
 	}
 
