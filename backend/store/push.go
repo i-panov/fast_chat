@@ -50,15 +50,6 @@ func (s *Store) AddPushSubscriptionForSession(
 	return &stored, nil
 }
 
-// AddPushSubscription is the legacy user-only form. It writes a subscription
-// with an empty session id, which is delivered only while the user is offline.
-// AddPushSubscription is a legacy helper used by tests.
-//
-// Deprecated: use AddPushSubscriptionForSession.
-func (s *Store) AddPushSubscription(ctx context.Context, userID, endpoint, p256dh, auth string) (*model.PushSubscription, error) {
-	return s.AddPushSubscriptionForSession(ctx, userID, "", endpoint, p256dh, auth)
-}
-
 func (s *Store) GetPushSubscriptionsByUser(ctx context.Context, userID string) ([]model.PushSubscription, error) {
 	var subs []model.PushSubscription
 	if err := s.db.WithContext(ctx).Where("user_id = ?", userID).Find(&subs).Error; err != nil {

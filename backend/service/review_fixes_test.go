@@ -186,7 +186,7 @@ func TestNotifyMessageSentSingleReceiptOnlineOnly(t *testing.T) {
 	}
 
 	// Only bob is online; carol stays offline.
-	svc.store.AddConnection("bob:test")
+	svc.store.AddConnectionForSession("bob:test", "")
 
 	aliceEvents := subscribe(t, hub, "alice:test")
 	subscribe(t, hub, "bob:test")

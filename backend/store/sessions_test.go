@@ -901,7 +901,7 @@ func TestRevokeSessionDeletesLegacyPushRows(t *testing.T) {
 	if !ok {
 		t.Fatal("legacy session missing")
 	}
-	if _, err := s.AddPushSubscription(ctx, user.ID, "https://fcm.googleapis.com/fcm/send/legacy", "p256dh", "auth"); err != nil {
+	if _, err := s.AddPushSubscriptionForSession(ctx, user.ID, "", "https://fcm.googleapis.com/fcm/send/legacy", "p256dh", "auth"); err != nil {
 		t.Fatal(err)
 	}
 

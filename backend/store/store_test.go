@@ -1003,7 +1003,7 @@ func TestAddThreadMessage(t *testing.T) {
 	}
 }
 
-func TestAddConnection(t *testing.T) {
+func TestAddConnectionForSession(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 
@@ -1011,13 +1011,13 @@ func TestAddConnection(t *testing.T) {
 		t.Error("expected user to be offline right after creation")
 	}
 
-	s.AddConnection(testAlice)
+	s.AddConnectionForSession(testAlice, "")
 
 	if !s.IsOnline(testAlice) {
 		t.Error("expected user to be online after AddConnection")
 	}
 
-	s.RemoveConnection(testAlice)
+	s.RemoveConnectionForSession(testAlice, "")
 
 	if s.IsOnline(testAlice) {
 		t.Error("expected user to be offline after RemoveConnection")
@@ -1028,15 +1028,15 @@ func TestAddConnectionMultiple(t *testing.T) {
 	s := newTestStore(t)
 	createTestUser(t, s, "alice")
 
-	s.AddConnection(testAlice)
-	s.AddConnection(testAlice)
-	s.RemoveConnection(testAlice)
+	s.AddConnectionForSession(testAlice, "")
+	s.AddConnectionForSession(testAlice, "")
+	s.RemoveConnectionForSession(testAlice, "")
 
 	if !s.IsOnline(testAlice) {
 		t.Error("expected user to stay online after one RemoveConnection (still one left)")
 	}
 
-	s.RemoveConnection(testAlice)
+	s.RemoveConnectionForSession(testAlice, "")
 
 	if s.IsOnline(testAlice) {
 		t.Error("expected user to be offline after all connections removed")
@@ -1095,9 +1095,9 @@ func TestOfflineSince(t *testing.T) {
 		t.Fatalf("offlineSince = %v, want the zero time", since)
 	}
 
-	s.AddConnection(testAlice)
-	s.AddConnection(testAlice)
-	s.RemoveConnection(testAlice)
+	s.AddConnectionForSession(testAlice, "")
+	s.AddConnectionForSession(testAlice, "")
+	s.RemoveConnectionForSession(testAlice, "")
 
 	// One connection is left: the user is still online.
 	if since := s.OfflineSince(testAlice); !since.IsZero() {
@@ -1105,14 +1105,14 @@ func TestOfflineSince(t *testing.T) {
 	}
 
 	before := time.Now()
-	s.RemoveConnection(testAlice)
+	s.RemoveConnectionForSession(testAlice, "")
 
 	since := s.OfflineSince(testAlice)
 	if since.IsZero() || since.Before(before) {
 		t.Fatalf("offlineSince = %v, want the time the user went offline", since)
 	}
 
-	s.AddConnection(testAlice)
+	s.AddConnectionForSession(testAlice, "")
 
 	if since := s.OfflineSince(testAlice); !since.IsZero() {
 		t.Fatalf("offlineSince = %v after reconnecting, want the zero time", since)
@@ -1201,7 +1201,7 @@ func TestSearchUsersOnlineState(t *testing.T) {
 		t.Fatal("alice should start offline")
 	}
 
-	s.AddConnection(testAlice)
+	s.AddConnectionForSession(testAlice, "")
 
 	results := s.SearchUsers(context.Background(), "ali", "")
 	if len(results) != 1 {

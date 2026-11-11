@@ -221,7 +221,7 @@ func TestRevokeAllSessionsDeletesAllPushSubscriptions(t *testing.T) {
 		}
 	}
 	// Logout-all must also drop legacy rows that carry no session id.
-	if _, err := s.AddPushSubscription(ctx, user.ID, "https://fcm.googleapis.com/fcm/send/legacy", "p256dh", "auth"); err != nil {
+	if _, err := s.AddPushSubscriptionForSession(ctx, user.ID, "", "https://fcm.googleapis.com/fcm/send/legacy", "p256dh", "auth"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -284,7 +284,7 @@ func TestDeletePushSubscriptionsBySessionEmptyIsNoop(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if _, err := s.AddPushSubscription(ctx, testAlice, "https://fcm.googleapis.com/fcm/send/legacy", "p256dh", "auth"); err != nil {
+	if _, err := s.AddPushSubscriptionForSession(ctx, testAlice, "", "https://fcm.googleapis.com/fcm/send/legacy", "p256dh", "auth"); err != nil {
 		t.Fatal(err)
 	}
 

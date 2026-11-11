@@ -228,19 +228,6 @@ func (s *Store) DeleteKeyBackup(ctx context.Context, userID string) error {
 		Updates(map[string]any{fieldKeyBackup: "", fieldKeyBackupAt: nil}).Error
 }
 
-// RevokeUserToken invalidates the legacy users.token columns. The stored
-// token is replaced with the hash of a fresh random value and its expiry is
-// pulled back to now, so a stale value cannot resurrect a revoked session if
-// the database is ever backfilled again. Session authentication itself no
-// longer reads these columns.
-// RevokeUserToken is a compatibility wrapper for callers that only need the
-// legacy columns.
-//
-// Deprecated: use revokeUserToken inside a session transaction.
-func (s *Store) RevokeUserToken(ctx context.Context, userID string) error {
-	return revokeUserToken(s.db.WithContext(ctx), userID)
-}
-
 func (s *Store) GetUsersByIDs(ctx context.Context, userIDs []string) map[string]string {
 	out := make(map[string]string, len(userIDs))
 	if len(userIDs) == 0 {

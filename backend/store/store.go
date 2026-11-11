@@ -147,22 +147,6 @@ func (s *Store) IsSessionOnline(sessionID string) bool {
 	return s.sessionConns[sessionID] > 0
 }
 
-// AddConnection is the legacy user-only presence hook.
-// AddConnection is a legacy helper for tests and pre-session callers.
-//
-// Deprecated: use AddConnectionForSession.
-func (s *Store) AddConnection(userID string) bool {
-	return s.AddConnectionForSession(userID, "")
-}
-
-// RemoveConnection is the legacy user-only presence hook.
-// RemoveConnection is a legacy helper for tests and pre-session callers.
-//
-// Deprecated: use RemoveConnectionForSession.
-func (s *Store) RemoveConnection(userID string) bool {
-	return s.RemoveConnectionForSession(userID, "")
-}
-
 func (s *Store) IsOnline(userID string) bool {
 	s.onlineMu.RLock()
 	defer s.onlineMu.RUnlock()

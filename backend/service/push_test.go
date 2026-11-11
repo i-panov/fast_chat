@@ -85,7 +85,7 @@ func TestSendPushForMessageOnlineRecipientSkipped(t *testing.T) {
 	alice := registerPushTestUser(t, s, "alice")
 
 	// Mark alice as online so SendToUser is never invoked.
-	s.store.AddConnection(alice.ID)
+	s.store.AddConnectionForSession(alice.ID, "")
 
 	msg := &model.Message{ID: "m1", ChatID: "c1", FromID: alice.ID, FromNick: "alice"}
 	s.SendPushForMessage(context.Background(), &model.Chat{ID: "c1"}, msg, "", alice.ID)
@@ -106,7 +106,7 @@ func TestSendPushForMessageOfflineWithSubscriptions(t *testing.T) {
 	alice := registerPushTestUser(t, s, "alice")
 
 	// Seed a subscription for alice (who is offline by default).
-	if _, err := s.store.AddPushSubscription(context.Background(), alice.ID, "https://fcm.googleapis.com/fcm/send/xyz", "dGVzdA==", "aHVl"); err != nil {
+	if _, err := s.store.AddPushSubscriptionForSession(context.Background(), alice.ID, "", "https://fcm.googleapis.com/fcm/send/xyz", "dGVzdA==", "aHVl"); err != nil {
 		t.Fatal(err)
 	}
 
