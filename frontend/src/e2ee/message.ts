@@ -42,6 +42,25 @@ export async function encryptMessageText(
 	return { text: ciphertext, encryptedPayload: JSON.stringify(payload) };
 }
 
+async function openAnyEnvelope(
+	payload: EncryptedPayload,
+	userId: string,
+	key: KeyPair,
+): Promise<Uint8Array> {
+	const ordered = [
+		...payload.envelopes.filter((envelope) => envelope.keyId === userId),
+		...payload.envelopes.filter((envelope) => envelope.keyId !== userId),
+	];
+	for (const envelope of ordered) {
+		try {
+			return await openMessageKey(envelope, key.publicKey, key.privateKey);
+		} catch {
+			// The envelope belongs to another device key; try the next one.
+		}
+	}
+	throw new Error("no envelope for this key");
+}
+
 // decryptMessageText decrypts a single message's ciphertext using the
 // user's own envelope.
 export async function decryptMessageText(
@@ -52,12 +71,7 @@ export async function decryptMessageText(
 	if (!msg.encryptedPayload) return msg.text;
 
 	const payload = JSON.parse(msg.encryptedPayload) as EncryptedPayload;
-	const envelope = payload.envelopes.find((e) => e.keyId === userId);
-	if (envelope === undefined) {
-		throw new Error("no envelope for user");
-	}
-
-	const msgKey = await openMessageKey(envelope, key.publicKey, key.privateKey);
+	const msgKey = await openAnyEnvelope(payload, userId, key);
 	return decryptText(msg.text, payload.nonce, msgKey);
 }
 
@@ -80,12 +94,7 @@ export async function decryptMessageContent(
 
 	// encryptedPayload carries the sealed msgKey envelopes + nonce.
 	const payload = JSON.parse(msg.encryptedPayload) as EncryptedPayload;
-	const envelope = payload.envelopes.find((e) => e.keyId === userId);
-	if (envelope === undefined) {
-		return null;
-	}
-
-	const msgKey = await openMessageKey(envelope, key.publicKey, key.privateKey);
+	const msgKey = await openAnyEnvelope(payload, userId, key);
 
 	try {
 		const content = await decryptContent(

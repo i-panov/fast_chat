@@ -120,6 +120,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&model.MessageReaction{},
 		&model.ChatPin{},
 		&model.UserBlock{},
+		&model.UserDevice{},
 		&model.Thread{},
 		&model.File{},
 		&model.MessageFile{},

@@ -18,9 +18,10 @@ const (
 	// sessionTouchInterval throttles last_seen_at writes on the request path.
 	sessionTouchInterval = 5 * time.Minute
 
-	fieldTokenHash = "token_hash"
-	fieldExpiresAt = "expires_at"
-	fieldRevokedAt = "revoked_at"
+	fieldTokenHash  = "token_hash"
+	fieldLastSeenAt = "last_seen_at"
+	fieldExpiresAt  = "expires_at"
+	fieldRevokedAt  = "revoked_at"
 )
 
 var (
@@ -99,12 +100,12 @@ func (s *Store) CreateSession(
 			if err := tx.Model(&model.Session{}).
 				Where("id = ?", session.ID).
 				Updates(map[string]any{
-					fieldTokenHash: tokenHash,
-					"device_name":  deviceName,
-					"user_agent":   userAgent,
-					fieldExpiresAt: expiresAt,
-					"last_seen_at": now,
-					fieldRevokedAt: nil,
+					fieldTokenHash:  tokenHash,
+					"device_name":   deviceName,
+					"user_agent":    userAgent,
+					fieldExpiresAt:  expiresAt,
+					fieldLastSeenAt: now,
+					fieldRevokedAt:  nil,
 				}).Error; err != nil {
 				return err
 			}
@@ -175,9 +176,9 @@ func (s *Store) RefreshSession(ctx context.Context, sessionID string, ttl time.D
 		res := tx.Model(&model.Session{}).
 			Where("id = ? AND revoked_at IS NULL AND expires_at > ?", sessionID, now).
 			Updates(map[string]any{
-				fieldTokenHash: hashToken(token),
-				fieldExpiresAt: now.Add(ttl),
-				"last_seen_at": now,
+				fieldTokenHash:  hashToken(token),
+				fieldExpiresAt:  now.Add(ttl),
+				fieldLastSeenAt: now,
 			})
 		if res.Error != nil {
 			return res.Error
@@ -212,7 +213,7 @@ func (s *Store) TouchSession(ctx context.Context, sessionID string, now time.Tim
 
 	return s.db.WithContext(ctx).Model(&model.Session{}).
 		Where("id = ? AND unixepoch(last_seen_at) < unixepoch(?)", sessionID, now.Add(-sessionTouchInterval)).
-		Update("last_seen_at", now.UTC()).Error
+		Update(fieldLastSeenAt, now.UTC()).Error
 }
 
 // RevokeSession invalidates one session of the user and drops its push

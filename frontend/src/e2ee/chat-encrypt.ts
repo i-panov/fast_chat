@@ -15,7 +15,7 @@ import type { FileKey } from "./file-crypto.ts";
 import { encryptBytes, generateFileKey, hashBytes } from "./file-crypto.ts";
 import {
 	ensureAccountKeys,
-	getRecipientPublicKeys,
+	getRecipientDeviceKeys,
 	RecoveryRequiredError,
 } from "./keys.ts";
 
@@ -49,14 +49,18 @@ export async function encryptForChat(
 		}
 		await ensureAccountKeys(token);
 
-		const recipientKeys = await getRecipientPublicKeys(token, memberIds);
+		const deviceKeys = await getRecipientDeviceKeys(token, memberIds);
 		const recipients: Array<{ keyId: string; publicKey: string }> = [];
 		const missing: string[] = [];
 
 		for (const id of memberIds) {
-			const publicKey = recipientKeys.get(id);
-			if (publicKey && publicKey !== "") {
-				recipients.push({ keyId: id, publicKey });
+			const devices = deviceKeys.get(id);
+			if (devices !== undefined && devices.length > 0) {
+				for (const device of devices) {
+					if (device.publicKey !== "") {
+						recipients.push(device);
+					}
+				}
 			} else {
 				missing.push(id);
 			}

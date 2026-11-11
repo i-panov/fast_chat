@@ -1,5 +1,12 @@
 import type { FileKey } from "../e2ee/file-crypto.ts";
 
+export interface DeviceKey {
+	id: string;
+	publicKey: string;
+	createdAt: string;
+	lastSeenAt: string;
+}
+
 export interface BlockedUser {
 	id: string;
 	nick: string;

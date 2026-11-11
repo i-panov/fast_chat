@@ -6,7 +6,6 @@ import {
 	discardRecoveryAndGenerate,
 	ensureAccountKeys,
 	getMyKeyPair,
-	MultiDeviceKeyRequiredError,
 	NewKeyConfirmationRequiredError,
 	RecoveryRequiredError,
 	restoreKeyPairFromBackup,
@@ -90,14 +89,17 @@ describe("key server backup integration", () => {
 		expect(await getMyKeyPair()).not.toBeNull();
 	});
 
-	it("refuses to generate a new key when other devices exist", async () => {
+	it("asks before a per-device key when other devices exist", async () => {
 		otherDevice = true;
 
 		await expect(ensureAccountKeys("token")).rejects.toBeInstanceOf(
-			MultiDeviceKeyRequiredError,
+			NewKeyConfirmationRequiredError,
 		);
 		expect(await getMyKeyPair()).toBeNull();
 		expect(uploadCount).toBe(0);
+
+		confirmNewKey();
+		expect(await ensureAccountKeys("token")).toBeTruthy();
 	});
 
 	it("is single-flight: concurrent calls share one key pair", async () => {

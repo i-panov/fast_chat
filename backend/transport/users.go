@@ -28,6 +28,7 @@ func RegisterUsers(api huma.API, st *store.Store, fed *federation.Client, cfg *c
 	registerKeyBackup(api, st)
 	registerUserAvatar(api, st)
 	registerUserBlocks(api, st)
+	registerUserDevices(api, st, fed, cfg)
 }
 
 // registerClientConfig registers a subset of the operations.
@@ -97,7 +98,7 @@ func registerUserKeys(api huma.API, st *store.Store, fed *federation.Client, cfg
 
 		rawKey, err := service.DecodePublicKey(input.Body.PublicKey)
 		if err != nil {
-			return nil, &statusError{ErrorMessage: "invalid public key", code: http.StatusBadRequest}
+			return nil, &statusError{ErrorMessage: msgInvalidPublicKey, code: http.StatusBadRequest}
 		}
 
 		normalized := base64.StdEncoding.EncodeToString(rawKey)
@@ -151,7 +152,7 @@ func registerUserKeys(api huma.API, st *store.Store, fed *federation.Client, cfg
 		}
 
 		if err := json.Unmarshal(data, &result); err != nil || result.PublicKey == "" {
-			return nil, &statusError{ErrorMessage: "failed to parse remote response", code: http.StatusBadGateway}
+			return nil, &statusError{ErrorMessage: msgFailedParseRemote, code: http.StatusBadGateway}
 		}
 
 		// A peer must not plant an arbitrary string as someone's E2E key:
@@ -371,7 +372,7 @@ func searchFederated(
 	}
 
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, &statusError{ErrorMessage: "failed to parse remote response", code: http.StatusInternalServerError}
+		return nil, &statusError{ErrorMessage: msgFailedParseRemote, code: http.StatusInternalServerError}
 	}
 
 	if result.Users == nil {

@@ -12,7 +12,11 @@ import (
 	"fast_chat/store"
 )
 
-const msgFileNotFound = "file not found"
+const (
+	msgFileNotFound      = "file not found"
+	msgInvalidPublicKey  = "invalid public key"
+	msgFailedParseRemote = "failed to parse remote response"
+)
 
 // statusError implements huma.StatusError using the pre-migration error
 // shape. Huma serializes errors via reflection on exported fields, so the

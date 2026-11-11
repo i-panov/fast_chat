@@ -1005,3 +1005,34 @@ func TestUserBlockEndpoints(t *testing.T) {
 		t.Fatalf("unblock = %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestUserDeviceKeyEndpoints(t *testing.T) {
+	ts := newDomainTestServer(t)
+	h := ts.Handler
+	st := ts.Store
+	user := createTestUser(t, st)
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/device-key", user.Token, `{"publicKey":"`+key+`"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put device key = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodGet, "/api/users/"+user.ID+"/device-keys", user.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get device keys = %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeBody(t, rec)
+	devices, _ := resp["devices"].([]any)
+	if len(devices) != 1 {
+		t.Fatalf("devices = %v", resp["devices"])
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodDelete, "/api/users/device-key", user.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete device key = %d: %s", rec.Code, rec.Body.String())
+	}
+}

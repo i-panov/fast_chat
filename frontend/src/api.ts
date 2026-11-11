@@ -7,6 +7,7 @@ import type {
 	CallInfo,
 	Chat,
 	CreateChatOptions,
+	DeviceKey,
 	EditMessageOptions,
 	FileInfo,
 	ICEConfig,
@@ -179,6 +180,26 @@ export function sseAuth(connectionId: string, token: string) {
 		method: "POST",
 		body: JSON.stringify({ connectionId, token }),
 	});
+}
+
+export function registerDeviceKey(token: string, publicKey: string) {
+	return request<{ status: string }>("/api/users/device-key", token, {
+		method: "PUT",
+		body: JSON.stringify({ publicKey }),
+	});
+}
+
+export function revokeDeviceKey(token: string) {
+	return request<{ status: string }>("/api/users/device-key", token, {
+		method: "DELETE",
+	});
+}
+
+export function getUserDeviceKeys(token: string, userId: string) {
+	return request<{ devices: DeviceKey[] }>(
+		`/api/users/${encodeURIComponent(userId)}/device-keys`,
+		token,
+	);
 }
 
 export function getBlockedUsers(token: string) {

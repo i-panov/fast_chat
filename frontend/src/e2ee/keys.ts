@@ -2,7 +2,8 @@ import {
 	deleteKeyBackup,
 	getKeyBackup,
 	getPublicKey,
-	getSessions,
+	getUserDeviceKeys,
+	registerDeviceKey,
 	setKeyBackup,
 	uploadPublicKey,
 } from "../api.ts";
@@ -14,6 +15,7 @@ import { generateKeyPair, type KeyPair } from "./crypto.ts";
 const PRIVATE_KEY_META = "e2ee.privateKey";
 const PUBLIC_KEY_META = "e2ee.publicKey";
 const PUBLIC_KEY_UPLOADED_META = "e2ee.publicKeyUploaded";
+const deviceKeyRegistered = new Set<string>();
 
 // Security trade-off: the private key is stored in plaintext in the
 // per-account IndexedDB (meta store) so messages stay decryptable across
@@ -98,6 +100,20 @@ async function uploadPublicKeyIfNeeded(
 	}
 }
 
+async function ensureDeviceKey(
+	token: string,
+	publicKey: string,
+): Promise<void> {
+	const scope = `${accountScope()}:${token}`;
+	if (deviceKeyRegistered.has(scope)) return;
+	try {
+		await registerDeviceKey(token, publicKey);
+		deviceKeyRegistered.add(scope);
+	} catch (err) {
+		console.warn("E2E device key upload failed, will retry:", err);
+	}
+}
+
 // Per-account in-memory caches. The active account key scopes them so
 // switching accounts (a pure SPA transition, no reload) never leaks one
 // account's key pair into another's requests. IndexedDB is already
@@ -148,12 +164,6 @@ export function onRecoveryNeeded(fn: (token: string) => void): () => void {
 	};
 	window.addEventListener(RECOVERY_NEEDED_EVENT, handler);
 	return () => window.removeEventListener(RECOVERY_NEEDED_EVENT, handler);
-}
-
-function emitMultiDeviceKeyRequired(token: string) {
-	window.dispatchEvent(
-		new CustomEvent<string>(MULTI_DEVICE_KEY_EVENT, { detail: token }),
-	);
 }
 
 export function onMultiDeviceKeyRequired(
@@ -280,6 +290,7 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 				// DB reset).
 				if (token !== undefined) {
 					await uploadPublicKeyIfNeeded(token, existing.publicKey);
+					await ensureDeviceKey(token, existing.publicKey);
 				}
 				return existing;
 			}
@@ -300,23 +311,9 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 				throw new RecoveryRequiredError();
 			}
 
-			// No local key, no backup. Before creating a new identity, make
-			// sure this is not a second device of an existing account: a new
-			// public key would silently break decryption on the other devices.
-			// Fail closed if the session list cannot be checked.
-			let otherDevices = 0;
-			try {
-				const sessions = await getSessions(token);
-				otherDevices = sessions.sessions.filter((s) => !s.current).length;
-			} catch {
-				emitMultiDeviceKeyRequired(token);
-				throw new MultiDeviceKeyRequiredError();
-			}
-			if (otherDevices > 0) {
-				emitMultiDeviceKeyRequired(token);
-				throw new MultiDeviceKeyRequiredError();
-			}
-
+			// Phase B: this device gets its own key. The user still has to
+			// confirm, because old messages addressed to the account key (or
+			// to another device) will stay unreadable here.
 			if (!confirmedNewKey.has(scope)) {
 				emitNewKeyConfirmation(token);
 				throw new NewKeyConfirmationRequiredError();
@@ -330,6 +327,7 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 			await metaRepo.setNoNotify(PUBLIC_KEY_UPLOADED_META, false);
 			keyCacheByAccount.set(scope, kp);
 			await uploadPublicKeyIfNeeded(token, kp.publicKey);
+			await ensureDeviceKey(token, kp.publicKey);
 			return kp;
 		} finally {
 			inFlightByAccount.delete(scope);
@@ -395,5 +393,43 @@ export async function getRecipientPublicKeys(
 			out.set(chunk[j], keys[j]);
 		}
 	}
+	return out;
+}
+
+// getRecipientDeviceKeys returns the active device keys of every member.
+// Users with no registered devices fall back to the legacy account key with
+// keyId=userId, so old clients keep receiving envelopes.
+export async function getRecipientDeviceKeys(
+	token: string,
+	userIds: string[],
+): Promise<Map<string, Array<{ keyId: string; publicKey: string }>>> {
+	const out = new Map<string, Array<{ keyId: string; publicKey: string }>>();
+	await Promise.all(
+		userIds.map(async (userId) => {
+			try {
+				const { devices } = await getUserDeviceKeys(token, userId);
+				if (devices.length > 0) {
+					out.set(
+						userId,
+						devices.map((device) => ({
+							keyId: device.id,
+							publicKey: device.publicKey,
+						})),
+					);
+					return;
+				}
+			} catch {
+				// Fall through to the legacy account key.
+			}
+			try {
+				const publicKey = await getRecipientPublicKey(token, userId);
+				if (publicKey !== "") {
+					out.set(userId, [{ keyId: userId, publicKey }]);
+				}
+			} catch {
+				// The caller reports the missing key.
+			}
+		}),
+	);
 	return out;
 }

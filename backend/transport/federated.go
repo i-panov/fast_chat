@@ -23,6 +23,7 @@ func RegisterFederated(api huma.API, st *store.Store, svc *service.Service, fm *
 	registerFederatedChats(api, st, svc, fm, cfg)
 	registerFederatedCalls(api, st, svc)
 	registerFederatedSync(api, svc)
+	registerFederatedDeviceKeys(api, st)
 }
 
 // fedSecurity is the security declaration for federation operations.
