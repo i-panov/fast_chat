@@ -406,29 +406,30 @@ export async function getRecipientDeviceKeys(
 	const out = new Map<string, Array<{ keyId: string; publicKey: string }>>();
 	await Promise.all(
 		userIds.map(async (userId) => {
+			const keys: Array<{ keyId: string; publicKey: string }> = [];
 			try {
 				const { devices } = await getUserDeviceKeys(token, userId);
-				if (devices.length > 0) {
-					out.set(
-						userId,
-						devices.map((device) => ({
-							keyId: device.id,
-							publicKey: device.publicKey,
-						})),
-					);
-					return;
+				for (const device of devices) {
+					keys.push({ keyId: device.id, publicKey: device.publicKey });
 				}
 			} catch {
 				// Fall through to the legacy account key.
 			}
 			try {
+				// Always include the account key as a legacy envelope: a client
+				// that predates device keys does not register one and can only
+				// read keyId=userId.
 				const publicKey = await getRecipientPublicKey(token, userId);
-				if (publicKey !== "") {
-					out.set(userId, [{ keyId: userId, publicKey }]);
+				if (
+					publicKey !== "" &&
+					!keys.some((key) => key.publicKey === publicKey)
+				) {
+					keys.push({ keyId: userId, publicKey });
 				}
 			} catch {
 				// The caller reports the missing key.
 			}
+			if (keys.length > 0) out.set(userId, keys);
 		}),
 	);
 	return out;

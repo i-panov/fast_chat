@@ -195,6 +195,14 @@ export function revokeDeviceKey(token: string) {
 	});
 }
 
+export function revokeUserDeviceKey(token: string, deviceId: string) {
+	return request<{ status: string }>(
+		`/api/users/device-keys/${encodeURIComponent(deviceId)}`,
+		token,
+		{ method: "DELETE" },
+	);
+}
+
 export function getUserDeviceKeys(token: string, userId: string) {
 	return request<{ devices: DeviceKey[] }>(
 		`/api/users/${encodeURIComponent(userId)}/device-keys`,

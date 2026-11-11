@@ -384,6 +384,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					open={sessionsOpen}
 					onClose={() => setSessionsOpen(false)}
 					token={activeAccount.token}
+					userId={activeAccount.user.id}
 					onLogoutAll={logoutAll}
 				/>
 			)}

@@ -218,5 +218,7 @@
 	"messageSearch.hint": "Введите минимум 2 символа.",
 	"messageSearch.empty": "Ничего не найдено.",
 	"media.saveOffline": "Сохранить офлайн",
-	"media.savedOffline": "Сохранено офлайн"
+	"media.savedOffline": "Сохранено офлайн",
+	"sessions.key": "ключ E2EE",
+	"sessions.revokeKey": "Отозвать ключ"
 }

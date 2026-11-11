@@ -10,13 +10,19 @@ import {
 } from "@mantine/core";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { getSessions, revokeDeviceSession } from "../../api.ts";
+import {
+	getSessions,
+	getUserDeviceKeys,
+	revokeDeviceSession,
+	revokeUserDeviceKey,
+} from "../../api.ts";
 import type { SessionInfo } from "../../types/api.ts";
 
 interface Props {
 	open: boolean;
 	onClose: () => void;
 	token: string | undefined;
+	userId: string;
 	onLogoutAll: () => void;
 }
 
@@ -25,9 +31,16 @@ function formatDate(value: string): string {
 	return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
+export function SessionsModal({
+	open,
+	onClose,
+	token,
+	userId,
+	onLogoutAll,
+}: Props) {
 	const { t } = useTranslation();
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
+	const [deviceKeys, setDeviceKeys] = useState<Set<string>>(new Set());
 	const [loading, setLoading] = useState(false);
 	const [revoking, setRevoking] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -38,9 +51,12 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 		let cancelled = false;
 		setLoading(true);
 		setError(null);
-		void getSessions(token)
-			.then((result) => {
-				if (!cancelled) setSessions(result.sessions);
+		void Promise.all([getSessions(token), getUserDeviceKeys(token, userId)])
+			.then(([result, keys]) => {
+				if (!cancelled) {
+					setSessions(result.sessions);
+					setDeviceKeys(new Set(keys.devices.map((device) => device.id)));
+				}
 			})
 			.catch((err: unknown) => {
 				if (!cancelled) {
@@ -54,7 +70,25 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 		return () => {
 			cancelled = true;
 		};
-	}, [open, token]);
+	}, [open, token, userId]);
+
+	async function handleRevokeKey(deviceID: string) {
+		if (token === undefined) return;
+		setRevoking(deviceID);
+		setError(null);
+		try {
+			await revokeUserDeviceKey(token, deviceID);
+			setDeviceKeys((prev) => {
+				const next = new Set(prev);
+				next.delete(deviceID);
+				return next;
+			});
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setRevoking(null);
+		}
+	}
 
 	async function handleRevoke(sessionID: string) {
 		if (token === undefined) return;
@@ -115,6 +149,11 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 												{t("sessions.thisDevice")}
 											</Badge>
 										)}
+										{deviceKeys.has(session.id) && (
+											<Badge size="xs" variant="outline" color="teal">
+												{t("sessions.key")}
+											</Badge>
+										)}
 									</Group>
 									<Text size="xs" c="dimmed">
 										{t("sessions.lastSeen", {
@@ -122,6 +161,19 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 										})}
 									</Text>
 								</div>
+								{deviceKeys.has(session.id) && (
+									<Button
+										size="xs"
+										color="orange"
+										variant="subtle"
+										loading={revoking === session.id}
+										onClick={() => {
+											void handleRevokeKey(session.id);
+										}}
+									>
+										{t("sessions.revokeKey")}
+									</Button>
+								)}
 								{!session.current && (
 									<Button
 										size="xs"

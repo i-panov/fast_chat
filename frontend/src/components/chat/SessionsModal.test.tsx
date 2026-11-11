@@ -5,7 +5,9 @@ import { SessionsModal } from "./SessionsModal.tsx";
 
 vi.mock("../../api.ts", () => ({
 	getSessions: vi.fn(),
+	getUserDeviceKeys: vi.fn(() => Promise.resolve({ devices: [] })),
 	revokeDeviceSession: vi.fn(),
+	revokeUserDeviceKey: vi.fn(),
 }));
 
 const { getSessions, revokeDeviceSession } = await import("../../api.ts");
@@ -49,6 +51,7 @@ describe("SessionsModal", () => {
 					open
 					onClose={() => {}}
 					token="tok"
+					userId="a:test"
 					onLogoutAll={onLogoutAll}
 				/>
 			</MantineProvider>,
@@ -81,6 +84,7 @@ describe("SessionsModal", () => {
 					open
 					onClose={() => {}}
 					token="tok"
+					userId="a:test"
 					onLogoutAll={onLogoutAll}
 				/>
 			</MantineProvider>,

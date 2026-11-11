@@ -216,5 +216,7 @@
 	"messageSearch.hint": "Type at least 2 characters.",
 	"messageSearch.empty": "Nothing found.",
 	"media.saveOffline": "Save offline",
-	"media.savedOffline": "Saved offline"
+	"media.savedOffline": "Saved offline",
+	"sessions.key": "E2EE key",
+	"sessions.revokeKey": "Revoke key"
 }

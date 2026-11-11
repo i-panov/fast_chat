@@ -66,6 +66,23 @@ func registerUserDevices(api huma.API, st *store.Store, fed *federation.Client, 
 	})
 
 	huma.Register(api, huma.Operation{
+		OperationID: "revoke-device-key",
+		Method:      http.MethodDelete,
+		Path:        "/api/users/device-keys/{deviceId}",
+		Summary:     "Revoke one of the caller's device keys",
+		Security:    []map[string][]string{{bearerScheme: {}}},
+	}, func(ctx context.Context, input *deviceKeyPathInput) (*statusOutput, error) {
+		user, ok := userFromContext(ctx)
+		if !ok {
+			return nil, errUnauthorized
+		}
+		if err := st.RevokeUserDevice(ctx, user.ID, input.DeviceID); err != nil {
+			return nil, errInternal
+		}
+		return okStatus(), nil
+	})
+
+	huma.Register(api, huma.Operation{
 		OperationID: "list-device-keys",
 		Method:      http.MethodGet,
 		Path:        "/api/users/{userId}/device-keys",
@@ -146,6 +163,10 @@ type deviceKeyInput struct {
 
 type deviceKeysPathInput struct {
 	UserID string `path:"userId"`
+}
+
+type deviceKeyPathInput struct {
+	DeviceID string `path:"deviceId"`
 }
 
 type deviceKeyDTO struct {
