@@ -57,18 +57,20 @@ func (c *Connection) Lock()   { c.mu.Lock() }
 func (c *Connection) Unlock() { c.mu.Unlock() }
 
 type Hub struct {
-	mu          sync.RWMutex
-	connections map[string]*Connection
-	userConns   map[string][]string
-	lastTyping  sync.Map
-	closeCh     chan struct{}
+	mu           sync.RWMutex
+	connections  map[string]*Connection
+	userConns    map[string][]string
+	sessionConns map[string]map[string]struct{}
+	lastTyping   sync.Map
+	closeCh      chan struct{}
 }
 
 func NewHub(cleanupInterval time.Duration) *Hub {
 	hub := &Hub{
-		connections: make(map[string]*Connection),
-		userConns:   make(map[string][]string),
-		closeCh:     make(chan struct{}),
+		connections:  make(map[string]*Connection),
+		userConns:    make(map[string][]string),
+		sessionConns: make(map[string]map[string]struct{}),
+		closeCh:      make(chan struct{}),
 	}
 	go hub.cleanupLastTyping(cleanupInterval)
 
@@ -90,6 +92,7 @@ func (h *Hub) Close() {
 		delete(h.connections, id)
 	}
 	h.userConns = make(map[string][]string)
+	h.sessionConns = make(map[string]map[string]struct{})
 }
 
 func (h *Hub) LoadLastTyping(key string) (any, bool) {
@@ -197,6 +200,15 @@ func (h *Hub) Unregister(connectionID string, conn *Connection) {
 			delete(h.userConns, current.UserID)
 		}
 	}
+
+	if current.SessionID != "" {
+		if conns := h.sessionConns[current.SessionID]; conns != nil {
+			delete(conns, connectionID)
+			if len(conns) == 0 {
+				delete(h.sessionConns, current.SessionID)
+			}
+		}
+	}
 }
 
 func (h *Hub) GetConnection(connectionID string) *Connection {
@@ -250,6 +262,12 @@ func (h *Hub) BindSession(connectionID, userID, sessionID string, expiresAt time
 	// connection (e.g. a retried auth request).
 	if !slices.Contains(h.userConns[userID], connectionID) {
 		h.userConns[userID] = append(h.userConns[userID], connectionID)
+	}
+	if sessionID != "" {
+		if h.sessionConns[sessionID] == nil {
+			h.sessionConns[sessionID] = make(map[string]struct{})
+		}
+		h.sessionConns[sessionID][connectionID] = struct{}{}
 	}
 
 	return true, nil
@@ -319,7 +337,11 @@ func (h *Hub) UpdateSessionExpiry(sessionID string, expiresAt time.Time) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	for _, conn := range h.connections {
+	for id := range h.sessionConns[sessionID] {
+		conn := h.connections[id]
+		if conn == nil {
+			continue
+		}
 		conn.mu.Lock()
 		if conn.SessionID == sessionID {
 			conn.ExpiresAt = expiresAt
@@ -367,15 +389,10 @@ func (h *Hub) sessionConnectionIDs(sessionID string) []string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	ids := make([]string, 0)
-	for id, conn := range h.connections {
-		conn.mu.Lock()
-		match := conn.SessionID == sessionID
-		conn.mu.Unlock()
-
-		if match {
-			ids = append(ids, id)
-		}
+	conns := h.sessionConns[sessionID]
+	ids := make([]string, 0, len(conns))
+	for id := range conns {
+		ids = append(ids, id)
 	}
 
 	return ids

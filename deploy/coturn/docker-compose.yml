@@ -1,0 +1,14 @@
+services:
+  coturn:
+    image: coturn/coturn:4.6.3
+    restart: unless-stopped
+    # TURN needs the real client address and a wide UDP range. Host
+    # networking is the least surprising option on Linux; with a bridge use
+    # the ports below plus external-ip in turnserver.conf.
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ./certs:/etc/coturn/certs:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]

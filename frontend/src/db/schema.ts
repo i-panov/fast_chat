@@ -137,6 +137,7 @@ export interface CachedFile {
 	blob: Blob;
 	mimeType: string;
 	cachedAt: number;
+	lastAccessedAt?: number;
 	size: number;
 }
 

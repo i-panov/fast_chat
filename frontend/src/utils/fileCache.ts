@@ -83,6 +83,26 @@ export function releaseFileBlobUrl(fileUrl: string): void {
 	}
 }
 
+export function isFileCached(fileUrl: string): Promise<boolean> {
+	return fileCacheRepo.isCached(fileUrl);
+}
+
+// saveFileOffline downloads the file even when it is above the automatic
+// cache threshold. The caller must pass the account token.
+export async function saveFileOffline(
+	fileUrl: string,
+	token: string | undefined,
+): Promise<void> {
+	if (await fileCacheRepo.isCached(fileUrl)) return;
+
+	const headers: Record<string, string> = {};
+	if (token !== undefined) headers.Authorization = `Bearer ${token}`;
+	const response = await fetch(fileUrl, { headers });
+	if (!response.ok) throw new Error(`Failed to load file: ${response.status}`);
+	const blob = await response.blob();
+	await fileCacheRepo.put(fileUrl, blob, blob.type, true);
+}
+
 async function loadFile(
 	key: string,
 	fileUrl: string,

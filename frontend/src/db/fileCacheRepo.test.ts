@@ -24,6 +24,12 @@ describe("fileCacheRepo", () => {
 		expect(await fileCacheRepo.get("https://srv/missing")).toBeUndefined();
 	});
 
+	it("reports whether a file is cached", async () => {
+		expect(await fileCacheRepo.isCached("https://srv/none")).toBe(false);
+		await fileCacheRepo.put("https://srv/cached", blob("abc"), "text/plain");
+		expect(await fileCacheRepo.isCached("https://srv/cached")).toBe(true);
+	});
+
 	it("removes an entry", async () => {
 		await fileCacheRepo.put("https://srv/a", blob("abc"), "text/plain");
 		await fileCacheRepo.remove("https://srv/a");

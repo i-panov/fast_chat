@@ -216,5 +216,7 @@
 	"messageSearch.title": "Поиск по сообщениям",
 	"messageSearch.placeholder": "Текст сообщения…",
 	"messageSearch.hint": "Введите минимум 2 символа.",
-	"messageSearch.empty": "Ничего не найдено."
+	"messageSearch.empty": "Ничего не найдено.",
+	"media.saveOffline": "Сохранить офлайн",
+	"media.savedOffline": "Сохранено офлайн"
 }

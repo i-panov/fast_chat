@@ -555,3 +555,25 @@ func TestBindSessionConcurrentReplaysCreateOneBinding(t *testing.T) {
 		t.Fatalf("userConns = %v, want one entry", h.userConns["u1"])
 	}
 }
+
+func TestSessionConnectionIndex(t *testing.T) {
+	h := NewHub(time.Minute)
+	t.Cleanup(h.Close)
+
+	h.Register("c1")
+	h.Register("c2")
+	if _, err := h.BindSession("c1", "u1", "s1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.BindSession("c2", "u1", "s1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(h.sessionConnectionIDs("s1")); got != 2 {
+		t.Fatalf("session index = %d, want 2", got)
+	}
+
+	h.CloseSession("s1")
+	if got := len(h.sessionConnectionIDs("s1")); got != 0 {
+		t.Fatalf("session index after close = %d, want 0", got)
+	}
+}

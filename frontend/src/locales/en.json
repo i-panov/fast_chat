@@ -214,5 +214,7 @@
 	"messageSearch.title": "Search messages",
 	"messageSearch.placeholder": "Message text…",
 	"messageSearch.hint": "Type at least 2 characters.",
-	"messageSearch.empty": "Nothing found."
+	"messageSearch.empty": "Nothing found.",
+	"media.saveOffline": "Save offline",
+	"media.savedOffline": "Saved offline"
 }
