@@ -260,7 +260,7 @@ func (s *Store) AddChatMember(ctx context.Context, chatID, userID string, maxMem
 			return err
 		}
 
-		if count >= int64(maxMembers) {
+		if maxMembers > 0 && count >= int64(maxMembers) {
 			return ErrTooManyMembers
 		}
 

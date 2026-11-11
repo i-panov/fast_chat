@@ -16,7 +16,6 @@ import (
 
 const (
 	groupNameMaxLen = 60
-	maxGroupMembers = 100
 )
 
 // Realtime event names and event payload keys shared across the chat domain.
@@ -239,10 +238,6 @@ func (s *Service) CreateGroupChat(ctx context.Context, ownerID, name string, mem
 		return ChatView{}, ErrGroupNameInvalid
 	}
 
-	if len(memberIDs) > maxGroupMembers {
-		return ChatView{}, ErrTooManyMembers
-	}
-
 	seen := make(map[string]struct{}, len(memberIDs)+1)
 	cleaned := make([]string, 0, len(memberIDs)+1)
 
@@ -337,7 +332,7 @@ func (s *Service) AddChatMember(ctx context.Context, chatID, userID string) (Cha
 		return ChatView{}, ErrUserNotFound
 	}
 
-	if err := s.store.AddChatMember(ctx, chatID, userID, maxGroupMembers); err != nil {
+	if err := s.store.AddChatMember(ctx, chatID, userID, 0); err != nil {
 		return ChatView{}, err
 	}
 
