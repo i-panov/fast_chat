@@ -177,6 +177,10 @@ func (s *Service) HandleFederatedInvite(ctx context.Context, owner, callID, chat
 		return ErrNotParticipant
 	}
 
+	if s.IsBlockedBetween(ctx, calleeID, callerID) {
+		return ErrUserBlocked
+	}
+
 	if existing, ok := s.calls.GetFederated(callID); ok {
 		sameCall := existing.Owner == owner && existing.ChatID == chatID &&
 			existing.CallerID == callerID && existing.CalleeID == calleeID

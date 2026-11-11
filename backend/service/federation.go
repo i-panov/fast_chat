@@ -217,6 +217,12 @@ func (s *Service) SendFederatedMessage(
 		return nil, ErrMessageTooLong
 	}
 
+	for _, memberID := range chat.Members {
+		if s.IsBlockedBetween(ctx, memberID, in.FromID) {
+			return nil, ErrUserBlocked
+		}
+	}
+
 	if in.Location != nil && !ValidCoords(in.Location.Lat, in.Location.Lng) {
 		return nil, ErrInvalidCoordinates
 	}

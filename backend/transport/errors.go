@@ -121,6 +121,10 @@ func mapFederatedCallError(err error) error {
 		return &statusError{ErrorMessage: "call not found", code: http.StatusGone}
 	}
 
+	if errors.Is(err, service.ErrUserBlocked) {
+		return &statusError{ErrorMessage: "user is blocked", code: http.StatusForbidden}
+	}
+
 	return err
 }
 
