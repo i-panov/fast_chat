@@ -1036,3 +1036,38 @@ func TestUserDeviceKeyEndpoints(t *testing.T) {
 		t.Fatalf("delete device key = %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestUserDeviceBackupEndpoints(t *testing.T) {
+	ts := newDomainTestServer(t)
+	h := ts.Handler
+	st := ts.Store
+	user := createTestUser(t, st)
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/device-key", user.Token, `{"publicKey":"`+key+`"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put device key = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	backup := base64.StdEncoding.EncodeToString([]byte("opaque-backup"))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/device-key/backup", user.Token, `{"backup":"`+backup+`"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put backup = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	devices, err := st.ListUserDevices(context.Background(), user.ID)
+	if err != nil || len(devices) != 1 || devices[0].KeyBackup == "" {
+		t.Fatalf("devices = %+v err=%v", devices, err)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodGet, "/api/users/device-keys/"+devices[0].ID+"/backup", user.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get backup = %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeBody(t, rec)
+	if resp["backup"] != backup {
+		t.Fatalf("backup = %v", resp["backup"])
+	}
+}

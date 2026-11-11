@@ -396,6 +396,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 						void refreshKeyPair();
 					}}
 					token={activeAccount.token}
+					deviceId={activeAccount.sessionId}
 					keyPair={keyPair}
 				/>
 			)}

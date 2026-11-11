@@ -19,10 +19,17 @@ interface Props {
 	open: boolean;
 	onClose: () => void;
 	token: string;
+	deviceId?: string;
 	keyPair: KeyPair | null;
 }
 
-export function BackupSettingsModal({ open, onClose, token, keyPair }: Props) {
+export function BackupSettingsModal({
+	open,
+	onClose,
+	token,
+	deviceId,
+	keyPair,
+}: Props) {
 	const { t } = useTranslation();
 	const [exists, setExists] = useState(false);
 	const [password, setPassword] = useState("");
@@ -56,7 +63,7 @@ export function BackupSettingsModal({ open, onClose, token, keyPair }: Props) {
 		setSaving(true);
 		setError(null);
 		try {
-			await uploadKeyBackup(token, password, keyPair);
+			await uploadKeyBackup(token, password, keyPair, deviceId);
 			setExists(true);
 			setDone(true);
 			setPassword("");
@@ -72,7 +79,7 @@ export function BackupSettingsModal({ open, onClose, token, keyPair }: Props) {
 		setSaving(true);
 		setError(null);
 		try {
-			await clearServerKeyBackup(token);
+			await clearServerKeyBackup(token, deviceId);
 			setExists(false);
 			setDone(true);
 		} catch (err) {

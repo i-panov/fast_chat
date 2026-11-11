@@ -1,9 +1,12 @@
 import {
+	deleteDeviceKeyBackup,
 	deleteKeyBackup,
+	getDeviceKeyBackup,
 	getKeyBackup,
 	getPublicKey,
 	getUserDeviceKeys,
 	registerDeviceKey,
+	setDeviceKeyBackup,
 	setKeyBackup,
 	uploadPublicKey,
 } from "../api.ts";
@@ -204,9 +207,13 @@ export async function uploadKeyBackup(
 	token: string,
 	password: string,
 	kp: KeyPair,
+	deviceID?: string,
 ): Promise<void> {
 	const blob = await encryptBackup(password, kp);
 	await setKeyBackup(token, blob);
+	if (deviceID !== undefined) {
+		await setDeviceKeyBackup(token, blob);
+	}
 }
 
 // restoreKeyPairFromBackup fetches the server backup and recovers the key
@@ -227,8 +234,32 @@ export async function restoreKeyPairFromBackup(
 
 // clearServerKeyBackup deletes the tracked user's backup blob (revocation
 // or when the user starts fresh with a newly generated key pair).
-export async function clearServerKeyBackup(token: string): Promise<void> {
+export async function clearServerKeyBackup(
+	token: string,
+	deviceID?: string,
+): Promise<void> {
 	await deleteKeyBackup(token);
+	if (deviceID !== undefined) {
+		await deleteDeviceKeyBackup(token);
+	}
+}
+
+// restoreKeyPairFromDeviceBackup recovers one device's key by password. The
+// key is saved locally and re-registered for the current device, so a new
+// browser can read the history addressed to that device.
+export async function restoreKeyPairFromDeviceBackup(
+	token: string,
+	deviceID: string,
+	password: string,
+): Promise<KeyPair> {
+	const { backup } = await getDeviceKeyBackup(token, deviceID);
+	const kp = await decryptBackup(password, backup);
+	await metaRepo.setNoNotify(PUBLIC_KEY_META, kp.publicKey);
+	await metaRepo.setNoNotify(PRIVATE_KEY_META, kp.privateKey);
+	await metaRepo.setNoNotify(PUBLIC_KEY_UPLOADED_META, true);
+	keyCacheByAccount.set(accountScope(), kp);
+	await ensureDeviceKey(token, kp.publicKey);
+	return kp;
 }
 
 export async function hasServerKeyBackup(token: string): Promise<boolean> {

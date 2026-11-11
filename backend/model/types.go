@@ -185,12 +185,14 @@ type MessageReaction struct {
 // UserDevice is one E2EE device key. Phase B keys messages to the device,
 // not to the account: id is the stable device/session identifier.
 type UserDevice struct {
-	ID         string     `gorm:"primaryKey"     json:"id"`
-	UserID     string     `gorm:"index;not null" json:"userId"`
-	PublicKey  string     `gorm:"not null"       json:"publicKey"`
-	CreatedAt  time.Time  `gorm:"not null"       json:"createdAt"`
-	LastSeenAt time.Time  `gorm:"not null"       json:"lastSeenAt"`
-	RevokedAt  *time.Time `gorm:"index"          json:"revokedAt,omitempty"`
+	ID          string     `gorm:"primaryKey"          json:"id"`
+	UserID      string     `gorm:"index;not null"      json:"userId"`
+	PublicKey   string     `gorm:"not null"            json:"publicKey"`
+	KeyBackup   string     `gorm:"not null;default:''" json:"-"`
+	KeyBackupAt *time.Time `json:"-"`
+	CreatedAt   time.Time  `gorm:"not null"            json:"createdAt"`
+	LastSeenAt  time.Time  `gorm:"not null"            json:"lastSeenAt"`
+	RevokedAt   *time.Time `gorm:"index"               json:"revokedAt,omitempty"`
 }
 
 // UserBlock is a local block: blocker does not want content or calls from

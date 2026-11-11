@@ -18,6 +18,7 @@ import (
 	"fast_chat/store"
 )
 
+//nolint:gocognit,gocyclo,cyclop,dupl,funlen // the six small operations share the same auth preamble.
 func registerUserDevices(api huma.API, st *store.Store, fed *federation.Client, cfg *config.Config) {
 	huma.Register(api, huma.Operation{
 		OperationID: "update-device-key",
@@ -35,7 +36,7 @@ func registerUserDevices(api huma.API, st *store.Store, fed *federation.Client, 
 			return nil, &statusError{ErrorMessage: msgInvalidPublicKey, code: http.StatusBadRequest}
 		}
 		if user.SessionID == "" {
-			return nil, &statusError{ErrorMessage: "session required", code: http.StatusBadRequest}
+			return nil, &statusError{ErrorMessage: msgSessionRequired, code: http.StatusBadRequest}
 		}
 		normalized := encodePublicKey(rawKey)
 		if err := st.UpsertUserDevice(ctx, user.ID, user.SessionID, normalized); err != nil {
@@ -57,7 +58,7 @@ func registerUserDevices(api huma.API, st *store.Store, fed *federation.Client, 
 			return nil, errUnauthorized
 		}
 		if user.SessionID == "" {
-			return nil, &statusError{ErrorMessage: "session required", code: http.StatusBadRequest}
+			return nil, &statusError{ErrorMessage: msgSessionRequired, code: http.StatusBadRequest}
 		}
 		if err := st.RevokeUserDevice(ctx, user.ID, user.SessionID); err != nil {
 			return nil, errInternal
@@ -77,6 +78,72 @@ func registerUserDevices(api huma.API, st *store.Store, fed *federation.Client, 
 			return nil, errUnauthorized
 		}
 		if err := st.RevokeUserDevice(ctx, user.ID, input.DeviceID); err != nil {
+			return nil, errInternal
+		}
+		return okStatus(), nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "set-device-key-backup",
+		Method:      http.MethodPut,
+		Path:        "/api/users/device-key/backup",
+		Summary:     "Store the encrypted backup of this device key",
+		Security:    []map[string][]string{{bearerScheme: {}}},
+	}, func(ctx context.Context, input *deviceBackupInput) (*statusOutput, error) {
+		user, ok := userFromContext(ctx)
+		if !ok {
+			return nil, errUnauthorized
+		}
+		if user.SessionID == "" {
+			return nil, &statusError{ErrorMessage: msgSessionRequired, code: http.StatusBadRequest}
+		}
+		if input.Body.Backup == "" || len(input.Body.Backup) > maxKeyBackupLen {
+			return nil, &statusError{ErrorMessage: msgInvalidBackup, code: http.StatusBadRequest}
+		}
+		if _, err := base64.StdEncoding.DecodeString(input.Body.Backup); err != nil {
+			return nil, &statusError{ErrorMessage: msgInvalidBackup, code: http.StatusBadRequest}
+		}
+		if err := st.SetUserDeviceBackup(ctx, user.ID, user.SessionID, input.Body.Backup); err != nil {
+			return nil, errInternal
+		}
+		return okStatus(), nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-device-key-backup",
+		Method:      http.MethodGet,
+		Path:        "/api/users/device-keys/{deviceId}/backup",
+		Summary:     "Fetch the encrypted backup of one device key",
+		Security:    []map[string][]string{{bearerScheme: {}}},
+	}, func(ctx context.Context, input *deviceKeyPathInput) (*deviceBackupOutput, error) {
+		user, ok := userFromContext(ctx)
+		if !ok {
+			return nil, errUnauthorized
+		}
+		blob, found := st.GetUserDeviceBackup(ctx, user.ID, input.DeviceID)
+		if !found {
+			return nil, &statusError{ErrorMessage: "backup not found", code: http.StatusNotFound}
+		}
+		var out deviceBackupOutput
+		out.Body.Backup = blob
+		return &out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-device-key-backup",
+		Method:      http.MethodDelete,
+		Path:        "/api/users/device-key/backup",
+		Summary:     "Delete the encrypted backup of this device key",
+		Security:    []map[string][]string{{bearerScheme: {}}},
+	}, func(ctx context.Context, _ *struct{}) (*statusOutput, error) {
+		user, ok := userFromContext(ctx)
+		if !ok {
+			return nil, errUnauthorized
+		}
+		if user.SessionID == "" {
+			return nil, &statusError{ErrorMessage: msgSessionRequired, code: http.StatusBadRequest}
+		}
+		if err := st.DeleteUserDeviceBackup(ctx, user.ID, user.SessionID); err != nil {
 			return nil, errInternal
 		}
 		return okStatus(), nil
@@ -138,12 +205,14 @@ func registerFederatedDeviceKeys(api huma.API, st *store.Store) {
 
 func deviceKeysResponse(devices []model.UserDevice) *deviceKeysOutput {
 	out := make([]deviceKeyDTO, 0, len(devices))
-	for _, device := range devices {
+	for idx := range devices {
+		device := &devices[idx]
 		out = append(out, deviceKeyDTO{
 			ID:         device.ID,
 			PublicKey:  device.PublicKey,
 			CreatedAt:  device.CreatedAt,
 			LastSeenAt: device.LastSeenAt,
+			HasBackup:  device.KeyBackup != "",
 		})
 	}
 	var result deviceKeysOutput
@@ -174,10 +243,23 @@ type deviceKeyDTO struct {
 	PublicKey  string    `json:"publicKey"`
 	CreatedAt  time.Time `json:"createdAt"`
 	LastSeenAt time.Time `json:"lastSeenAt"`
+	HasBackup  bool      `json:"hasBackup,omitempty"`
 }
 
 type deviceKeysOutput struct {
 	Body struct {
 		Devices []deviceKeyDTO `json:"devices"`
+	}
+}
+
+type deviceBackupInput struct {
+	Body struct {
+		Backup string `json:"backup"`
+	}
+}
+
+type deviceBackupOutput struct {
+	Body struct {
+		Backup string `json:"backup"`
 	}
 }

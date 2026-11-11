@@ -189,11 +189,11 @@ func registerKeyBackup(api huma.API, st *store.Store) {
 		}
 
 		if input.Body.Backup == "" || len(input.Body.Backup) > maxKeyBackupLen {
-			return nil, &statusError{ErrorMessage: "invalid backup", code: http.StatusBadRequest}
+			return nil, &statusError{ErrorMessage: msgInvalidBackup, code: http.StatusBadRequest}
 		}
 
 		if _, err := base64.StdEncoding.DecodeString(input.Body.Backup); err != nil {
-			return nil, &statusError{ErrorMessage: "invalid backup", code: http.StatusBadRequest}
+			return nil, &statusError{ErrorMessage: msgInvalidBackup, code: http.StatusBadRequest}
 		}
 
 		if err := st.SetKeyBackup(ctx, user.ID, input.Body.Backup); err != nil {

@@ -16,6 +16,8 @@ const (
 	msgFileNotFound      = "file not found"
 	msgInvalidPublicKey  = "invalid public key"
 	msgFailedParseRemote = "failed to parse remote response"
+	msgSessionRequired   = "session required"
+	msgInvalidBackup     = "invalid backup"
 )
 
 // statusError implements huma.StatusError using the pre-migration error

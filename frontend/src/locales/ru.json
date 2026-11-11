@@ -220,5 +220,10 @@
 	"media.saveOffline": "Сохранить офлайн",
 	"media.savedOffline": "Сохранено офлайн",
 	"sessions.key": "ключ E2EE",
-	"sessions.revokeKey": "Отозвать ключ"
+	"sessions.revokeKey": "Отозвать ключ",
+	"sessions.keyBackup": "есть бэкап",
+	"sessions.restoreKey": "Восстановить ключ",
+	"sessions.restoreKeyTitle": "Восстановить ключ устройства",
+	"sessions.restoreKeyHint": "Введите пароль от бэкапа ключа устройства «{{device}}».",
+	"sessions.restoreKeyFailed": "Не удалось восстановить ключ"
 }

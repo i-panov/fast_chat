@@ -5,6 +5,7 @@ export interface DeviceKey {
 	publicKey: string;
 	createdAt: string;
 	lastSeenAt: string;
+	hasBackup?: boolean;
 }
 
 export interface BlockedUser {

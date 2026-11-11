@@ -181,6 +181,8 @@ make frontend:run   # Vite dev-сервер на :5173
 | `PUT`   | `/api/users/device-key` | Bearer | Зарегистрировать ключ текущего устройства |
 | `DELETE`| `/api/users/device-key` | Bearer | Отозвать ключ текущего устройства |
 | `GET`   | `/api/users/{userId}/device-keys` | Bearer | Ключи устройств пользователя |
+| `PUT`   | `/api/users/device-key/backup` | Bearer | Бэкап ключа текущего устройства |
+| `GET`   | `/api/users/device-keys/{deviceId}/backup` | Bearer | Бэкап ключа конкретного устройства |
 | `GET`   | `/api/users/{userId}/public-key` | Bearer | Получить публичный ключ пользователя |
 | `PUT`   | `/api/users/key-backup` | Bearer | Сохранить бэкап ключей |
 | `GET`   | `/api/users/key-backup` | Bearer | Получить бэкап ключей |

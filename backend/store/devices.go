@@ -38,5 +38,26 @@ func (s *Store) RevokeUserDevice(ctx context.Context, userID, deviceID string) e
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Model(&model.UserDevice{}).
 		Where("id = ? AND user_id = ?", deviceID, userID).
-		Update("revoked_at", now).Error
+		Updates(map[string]any{"revoked_at": now, fieldKeyBackup: "", fieldKeyBackupAt: nil}).Error
+}
+
+func (s *Store) SetUserDeviceBackup(ctx context.Context, userID, deviceID, blob string) error {
+	now := time.Now().UTC()
+	return s.db.WithContext(ctx).Model(&model.UserDevice{}).
+		Where("id = ? AND user_id = ?", deviceID, userID).
+		Updates(map[string]any{fieldKeyBackup: blob, fieldKeyBackupAt: now}).Error
+}
+
+func (s *Store) GetUserDeviceBackup(ctx context.Context, userID, deviceID string) (string, bool) {
+	var blob string
+	err := s.db.WithContext(ctx).Model(&model.UserDevice{}).
+		Where("id = ? AND user_id = ? AND revoked_at IS NULL", deviceID, userID).
+		Pluck(fieldKeyBackup, &blob).Error
+	return blob, err == nil && blob != ""
+}
+
+func (s *Store) DeleteUserDeviceBackup(ctx context.Context, userID, deviceID string) error {
+	return s.db.WithContext(ctx).Model(&model.UserDevice{}).
+		Where("id = ? AND user_id = ?", deviceID, userID).
+		Updates(map[string]any{fieldKeyBackup: "", fieldKeyBackupAt: nil}).Error
 }

@@ -195,6 +195,26 @@ export function revokeDeviceKey(token: string) {
 	});
 }
 
+export function setDeviceKeyBackup(token: string, backup: string) {
+	return request<{ status: string }>("/api/users/device-key/backup", token, {
+		method: "PUT",
+		body: JSON.stringify({ backup }),
+	});
+}
+
+export function getDeviceKeyBackup(token: string, deviceId: string) {
+	return request<{ backup: string }>(
+		`/api/users/device-keys/${encodeURIComponent(deviceId)}/backup`,
+		token,
+	);
+}
+
+export function deleteDeviceKeyBackup(token: string) {
+	return request<{ status: string }>("/api/users/device-key/backup", token, {
+		method: "DELETE",
+	});
+}
+
 export function revokeUserDeviceKey(token: string, deviceId: string) {
 	return request<{ status: string }>(
 		`/api/users/device-keys/${encodeURIComponent(deviceId)}`,

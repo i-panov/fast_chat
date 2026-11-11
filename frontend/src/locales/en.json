@@ -218,5 +218,10 @@
 	"media.saveOffline": "Save offline",
 	"media.savedOffline": "Saved offline",
 	"sessions.key": "E2EE key",
-	"sessions.revokeKey": "Revoke key"
+	"sessions.revokeKey": "Revoke key",
+	"sessions.keyBackup": "backup available",
+	"sessions.restoreKey": "Restore key",
+	"sessions.restoreKeyTitle": "Restore device key",
+	"sessions.restoreKeyHint": "Enter the backup password for “{{device}}”.",
+	"sessions.restoreKeyFailed": "Failed to restore the key"
 }
