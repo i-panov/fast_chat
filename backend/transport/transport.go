@@ -714,6 +714,15 @@ func verifyFederatedRequest(fm *federation.Manager, w http.ResponseWriter, r *ht
 		return false, false
 	}
 
+	// Version 1 is the pre-versioning protocol. A future incompatible
+	// version is refused instead of being parsed as v1.
+	if version := r.Header.Get(federation.ProtocolHeader); version != "" {
+		parsed, err := strconv.Atoi(version)
+		if err != nil || parsed != federation.CurrentProtocolVersion {
+			return false, false
+		}
+	}
+
 	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
 	if err != nil {
 		return false, false

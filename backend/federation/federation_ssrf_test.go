@@ -280,7 +280,7 @@ func TestFetchWellKnownRejectsOversizedBody(t *testing.T) {
 
 	domain := strings.TrimPrefix(srv.URL, "http://")
 
-	_, err := m.fetchWellKnown(context.Background(), domain)
+	_, _, err := m.fetchWellKnown(context.Background(), domain)
 	if err == nil {
 		t.Fatal("an oversized well-known body was accepted")
 	}

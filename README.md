@@ -477,3 +477,6 @@ make codeql:backend     # CodeQL (SSRF/taint-анализ, требует CodeQL
 ## Автоматизация
 
 - **Dependabot** (`.github/dependabot.yml`) — еженедельные обновления зависимостей (Go + npm).
+
+
+Версия федеративного протокола: `/.well-known/fast-chat` отдаёт `protocolVersions`, подписанные запросы несут `X-Federation-Protocol` (текущая версия 1).

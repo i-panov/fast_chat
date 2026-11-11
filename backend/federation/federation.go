@@ -39,6 +39,7 @@ var (
 	// ErrInvalidFederationDomain marks a server domain that is not a bare
 	// host with an optional numeric port.
 	ErrInvalidFederationDomain = errors.New("invalid federation server domain")
+	ErrNoCommonProtocol        = errors.New("no common federation protocol")
 )
 
 const (
@@ -46,14 +47,18 @@ const (
 	// unique.
 	NonceHeader = "X-Federation-Nonce"
 
-	wellKnownPath      = "/.well-known/fast-chat"
-	privFileName       = "federation.priv"
-	pubFileName        = "federation.pub"
-	cacheTTL           = 1 * time.Hour
-	negCacheTTL        = 5 * time.Minute
-	replayWindow       = 10 * time.Minute
-	nonceCleanupTick   = 1 * time.Minute
-	timestampTolerance = 5 * time.Minute
+	wellKnownPath  = "/.well-known/fast-chat"
+	ProtocolHeader = "X-Federation-Protocol"
+	// CurrentProtocolVersion is the version this server speaks. Version 1 is
+	// the pre-versioning format; future incompatible changes bump it.
+	CurrentProtocolVersion = 1
+	privFileName           = "federation.priv"
+	pubFileName            = "federation.pub"
+	cacheTTL               = 1 * time.Hour
+	negCacheTTL            = 5 * time.Minute
+	replayWindow           = 10 * time.Minute
+	nonceCleanupTick       = 1 * time.Minute
+	timestampTolerance     = 5 * time.Minute
 	// maxNonces caps the replay-protection map: every (server:signature)
 	// pair lives 10 minutes, so a hostile peer naming fresh nonces could
 	// otherwise grow the sync.Map without bound. Past the cap Verify
@@ -72,6 +77,7 @@ const (
 
 type cacheEntry struct {
 	key       *rsa.PublicKey
+	versions  []int
 	expiresAt time.Time
 }
 
@@ -347,9 +353,10 @@ func (m *Manager) WellKnownHandler(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, map[string]string{
-		"serverDomain": m.serverDomain,
-		"publicKeyPem": pemStr,
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"serverDomain":     m.serverDomain,
+		"publicKeyPem":     pemStr,
+		"protocolVersions": []int{CurrentProtocolVersion},
 	})
 }
 
@@ -358,6 +365,38 @@ func (m *Manager) PublicKeyPEM() (string, error) {
 	return m.publicKeyPEM()
 }
 
+// ProtocolVersion returns the highest protocol version common to this server
+// and the peer. Version 1 is assumed for peers whose well-known predates the
+// protocolVersions field.
+func (m *Manager) ProtocolVersion(_ context.Context, serverDomain string) (int, error) {
+	if serverDomain == m.serverDomain {
+		return CurrentProtocolVersion, nil
+	}
+
+	// The well-known document is fetched by Verify on the inbound side. A
+	// peer that has not been seen yet is assumed to speak v1: sending an
+	// extra round-trip from every outbound request would make the client
+	// depend on a network call that is not needed for the pre-versioning
+	// protocol.
+	m.mu.RLock()
+	entry := m.pubKeyCache[serverDomain]
+	m.mu.RUnlock()
+	versions := []int{1}
+	if entry != nil && len(entry.versions) > 0 {
+		versions = entry.versions
+	}
+
+	best := 0
+	for _, remote := range versions {
+		if remote <= CurrentProtocolVersion && remote > best {
+			best = remote
+		}
+	}
+	if best == 0 {
+		return 0, fmt.Errorf("%w: %q", ErrNoCommonProtocol, serverDomain)
+	}
+	return best, nil
+}
 func (m *Manager) publicKeyPEM() (string, error) {
 	pubBytes, err := x509.MarshalPKIXPublicKey(m.publicKey)
 	if err != nil {
@@ -397,7 +436,7 @@ func (m *Manager) getPublicKey(ctx context.Context, serverDomain string) *rsa.Pu
 		return nil
 	}
 
-	key, err := m.fetchWellKnown(ctx, serverDomain)
+	key, versions, err := m.fetchWellKnown(ctx, serverDomain)
 	if err != nil {
 		slog.Warn("failed to fetch .well-known", "server", serverDomain, "err", err)
 
@@ -411,6 +450,7 @@ func (m *Manager) getPublicKey(ctx context.Context, serverDomain string) *rsa.Pu
 	m.mu.Lock()
 	m.pubKeyCache[serverDomain] = &cacheEntry{
 		key:       key,
+		versions:  versions,
 		expiresAt: time.Now().Add(m.cacheDuration),
 	}
 	delete(m.negCache, serverDomain)
@@ -522,16 +562,16 @@ func (m *Manager) httpClient() *http.Client {
 	return m.client
 }
 
-func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa.PublicKey, error) {
+func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa.PublicKey, []int, error) {
 	if !isValidFederationDomain(serverDomain) {
-		return nil, fmt.Errorf("%w %q", ErrInvalidFederationDomain, serverDomain)
+		return nil, nil, fmt.Errorf("%w %q", ErrInvalidFederationDomain, serverDomain)
 	}
 
 	wellKnownURL := fmt.Sprintf("%s://%s%s", m.scheme, serverDomain, wellKnownPath)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnownURL, http.NoBody)
 	if err != nil {
-		return nil, fmt.Errorf("well-known request creation failed: %w", err)
+		return nil, nil, fmt.Errorf("well-known request creation failed: %w", err)
 	}
 
 	// By design: peers are addressed by domain from X-Federation-Server.
@@ -540,16 +580,17 @@ func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa
 	// verification. codeql[go/request-forgery]
 	resp, err := m.httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("well-known request failed: %w", err)
+		return nil, nil, fmt.Errorf("well-known request failed: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck // body close errors are not actionable
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: %d", ErrWellKnownStatus, resp.StatusCode)
+		return nil, nil, fmt.Errorf("%w: %d", ErrWellKnownStatus, resp.StatusCode)
 	}
 
 	var data struct {
-		PublicKeyPem string `json:"publicKeyPem"`
+		PublicKeyPem     string `json:"publicKeyPem"`
+		ProtocolVersions []int  `json:"protocolVersions"`
 	}
 
 	// The body is read before the request is authenticated: Verify fetches the
@@ -561,10 +602,14 @@ func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa
 	resp.Body = http.MaxBytesReader(nil, resp.Body, maxWellKnownBody)
 
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("failed to decode well-known response: %w", err)
+		return nil, nil, fmt.Errorf("failed to decode well-known response: %w", err)
 	}
 
-	return parsePublicKeyPEM(data.PublicKeyPem)
+	key, err := parsePublicKeyPEM(data.PublicKeyPem)
+	if err != nil {
+		return nil, nil, err
+	}
+	return key, data.ProtocolVersions, nil
 }
 
 // isValidFederationDomain reports whether serverDomain is a bare host with

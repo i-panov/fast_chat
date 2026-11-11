@@ -140,6 +140,9 @@ func verifyRecorded(t *testing.T, verifier *Manager, req recordedRequest) {
 	if got := req.header.Get("X-Federation-Server"); got != "local.test" {
 		t.Errorf("X-Federation-Server = %q, want %q", got, "local.test")
 	}
+	if got := req.header.Get(ProtocolHeader); got != strconv.Itoa(CurrentProtocolVersion) {
+		t.Errorf("%s = %q, want %d", ProtocolHeader, got, CurrentProtocolVersion)
+	}
 
 	if got := req.header.Get(httputil.RequestIDHeader); got != "req-v2-test" {
 		t.Errorf("%s = %q, want %q", httputil.RequestIDHeader, got, "req-v2-test")
@@ -359,7 +362,7 @@ func TestGetPublicKeyReturnsOwnKey(t *testing.T) {
 func TestFetchWellKnownRejectsBadURL(t *testing.T) {
 	m := newTestManager(t, "local.test")
 
-	if _, err := m.fetchWellKnown(context.Background(), "not a domain"); err == nil {
+	if _, _, err := m.fetchWellKnown(context.Background(), "not a domain"); err == nil {
 		t.Error("domain with a space: expected error, got nil")
 	}
 }

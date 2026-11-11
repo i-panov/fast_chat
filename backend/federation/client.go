@@ -201,6 +201,12 @@ func (c *Client) Request(ctx context.Context, method, urlStr string, body any) (
 		req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
 		req.Header.Set(NonceHeader, nonce)
 
+		version, versionErr := c.manager.ProtocolVersion(ctx, parsedURL.Host)
+		if versionErr != nil {
+			return nil, versionErr
+		}
+		req.Header.Set(ProtocolHeader, strconv.Itoa(version))
+
 		// Propagate the incoming request ID so the upstream server can
 		// correlate logs with the originating request.
 		if id := httputil.GetRequestID(ctx); id != "" {

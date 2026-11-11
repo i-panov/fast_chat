@@ -252,8 +252,9 @@ func TestWellKnownHandler(t *testing.T) {
 	}
 
 	var body struct {
-		ServerDomain string `json:"serverDomain"`
-		PublicKeyPem string `json:"publicKeyPem"`
+		ServerDomain     string `json:"serverDomain"`
+		PublicKeyPem     string `json:"publicKeyPem"`
+		ProtocolVersions []int  `json:"protocolVersions"`
 	}
 
 	if err := json.NewDecoder(bytes.NewReader(rec.Body.Bytes())).Decode(&body); err != nil {
@@ -266,6 +267,9 @@ func TestWellKnownHandler(t *testing.T) {
 
 	if body.PublicKeyPem != pemStr {
 		t.Errorf("publicKeyPem mismatch")
+	}
+	if len(body.ProtocolVersions) != 1 || body.ProtocolVersions[0] != CurrentProtocolVersion {
+		t.Errorf("protocolVersions = %v", body.ProtocolVersions)
 	}
 }
 
