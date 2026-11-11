@@ -1,5 +1,5 @@
 import { ActionIcon, Group, Loader, Paper, Tooltip } from "@mantine/core";
-import { Menu } from "lucide-react";
+import { Menu, Search } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useNetworkStatus } from "../../hooks/useNetworkStatus.ts";
@@ -7,6 +7,7 @@ import { useSyncStatus } from "../../hooks/useSyncStatus.ts";
 
 interface Props {
 	onSwitcherToggle: () => void;
+	onOpenMessageSearch?: () => void;
 }
 
 function Dot({ color, label }: { color: string; label: string }) {
@@ -27,7 +28,7 @@ function Dot({ color, label }: { color: string; label: string }) {
 	);
 }
 
-export function AppHeader({ onSwitcherToggle }: Props) {
+export function AppHeader({ onSwitcherToggle, onOpenMessageSearch }: Props) {
 	const { t } = useTranslation();
 	const isOnline = useNetworkStatus();
 	const syncState = useSyncStatus();
@@ -72,7 +73,20 @@ export function AppHeader({ onSwitcherToggle }: Props) {
 				>
 					<Menu size={18} />
 				</ActionIcon>
-				{indicator}
+				<Group gap={4}>
+					{onOpenMessageSearch !== undefined && (
+						<ActionIcon
+							variant="subtle"
+							color="gray"
+							size="lg"
+							onClick={onOpenMessageSearch}
+							aria-label={t("messageSearch.open")}
+						>
+							<Search size={18} />
+						</ActionIcon>
+					)}
+					{indicator}
+				</Group>
 			</Group>
 		</Paper>
 	);

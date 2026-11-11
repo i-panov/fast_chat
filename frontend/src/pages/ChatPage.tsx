@@ -27,6 +27,7 @@ import { IncomingCallSection } from "../components/chat/IncomingCallOverlay.tsx"
 import { InputBar } from "../components/chat/InputBar.tsx";
 import { LocationPickerModal } from "../components/chat/LocationPickerModal.tsx";
 import { MessageList } from "../components/chat/MessageList.tsx";
+import { MessageSearchModal } from "../components/chat/MessageSearchModal.tsx";
 import { MultiDeviceKeyModal } from "../components/chat/MultiDeviceKeyModal.tsx";
 import { PinnedMessagesModal } from "../components/chat/PinnedMessagesModal.tsx";
 import { RecoveryModal } from "../components/chat/RecoveryModal.tsx";
@@ -472,6 +473,7 @@ export function ChatPage() {
 	const s = useChatPage();
 	const { selectChat, handleOpenThread } = s;
 	const { t } = useTranslation();
+	const [messageSearchOpen, setMessageSearchOpen] = useState(false);
 
 	usePushNotifications(s.activeAccount?.token ?? "");
 
@@ -544,13 +546,22 @@ export function ChatPage() {
 		<ChatContext.Provider value={s}>
 			<Stack h="100%" gap={0}>
 				<MultiDeviceKeyModal activeToken={s.activeAccount?.token ?? null} />
+				<MessageSearchModal
+					open={messageSearchOpen}
+					onClose={() => setMessageSearchOpen(false)}
+					userId={s.user.id}
+					onSelect={(chatId) => selectChat(chatId)}
+				/>
 				<AccountSwitcher
 					open={s.switcherOpen}
 					onClose={() => s.setSwitcherOpen(false)}
 					onLogout={s.logout}
 				/>
 				<RecoveryModal activeToken={s.activeAccount?.token ?? null} />
-				<AppHeader onSwitcherToggle={() => s.setSwitcherOpen(true)} />
+				<AppHeader
+					onSwitcherToggle={() => s.setSwitcherOpen(true)}
+					onOpenMessageSearch={() => setMessageSearchOpen(true)}
+				/>
 				<AudioPlayerBar />
 				<div style={{ display: "flex", flex: 1, minHeight: 0 }}>
 					<ErrorBoundary>

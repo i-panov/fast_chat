@@ -209,5 +209,10 @@
 	"message.block": "Block user",
 	"message.forward": "Forward",
 	"forward.title": "Forward message",
-	"forward.empty": "No chats to forward to."
+	"forward.empty": "No chats to forward to.",
+	"messageSearch.open": "Search messages",
+	"messageSearch.title": "Search messages",
+	"messageSearch.placeholder": "Message text…",
+	"messageSearch.hint": "Type at least 2 characters.",
+	"messageSearch.empty": "Nothing found."
 }

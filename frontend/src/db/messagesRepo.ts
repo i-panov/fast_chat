@@ -24,6 +24,11 @@ export const messagesRepo = {
 		);
 	},
 
+	async getAll(): Promise<StoredMessage[]> {
+		const db = await getDB();
+		return db.getAll("messages");
+	},
+
 	async getById(
 		chatId: string,
 		messageId: string,

@@ -211,5 +211,10 @@
 	"message.block": "Заблокировать пользователя",
 	"message.forward": "Переслать",
 	"forward.title": "Переслать сообщение",
-	"forward.empty": "Нет чатов для пересылки."
+	"forward.empty": "Нет чатов для пересылки.",
+	"messageSearch.open": "Поиск по сообщениям",
+	"messageSearch.title": "Поиск по сообщениям",
+	"messageSearch.placeholder": "Текст сообщения…",
+	"messageSearch.hint": "Введите минимум 2 символа.",
+	"messageSearch.empty": "Ничего не найдено."
 }
