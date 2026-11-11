@@ -462,6 +462,26 @@ export function editMessage(token: string, params: EditMessageParams) {
 	});
 }
 
+export function pinMessage(token: string, chatId: string, messageId: string) {
+	return request<{ status: string }>(
+		`/api/chats/${chatId}/pins/${messageId}`,
+		token,
+		{ method: "POST" },
+	);
+}
+
+export function unpinMessage(token: string, chatId: string, messageId: string) {
+	return request<{ status: string }>(
+		`/api/chats/${chatId}/pins/${messageId}`,
+		token,
+		{ method: "DELETE" },
+	);
+}
+
+export function getPinnedMessages(token: string, chatId: string) {
+	return request<{ messages: Message[] }>(`/api/chats/${chatId}/pins`, token);
+}
+
 export function createThread(token: string, chatId: string, messageId: string) {
 	return request<{ thread: Thread }>(
 		`/api/chats/${chatId}/messages/${messageId}/thread`,

@@ -1,10 +1,14 @@
+// The page composes every chat surface; the file is intentionally a single
+// layout module.
+/* eslint-disable max-lines */
 import { ActionIcon, Center, Group, Paper, Stack, Text } from "@mantine/core";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { Settings } from "lucide-react";
+import { Pin, Settings } from "lucide-react";
 import type * as React from "react";
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
+import { getPinnedMessages, pinMessage, unpinMessage } from "../api.ts";
 import { ActiveCallOverlay } from "../components/chat/ActiveCallOverlay.tsx";
 import { AppHeader } from "../components/chat/AppHeader.tsx";
 import { AudioPlayerBar } from "../components/chat/AudioPlayerBar.tsx";
@@ -18,14 +22,17 @@ import { InputBar } from "../components/chat/InputBar.tsx";
 import { LocationPickerModal } from "../components/chat/LocationPickerModal.tsx";
 import { MessageList } from "../components/chat/MessageList.tsx";
 import { MultiDeviceKeyModal } from "../components/chat/MultiDeviceKeyModal.tsx";
+import { PinnedMessagesModal } from "../components/chat/PinnedMessagesModal.tsx";
 import { RecoveryModal } from "../components/chat/RecoveryModal.tsx";
 import { SearchBox } from "../components/chat/SearchBox.tsx";
 import { ThreadView } from "../components/chat/ThreadView.tsx";
 import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
 import { OnlineDot } from "../components/shared/OnlineDot.tsx";
 import ChatContext from "../context/ChatContext.tsx";
+import { chatsRepo } from "../db/chatsRepo.ts";
 import { useChatPage } from "../hooks/useChatInteraction.ts";
 import { usePushNotifications } from "../hooks/usePushNotifications.ts";
+import type { Message } from "../types/api.ts";
 import { chatTitle } from "../utils/chat.ts";
 
 type ChatPageState = ReturnType<typeof useChatPage>;
@@ -62,6 +69,7 @@ function ChatHeader({
 	badge,
 	typingNick,
 	online,
+	pinnedButton,
 	callButton,
 	onOpenSettings,
 }: {
@@ -70,6 +78,7 @@ function ChatHeader({
 	badge?: string;
 	typingNick?: string;
 	online?: boolean;
+	pinnedButton?: React.ReactNode;
 	callButton?: React.ReactNode;
 	onOpenSettings?: () => void;
 }) {
@@ -110,6 +119,7 @@ function ChatHeader({
 					)}
 				</div>
 				<Group gap={4} wrap="nowrap">
+					{pinnedButton}
 					{callButton}
 					{onOpenSettings !== undefined && (
 						<ActionIcon
@@ -131,9 +141,11 @@ function ChatHeader({
 function ChatHeaderSlot({
 	s,
 	userId,
+	pinnedButton,
 }: {
 	s: ChatPageState;
 	userId: string;
+	pinnedButton?: React.ReactNode;
 }): React.ReactElement | null {
 	const { t } = useTranslation();
 
@@ -171,6 +183,7 @@ function ChatHeaderSlot({
 		<ChatHeader
 			title={title}
 			subtitle={subtitle}
+			pinnedButton={pinnedButton}
 			typingNick={typingNick}
 			online={isGroup || isSelf ? undefined : (otherMember?.online ?? false)}
 			callButton={
@@ -303,11 +316,76 @@ function PendingChatView({ s, userId }: { s: ChatPageState; userId: string }) {
 }
 
 function ActiveChatView({ s, userId }: { s: ChatPageState; userId: string }) {
+	const { t } = useTranslation();
 	const showAuthorForGroup = s.activeChat?.type === "group";
+	const [pinsOpen, setPinsOpen] = useState(false);
+	const [pins, setPins] = useState<Message[]>([]);
+	const [pinsLoading, setPinsLoading] = useState(false);
+	const chat = s.activeChat;
+	const token = s.activeAccount?.token;
+	const pinnedIds = new Set(chat?.pinnedMessageIds ?? []);
+	const canPin =
+		chat !== undefined && (chat.type !== "group" || chat.ownerId === userId);
+
+	const loadPins = useCallback(async () => {
+		if (chat === undefined || token === undefined) return;
+		setPinsLoading(true);
+		try {
+			const result = await getPinnedMessages(token, chat.id);
+			setPins(result.messages);
+		} finally {
+			setPinsLoading(false);
+		}
+	}, [chat, token]);
+
+	const openPins = useCallback(() => {
+		setPinsOpen(true);
+		void loadPins();
+	}, [loadPins]);
+
+	const togglePin = useCallback(
+		async (chatId: string, messageId: string) => {
+			if (chat === undefined || token === undefined) return;
+			const pinned = chat.pinnedMessageIds?.includes(messageId) === true;
+			if (pinned) {
+				await unpinMessage(token, chatId, messageId);
+			} else {
+				await pinMessage(token, chatId, messageId);
+			}
+			const current = chat.pinnedMessageIds ?? [];
+			const next = pinned
+				? current.filter((id) => id !== messageId)
+				: [messageId, ...current];
+			await chatsRepo.upsert({ ...chat, pinnedMessageIds: next });
+			if (pinsOpen) await loadPins();
+		},
+		[chat, token, pinsOpen, loadPins],
+	);
 
 	return (
 		<>
-			<ChatHeaderSlot s={s} userId={userId} />
+			<ChatHeaderSlot
+				s={s}
+				userId={userId}
+				pinnedButton={
+					canPin ? (
+						<ActionIcon
+							variant="subtle"
+							color="gray"
+							size="lg"
+							onClick={openPins}
+							aria-label={t("pins.open")}
+						>
+							<Pin size={18} />
+							{pinnedIds.size > 0 && (
+								<Text size="xs" style={{ marginLeft: 2 }}>
+									{pinnedIds.size}
+								</Text>
+							)}
+						</ActionIcon>
+					) : undefined
+				}
+			/>
 			<MessageList
 				messages={s.activeMessages}
 				userId={userId}
@@ -341,8 +419,22 @@ function ActiveChatView({ s, userId }: { s: ChatPageState; userId: string }) {
 				onCancelSend={(chatId, messageId) => {
 					void s.handleCancelSendMessage(chatId, messageId);
 				}}
+				onPin={(chatId, messageId) => {
+					void togglePin(chatId, messageId);
+				}}
+				pinnedIds={pinnedIds}
 				showAuthorForGroup={showAuthorForGroup}
 				isOffline={!s.isOnline}
+			/>
+			<PinnedMessagesModal
+				open={pinsOpen}
+				onClose={() => setPinsOpen(false)}
+				loading={pinsLoading}
+				messages={pins}
+				canUnpin={canPin}
+				onUnpin={(messageId) => {
+					void togglePin(s.activeChatId ?? "", messageId);
+				}}
 			/>
 			<ChatInputBar s={s} withTyping />
 		</>

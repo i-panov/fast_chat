@@ -184,6 +184,14 @@ type MessageReaction struct {
 	CreatedAt time.Time `gorm:"not null"   json:"createdAt"`
 }
 
+// ChatPin is a message pinned in a chat. Composite key: one pin per message.
+type ChatPin struct {
+	ChatID    string    `gorm:"primaryKey" json:"chatId"`
+	MessageID string    `gorm:"primaryKey" json:"messageId"`
+	PinnedBy  string    `gorm:"not null"   json:"pinnedBy"`
+	CreatedAt time.Time `gorm:"not null"   json:"createdAt"`
+}
+
 type DeletedMessage struct {
 	ChatID    string    `gorm:"primaryKey"     json:"chatId"`
 	MessageID string    `gorm:"primaryKey"     json:"messageId"`

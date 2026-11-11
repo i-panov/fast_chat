@@ -4,6 +4,8 @@ import {
 	CornerUpLeft,
 	MessageCircle,
 	Pencil,
+	Pin,
+	PinOff,
 	RotateCcw,
 	SquareX,
 	Trash2,
@@ -18,6 +20,8 @@ interface Props {
 	canCancelSend: boolean;
 	canReply: boolean;
 	canCreateThread: boolean;
+	canPin: boolean;
+	isPinned: boolean;
 	hasText: boolean;
 	status?: "sent" | "queued" | "failed";
 	onCopy: () => void;
@@ -26,6 +30,7 @@ interface Props {
 	onCancelSend: () => void;
 	onReply: () => void;
 	onCreateThread: () => void;
+	onPin: () => void;
 	onDelete: () => void | Promise<void>;
 	onClose: () => void;
 	menuRef: React.RefObject<HTMLDivElement | null>;
@@ -40,6 +45,8 @@ export function MessageContextMenu({
 	canCancelSend,
 	canReply,
 	canCreateThread,
+	canPin,
+	isPinned,
 	hasText,
 	status,
 	onCopy,
@@ -48,6 +55,7 @@ export function MessageContextMenu({
 	onCancelSend,
 	onReply,
 	onCreateThread,
+	onPin,
 	onDelete,
 	onClose,
 	menuRef,
@@ -115,6 +123,14 @@ export function MessageContextMenu({
 						onClick={onCreateThread}
 					>
 						{t("message.createThread")}
+					</Menu.Item>
+				)}
+				{canPin && (
+					<Menu.Item
+						leftSection={isPinned ? <PinOff size={14} /> : <Pin size={14} />}
+						onClick={onPin}
+					>
+						{isPinned ? t("message.unpin") : t("message.pin")}
 					</Menu.Item>
 				)}
 				{canDelete && (

@@ -10,6 +10,8 @@ interface MenuProps {
 	canCancelSend: boolean;
 	canReply: boolean;
 	canCreateThread: boolean;
+	canPin: boolean;
+	isPinned: boolean;
 	status?: "sent" | "queued" | "failed";
 	text: string;
 	chatId: string;
@@ -21,6 +23,7 @@ interface MenuProps {
 	onCancelSend: MessageBubbleProps["onCancelSend"];
 	onReply: MessageBubbleProps["onReply"];
 	onCreateThread: MessageBubbleProps["onCreateThread"];
+	onPin: MessageBubbleProps["onPin"];
 	onDelete: MessageBubbleProps["onDelete"];
 	onClose: () => void;
 	menuRef: React.RefObject<HTMLDivElement | null>;
@@ -34,6 +37,8 @@ export function BubbleContextMenu({
 	canCancelSend,
 	canReply,
 	canCreateThread,
+	canPin,
+	isPinned,
 	status,
 	text,
 	chatId,
@@ -45,6 +50,7 @@ export function BubbleContextMenu({
 	onCancelSend,
 	onReply,
 	onCreateThread,
+	onPin,
 	onDelete,
 	onClose,
 	menuRef,
@@ -59,6 +65,8 @@ export function BubbleContextMenu({
 			canCancelSend={canCancelSend}
 			canReply={canReply}
 			canCreateThread={canCreateThread}
+			canPin={canPin}
+			isPinned={isPinned}
 			hasText={text.length > 0}
 			status={status}
 			onCopy={() => {
@@ -83,6 +91,10 @@ export function BubbleContextMenu({
 			}}
 			onCreateThread={() => {
 				onCreateThread?.(chatId, msgId);
+				onClose();
+			}}
+			onPin={() => {
+				onPin?.(chatId, msgId);
 				onClose();
 			}}
 			onDelete={() => {

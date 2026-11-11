@@ -27,11 +27,13 @@ const (
 	eventChatDeleted       = "chat_deleted"
 	eventChatMemberAdded   = "chat_member_added"
 	eventChatMemberRemoved = "chat_member_removed"
+	eventChatPinned        = "chat_pinned"
 
 	keyUserID = "userId"
 	keyChatID = "chatId"
 	keyOnline = "online"
 	keyChat   = "chat"
+	keyPinned = "pinned"
 )
 
 // Chat domain errors. Handlers map a specific error to an HTTP status and a
@@ -69,13 +71,14 @@ type MemberView struct {
 // matches the pre-migration handler DTO so SSE events and HTTP payloads stay
 // byte-identical during the migration.
 type ChatView struct {
-	ID        string       `json:"id"`
-	Type      string       `json:"type"`
-	Name      string       `json:"name"`
-	OwnerID   string       `json:"ownerId"`
-	AvatarURL string       `json:"avatarUrl,omitempty"`
-	Members   []MemberView `json:"members"`
-	CreatedAt time.Time    `json:"createdAt"`
+	ID               string       `json:"id"`
+	Type             string       `json:"type"`
+	Name             string       `json:"name"`
+	OwnerID          string       `json:"ownerId"`
+	AvatarURL        string       `json:"avatarUrl,omitempty"`
+	PinnedMessageIDs []string     `json:"pinnedMessageIds,omitempty"` //nolint:tagliatelle // the API uses lower-case Id
+	Members          []MemberView `json:"members"`
+	CreatedAt        time.Time    `json:"createdAt"`
 }
 
 // IsMember reports whether userID is a member of chat.
@@ -114,6 +117,10 @@ func (s *Service) EnrichChatFromNicks(ctx context.Context, chat *model.Chat, nic
 		if f, err := s.store.GetFile(ctx, chat.AvatarFileID); err == nil {
 			view.AvatarURL = f.ToFileInfo().URL
 		}
+	}
+
+	if ids, err := s.store.GetPinnedMessageIDs(ctx, chat.ID); err == nil {
+		view.PinnedMessageIDs = ids
 	}
 
 	for _, member := range chat.Members {

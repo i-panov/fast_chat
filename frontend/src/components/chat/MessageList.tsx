@@ -86,6 +86,8 @@ interface Props {
 	onLoadMore?: () => void;
 	onCreateThread?: (chatId: string, messageId: string) => void;
 	onOpenThread?: (threadId: string) => void;
+	onPin?: (chatId: string, messageId: string) => void;
+	pinnedIds?: Set<string>;
 	messageToThread?: Record<string, string>;
 	threads?: Record<string, Thread>;
 	isInThread?: boolean;
@@ -212,6 +214,8 @@ function MessageEntry(props: {
 	deleteTTL: number;
 	onCreateThread?: Props["onCreateThread"];
 	onOpenThread?: Props["onOpenThread"];
+	onPin?: Props["onPin"];
+	pinnedIds?: Set<string>;
 	messageToThread?: Record<string, string>;
 	threads?: Record<string, Thread>;
 	isInThread?: boolean;
@@ -230,6 +234,8 @@ function MessageEntry(props: {
 		deleteTTL,
 		onCreateThread,
 		onOpenThread,
+		onPin,
+		pinnedIds,
 		messageToThread,
 		threads,
 		isInThread,
@@ -266,6 +272,8 @@ function MessageEntry(props: {
 				files={msg.files}
 				location={msg.location}
 				reactions={msg.reactions}
+				onPin={onPin}
+				isPinned={pinnedIds?.has(msg.id) === true}
 				onReplyClick={onReplyClick}
 				onStartEdit={onStartEdit}
 				onDelete={onDelete}
@@ -310,6 +318,8 @@ export function MessageList({
 	onLoadMore,
 	onCreateThread,
 	onOpenThread,
+	onPin,
+	pinnedIds,
 	messageToThread,
 	threads,
 	isInThread,
@@ -379,6 +389,8 @@ export function MessageList({
 				deleteTTL={deleteTTL}
 				onCreateThread={onCreateThread}
 				onOpenThread={onOpenThread}
+				onPin={onPin}
+				pinnedIds={pinnedIds}
 				messageToThread={messageToThread}
 				threads={threads}
 				isInThread={isInThread}
@@ -397,6 +409,8 @@ export function MessageList({
 			deleteTTL,
 			onCreateThread,
 			onOpenThread,
+			onPin,
+			pinnedIds,
 			messageToThread,
 			threads,
 			isInThread,

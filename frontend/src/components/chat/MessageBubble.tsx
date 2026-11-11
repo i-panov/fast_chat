@@ -58,6 +58,8 @@ export interface MessageBubbleProps {
 	createdAt: string;
 	onCreateThread?: (chatId: string, messageId: string) => void;
 	onOpenThread?: (threadId: string) => void;
+	onPin?: (chatId: string, messageId: string) => void;
+	isPinned?: boolean;
 	threadId?: string;
 	threadMessageCount?: number;
 	isInThread?: boolean;
@@ -121,6 +123,7 @@ function primitivePropsEqual(
 		prev.status === next.status &&
 		prev.deliveryStatus === next.deliveryStatus &&
 		prev.showAuthorNick === next.showAuthorNick &&
+		prev.isPinned === next.isPinned &&
 		prev.encrypted === next.encrypted &&
 		prev.undecryptable === next.undecryptable
 	);
@@ -284,6 +287,8 @@ export const MessageBubble = memo(function MessageBubble({
 	createdAt,
 	onCreateThread,
 	onOpenThread,
+	onPin,
+	isPinned = false,
 	threadId,
 	threadMessageCount,
 	isInThread,
@@ -326,6 +331,8 @@ export const MessageBubble = memo(function MessageBubble({
 	const canCancelSend = onCancelSend !== undefined && status === "queued";
 	const canReply =
 		onReply !== undefined && status !== "queued" && status !== "failed";
+	const canPin =
+		onPin !== undefined && status !== "queued" && status !== "failed";
 	const canCreateThread =
 		onCreateThread !== undefined &&
 		threadId === undefined &&
@@ -433,6 +440,8 @@ export const MessageBubble = memo(function MessageBubble({
 				canCancelSend={canCancelSend}
 				canReply={canReply}
 				canCreateThread={canCreateThread}
+				canPin={canPin}
+				isPinned={isPinned}
 				status={status}
 				text={text}
 				chatId={chatId}
@@ -444,6 +453,7 @@ export const MessageBubble = memo(function MessageBubble({
 				onCancelSend={onCancelSend}
 				onReply={onReply}
 				onCreateThread={onCreateThread}
+				onPin={onPin}
 				onDelete={onDelete}
 				onClose={closeMenu}
 				menuRef={menuRef}

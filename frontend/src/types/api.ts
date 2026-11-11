@@ -21,6 +21,7 @@ export interface Chat {
 	name: string;
 	ownerId: string;
 	avatarUrl?: string;
+	pinnedMessageIds?: string[];
 	members: MemberInfo[];
 	createdAt: string;
 }

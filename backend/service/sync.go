@@ -12,13 +12,14 @@ const syncDefaultSince = "1970-01-01T00:00:00Z"
 
 // SyncChatDTO describes a changed chat in the sync response.
 type SyncChatDTO struct {
-	ID        string       `json:"id"`
-	Type      string       `json:"type"`
-	Name      string       `json:"name"`
-	OwnerID   string       `json:"ownerId"`
-	AvatarURL string       `json:"avatarUrl,omitempty"`
-	Members   []MemberView `json:"members"`
-	CreatedAt time.Time    `json:"createdAt"`
+	ID               string       `json:"id"`
+	Type             string       `json:"type"`
+	Name             string       `json:"name"`
+	OwnerID          string       `json:"ownerId"`
+	AvatarURL        string       `json:"avatarUrl,omitempty"`
+	PinnedMessageIDs []string     `json:"pinnedMessageIds,omitempty"` //nolint:tagliatelle // the API uses lower-case Id
+	Members          []MemberView `json:"members"`
+	CreatedAt        time.Time    `json:"createdAt"`
 }
 
 // SyncDeletedMessageDTO is a tombstone for a deleted message.
@@ -207,6 +208,9 @@ func (s *Service) buildChats(ctx context.Context, chats []*model.Chat, nicks map
 			if f, err := s.store.GetFile(ctx, chat.AvatarFileID); err == nil {
 				dto.AvatarURL = f.ToFileInfo().URL
 			}
+		}
+		if ids, err := s.store.GetPinnedMessageIDs(ctx, chat.ID); err == nil {
+			dto.PinnedMessageIDs = ids
 		}
 
 		out = append(out, dto)

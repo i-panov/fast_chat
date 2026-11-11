@@ -437,6 +437,10 @@ func (s *Store) DeleteMessage(ctx context.Context, chatID, messageID, userID str
 			return err
 		}
 
+		if err := tx.Where("chat_id = ? AND message_id = ?", chatID, messageID).Delete(&model.ChatPin{}).Error; err != nil {
+			return err
+		}
+
 		if err := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{}).Error; err != nil {
 			return err
 		}

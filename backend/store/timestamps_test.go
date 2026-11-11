@@ -77,7 +77,7 @@ func newTimestampTestStore(t *testing.T) *Store {
 
 	if err := db.AutoMigrate(
 		&model.User{}, &model.Session{}, &model.Chat{}, &ChatMember{},
-		&model.Message{}, &model.MessageReaction{}, &model.Thread{}, &model.File{},
+		&model.Message{}, &model.MessageReaction{}, &model.ChatPin{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{}, &model.FederationOp{}, &model.FederationCursor{},
 		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{},

@@ -921,3 +921,41 @@ func TestMessageReactionEndpoints(t *testing.T) {
 		t.Fatalf("reactions after remove = %v", resp["reactions"])
 	}
 }
+
+func TestChatPinEndpoints(t *testing.T) {
+	ts := newDomainTestServer(t)
+	h := ts.Handler
+	st := ts.Store
+	user := createTestUser(t, st)
+	chat, err := st.EnsureSelfChat(context.Background(), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, _, err := st.AddMessage(context.Background(), chat.ID, "", user.ID, user.Nick, "pin", "m-pin", "", nil, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/chats/"+chat.ID+"/pins/"+msg.ID, user.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pin = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodGet, "/api/chats/"+chat.ID+"/pins", user.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list pins = %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeBody(t, rec)
+	messages, _ := resp["messages"].([]any)
+	if len(messages) != 1 {
+		t.Fatalf("pins = %v", resp["messages"])
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodDelete, "/api/chats/"+chat.ID+"/pins/"+msg.ID, user.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unpin = %d: %s", rec.Code, rec.Body.String())
+	}
+}

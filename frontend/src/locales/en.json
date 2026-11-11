@@ -194,5 +194,12 @@
 	"input.recordVoice": "Voice message",
 	"input.stopRecording": "Stop recording",
 	"input.recordUnsupported": "Voice recording is not supported by this browser",
-	"input.recordFailed": "Could not start recording. Check microphone access."
+	"input.recordFailed": "Could not start recording. Check microphone access.",
+	"pins.open": "Pinned messages",
+	"pins.title": "Pinned messages",
+	"pins.empty": "No pinned messages in this chat yet.",
+	"pins.encrypted": "Encrypted message",
+	"pins.unpin": "Unpin",
+	"message.pin": "Pin",
+	"message.unpin": "Unpin"
 }

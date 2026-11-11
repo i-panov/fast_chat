@@ -17,6 +17,7 @@ import (
 func RegisterChats(api huma.API, svc *service.Service, fed *federation.Client, cfg *config.Config) {
 	registerChatLifecycle(api, svc, fed, cfg)
 	registerChatMembership(api, svc)
+	registerChatPins(api, svc)
 }
 
 // registerChatLifecycle registers a subset of the operations.

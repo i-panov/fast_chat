@@ -89,6 +89,22 @@ async function applyReactionsEvent(data: {
 	notify();
 }
 
+async function applyChatPinEvent(data: {
+	chatId: string;
+	messageId: string;
+	pinned: boolean;
+}) {
+	const chat = await chatsRepo.getById(data.chatId);
+	if (chat === undefined) return;
+	const current = chat.pinnedMessageIds ?? [];
+	const ids = data.pinned
+		? current.includes(data.messageId)
+			? current
+			: [data.messageId, ...current]
+		: current.filter((id) => id !== data.messageId);
+	await chatsRepo.upsert({ ...chat, pinnedMessageIds: ids });
+}
+
 // routeCallEvent hands a call event to the manager, if there is one.
 function routeCallEvent(
 	callManager: CallManager | undefined,
@@ -201,6 +217,12 @@ export function useSseEvents({
 					await chatsRepo.upsert(chat);
 				}
 
+				return;
+			}
+			if (event === "chat_pinned") {
+				await applyChatPinEvent(
+					data as { chatId: string; messageId: string; pinned: boolean },
+				);
 				return;
 			}
 			if (event === "chat_deleted") {
