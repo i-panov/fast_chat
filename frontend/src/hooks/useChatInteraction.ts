@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import type { CallManager } from "../calls/callManager.ts";
+import { decryptFileStream } from "../e2ee/file-crypto.ts";
 import { ensureAccountKeys, RecoveryRequiredError } from "../e2ee/keys.ts";
 import {
 	retryFailedOps,
 	scheduleSync,
 	setTokenProvider,
 } from "../sync/syncEngine.ts";
-import type { TypingPayload } from "../types/api.ts";
+import type { Message, PendingFile, TypingPayload } from "../types/api.ts";
 import type { ChatPageState } from "../types/chat.ts";
 import { useAuth } from "../useAuth";
 import { useCall } from "./useCall.ts";
@@ -199,6 +200,48 @@ interface ChatPageStateParts {
 	};
 }
 
+// forwardAttachments downloads each attachment, decrypts it when the source
+// message carried a key, and returns a pending file ready for the normal
+// encrypted upload path. The caller revokes the blob URLs after send.
+async function forwardAttachments(
+	message: Message,
+	token: string | undefined,
+): Promise<PendingFile[]> {
+	const out: PendingFile[] = [];
+	for (const file of message.files ?? []) {
+		const key =
+			(file.hash !== undefined ? message.fileKeys?.[file.hash] : undefined) ??
+			message.fileKeys?.[file.id];
+		const headers: Record<string, string> = {};
+		if (token !== undefined) headers.Authorization = `Bearer ${token}`;
+		const response = await fetch(file.url, { headers });
+		if (!response.ok) throw new Error(`forward fetch ${response.status}`);
+		const blob = await response.blob();
+		let plain = blob;
+		if (key !== undefined) {
+			const plainBytes = await decryptFileStream(
+				new Uint8Array(await blob.arrayBuffer()),
+				key,
+			);
+			plain = new Blob([plainBytes as unknown as ArrayBuffer], {
+				type: file.mimeType,
+			});
+		}
+		const local = new File([plain], file.originalName, { type: file.mimeType });
+		out.push({
+			id: crypto.randomUUID(),
+			file: local,
+			blobUrl: URL.createObjectURL(plain),
+			originalName: file.originalName,
+			size: plain.size,
+			mimeType: file.mimeType,
+			fileType: file.fileType,
+			encrypted: true,
+		});
+	}
+	return out;
+}
+
 function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 	return {
 		activeAccount: parts.account.activeAccount,
@@ -240,15 +283,28 @@ function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 		pendingChatNick: parts.search.pendingChatNick,
 		selectPendingChat: parts.search.selectPendingChat,
 		handleDeleteMessage: parts.sender.deleteMessage,
-		handleForwardMessage: (targetChatId, message) => {
-			if (message.undecryptable === true || message.text.trim() === "") {
-				return Promise.resolve(false);
+		handleForwardMessage: async (targetChatId, message) => {
+			if (message.undecryptable === true) return false;
+			if (message.text.trim() === "" && (message.files ?? []).length === 0) {
+				return false;
 			}
-			return parts.sender.sendMessage({
-				chatId: targetChatId,
-				text: message.text,
-				location: message.location,
-			});
+			const token = parts.account.activeAccount?.token;
+			let pendingFiles: PendingFile[] = [];
+			try {
+				pendingFiles = await forwardAttachments(message, token);
+				return await parts.sender.sendMessage({
+					chatId: targetChatId,
+					text: message.text,
+					location: message.location,
+					pendingFiles,
+				});
+			} catch {
+				return false;
+			} finally {
+				for (const file of pendingFiles) {
+					URL.revokeObjectURL(file.blobUrl);
+				}
+			}
 		},
 		editingMessage: parts.editor.editingMessage,
 		handleStartEdit: parts.editor.handleStartEdit,
