@@ -17,6 +17,7 @@ import { ExistingFilePreview } from "./input/ExistingFilePreview.tsx";
 import { LocationPreview } from "./input/LocationPreview.tsx";
 import { PendingFilePreview } from "./input/PendingFilePreview.tsx";
 import { ReplyFilePreviewInline } from "./input/ReplyFilePreviewInline.tsx";
+import { VoiceRecorderButton } from "./input/VoiceRecorderButton.tsx";
 
 const bannerStyle = {
 	padding: "8px 12px",
@@ -268,6 +269,7 @@ function AttachToolbar({
 						</ActionIcon>
 					</Tooltip>
 				)}
+				<VoiceRecorderButton onAttachFiles={onAttachFiles} />
 			</div>
 		</>
 	);

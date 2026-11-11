@@ -190,5 +190,9 @@
 	"backup.newKeyWarning": "A new key cannot decrypt the old history. This cannot be undone.",
 	"backup.newKeyAdvice": "If another device still has the key, enable its backup and recover there first. Continue only if you accept losing access to old messages.",
 	"backup.newKeyConfirm": "Create new key",
-	"reaction.add": "Add reaction"
+	"reaction.add": "Add reaction",
+	"input.recordVoice": "Voice message",
+	"input.stopRecording": "Stop recording",
+	"input.recordUnsupported": "Voice recording is not supported by this browser",
+	"input.recordFailed": "Could not start recording. Check microphone access."
 }
