@@ -229,5 +229,14 @@
 	"login.usernameInvalid": "Username: 3–32 lowercase letters, digits and _",
 	"login.displayName": "Display name (optional)",
 	"chat.botE2EE": "E2EE · only you and the bot can read messages",
-	"chat.botPlaintext": "Bot chat · the server sees messages in plain text"
+	"chat.botPlaintext": "Bot chat · the server sees messages in plain text",
+	"bots.open": "Bots",
+	"bots.title": "Bots",
+	"bots.username": "Bot username",
+	"bots.displayName": "Display name",
+	"bots.create": "Create bot",
+	"bots.rotate": "New token",
+	"bots.empty": "You have no bots yet.",
+	"bots.tokenTitle": "New bot token",
+	"bots.tokenHint": "Copy it now; the full token is shown only once."
 }

@@ -221,8 +221,8 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *FederatedChatDTO) {
 	existing, ok := s.store.GetChat(ctx, chat.ID)
 	if ok {
-		if chat.BotID != "" && existing.BotID != chat.BotID {
-			if err := s.store.SetChatBotID(ctx, existing.ID, chat.BotID); err != nil {
+		if chat.BotID != "" && (existing.BotID != chat.BotID || existing.BotEncryptionMode != chat.BotEncryptionMode) {
+			if err := s.store.SetChatBot(ctx, existing.ID, chat.BotID, chat.BotEncryptionMode); err != nil {
 				log().Warn("federated bot chat metadata could not be restored", "chatID", chat.ID, "err", err)
 			} else {
 				existing.BotID = chat.BotID
@@ -239,14 +239,15 @@ func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *Feder
 	}
 
 	remote := &model.Chat{
-		ID:           chat.ID,
-		Type:         chat.Type,
-		Name:         chat.Name,
-		OwnerID:      chat.OwnerID,
-		Members:      chat.Members,
-		RemoteServer: peer,
-		BotID:        chat.BotID,
-		CreatedAt:    createdAt,
+		ID:                chat.ID,
+		Type:              chat.Type,
+		Name:              chat.Name,
+		OwnerID:           chat.OwnerID,
+		Members:           chat.Members,
+		RemoteServer:      peer,
+		BotID:             chat.BotID,
+		BotEncryptionMode: chat.BotEncryptionMode,
+		CreatedAt:         createdAt,
 	}
 
 	if err := s.store.CreateRemoteChat(ctx, remote); err != nil {

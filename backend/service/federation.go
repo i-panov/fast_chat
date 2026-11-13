@@ -129,6 +129,7 @@ func (s *Service) CreateFederatedChat(
 	if !FederatedChatMembersValid(members, remoteServer, localServer) {
 		return ChatView{}, false, ErrFederatedMembersNotValid
 	}
+	mode := ""
 	if botID != "" {
 		if !UserIDBelongsToServer(botID, localServer) {
 			return ChatView{}, false, ErrFederatedMembersNotValid
@@ -137,11 +138,12 @@ func (s *Service) CreateFederatedChat(
 		if !ok || !bot.IsActive {
 			return ChatView{}, false, ErrBotNotActive
 		}
+		mode = bot.EncryptionMode
 	}
 
 	if existing, ok := s.store.GetChat(ctx, chatID); ok {
-		if botID != "" && existing.BotID != botID {
-			if err := s.store.SetChatBotID(ctx, chatID, botID); err != nil {
+		if botID != "" && (existing.BotID != botID || existing.BotEncryptionMode != mode) {
+			if err := s.store.SetChatBot(ctx, chatID, botID, mode); err != nil {
 				return ChatView{}, false, err
 			}
 			for _, memberID := range members {
@@ -157,11 +159,12 @@ func (s *Service) CreateFederatedChat(
 	}
 
 	chat := &model.Chat{
-		ID:           chatID,
-		Members:      members,
-		CreatedAt:    time.Now().UTC(),
-		RemoteServer: remoteServer,
-		BotID:        botID,
+		ID:                chatID,
+		Members:           members,
+		CreatedAt:         time.Now().UTC(),
+		RemoteServer:      remoteServer,
+		BotID:             botID,
+		BotEncryptionMode: mode,
 	}
 
 	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
@@ -503,13 +506,14 @@ type SyncFederatedResponse struct {
 // peer is authoritative for it, so a server that missed the creation of the
 // chat can rebuild it from the catch-up response.
 type FederatedChatDTO struct {
-	ID        string    `json:"id"`
-	Type      string    `json:"type"`
-	Name      string    `json:"name"`
-	OwnerID   string    `json:"ownerId"`
-	Members   []string  `json:"members"`
-	BotID     string    `json:"botId,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID                string    `json:"id"`
+	Type              string    `json:"type"`
+	Name              string    `json:"name"`
+	OwnerID           string    `json:"ownerId"`
+	Members           []string  `json:"members"`
+	BotID             string    `json:"botId,omitempty"`
+	BotEncryptionMode string    `json:"botEncryptionMode,omitempty"`
+	CreatedAt         time.Time `json:"createdAt"`
 }
 
 // SyncFederated returns the messages and deleted messages changed since the
@@ -584,13 +588,14 @@ func (s *Service) federatedChats(ctx context.Context, chatIDs []string) []Federa
 	out := make([]FederatedChatDTO, 0, len(chats))
 	for idx := range chats {
 		out = append(out, FederatedChatDTO{
-			ID:        chats[idx].ID,
-			Type:      chats[idx].Type,
-			Name:      chats[idx].Name,
-			OwnerID:   chats[idx].OwnerID,
-			Members:   chats[idx].Members,
-			BotID:     chats[idx].BotID,
-			CreatedAt: chats[idx].CreatedAt,
+			ID:                chats[idx].ID,
+			Type:              chats[idx].Type,
+			Name:              chats[idx].Name,
+			OwnerID:           chats[idx].OwnerID,
+			Members:           chats[idx].Members,
+			BotID:             chats[idx].BotID,
+			BotEncryptionMode: chats[idx].BotEncryptionMode,
+			CreatedAt:         chats[idx].CreatedAt,
 		})
 	}
 

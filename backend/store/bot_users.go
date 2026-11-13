@@ -25,3 +25,9 @@ func (s *Store) GetChatBotID(ctx context.Context, chatID string) (string, bool) 
 	}
 	return botID, true
 }
+
+func (s *Store) SetChatBot(ctx context.Context, chatID, botID, encryptionMode string) error {
+	return s.db.WithContext(ctx).Model(&model.Chat{}).
+		Where("id = ?", chatID).
+		Updates(map[string]any{"bot_id": botID, "bot_encryption_mode": encryptionMode}).Error
+}

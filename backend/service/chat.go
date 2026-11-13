@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -113,13 +115,14 @@ func (s *Service) Chat(ctx context.Context, chatID string) (*model.Chat, error) 
 // ready-made nick lookup (skipping per-member DB queries).
 func (s *Service) EnrichChatFromNicks(ctx context.Context, chat *model.Chat, nicks map[string]string) ChatView {
 	view := ChatView{
-		ID:        chat.ID,
-		Type:      chat.Type,
-		Name:      chat.Name,
-		OwnerID:   chat.OwnerID,
-		BotID:     chat.BotID,
-		IsBotChat: chat.BotID != "",
-		CreatedAt: chat.CreatedAt,
+		ID:                chat.ID,
+		Type:              chat.Type,
+		Name:              chat.Name,
+		OwnerID:           chat.OwnerID,
+		BotID:             chat.BotID,
+		IsBotChat:         chat.BotID != "",
+		BotEncryptionMode: chat.BotEncryptionMode,
+		CreatedAt:         chat.CreatedAt,
 	}
 
 	if chat.AvatarFileID != "" {
@@ -241,10 +244,17 @@ func (s *Service) CreatePrivateChat(ctx context.Context, userID, withUserID stri
 		return ChatView{}, err
 	}
 	if isBot {
-		if err := s.store.SetChatBotID(ctx, chat.ID, withUserID); err != nil {
+		mode := EncryptionModeServer
+		if remoteServer != "" {
+			if remoteMode, ok := s.remoteBotEncryptionMode(ctx, withUserID, remoteServer); ok {
+				mode = remoteMode
+			}
+		}
+		if err := s.store.SetChatBot(ctx, chat.ID, withUserID, mode); err != nil {
 			return ChatView{}, err
 		}
 		chat.BotID = withUserID
+		chat.BotEncryptionMode = mode
 	}
 
 	view := s.EnrichChat(ctx, chat)
@@ -786,4 +796,22 @@ func (s *Service) replicateGroupMembership(ctx context.Context, chat *model.Chat
 	if _, err := s.fed.Request(ctx, "POST", groupURL, body); err != nil {
 		log().Warn("federated group membership sync failed", "server", domain, "err", err)
 	}
+}
+
+func (s *Service) remoteBotEncryptionMode(ctx context.Context, userID, remoteServer string) (string, bool) {
+	if s.fed == nil {
+		return "", false
+	}
+	urlStr := s.fed.URL(remoteServer, "/api/federated/users/"+url.PathEscape(userID)+"/public-key")
+	data, err := s.fed.Request(ctx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		return "", false
+	}
+	var body struct {
+		EncryptionMode string `json:"encryptionMode"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return "", false
+	}
+	return body.EncryptionMode, body.EncryptionMode != ""
 }

@@ -22,6 +22,8 @@ const (
 	keyText             = "text"
 	keyEncrypted        = "encrypted"
 	keyEncryptedPayload = "encryptedPayload"
+	// EncryptionModeServer is the plaintext bot mode.
+	EncryptionModeServer = "server"
 )
 
 var (
@@ -107,7 +109,7 @@ func (s *Service) CreateBot(ctx context.Context, ownerID, username, displayName 
 	bot := &model.Bot{
 		UserID: userID, OwnerID: ownerID,
 		TokenHash: hash, TokenPrefix: prefix,
-		EncryptionMode: "server", IsActive: true,
+		EncryptionMode: EncryptionModeServer, IsActive: true,
 	}
 	if err := s.store.CreateBot(ctx, bot, nil); err != nil {
 		return nil, err

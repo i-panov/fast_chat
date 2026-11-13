@@ -682,6 +682,9 @@ func TestFederationPairRemoteBotChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := pair.b.svc.SetBotEncryptionKey(ctx, created.User.ID, "cHVibGlj"); err != nil {
+		t.Fatal(err)
+	}
 
 	status, body := pair.a.doJSON(t, http.MethodPost, "/api/chats", alice.Token, map[string]any{
 		"withUserId": created.User.ID, "withUserIsBot": true,
@@ -694,7 +697,9 @@ func TestFederationPairRemoteBotChat(t *testing.T) {
 	if chatID == "" {
 		t.Fatalf("chat id missing: %v", body)
 	}
-	if chatBody["isBotChat"] != true || chatBody["botId"] != created.User.ID {
+	if chatBody["isBotChat"] != true || chatBody["botId"] != created.User.ID ||
+		chatBody["botEncryptionMode"] != "e2ee" {
+
 		t.Fatalf("chat = %v", chatBody)
 	}
 	eventually(t, "bot chat replica on B", func() bool {

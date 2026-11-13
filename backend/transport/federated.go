@@ -65,7 +65,11 @@ func registerFederatedUsers(api huma.API, st *store.Store, svc *service.Service,
 			return nil, &statusError{ErrorMessage: "user has no public key", code: http.StatusNotFound}
 		}
 
-		return publicKeyResponseBody(key), nil
+		out := publicKeyResponseBody(key)
+		if bot, ok := st.GetBot(ctx, input.UserID); ok {
+			out.Body.EncryptionMode = bot.EncryptionMode
+		}
+		return out, nil
 	})
 }
 

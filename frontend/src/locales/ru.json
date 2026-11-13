@@ -231,5 +231,14 @@
 	"login.usernameInvalid": "Username: 3–32 символа, только латиница, цифры и _",
 	"login.displayName": "Отображаемое имя (необязательно)",
 	"chat.botE2EE": "E2EE · сообщения видны только вам и боту",
-	"chat.botPlaintext": "Чат с ботом · сервер видит сообщения в открытом виде"
+	"chat.botPlaintext": "Чат с ботом · сервер видит сообщения в открытом виде",
+	"bots.open": "Боты",
+	"bots.title": "Боты",
+	"bots.username": "Username бота",
+	"bots.displayName": "Отображаемое имя",
+	"bots.create": "Создать бота",
+	"bots.rotate": "Новый токен",
+	"bots.empty": "У вас пока нет ботов.",
+	"bots.tokenTitle": "Новый токен бота",
+	"bots.tokenHint": "Скопируйте сейчас; полностью токен показывается один раз."
 }

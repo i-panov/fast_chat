@@ -64,6 +64,8 @@ type Chat struct {
 	RemoteServer string    `gorm:"default:''"              json:"-"`
 	// BotID marks a 1-1 chat with a bot (local or remote).
 	BotID string `gorm:"default:'';index" json:"botId,omitempty"`
+	// BotEncryptionMode is cached for remote bots; local bots resolve it live.
+	BotEncryptionMode string `gorm:"default:''" json:"botEncryptionMode,omitempty"`
 }
 
 type ReplyToInfo struct {

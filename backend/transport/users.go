@@ -294,8 +294,9 @@ type publicKeyPathInput struct {
 
 type publicKeyOutput struct {
 	Body struct {
-		PublicKey  string `json:"publicKey"`
-		KeyVersion string `json:"keyVersion"`
+		PublicKey      string `json:"publicKey"`
+		KeyVersion     string `json:"keyVersion"`
+		EncryptionMode string `json:"encryptionMode,omitempty"`
 	}
 }
 
@@ -303,6 +304,7 @@ func publicKeyResponseBody(key string) *publicKeyOutput {
 	var out publicKeyOutput
 	out.Body.PublicKey = key
 	out.Body.KeyVersion = service.KeyVersionFor(key)
+	out.Body.EncryptionMode = "server"
 
 	return &out
 }

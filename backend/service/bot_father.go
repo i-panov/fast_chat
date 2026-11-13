@@ -33,7 +33,7 @@ func (s *Service) EnsureMasterBot(ctx context.Context) (*model.Bot, *model.User,
 	_, hash, prefix := newBotToken()
 	bot := &model.Bot{
 		UserID: userID, TokenHash: hash, TokenPrefix: prefix,
-		EncryptionMode: "server", IsActive: true, IsMaster: true,
+		EncryptionMode: EncryptionModeServer, IsActive: true, IsMaster: true,
 	}
 	if err := s.store.CreateBot(ctx, bot, nil); err != nil {
 		return nil, nil, err

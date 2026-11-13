@@ -709,3 +709,38 @@ export function getCurrentCall(token: string) {
 export function getIceServers(token: string) {
 	return request<ICEConfig>("/api/ice", token);
 }
+
+export interface ManagedBot {
+	id: string;
+	username: string;
+	displayName?: string;
+	isActive: boolean;
+	isMaster: boolean;
+}
+
+export function listBots(token: string) {
+	return request<{ ok: boolean; result: ManagedBot[] }>("/api/bots", token);
+}
+
+export function createBot(
+	token: string,
+	username: string,
+	displayName: string,
+) {
+	return request<{ ok: boolean; bot: ManagedBot; token: string }>(
+		"/api/bots",
+		token,
+		{
+			method: "POST",
+			body: JSON.stringify({ username, displayName }),
+		},
+	);
+}
+
+export function rotateBotToken(token: string, username: string) {
+	return request<{ ok: boolean; token: string }>(
+		`/api/bots/${encodeURIComponent(username)}/token`,
+		token,
+		{ method: "POST" },
+	);
+}

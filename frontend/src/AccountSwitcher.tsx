@@ -14,6 +14,7 @@ import { useTranslation } from "react-i18next";
 import { getConfig } from "./api.ts";
 import { BackupSettingsModal } from "./components/chat/BackupSettingsModal.tsx";
 import { BlockedUsersModal } from "./components/chat/BlockedUsersModal.tsx";
+import { BotsModal } from "./components/chat/BotsModal.tsx";
 import { ProfileModal } from "./components/chat/ProfileModal.tsx";
 import { SessionsModal } from "./components/chat/SessionsModal.tsx";
 import { UserAvatar } from "./components/shared/UserAvatar.tsx";
@@ -169,6 +170,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const [clearDataLoading, setClearDataLoading] = useState(false);
 	const [backupOpen, setBackupOpen] = useState(false);
 	const [sessionsOpen, setSessionsOpen] = useState(false);
+	const [botsOpen, setBotsOpen] = useState(false);
 	const [profileOpen, setProfileOpen] = useState(false);
 	const [blocksOpen, setBlocksOpen] = useState(false);
 	const [keyPair, setKeyPair] = useState<KeyPair | null>(null);
@@ -269,6 +271,14 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					disabled={activeAccount === null}
 				>
 					{t("sessions.open")}
+				</Button>
+				<Button
+					variant="outline"
+					style={{ width: "100%", marginBottom: "8px" }}
+					onClick={() => setBotsOpen(true)}
+					disabled={activeAccount === null}
+				>
+					{t("bots.open")}
 				</Button>
 				<Button
 					variant="outline"
@@ -386,6 +396,13 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					token={activeAccount.token}
 					userId={activeAccount.user.id}
 					onLogoutAll={logoutAll}
+				/>
+			)}
+			{activeAccount !== null && (
+				<BotsModal
+					open={botsOpen}
+					onClose={() => setBotsOpen(false)}
+					token={activeAccount.token}
 				/>
 			)}
 			{activeAccount !== null && (
