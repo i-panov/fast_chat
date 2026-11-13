@@ -104,7 +104,7 @@ func New(deps *Deps) *Transport {
 	RegisterChats(api, deps.Svc, deps.FedClient, cfg)
 	RegisterMessages(api, deps.Svc, deps.Store, deps.FedClient, cfg)
 	RegisterFiles(api, deps.Store, deps.Svc, deps.FedClient, cfg)
-	registerBots(api, deps.Svc)
+	registerBots(api, deps.Store, deps.Svc, cfg)
 	RegisterSync(api, deps.Svc)
 	RegisterFederated(api, deps.Store, deps.Svc, deps.FedManager, cfg)
 

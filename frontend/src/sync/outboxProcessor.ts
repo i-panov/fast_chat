@@ -93,6 +93,7 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 			replyToId: op.replyToId,
 			fileIDs: uploadedIDs.length > 0 ? uploadedIDs : undefined,
 			fileHashes: op.fileHashes,
+			location: op.location,
 			threadId: op.threadId,
 			encrypted: op.encrypted,
 			encryptedPayload: op.encryptedPayload,
@@ -106,6 +107,7 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 			replyToId: op.replyToId,
 			fileIDs: uploadedIDs.length > 0 ? uploadedIDs : undefined,
 			fileHashes: op.fileHashes,
+			location: op.location,
 			encrypted: op.encrypted,
 			encryptedPayload: op.encryptedPayload,
 		});

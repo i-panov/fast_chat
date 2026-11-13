@@ -27,13 +27,14 @@ const (
 )
 
 var (
-	ErrBotUsernameInvalid = errors.New("bot username must match the username rules and end with _bot")
-	ErrBotUsernameTaken   = errors.New("bot username taken")
-	ErrBotOwnerRequired   = errors.New("bot owner is required")
-	ErrBotNotActive       = errors.New("bot is not active")
-	ErrBotSelfChat        = errors.New("cannot open a bot chat with a bot")
-	ErrBotMarkupInvalid   = errors.New("invalid inline keyboard")
-	ErrBotActionInvalid   = errors.New("unsupported bot action")
+	ErrBotUsernameInvalid  = errors.New("bot username must match the username rules and end with _bot")
+	ErrBotUsernameTaken    = errors.New("bot username taken")
+	ErrBotOwnerRequired    = errors.New("bot owner is required")
+	ErrBotNotActive        = errors.New("bot is not active")
+	ErrBotSelfChat         = errors.New("cannot open a bot chat with a bot")
+	ErrBotMarkupInvalid    = errors.New("invalid inline keyboard")
+	ErrBotActionInvalid    = errors.New("unsupported bot action")
+	ErrBotAttachmentRemote = errors.New("files and locations are not supported for federated bot chats")
 )
 
 var botBaseRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_]{0,26}[a-z0-9])?$`)
@@ -204,19 +205,33 @@ func (s *Service) SetBotEncryptionKey(ctx context.Context, botID, publicKey stri
 // SendBotMessage stores a plaintext bot message and pushes it to the human
 // participant when offline.
 func (s *Service) SendBotMessage(ctx context.Context, botID, chatID, text string, markup *model.InlineKeyboardMarkup) (*model.Message, error) {
-	return s.sendBotMessage(ctx, botID, chatID, text, markup, false, "")
+	return s.sendBotMessage(ctx, botID, chatID, text, markup, false, "", nil, nil)
 }
 
 func (s *Service) SendBotEncryptedMessage(ctx context.Context, botID, chatID, ciphertext, payload string) (*model.Message, error) {
-	return s.sendBotMessage(ctx, botID, chatID, ciphertext, nil, true, payload)
+	return s.sendBotMessage(ctx, botID, chatID, ciphertext, nil, true, payload, nil, nil)
 }
 
+func (s *Service) SendBotFile(ctx context.Context, botID, chatID, fileID, caption string) (*model.Message, error) {
+	return s.sendBotMessage(ctx, botID, chatID, caption, nil, false, "", []string{fileID}, nil)
+}
+
+func (s *Service) SendBotLocation(ctx context.Context, botID, chatID string, lat, lng float64) (*model.Message, error) {
+	if !ValidCoords(lat, lng) {
+		return nil, ErrInvalidCoordinates
+	}
+	return s.sendBotMessage(ctx, botID, chatID, "", nil, false, "", nil, &model.Location{Lat: lat, Lng: lng})
+}
+
+//nolint:gocyclo,cyclop,nestif // attachments, markup, push and federation share one send path.
 func (s *Service) sendBotMessage(
 	ctx context.Context,
 	botID, chatID, text string,
 	markup *model.InlineKeyboardMarkup,
 	encrypted bool,
 	payload string,
+	fileIDs []string,
+	location *model.Location,
 ) (*model.Message, error) {
 
 	bot, ok := s.store.GetBot(ctx, botID)
@@ -236,17 +251,31 @@ func (s *Service) sendBotMessage(
 		return nil, ErrChatNotFound
 	}
 	text = strings.TrimSpace(text)
-	if text == "" {
+	resolvedFiles := s.ResolveMessageFiles(ctx, botID, fileIDs, nil)
+	if text == "" && len(resolvedFiles) == 0 && location == nil {
 		return nil, ErrEmptyMessage
+	}
+	if encrypted && (len(resolvedFiles) > 0 || location != nil) {
+		return nil, ErrBotMarkupInvalid
+	}
+	if chat.RemoteServer != "" && (len(resolvedFiles) > 0 || location != nil) {
+		return nil, ErrBotAttachmentRemote
 	}
 	if err := validateInlineKeyboard(markup); err != nil {
 		return nil, err
 	}
-	msg, created, err := s.store.AddMessage(ctx, chatID, "", botID, user.DisplayName, text, "", "", nil, encrypted, payload)
+	msg, created, err := s.store.AddMessage(ctx, chatID, "", botID, user.DisplayName, text, "", "", location, encrypted, payload)
 	if err != nil {
 		return nil, err
 	}
 	if created {
+		if len(resolvedFiles) > 0 {
+			if err := s.store.AddMessageFiles(ctx, msg.ID, resolvedFiles); err != nil {
+				return nil, err
+			}
+			files, _ := s.store.GetMessageFiles(ctx, msg.ID) //nolint:errcheck // best-effort
+			msg.Files = files
+		}
 		if markup != nil {
 			if err := s.store.SetMessageReplyMarkup(ctx, msg.ID, markup); err != nil {
 				return nil, err
@@ -292,6 +321,8 @@ func (s *Service) AppendBotMessageUpdate(ctx context.Context, chatID string, msg
 			keyText:             msg.Text,
 			keyEncrypted:        msg.Encrypted,
 			"encrypted_payload": msg.EncryptedPayload,
+			"location":          msg.Location,
+			"files":             msg.Files,
 			"date":              msg.CreatedAt,
 		},
 	})

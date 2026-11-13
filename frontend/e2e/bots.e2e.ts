@@ -68,6 +68,17 @@ test("bot API and TypeScript SDK exchange a message and a callback", async ({
 	expect(chatInfo.id).toBe(chat.chat.id);
 	expect(chatInfo.type).toBe("private");
 	await bot.sendChatAction(chat.chat.id, "typing");
+	const uploaded = await bot.uploadFile(
+		new TextEncoder().encode("hello"),
+		"hello.txt",
+		"text/plain",
+	);
+	const fileMessage = await bot.sendFile(chat.chat.id, uploaded.id, "file");
+	expect(fileMessage.files?.[0]?.originalName).toBe("hello.txt");
+	const downloaded = await bot.downloadFile(uploaded.id);
+	expect(new TextDecoder().decode(downloaded)).toBe("hello");
+	const locationMessage = await bot.sendLocation(chat.chat.id, 55.75, 37.61);
+	expect(locationMessage.location).toEqual({ lat: 55.75, lng: 37.61 });
 
 	const sent = await request.post(`/api/chats/${chat.chat.id}/messages`, {
 		headers: auth,

@@ -32,6 +32,19 @@ export interface BotChat {
 	displayName: string;
 }
 
+export interface BotFile {
+	id: string;
+	hash?: string;
+	mimeType: string;
+	size: number;
+	originalName: string;
+}
+
+export interface BotLocation {
+	lat: number;
+	lng: number;
+}
+
 export interface BotMessage {
 	messageId: string;
 	chatId: string;
@@ -41,6 +54,8 @@ export interface BotMessage {
 	replyMarkup?: InlineKeyboardMarkup;
 	encrypted?: boolean;
 	encryptedPayload?: string;
+	files?: BotFile[];
+	location?: BotLocation;
 }
 
 export interface BotCallbackQuery {
@@ -108,6 +123,8 @@ interface RawMessage {
 	text: string;
 	encrypted?: boolean;
 	encrypted_payload?: string;
+	files?: BotFile[];
+	location?: BotLocation;
 	date: string;
 	replyMarkup?: {
 		inline_keyboard: Array<
@@ -291,6 +308,68 @@ export class BotClient {
 		});
 	}
 
+
+	async uploadFile(
+		data: Uint8Array | ArrayBuffer | Blob,
+		filename: string,
+		mimeType = "application/octet-stream",
+	): Promise<BotFile> {
+		if (this.encryptionKey !== undefined) {
+			throw new Error("encrypted bot files are not supported");
+		}
+		const form = new FormData();
+		const blob = data instanceof Blob ? data : new Blob([data as BlobPart], { type: mimeType });
+		form.append("file", blob, filename);
+		const response = await this.fetchImpl(`${this.baseUrl}/api/bot-api/uploadFile`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${this.token}` },
+			body: form,
+		});
+		if (!response.ok) throw new BotApiError(await response.text(), response.status, response.status);
+		const result = (await response.json()) as { file: BotFile };
+		return result.file;
+	}
+
+	async downloadFile(fileId: string): Promise<ArrayBuffer> {
+		const response = await this.fetchImpl(
+			`${this.baseUrl}/api/bot-api/files/${encodeURIComponent(fileId)}`,
+			{ headers: { Authorization: `Bearer ${this.token}` } },
+		);
+		if (!response.ok) throw new BotApiError(await response.text(), response.status, response.status);
+		return response.arrayBuffer();
+	}
+
+	async sendFile(
+		chatId: string,
+		fileId: string,
+		caption?: string,
+	): Promise<BotMessage> {
+		if (this.encryptionKey !== undefined) {
+			throw new Error("encrypted bot files are not supported");
+		}
+		const raw = await this.request<RawMessage>(
+			"POST",
+			"/api/bot-api/sendFile",
+			{ chat_id: chatId, file_id: fileId, caption },
+		);
+		return toMessage(raw);
+	}
+
+	async sendLocation(
+		chatId: string,
+		latitude: number,
+		longitude: number,
+	): Promise<BotMessage> {
+		if (this.encryptionKey !== undefined) {
+			throw new Error("encrypted bot locations are not supported");
+		}
+		const raw = await this.request<RawMessage>(
+			"POST",
+			"/api/bot-api/sendLocation",
+			{ chat_id: chatId, latitude, longitude },
+		);
+		return toMessage(raw);
+	}
 
 	async getChat(chatId: string): Promise<BotChat> {
 		return this.request<BotChat>("POST", "/api/bot-api/getChat", {
@@ -516,6 +595,8 @@ function toMessage(raw: RawMessage): BotMessage {
 		text: raw.text,
 		encrypted: raw.encrypted,
 		encryptedPayload: raw.encrypted_payload,
+		files: raw.files,
+		location: raw.location,
 		date: raw.date,
 		replyMarkup:
 			raw.replyMarkup === undefined

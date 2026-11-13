@@ -5,17 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 
+	"fast_chat/config"
+	"fast_chat/internal/filestage"
 	"fast_chat/model"
 	"fast_chat/service"
+	"fast_chat/store"
 )
 
-//nolint:funlen,gocognit,gocyclo,cyclop,maintidx // one function registers the small Bot API surface.
-func registerBots(api huma.API, svc *service.Service) {
+//nolint:funlen,gocognit,gocyclo,cyclop,dupl,maintidx // one function registers the small Bot API surface.
+func registerBots(api huma.API, st *store.Store, svc *service.Service, cfg *config.Config) {
 	huma.Register(api, huma.Operation{
 		OperationID: "create-bot",
 		Method:      http.MethodPost,
@@ -85,6 +90,85 @@ func registerBots(api huma.API, svc *service.Service) {
 		out.Body.OK = true
 		out.Body.Token = token
 		return &out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID:  "bot-upload-file",
+		Method:       http.MethodPost,
+		Path:         "/api/bot-api/uploadFile",
+		Summary:      "Upload a file as a bot (multipart/form-data)",
+		MaxBodyBytes: filestage.MaxUploadSize,
+	}, func(ctx context.Context, _ *struct{}) (*uploadFileOutput, error) {
+		bot, _, err := botFromContext(ctx, svc)
+		if err != nil {
+			return nil, err
+		}
+		rawRequest, hasRequest := requestFromContext(ctx)
+		rawWriter, hasWriter := responseWriterFromContext(ctx)
+		if !hasRequest || !hasWriter {
+			return nil, errInternal
+		}
+		return uploadFile(ctx, st, svc, cfg, bot.UserID, rawWriter, rawRequest)
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "bot-send-file",
+		Method:      http.MethodPost,
+		Path:        "/api/bot-api/sendFile",
+		Summary:     "Send a previously uploaded file to a bot chat",
+	}, func(ctx context.Context, input *botSendFileInput) (*botSendMessageOutput, error) {
+		bot, user, err := botFromContext(ctx, svc)
+		if err != nil {
+			return nil, err
+		}
+		msg, err := svc.SendBotFile(ctx, bot.UserID, input.Body.ChatID, input.Body.FileID, input.Body.Caption)
+		if err != nil {
+			return nil, botError(err)
+		}
+		return newBotSendOutput(msg, user, http.StatusCreated), nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "bot-send-location",
+		Method:      http.MethodPost,
+		Path:        "/api/bot-api/sendLocation",
+		Summary:     "Send a location to a bot chat",
+	}, func(ctx context.Context, input *botSendLocationInput) (*botSendMessageOutput, error) {
+		bot, user, err := botFromContext(ctx, svc)
+		if err != nil {
+			return nil, err
+		}
+		msg, err := svc.SendBotLocation(ctx, bot.UserID, input.Body.ChatID, input.Body.Latitude, input.Body.Longitude)
+		if err != nil {
+			return nil, botError(err)
+		}
+		return newBotSendOutput(msg, user, http.StatusCreated), nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "bot-download-file",
+		Method:      http.MethodGet,
+		Path:        "/api/bot-api/files/{fileId}",
+		Summary:     "Download a plaintext file attached to a bot chat",
+	}, func(ctx context.Context, input *botFileInput) (*huma.StreamResponse, error) {
+		bot, _, err := botFromContext(ctx, svc)
+		if err != nil {
+			return nil, err
+		}
+		file, err := st.GetFile(ctx, input.FileID)
+		if err != nil || file.RemoteServer != "" {
+			return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+		}
+		if !svc.UserCanAccessFile(ctx, bot.UserID, input.FileID) {
+			return nil, &statusError{ErrorMessage: "not a member", code: http.StatusForbidden}
+		}
+		fullPath := filepath.Join(cfg.Uploads.Dir, file.StoragePath)
+		return &huma.StreamResponse{Body: func(hctx huma.Context) {
+			r, w := humachi.Unwrap(hctx)
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Content-Type", file.MimeType)
+			http.ServeFile(w, r, fullPath)
+		}}, nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -189,11 +273,7 @@ func registerBots(api huma.API, svc *service.Service) {
 		if err != nil {
 			return nil, botError(err)
 		}
-		var out botSendMessageOutput
-		out.Status = http.StatusCreated
-		out.Body.OK = true
-		out.Body.Result = botMessageDTOFrom(msg, user)
-		return &out, nil
+		return newBotSendOutput(msg, user, http.StatusCreated), nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -214,11 +294,7 @@ func registerBots(api huma.API, svc *service.Service) {
 		if err != nil {
 			return nil, botError(err)
 		}
-		var out botSendMessageOutput
-		out.Status = http.StatusOK
-		out.Body.OK = true
-		out.Body.Result = botMessageDTOFrom(msg, user)
-		return &out, nil
+		return newBotSendOutput(msg, user, http.StatusOK), nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -378,6 +454,8 @@ func botError(err error) error {
 		return &statusError{ErrorMessage: "invalid inline keyboard", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrBotActionInvalid):
 		return &statusError{ErrorMessage: "unsupported chat action", code: http.StatusBadRequest}
+	case errors.Is(err, service.ErrBotAttachmentRemote):
+		return &statusError{ErrorMessage: "files and locations are not supported in federated bot chats", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrMessageNotFound):
 		return &statusError{ErrorMessage: "message not found", code: http.StatusNotFound}
 	default:
@@ -429,6 +507,8 @@ type botSendMessageInput struct {
 		ChatID           string                      `json:"chat_id"` //nolint:tagliatelle // Bot API uses snake_case
 		Text             string                      `json:"text"`
 		ReplyMarkup      *model.InlineKeyboardMarkup `json:"reply_markup,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
+		Files            []model.FileInfo            `json:"files,omitempty"`
+		Location         *model.Location             `json:"location,omitempty"`
 		Encrypted        bool                        `json:"encrypted,omitempty"`
 		EncryptedPayload string                      `json:"encrypted_payload,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
 	}
@@ -440,6 +520,8 @@ type botEditMessageInput struct {
 		MessageID        string                      `json:"message_id"` //nolint:tagliatelle // Bot API uses snake_case
 		Text             string                      `json:"text"`
 		ReplyMarkup      *model.InlineKeyboardMarkup `json:"reply_markup,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
+		Files            []model.FileInfo            `json:"files,omitempty"`
+		Location         *model.Location             `json:"location,omitempty"`
 		Encrypted        bool                        `json:"encrypted,omitempty"`
 		EncryptedPayload string                      `json:"encrypted_payload,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
 	}
@@ -561,6 +643,14 @@ type botTokenOutput struct {
 
 func (o *botTokenOutput) GetStatus() int { return o.Status }
 
+func newBotSendOutput(msg *model.Message, user *model.User, status int) *botSendMessageOutput {
+	var out botSendMessageOutput
+	out.Status = status
+	out.Body.OK = true
+	out.Body.Result = botMessageDTOFrom(msg, user)
+	return &out
+}
+
 type botMessageDTO struct {
 	MessageID        string                      `json:"message_id"` //nolint:tagliatelle // Bot API uses snake_case
 	ChatID           string                      `json:"chat_id"`    //nolint:tagliatelle // Bot API uses snake_case
@@ -570,6 +660,8 @@ type botMessageDTO struct {
 	EncryptedPayload string                      `json:"encrypted_payload,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
 	Date             time.Time                   `json:"date"`
 	ReplyMarkup      *model.InlineKeyboardMarkup `json:"reply_markup,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
+	Files            []model.FileInfo            `json:"files,omitempty"`
+	Location         *model.Location             `json:"location,omitempty"`
 }
 
 type botMessageUser struct {
@@ -586,6 +678,7 @@ func botMessageDTOFrom(msg *model.Message, user *model.User) *botMessageDTO {
 		From: botMessageUser{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, IsBot: true},
 		Text: msg.Text, Encrypted: msg.Encrypted, EncryptedPayload: msg.EncryptedPayload,
 		Date: msg.CreatedAt, ReplyMarkup: msg.ReplyMarkup,
+		Files: msg.Files, Location: msg.Location,
 	}
 }
 
@@ -632,4 +725,24 @@ type botChatActionInput struct {
 		ChatID string `json:"chat_id"` //nolint:tagliatelle // Bot API uses snake_case
 		Action string `json:"action"`
 	}
+}
+
+type botSendFileInput struct {
+	Body struct {
+		ChatID  string `json:"chat_id"` //nolint:tagliatelle // Bot API uses snake_case
+		FileID  string `json:"file_id"` //nolint:tagliatelle // Bot API uses snake_case
+		Caption string `json:"caption,omitempty"`
+	}
+}
+
+type botSendLocationInput struct {
+	Body struct {
+		ChatID    string  `json:"chat_id"` //nolint:tagliatelle // Bot API uses snake_case
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	}
+}
+
+type botFileInput struct {
+	FileID string `path:"fileId"`
 }

@@ -71,6 +71,7 @@ export interface OutboxOpSend {
 	replyToId?: string;
 	pendingFileClientIds: string[];
 	fileHashes?: string[];
+	location?: { lat: number; lng: number };
 	// uploadedFileIds persists successfully uploaded file IDs so a retry
 	// after a crash does not re-upload the same blobs (server orphans).
 	uploadedFileIds?: string[];

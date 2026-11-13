@@ -368,6 +368,7 @@ export interface SendMessageParams {
 	threadId?: string;
 	encrypted?: boolean;
 	encryptedPayload?: string;
+	location?: { lat: number; lng: number };
 }
 
 export function sendMessage(token: string, params: SendMessageParams) {
@@ -385,6 +386,7 @@ export function sendMessage(token: string, params: SendMessageParams) {
 			fileHashes: params.fileHashes,
 			encrypted: params.encrypted,
 			encryptedPayload: params.encryptedPayload,
+			location: params.location,
 		}),
 	});
 }

@@ -251,3 +251,38 @@ func TestBotUpdateCarriesEncryptionAndAuthor(t *testing.T) {
 		t.Fatalf("from payload = %s", updates[0].Payload)
 	}
 }
+
+func TestBotSendsFileAndLocation(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateBot(ctx, owner.ID, "media_bot", "Media")
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := s.OpenBotChat(ctx, owner.ID, "media_bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := s.store.SaveFile(ctx, "hash", "text/plain", 5, "a.txt", "a.txt", created.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withFile, err := s.SendBotFile(ctx, created.User.ID, view.ID, file.ID, "caption")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withFile.Files) != 1 || withFile.Files[0].OriginalName != "a.txt" {
+		t.Fatalf("files = %+v", withFile.Files)
+	}
+	withLocation, err := s.SendBotLocation(ctx, created.User.ID, view.ID, 55.75, 37.61)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withLocation.Location == nil || withLocation.Location.Lat != 55.75 {
+		t.Fatalf("location = %+v", withLocation.Location)
+	}
+}

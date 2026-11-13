@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- the plaintext bot and encrypted paths share the same send/edit pipeline. */
 import { useCallback } from "react";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
@@ -170,9 +171,24 @@ async function doSendMessage(
 	if (user === null) return false;
 
 	const chat = await chatsRepo.getById(chatId);
+	if (
+		chat?.isBotChat === true &&
+		chat.botEncryptionMode === "e2ee" &&
+		((pendingFiles ?? []).length > 0 || location !== undefined)
+	) {
+		return false;
+	}
+
 	if (chat?.isBotChat === true && chat.botEncryptionMode !== "e2ee") {
-		// Plaintext bot chats: the server has to hand the text to the bot.
-		if ((pendingFiles ?? []).length > 0 || location !== undefined) return false;
+		// Plaintext bot chats: files stay plaintext too, because the bot
+		// protocol has no encrypted file transport.
+		const forcedFiles = (pendingFiles ?? []).map((file) => ({
+			...file,
+			encrypted: false,
+		}));
+		const prepared = await deps.prepareFiles(forcedFiles, token);
+		const fileInfos = forcedFiles.map(buildStoredFile);
+		const { fileHashes, uploadClientIds } = buildFileMaps(prepared);
 		const botMsgId = genId();
 		const botNow = new Date().toISOString();
 		const stored: Message = {
@@ -183,6 +199,8 @@ async function doSendMessage(
 			text,
 			encrypted: false,
 			createdAt: botNow,
+			files: fileInfos.length > 0 ? fileInfos : undefined,
+			location,
 		};
 		if (inThreadId !== undefined) {
 			await threadMessagesRepo.upsert(stored, inThreadId, "queued");
@@ -197,7 +215,9 @@ async function doSendMessage(
 			text,
 			encrypted: false,
 			replyToId,
-			pendingFileClientIds: [],
+			pendingFileClientIds: uploadClientIds,
+			fileHashes,
+			location,
 			createdAt: botNow,
 			attempts: 0,
 			threadId: inThreadId,
