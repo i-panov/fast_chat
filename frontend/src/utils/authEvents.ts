@@ -20,10 +20,6 @@ export function replacementToken(token: string): string | undefined {
 	return replacements.get(token);
 }
 
-export function forgetTokenReplacement(token: string) {
-	replacements.delete(token);
-}
-
 export function emitUnauthorized(token: string) {
 	window.dispatchEvent(
 		new CustomEvent(UNAUTHORIZED_EVENT, { detail: { token } }),

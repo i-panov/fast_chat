@@ -8,6 +8,7 @@ const navigate = vi.hoisted(() => vi.fn());
 
 const DEBUG_CODE_TEXT = /123456/;
 const BACK_TO_CHAT = /backToChat|Back to chat/;
+const NICK_PLACEHOLDER = /Nickname|Никнейм/;
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual =
@@ -140,7 +141,7 @@ describe("login page", () => {
 		fireEvent.change(code, { target: { value: "654321" } });
 		fireEvent.click(submit());
 
-		const nick = await screen.findByDisplayValue("");
+		const nick = await screen.findByPlaceholderText(NICK_PLACEHOLDER);
 		fireEvent.change(nick, { target: { value: "bob" } });
 		fireEvent.click(submit());
 

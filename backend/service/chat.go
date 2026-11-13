@@ -28,6 +28,7 @@ const (
 	eventChatMemberAdded   = "chat_member_added"
 	eventChatMemberRemoved = "chat_member_removed"
 	eventChatPinned        = "chat_pinned"
+	eventBotCallbackAnswer = "bot_callback_answer"
 
 	keyUserID = "userId"
 	keyChatID = "chatId"
@@ -61,24 +62,30 @@ func (e *GroupMemberNotFoundError) Error() string { return "user not found: " + 
 // MemberView is the transport-neutral member descriptor used by chat views
 // and SSE events.
 type MemberView struct {
-	ID        string `json:"id"`
-	Nick      string `json:"nick"`
-	Online    bool   `json:"online,omitempty"`
-	AvatarURL string `json:"avatarUrl,omitempty"`
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	Nick        string `json:"nick"`
+	DisplayName string `json:"displayName,omitempty"`
+	IsBot       bool   `json:"isBot,omitempty"`
+	Online      bool   `json:"online,omitempty"`
+	AvatarURL   string `json:"avatarUrl,omitempty"`
 }
 
 // ChatView is the transport-neutral enriched chat descriptor. Its JSON shape
 // matches the pre-migration handler DTO so SSE events and HTTP payloads stay
 // byte-identical during the migration.
 type ChatView struct {
-	ID               string       `json:"id"`
-	Type             string       `json:"type"`
-	Name             string       `json:"name"`
-	OwnerID          string       `json:"ownerId"`
-	AvatarURL        string       `json:"avatarUrl,omitempty"`
-	PinnedMessageIDs []string     `json:"pinnedMessageIds,omitempty"` //nolint:tagliatelle // the API uses lower-case Id
-	Members          []MemberView `json:"members"`
-	CreatedAt        time.Time    `json:"createdAt"`
+	ID                string       `json:"id"`
+	Type              string       `json:"type"`
+	Name              string       `json:"name"`
+	OwnerID           string       `json:"ownerId"`
+	AvatarURL         string       `json:"avatarUrl,omitempty"`
+	PinnedMessageIDs  []string     `json:"pinnedMessageIds,omitempty"` //nolint:tagliatelle // the API uses lower-case Id
+	Members           []MemberView `json:"members"`
+	BotID             string       `json:"botId,omitempty"`
+	IsBotChat         bool         `json:"isBotChat,omitempty"`
+	BotEncryptionMode string       `json:"botEncryptionMode,omitempty"`
+	CreatedAt         time.Time    `json:"createdAt"`
 }
 
 // IsMember reports whether userID is a member of chat.
@@ -110,12 +117,20 @@ func (s *Service) EnrichChatFromNicks(ctx context.Context, chat *model.Chat, nic
 		Type:      chat.Type,
 		Name:      chat.Name,
 		OwnerID:   chat.OwnerID,
+		BotID:     chat.BotID,
+		IsBotChat: chat.BotID != "",
 		CreatedAt: chat.CreatedAt,
 	}
 
 	if chat.AvatarFileID != "" {
 		if f, err := s.store.GetFile(ctx, chat.AvatarFileID); err == nil {
 			view.AvatarURL = f.ToFileInfo().URL
+		}
+	}
+
+	if chat.BotID != "" {
+		if bot, ok := s.store.GetBot(ctx, chat.BotID); ok {
+			view.BotEncryptionMode = bot.EncryptionMode
 		}
 	}
 
@@ -128,7 +143,7 @@ func (s *Service) EnrichChatFromNicks(ctx context.Context, chat *model.Chat, nic
 		avatarURL := ""
 		if u, found := s.store.GetUserByID(ctx, member); found {
 			if !ok {
-				nick = u.Nick
+				nick = u.Username
 			}
 			if u.AvatarFileID != "" {
 				avatarURL = "/api/files/" + u.AvatarFileID
@@ -137,12 +152,13 @@ func (s *Service) EnrichChatFromNicks(ctx context.Context, chat *model.Chat, nic
 			nick = member
 		}
 
-		view.Members = append(view.Members, MemberView{
-			ID:        member,
-			Nick:      nick,
-			Online:    s.store.IsOnline(member),
-			AvatarURL: avatarURL,
-		})
+		memberView := MemberView{ID: member, Nick: nick, Online: s.store.IsOnline(member), AvatarURL: avatarURL}
+		if u, found := s.store.GetUserByID(ctx, member); found {
+			memberView.Username = u.Username
+			memberView.DisplayName = u.DisplayName
+			memberView.IsBot = u.IsBot
+		}
+		view.Members = append(view.Members, memberView)
 	}
 
 	return view
@@ -193,7 +209,7 @@ func (s *Service) BroadcastUserStatus(ctx context.Context, userID string, online
 // CreatePrivateChat builds a direct chat between two users. Federated peers
 // are resolved by their ID; local peers are validated to exist. The returned
 // view is the enriched chat ready for the transport response.
-func (s *Service) CreatePrivateChat(ctx context.Context, userID, withUserID string) (ChatView, error) {
+func (s *Service) CreatePrivateChat(ctx context.Context, userID, withUserID string, isBot bool) (ChatView, error) {
 	if withUserID == "" {
 		return ChatView{}, ErrWithUserRequired
 	}
@@ -211,14 +227,24 @@ func (s *Service) CreatePrivateChat(ctx context.Context, userID, withUserID stri
 	}
 
 	if remoteServer == "" {
-		if _, ok := s.store.GetUserByID(ctx, withUserID); !ok {
+		target, ok := s.store.GetUserByID(ctx, withUserID)
+		if !ok {
 			return ChatView{}, ErrUserNotFound
+		}
+		if target.IsBot {
+			return s.OpenBotChat(ctx, userID, target.Username)
 		}
 	}
 
 	chat, err := s.store.CreateChat(ctx, userID, withUserID, remoteServer)
 	if err != nil {
 		return ChatView{}, err
+	}
+	if isBot {
+		if err := s.store.SetChatBotID(ctx, chat.ID, withUserID); err != nil {
+			return ChatView{}, err
+		}
+		chat.BotID = withUserID
 	}
 
 	view := s.EnrichChat(ctx, chat)
@@ -663,8 +689,6 @@ func remoteHost(domain string) string {
 // net.ParseIP rejects: dotted octal ("0177.0.0.1"), hexadecimal
 // ("0x7f.0.0.1") and single-integer ("2130706433", "0x7f000001") forms.
 // Returns nil when the host is not a numeric IP (e.g. a DNS name).
-//
-//nolint:gosec // G115: every part is range-checked against its field width before narrowing to a byte.
 func parseNumericIP(host string) net.IP {
 	if ip := net.ParseIP(host); ip != nil {
 		return ip
@@ -702,28 +726,28 @@ func parseNumericIP(host string) net.IP {
 			return nil
 		}
 
-		addr[0] = byte(nums[0] >> 24)
-		addr[1] = byte(nums[0] >> 16)
-		addr[2] = byte(nums[0] >> 8)
-		addr[3] = byte(nums[0])
+		addr[0] = ipv4Byte(nums[0] >> 24)
+		addr[1] = ipv4Byte(nums[0] >> 16)
+		addr[2] = ipv4Byte(nums[0] >> 8)
+		addr[3] = ipv4Byte(nums[0])
 	case 2:
 		if nums[0] > 0xFF || nums[1] > 0xFFFFFF {
 			return nil
 		}
 
-		addr[0] = byte(nums[0])
-		addr[1] = byte(nums[1] >> 16)
-		addr[2] = byte(nums[1] >> 8)
-		addr[3] = byte(nums[1])
+		addr[0] = ipv4Byte(nums[0])
+		addr[1] = ipv4Byte(nums[1] >> 16)
+		addr[2] = ipv4Byte(nums[1] >> 8)
+		addr[3] = ipv4Byte(nums[1])
 	case 3:
 		if nums[0] > 0xFF || nums[1] > 0xFF || nums[2] > 0xFFFF {
 			return nil
 		}
 
-		addr[0] = byte(nums[0])
-		addr[1] = byte(nums[1])
-		addr[2] = byte(nums[2] >> 8)
-		addr[3] = byte(nums[2])
+		addr[0] = ipv4Byte(nums[0])
+		addr[1] = ipv4Byte(nums[1])
+		addr[2] = ipv4Byte(nums[2] >> 8)
+		addr[3] = ipv4Byte(nums[2])
 	case 4:
 		for _, num := range nums {
 			if num > 0xFF {
@@ -731,13 +755,19 @@ func parseNumericIP(host string) net.IP {
 			}
 		}
 
-		addr[0] = byte(nums[0])
-		addr[1] = byte(nums[1])
-		addr[2] = byte(nums[2])
-		addr[3] = byte(nums[3])
+		addr[0] = ipv4Byte(nums[0])
+		addr[1] = ipv4Byte(nums[1])
+		addr[2] = ipv4Byte(nums[2])
+		addr[3] = ipv4Byte(nums[3])
 	}
 
 	return net.IPv4(addr[0], addr[1], addr[2], addr[3])
+}
+
+// ipv4Byte keeps the conversion explicit: callers have already bounded the
+// component, and the mask makes that contract local to the conversion.
+func ipv4Byte(value uint64) byte {
+	return byte(value & 0xFF)
 }
 
 // replicateGroupMembership sends the authoritative member list to one peer.

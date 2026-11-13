@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	acceptCall,
@@ -412,7 +413,11 @@ describe("endpoint helpers", () => {
 
 		await completeRegistration("setup", "nick");
 		const [, regInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-		expect(parseBody(regInit)).toEqual({ setupToken: "setup", nick: "nick" });
+		expect(parseBody(regInit)).toEqual({
+			setupToken: "setup",
+			username: "nick",
+			displayName: "nick",
+		});
 
 		await sseAuth("conn-1", "tok");
 		const [authPath, authInit] = fetchMock.mock.calls[1] as [

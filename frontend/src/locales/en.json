@@ -223,5 +223,9 @@
 	"sessions.restoreKey": "Restore key",
 	"sessions.restoreKeyTitle": "Restore device key",
 	"sessions.restoreKeyHint": "Enter the backup password for “{{device}}”.",
-	"sessions.restoreKeyFailed": "Failed to restore the key"
+	"sessions.restoreKeyFailed": "Failed to restore the key",
+	"bot.callbackSent": "Callback sent to the bot",
+	"search.bot": "bot",
+	"login.usernameInvalid": "Username: 3–32 lowercase letters, digits and _",
+	"login.displayName": "Display name (optional)"
 }

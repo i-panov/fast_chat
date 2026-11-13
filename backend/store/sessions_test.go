@@ -32,7 +32,7 @@ func TestCreateUserWithSessionReturnsWorkingToken(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
 
-	user, sess, token, err := s.CreateUserWithSession(ctx, "bob@test.local", "bob", "test", "dev-1", "Chrome", "ua", time.Hour)
+	user, sess, token, err := s.CreateUserWithSession(ctx, "bob@test.local", "bob", "Bob", "test", "dev-1", "Chrome", "ua", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

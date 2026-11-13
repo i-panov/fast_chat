@@ -669,3 +669,71 @@ func TestFederationPairGroupReplication(t *testing.T) {
 		return err == nil
 	})
 }
+
+func TestFederationPairRemoteBotChat(t *testing.T) {
+	t.Parallel()
+
+	pair := newFederationPair(t)
+	alice := pair.a.createUser(t, "alice")
+	bob := pair.b.createUser(t, "bob")
+	ctx := context.Background()
+
+	created, err := pair.b.svc.CreateBot(ctx, bob.ID, "remote_bot", "Remote Bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := pair.a.doJSON(t, http.MethodPost, "/api/chats", alice.Token, map[string]any{
+		"withUserId": created.User.ID, "withUserIsBot": true,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create chat = %d %v", status, body)
+	}
+	chatBody, _ := body["chat"].(map[string]any)
+	chatID, _ := chatBody["id"].(string)
+	if chatID == "" {
+		t.Fatalf("chat id missing: %v", body)
+	}
+	if chatBody["isBotChat"] != true || chatBody["botId"] != created.User.ID {
+		t.Fatalf("chat = %v", chatBody)
+	}
+	eventually(t, "bot chat replica on B", func() bool {
+		chat, ok := pair.b.store.GetChat(ctx, chatID)
+		if !ok || chat.BotID != created.User.ID {
+			return false
+		}
+		_, ok = pair.b.store.GetBotChat(ctx, created.User.ID, alice.ID)
+		return ok
+	})
+
+	status, body = pair.a.doJSON(t, http.MethodPost, "/api/chats/"+chatID+"/messages", alice.Token, map[string]any{"text": "ping"})
+	if status != http.StatusCreated {
+		t.Fatalf("send = %d %v", status, body)
+	}
+
+	status, body = pair.b.doJSON(t, http.MethodPost, "/api/bot-api/getUpdates", created.Token, map[string]any{"offset": 0, "limit": 100, "timeout": 1})
+	if status != http.StatusOK {
+		t.Fatalf("updates = %d %v", status, body)
+	}
+	result, _ := body["result"].([]any)
+	if len(result) == 0 {
+		t.Fatal("bot did not receive the remote message")
+	}
+
+	status, body = pair.b.doJSON(t, http.MethodPost, "/api/bot-api/sendMessage", created.Token, map[string]any{
+		"chat_id": chatID, "text": "pong",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("reply = %d %v", status, body)
+	}
+	reply, _ := body["result"].(map[string]any)
+	replyID, _ := reply["message_id"].(string)
+	if replyID == "" {
+		t.Fatalf("reply id missing: %v", body)
+	}
+
+	eventually(t, "bot reply on A", func() bool {
+		msg, err := pair.a.store.GetMessage(ctx, chatID, replyID)
+		return err == nil && msg.Text == "pong"
+	})
+}

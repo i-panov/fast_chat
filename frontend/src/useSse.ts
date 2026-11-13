@@ -124,6 +124,7 @@ export function useSse(token: string, onEvent: EventHandler) {
 				"thread_message_new",
 				"typing",
 				"typing_stop",
+				"bot_callback_answer",
 				"call_incoming",
 				"call_accepted",
 				"call_ended",

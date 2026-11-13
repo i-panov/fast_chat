@@ -32,6 +32,7 @@ export function LoginPage() {
 	const [email, setEmail] = useState("");
 	const [code, setCode] = useState("");
 	const [nick, setNick] = useState("");
+	const [displayName, setDisplayName] = useState("");
 	const [setupToken, setSetupToken] = useState("");
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(false);
@@ -90,13 +91,21 @@ export function LoginPage() {
 	}
 
 	async function handleCompleteRegistration() {
-		const trimmed = nick.trim();
-		if (trimmed.length === 0) return;
+		const trimmed = nick.trim().toLowerCase();
+		if (trimmed.length < 3 || trimmed.length > 32) {
+			setError(t("login.usernameInvalid"));
+			return;
+		}
 		setLoading(true);
 		setError("");
 		try {
 			const device = getDeviceInfo();
-			const result = await completeRegistration(setupToken, trimmed, device);
+			const result = await completeRegistration(
+				setupToken,
+				trimmed,
+				device,
+				displayName.trim() || trimmed,
+			);
 			addAccount(
 				result.token,
 				result.user,
@@ -208,10 +217,16 @@ export function LoginPage() {
 							</Text>
 							<TextInput
 								placeholder={t("login.nick")}
-								maxLength={20}
+								maxLength={32}
 								value={nick}
 								onChange={(e) => setNick(e.target.value)}
 								autoFocus
+							/>
+							<TextInput
+								placeholder={t("login.displayName")}
+								maxLength={64}
+								value={displayName}
+								onChange={(e) => setDisplayName(e.target.value)}
 							/>
 							{error.length > 0 && (
 								<Text size="sm" c="red" ta="center">
@@ -219,7 +234,7 @@ export function LoginPage() {
 								</Text>
 							)}
 							<Button
-								disabled={loading || nick.trim().length === 0}
+								disabled={loading || nick.trim().length < 3}
 								loading={loading}
 								onClick={() => {
 									void handleCompleteRegistration();

@@ -197,7 +197,7 @@ func TestCompleteRegistrationCreatesSession(t *testing.T) {
 		t.Fatalf("expected a setup token, got %+v", verified)
 	}
 
-	res, err := s.CompleteRegistration(ctx, verified.SetupToken, "alice", DeviceInfo{ID: "dev-1", Name: "Chrome"})
+	res, err := s.CompleteRegistration(ctx, verified.SetupToken, "alice", "Alice", DeviceInfo{ID: "dev-1", Name: "Chrome"})
 	if err != nil {
 		t.Fatal(err)
 	}

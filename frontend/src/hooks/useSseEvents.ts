@@ -1,3 +1,4 @@
+import { notifications } from "@mantine/notifications";
 import { useCallback, useEffect, useRef } from "react";
 import type { CallManager } from "../calls/callManager.ts";
 import { handleCallEvent } from "../calls/handleCallEvent.ts";
@@ -144,6 +145,15 @@ function chatFromEvent(data: unknown): Chat | null {
 	return null;
 }
 
+function showBotCallbackAnswer(data: unknown): void {
+	const answer = data as { text?: string; showAlert?: boolean };
+	if (answer.text === undefined || answer.text === "") return;
+	notifications.show({
+		message: answer.text,
+		color: answer.showAlert === true ? "red" : "teal",
+	});
+}
+
 export function useSseEvents({
 	token,
 	addTypingUser,
@@ -158,9 +168,14 @@ export function useSseEvents({
 	}, [token]);
 
 	const handler = useCallback(
+		// eslint-disable-next-line max-statements
 		async (event: string, data: unknown) => {
 			if (isCallEvent(event)) {
 				routeCallEvent(callManager, event, data);
+				return;
+			}
+			if (event === "bot_callback_answer") {
+				showBotCallbackAnswer(data);
 				return;
 			}
 			if (event === "new_message" || event === "message_updated") {

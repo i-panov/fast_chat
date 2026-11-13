@@ -122,6 +122,7 @@ export function completeRegistration(
 	setupToken: string,
 	nick: string,
 	device: DevicePayload = {},
+	displayName = nick,
 ) {
 	return request<{
 		user: User;
@@ -131,7 +132,12 @@ export function completeRegistration(
 		deviceId?: string;
 	}>("/api/auth/complete-registration", undefined, {
 		method: "POST",
-		body: JSON.stringify({ setupToken, nick, ...device }),
+		body: JSON.stringify({
+			setupToken,
+			username: nick,
+			displayName,
+			...device,
+		}),
 	});
 }
 
@@ -186,12 +192,6 @@ export function registerDeviceKey(token: string, publicKey: string) {
 	return request<{ status: string }>("/api/users/device-key", token, {
 		method: "PUT",
 		body: JSON.stringify({ publicKey }),
-	});
-}
-
-export function revokeDeviceKey(token: string) {
-	return request<{ status: string }>("/api/users/device-key", token, {
-		method: "DELETE",
 	});
 }
 
@@ -261,6 +261,19 @@ export function searchUsers(token: string, q: string) {
 	return request<{ users: User[] }>(
 		`/api/users/search?q=${encodeURIComponent(q)}`,
 		token,
+	);
+}
+
+export function pressBotCallback(
+	token: string,
+	chatId: string,
+	messageId: string,
+	data: string,
+) {
+	return request<{ ok: boolean; result: { callback_query_id: string } }>(
+		`/api/bot-chats/${encodeURIComponent(chatId)}/callbacks`,
+		token,
+		{ method: "POST", body: JSON.stringify({ messageId, data }) },
 	);
 }
 

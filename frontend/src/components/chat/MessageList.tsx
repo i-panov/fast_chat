@@ -307,6 +307,7 @@ function MessageEntry(props: {
 				encrypted={msg.encrypted}
 				undecryptable={msg.undecryptable}
 				fileKeys={msg.fileKeys}
+				replyMarkup={msg.replyMarkup}
 			/>
 		</div>
 	);

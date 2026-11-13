@@ -72,6 +72,7 @@ export interface ChatPageState {
 	handleSearchChange: (value: string) => void;
 
 	pendingChatWith: string | null;
+	pendingChatIsBot?: boolean;
 	pendingChatNick: string | null;
 	selectPendingChat: (withUserId: string, withUserNick: string) => void;
 

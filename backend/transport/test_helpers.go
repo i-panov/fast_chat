@@ -33,6 +33,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 		&model.DeletedChat{}, &model.PushSubscription{},
 		&model.MessageReadStatus{},
 		&model.FederationOp{}, &model.FederationCursor{},
+		&model.Bot{}, &model.BotChat{}, &model.BotUpdate{}, &model.BotCallbackQuery{}, &model.BotFatherState{},
 	); err != nil {
 		t.Fatal(err)
 	}

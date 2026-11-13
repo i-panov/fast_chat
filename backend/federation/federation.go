@@ -198,6 +198,7 @@ func NewSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 		},
 	}
 
+	// nosemgrep: fast-chat-inline-http-client -- this is the safe constructor.
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
@@ -577,7 +578,8 @@ func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa
 	// By design: peers are addressed by domain from X-Federation-Server.
 	// NewSafeHTTPClient blocks private/loopback IPs at dial time and pins the
 	// resolved IP (DNS-rebinding safe); a forged peer still fails signature
-	// verification. codeql[go/request-forgery]
+	// verification.
+	// codeql[go/request-forgery]
 	resp, err := m.httpClient().Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("well-known request failed: %w", err)

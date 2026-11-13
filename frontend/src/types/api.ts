@@ -17,15 +17,21 @@ export interface BlockedUser {
 
 export interface User {
 	id: string;
+	username?: string;
 	nick: string;
 	email?: string;
 	online: boolean;
 	avatarUrl?: string;
+	displayName?: string;
+	isBot?: boolean;
 }
 
 export interface MemberInfo {
 	id: string;
+	username?: string;
 	nick: string;
+	displayName?: string;
+	isBot?: boolean;
 	online?: boolean;
 	avatarUrl?: string;
 }
@@ -38,6 +44,9 @@ export interface Chat {
 	avatarUrl?: string;
 	pinnedMessageIds?: string[];
 	members: MemberInfo[];
+	botId?: string;
+	isBotChat?: boolean;
+	botEncryptionMode?: "server" | "e2ee";
 	createdAt: string;
 }
 
@@ -96,6 +105,16 @@ export type MessageStatus = "sent" | "queued" | "failed";
 
 export type MessageDeliveryStatus = "sent" | "delivered" | "read";
 
+interface InlineKeyboardButton {
+	text: string;
+	callback_data?: string;
+	url?: string;
+}
+
+export interface InlineKeyboardMarkup {
+	inline_keyboard: InlineKeyboardButton[][];
+}
+
 export interface Message {
 	id: string;
 	chatId: string;
@@ -120,6 +139,7 @@ export interface Message {
 	files?: FileInfo[];
 	location?: Location;
 	reactions?: ReactionSummary[];
+	replyMarkup?: InlineKeyboardMarkup;
 	status?: MessageStatus;
 	deliveryStatus?: MessageDeliveryStatus;
 	readBy?: string[];
@@ -180,7 +200,7 @@ interface VerifyCodeNew {
 export type VerifyCodeResult = VerifyCodeExisting | VerifyCodeNew;
 
 export type CreateChatOptions =
-	| { type: "private"; withUserId: string }
+	| { type: "private"; withUserId: string; withUserIsBot?: boolean }
 	| { type: "group"; name: string; memberIds: string[] };
 
 export interface EditMessageOptions {

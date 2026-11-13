@@ -498,6 +498,12 @@ func (s *Service) SendMessage(
 	}
 
 	s.notifyMessageSent(ctx, chat, msg, threadID, fromID)
+	if threadID == "" && chat.BotID != "" {
+		s.AppendBotMessageUpdate(ctx, chat.ID, msg)
+		if bot, ok := s.store.GetBot(ctx, chat.BotID); ok && bot.IsMaster {
+			s.HandleRootBotCommand(ctx, chat, msg)
+		}
+	}
 
 	return msg, nil
 }

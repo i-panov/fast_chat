@@ -10,7 +10,12 @@ export interface UseMessageSearchReturn {
 
 	pendingChatWith: string | null;
 	pendingChatNick: string | null;
-	selectPendingChat: (withUserId: string, withUserNick: string) => void;
+	pendingChatIsBot: boolean;
+	selectPendingChat: (
+		withUserId: string,
+		withUserNick: string,
+		isBot?: boolean,
+	) => void;
 	clearPendingChat: () => void;
 }
 
@@ -22,6 +27,7 @@ export function useMessageSearch(
 	const [showSearchResults, setShowSearchResults] = useState(false);
 	const [pendingChatWith, setPendingChatWith] = useState<string | null>(null);
 	const [pendingChatNick, setPendingChatNick] = useState<string | null>(null);
+	const [pendingChatIsBot, setPendingChatIsBot] = useState(false);
 	const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const searchSeqRef = useRef(0);
 
@@ -70,9 +76,10 @@ export function useMessageSearch(
 	}, []);
 
 	const selectPendingChat = useCallback(
-		(withUserId: string, withUserNick: string) => {
+		(withUserId: string, withUserNick: string, isBot = false) => {
 			setPendingChatWith(withUserId);
 			setPendingChatNick(withUserNick);
+			setPendingChatIsBot(isBot);
 		},
 		[],
 	);
@@ -89,6 +96,7 @@ export function useMessageSearch(
 		handleSearchChange,
 		pendingChatWith,
 		pendingChatNick,
+		pendingChatIsBot,
 		selectPendingChat,
 		clearPendingChat,
 	};

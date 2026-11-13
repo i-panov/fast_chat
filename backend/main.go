@@ -244,7 +244,8 @@ func (s *statusWriter) Write(payload []byte) (int, error) {
 
 	// Middleware passthrough: the body is produced by downstream handlers (JSON
 	// via httputil.WriteJSON or file streaming); this wrapper only forwards
-	// bytes so status logging sees them. codeql[go/reflected-xss]
+	// bytes so status logging sees them.
+	// codeql[go/reflected-xss]
 	return s.ResponseWriter.Write(payload)
 }
 
@@ -389,6 +390,7 @@ var (
 	commit  = "none"
 )
 
+//nolint:funlen // startup wiring is intentionally linear.
 func main() {
 	configPath := flag.String("config", "", "path to config file (required)")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -480,6 +482,10 @@ func main() {
 
 	hub := sse.NewHub(service.TypingThrottleInterval * 5)
 	svc := service.New(st, cfg, hub, pushService)
+	if _, _, err := svc.EnsureMasterBot(context.Background()); err != nil {
+		slog.Error("failed to initialize master bot", "err", err)
+		os.Exit(1)
+	}
 	fedClient := federation.NewClient(fedManager, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout, cfg.Federation.AllowPrivateAddresses)
 
 	// The calls live in memory: the registry knows the state of the ongoing

@@ -120,7 +120,7 @@ func (s *Service) federatedInviteEvent(
 
 	data := map[string]any{
 		callIDKey:   callID,
-		"from":      map[string]string{"id": callerID, "nick": s.nickOf(ctx, callerID)},
+		keyFrom:     map[string]string{"id": callerID, "nick": s.nickOf(ctx, callerID)},
 		keyChatID:   chatID,
 		keyOffer:    offer,
 		"expiresAt": expiresAt.Format(time.RFC3339),

@@ -15,7 +15,7 @@ func TestChatPins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg, _, err := s.AddMessage(ctx, chat.ID, "", user.ID, user.Nick, "pin me", "m1", "", nil, false, "")
+	msg, _, err := s.AddMessage(ctx, chat.ID, "", user.ID, user.Username, "pin me", "m1", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}

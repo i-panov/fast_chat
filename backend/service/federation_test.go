@@ -122,12 +122,12 @@ func TestCreateFederatedChat_Validation(t *testing.T) {
 	ctx := context.Background()
 
 	// Wrong member count.
-	if _, _, err := s.CreateFederatedChat(ctx, "c1", []string{"a:rem"}, "rem", "loc"); !errors.Is(err, ErrFederatedChatMembers) {
+	if _, _, err := s.CreateFederatedChat(ctx, "c1", []string{"a:rem"}, "rem", "loc", ""); !errors.Is(err, ErrFederatedChatMembers) {
 		t.Errorf("expected ErrFederatedChatMembers, got %v", err)
 	}
 
 	// Members not split across servers.
-	if _, _, err := s.CreateFederatedChat(ctx, "c1", []string{"a:rem", "b:rem"}, "rem", "loc"); !errors.Is(err, ErrFederatedMembersNotValid) {
+	if _, _, err := s.CreateFederatedChat(ctx, "c1", []string{"a:rem", "b:rem"}, "rem", "loc", ""); !errors.Is(err, ErrFederatedMembersNotValid) {
 		t.Errorf("expected ErrFederatedMembersNotValid, got %v", err)
 	}
 }
@@ -136,7 +136,7 @@ func TestCreateFederatedChat_SuccessAndIdempotent(t *testing.T) {
 	s := newFedTestService(t)
 	ctx := context.Background()
 
-	view1, already, err := s.CreateFederatedChat(ctx, "c1", []string{"a:loc", "b:rem"}, "rem", "loc")
+	view1, already, err := s.CreateFederatedChat(ctx, "c1", []string{"a:loc", "b:rem"}, "rem", "loc", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestCreateFederatedChat_SuccessAndIdempotent(t *testing.T) {
 	}
 
 	// Second call with the same id is idempotent.
-	if _, already, err := s.CreateFederatedChat(ctx, "c1", []string{"a:loc", "b:rem"}, "rem", "loc"); err != nil {
+	if _, already, err := s.CreateFederatedChat(ctx, "c1", []string{"a:loc", "b:rem"}, "rem", "loc", ""); err != nil {
 		t.Fatal(err)
 	} else if !already {
 		t.Fatal("expected second creation to be idempotent")
@@ -351,7 +351,7 @@ func TestCreateFederatedChatBroadcastsChatCreated(t *testing.T) {
 		}
 	}()
 
-	view, already, err := s.CreateFederatedChat(ctx, "c-broadcast", members, "rem", "loc")
+	view, already, err := s.CreateFederatedChat(ctx, "c-broadcast", members, "rem", "loc", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestCreateFederatedChatBroadcastsChatCreated(t *testing.T) {
 	}
 
 	// Idempotent recreation must not broadcast again.
-	if _, already, err := s.CreateFederatedChat(ctx, "c-broadcast", members, "rem", "loc"); err != nil || !already {
+	if _, already, err := s.CreateFederatedChat(ctx, "c-broadcast", members, "rem", "loc", ""); err != nil || !already {
 		t.Fatalf("expected idempotent recreation, err=%v already=%v", err, already)
 	}
 
@@ -522,7 +522,7 @@ func TestSendFederatedMessageStoresRemoteAttachment(t *testing.T) {
 	s := newFedTestService(t)
 	ctx := context.Background()
 	view, _, err := s.CreateFederatedChat(ctx, "fed-file-chat",
-		[]string{"alice:localhost:8080", "bob:remote.test"}, "remote.test", "localhost:8080")
+		[]string{"alice:localhost:8080", "bob:remote.test"}, "remote.test", "localhost:8080", "")
 	if err != nil {
 		t.Fatal(err)
 	}

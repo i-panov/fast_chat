@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	// nickMaxRunes is the maximum allowed length of a display nick.
-	nickMaxRunes = 20
+	// usernameMaxRunes is the maximum total username length.
+	usernameMaxRunes = 32
+	usernameMinRunes = 3
 	// emailCodeTTL is the lifetime of both the verification code and the
 	// setup token issued to finish registration.
 	emailCodeTTL = 10 * time.Minute
@@ -32,7 +33,7 @@ var (
 	ErrEmailSendFailed   = errors.New("failed to send email")
 	ErrInvalidCode       = errors.New("invalid code")
 	ErrInvalidSetupToken = errors.New("invalid setup token")
-	ErrNickInvalid       = errors.New("nick must be 1-20 characters")
+	ErrNickInvalid       = errors.New("username must be 3-32 characters")
 	ErrNickColon         = errors.New("nick must not contain ':'")
 	ErrNicknameTaken     = errors.New("nickname already taken")
 	ErrEmailAlreadyTaken = errors.New("email already registered")
@@ -139,14 +140,20 @@ type RegistrationResult struct {
 
 // CompleteRegistration validates the nick and setup token, then creates the
 // user, their first session and their private self-chat.
-func (s *Service) CompleteRegistration(ctx context.Context, setupToken, nick string, device DeviceInfo) (*RegistrationResult, error) {
-	nick = strings.TrimSpace(nick)
-	if nick == "" || utf8.RuneCountInString(nick) > nickMaxRunes {
+func (s *Service) CompleteRegistration(
+	ctx context.Context, setupToken, username, displayName string, device DeviceInfo,
+) (*RegistrationResult, error) {
+
+	username, ok := NormalizeUsername(username)
+	if !ok || strings.HasSuffix(username, "_bot") {
 		return nil, ErrNickInvalid
 	}
-
-	if strings.Contains(nick, ":") {
-		return nil, ErrNickColon
+	displayName = strings.TrimSpace(displayName)
+	if utf8.RuneCountInString(displayName) > 64 {
+		return nil, ErrNickInvalid
+	}
+	if displayName == "" {
+		displayName = username
 	}
 
 	email, ok := s.store.Codes().VerifySetupToken(setupToken)
@@ -157,7 +164,7 @@ func (s *Service) CompleteRegistration(ctx context.Context, setupToken, nick str
 	device = normalizeDevice(device)
 
 	user, session, token, err := s.store.CreateUserWithSession(
-		ctx, email, nick, s.cfg.Server.Domain,
+		ctx, email, username, displayName, s.cfg.Server.Domain,
 		device.ID, device.Name, device.UserAgent, s.sessionTTL(),
 	)
 	if err != nil {

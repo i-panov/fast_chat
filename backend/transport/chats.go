@@ -71,7 +71,7 @@ func registerChatCRUD(api huma.API, svc *service.Service, fed *federation.Client
 			return &out, nil
 		}
 
-		view, err := svc.CreatePrivateChat(ctx, user.ID, input.Body.WithUserID)
+		view, err := svc.CreatePrivateChat(ctx, user.ID, input.Body.WithUserID, input.Body.WithUserIsBot)
 		if err != nil {
 			return nil, chatOrInternalError(err)
 		}
@@ -86,11 +86,15 @@ func registerChatCRUD(api huma.API, svc *service.Service, fed *federation.Client
 			memberIDs = append(memberIDs, member.ID)
 		}
 
-		fedPost(ctx, fed, remoteServer, "/api/federated/chats", map[string]any{
+		body := map[string]any{
 			"chatId":       view.ID,
 			"members":      memberIDs,
 			"remoteServer": cfg.Server.Domain,
-		})
+		}
+		if input.Body.WithUserIsBot {
+			body["botId"] = input.Body.WithUserID
+		}
+		fedPost(ctx, fed, remoteServer, "/api/federated/chats", body)
 
 		var out createChatOutput
 		out.Body.Chat = view
@@ -382,10 +386,11 @@ type chatsOutput struct {
 
 type createChatInput struct {
 	Body struct {
-		Type       string   `json:"type,omitempty"`
-		WithUserID string   `json:"withUserId,omitempty"`
-		Name       string   `json:"name,omitempty"`
-		MemberIDs  []string `json:"memberIDs,omitempty"`
+		Type          string   `json:"type,omitempty"`
+		WithUserID    string   `json:"withUserId,omitempty"`
+		WithUserIsBot bool     `json:"withUserIsBot,omitempty"`
+		Name          string   `json:"name,omitempty"`
+		MemberIDs     []string `json:"memberIDs,omitempty"`
 	}
 }
 

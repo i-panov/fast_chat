@@ -194,7 +194,7 @@ func TestPersistedTimestampsAreUTC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := s.AddMessage(ctx, chat.ID, "", user.ID, user.Nick, "hi", "", "", nil, false, ""); err != nil {
+	if _, _, err := s.AddMessage(ctx, chat.ID, "", user.ID, user.Username, "hi", "", "", nil, false, ""); err != nil {
 		t.Fatal(err)
 	}
 

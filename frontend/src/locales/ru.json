@@ -225,5 +225,9 @@
 	"sessions.restoreKey": "Восстановить ключ",
 	"sessions.restoreKeyTitle": "Восстановить ключ устройства",
 	"sessions.restoreKeyHint": "Введите пароль от бэкапа ключа устройства «{{device}}».",
-	"sessions.restoreKeyFailed": "Не удалось восстановить ключ"
+	"sessions.restoreKeyFailed": "Не удалось восстановить ключ",
+	"bot.callbackSent": "Нажатие отправлено боту",
+	"search.bot": "бот",
+	"login.usernameInvalid": "Username: 3–32 символа, только латиница, цифры и _",
+	"login.displayName": "Отображаемое имя (необязательно)"
 }

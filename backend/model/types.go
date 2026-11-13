@@ -4,9 +4,11 @@ package model
 import "time"
 
 type User struct {
-	ID    string `gorm:"primaryKey"           json:"id"`
-	Email string `gorm:"uniqueIndex;not null" json:"email"`
-	Nick  string `gorm:"uniqueIndex;not null" json:"nick"`
+	ID          string `gorm:"primaryKey"                           json:"id"`
+	Email       string `gorm:"uniqueIndex;not null"                 json:"email"`
+	Username    string `gorm:"column:username;uniqueIndex;not null" json:"username"`
+	DisplayName string `gorm:"not null;default:''"                  json:"displayName,omitempty"`
+	IsBot       bool   `gorm:"not null;default:false"               json:"isBot,omitempty"`
 	// Token is the plaintext token returned once by CreateUserWithSession.
 	// It is deliberately not persisted: sessions hold only the hash.
 	Token        string    `gorm:"-"                   json:"-"`
@@ -18,14 +20,24 @@ type User struct {
 }
 
 type PublicUser struct {
-	ID        string `json:"id"`
-	Nick      string `json:"nick"`
-	Online    bool   `json:"online"`
-	AvatarURL string `json:"avatarUrl,omitempty"`
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	Nick        string `json:"nick"`
+	DisplayName string `json:"displayName,omitempty"`
+	IsBot       bool   `json:"isBot,omitempty"`
+	Online      bool   `json:"online"`
+	AvatarURL   string `json:"avatarUrl,omitempty"`
 }
 
 func (u *User) Public() PublicUser {
-	out := PublicUser{ID: u.ID, Nick: u.Nick, Online: u.Online}
+	display := u.DisplayName
+	if display == "" {
+		display = u.Username
+	}
+	out := PublicUser{
+		ID: u.ID, Username: u.Username, Nick: display, DisplayName: display,
+		IsBot: u.IsBot, Online: u.Online,
+	}
 	if u.AvatarFileID != "" {
 		out.AvatarURL = "/api/files/" + u.AvatarFileID
 	}
@@ -50,6 +62,8 @@ type Chat struct {
 	Members      []string  `gorm:"-"                       json:"-"`
 	CreatedAt    time.Time `gorm:"not null"                json:"createdAt"`
 	RemoteServer string    `gorm:"default:''"              json:"-"`
+	// BotID marks a 1-1 chat with a bot (local or remote).
+	BotID string `gorm:"default:'';index" json:"botId,omitempty"`
 }
 
 type ReplyToInfo struct {
@@ -153,19 +167,20 @@ type Message struct {
 	// that exist at that moment. Queries therefore use threadIDIsEmpty, which
 	// treats NULL as chat level. No index tag is needed because
 	// idx_messages_thread_created already leads with this column.
-	ThreadID         string            `json:"threadId,omitempty"`
-	FromID           string            `gorm:"not null"               json:"fromId"`
-	FromNick         string            `gorm:"not null"               json:"fromNick"`
-	Text             string            `gorm:"not null"               json:"text"`
-	Encrypted        bool              `gorm:"not null;default:false" json:"encrypted"`
-	EncryptedPayload string            `gorm:"not null;default:''"    json:"encryptedPayload"`
-	CreatedAt        time.Time         `gorm:"not null"               json:"createdAt"`
-	UpdatedAt        time.Time         `gorm:"not null"               json:"-"`
-	EditedAt         *time.Time        `json:"editedAt,omitempty"`
-	ReplyTo          *ReplyToInfo      `gorm:"serializer:json"        json:"replyTo,omitempty"`
-	Location         *Location         `gorm:"serializer:json"        json:"location,omitempty"`
-	Files            []FileInfo        `gorm:"-"                      json:"files,omitempty"`
-	Reactions        []ReactionSummary `gorm:"-"                      json:"reactions,omitempty"`
+	ThreadID         string                `json:"threadId,omitempty"`
+	FromID           string                `gorm:"not null"               json:"fromId"`
+	FromNick         string                `gorm:"not null"               json:"fromNick"`
+	Text             string                `gorm:"not null"               json:"text"`
+	Encrypted        bool                  `gorm:"not null;default:false" json:"encrypted"`
+	EncryptedPayload string                `gorm:"not null;default:''"    json:"encryptedPayload"`
+	CreatedAt        time.Time             `gorm:"not null"               json:"createdAt"`
+	UpdatedAt        time.Time             `gorm:"not null"               json:"-"`
+	EditedAt         *time.Time            `json:"editedAt,omitempty"`
+	ReplyTo          *ReplyToInfo          `gorm:"serializer:json"        json:"replyTo,omitempty"`
+	Location         *Location             `gorm:"serializer:json"        json:"location,omitempty"`
+	ReplyMarkup      *InlineKeyboardMarkup `gorm:"serializer:json"        json:"replyMarkup,omitempty"`
+	Files            []FileInfo            `gorm:"-"                      json:"files,omitempty"`
+	Reactions        []ReactionSummary     `gorm:"-"                      json:"reactions,omitempty"`
 }
 
 // ReactionSummary is the aggregate of one emoji on a message. Me tells the
@@ -277,4 +292,64 @@ type FederationOp struct {
 type FederationCursor struct {
 	RemoteServer string    `gorm:"primaryKey" json:"remoteServer"`
 	LastSyncAt   time.Time `gorm:"not null"   json:"lastSyncAt"`
+}
+
+// Bot is the server-side profile of a bot user. The bot's username and
+// display name live in users; this row only holds ownership and credentials.
+type Bot struct {
+	UserID         string    `gorm:"primaryKey"                json:"id"` //nolint:tagliatelle // bot identity is exposed as id
+	OwnerID        string    `gorm:"index;not null"            json:"ownerId"`
+	TokenHash      string    `gorm:"uniqueIndex;not null"      json:"-"`
+	TokenPrefix    string    `gorm:"index;not null"            json:"-"`
+	EncryptionMode string    `gorm:"not null;default:'server'" json:"encryptionMode"`
+	IsActive       bool      `gorm:"not null;default:true"     json:"isActive"`
+	IsMaster       bool      `gorm:"not null;default:false"    json:"isMaster"`
+	CreatedAt      time.Time `gorm:"not null"                  json:"createdAt"`
+	UpdatedAt      time.Time `gorm:"not null"                  json:"updatedAt"`
+}
+
+type BotChat struct {
+	BotID     string    `gorm:"primaryKey"           json:"botId"`
+	UserID    string    `gorm:"primaryKey"           json:"userId"`
+	ChatID    string    `gorm:"uniqueIndex;not null" json:"chatId"`
+	CreatedAt time.Time `gorm:"not null"             json:"createdAt"`
+}
+
+type BotUpdate struct {
+	ID        uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
+	BotID     string    `gorm:"index;not null"           json:"-"`
+	Type      string    `gorm:"not null"                 json:"type"`
+	Payload   string    `gorm:"not null"                 json:"-"`
+	CreatedAt time.Time `gorm:"not null"                 json:"createdAt"`
+}
+
+type BotCallbackQuery struct {
+	ID         string     `gorm:"primaryKey"             json:"id"`
+	BotID      string     `gorm:"index;not null"         json:"botId"`
+	ChatID     string     `gorm:"index;not null"         json:"chatId"`
+	MessageID  string     `gorm:"not null"               json:"messageId"`
+	UserID     string     `gorm:"not null"               json:"userId"`
+	Data       string     `gorm:"not null"               json:"data"`
+	CreatedAt  time.Time  `gorm:"not null"               json:"createdAt"`
+	AnsweredAt *time.Time `json:"answeredAt,omitempty"`
+	AnswerText string     `gorm:"not null;default:''"    json:"-"`
+	ShowAlert  bool       `gorm:"not null;default:false" json:"-"`
+}
+
+type BotFatherState struct {
+	UserID    string    `gorm:"primaryKey"          json:"userId"`
+	Step      string    `gorm:"not null"            json:"step"`
+	Payload   string    `gorm:"not null;default:''" json:"-"`
+	UpdatedAt time.Time `gorm:"not null"            json:"updatedAt"`
+	ExpiresAt time.Time `gorm:"not null"            json:"expiresAt"`
+}
+
+type InlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
+	URL          string `json:"url,omitempty"`
+}
+
+type InlineKeyboardMarkup struct {
+	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"` //nolint:tagliatelle // Bot API uses snake_case
 }

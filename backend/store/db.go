@@ -111,6 +111,10 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	if err := migrateLegacyUserColumnNames(db); err != nil {
+		return nil, fmt.Errorf("migrate username column: %w", err)
+	}
+
 	if err := db.AutoMigrate(
 		&model.User{},
 		&model.Session{},
@@ -130,6 +134,11 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&model.PushSubscription{},
 		&model.FederationOp{},
 		&model.FederationCursor{},
+		&model.Bot{},
+		&model.BotChat{},
+		&model.BotUpdate{},
+		&model.BotCallbackQuery{},
+		&model.BotFatherState{},
 	); err != nil {
 		return nil, err
 	}

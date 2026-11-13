@@ -30,6 +30,7 @@ type domainTestServer struct {
 	Cfg       *config.Config
 	Fed       *federation.Manager
 	Transport *Transport
+	Svc       *service.Service
 }
 
 // newDomainTestServer builds a full transport (all domains) wired with real
@@ -62,7 +63,7 @@ func newDomainTestServer(t *testing.T) *domainTestServer {
 		Commit:        "test-commit",
 	})
 
-	return &domainTestServer{Handler: transport.Handler(), Store: st, Cfg: cfg, Fed: fm, Transport: transport}
+	return &domainTestServer{Handler: transport.Handler(), Store: st, Cfg: cfg, Fed: fm, Transport: transport, Svc: svc}
 }
 
 // bearerReq builds an authenticated JSON request.
@@ -726,7 +727,7 @@ func TestFileServingSecurityPolicy(t *testing.T) {
 	chatID, _ := decodeBody(t, rec)["chat"].(map[string]any)["id"].(string)
 
 	attach := func(fileID, messageID string) {
-		msg, _, err := st.AddMessage(context.Background(), chatID, "", alice.ID, alice.Nick, "f", messageID, "", nil, false, "")
+		msg, _, err := st.AddMessage(context.Background(), chatID, "", alice.ID, alice.Username, "f", messageID, "", nil, false, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -894,7 +895,7 @@ func TestMessageReactionEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg, _, err := st.AddMessage(context.Background(), chat.ID, "", user.ID, user.Nick, "hi", "m-reaction", "", nil, false, "")
+	msg, _, err := st.AddMessage(context.Background(), chat.ID, "", user.ID, user.Username, "hi", "m-reaction", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -931,7 +932,7 @@ func TestChatPinEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg, _, err := st.AddMessage(context.Background(), chat.ID, "", user.ID, user.Nick, "pin", "m-pin", "", nil, false, "")
+	msg, _, err := st.AddMessage(context.Background(), chat.ID, "", user.ID, user.Username, "pin", "m-pin", "", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1069,5 +1070,57 @@ func TestUserDeviceBackupEndpoints(t *testing.T) {
 	resp := decodeBody(t, rec)
 	if resp["backup"] != backup {
 		t.Fatalf("backup = %v", resp["backup"])
+	}
+}
+
+func TestBotAPIRoundTrip(t *testing.T) {
+	ts := newDomainTestServer(t)
+	owner := createTestUser(t, ts.Store)
+	created, err := ts.Svc.CreateBot(context.Background(), owner.ID, "weather_bot", "Погода")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	ts.Handler.ServeHTTP(rec, bearerReq(t, http.MethodGet, "/api/bot-api/getMe", created.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("getMe = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	view, err := ts.Svc.OpenBotChat(context.Background(), owner.ID, "weather_bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	ts.Handler.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/bot-api/sendMessage", created.Token,
+		`{"chat_id":"`+view.ID+`","text":"hello"}`))
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("sendMessage = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBotManagementAPI(t *testing.T) {
+	ts := newDomainTestServer(t)
+	owner := createTestUser(t, ts.Store)
+	rec := httptest.NewRecorder()
+	ts.Handler.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/bots", owner.Token,
+		`{"username":"managed_bot","displayName":"Managed"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create bot = %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.Token == "" {
+		t.Fatalf("created = %+v err=%v", created, err)
+	}
+	rec = httptest.NewRecorder()
+	ts.Handler.ServeHTTP(rec, bearerReq(t, http.MethodGet, "/api/bots", owner.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list bots = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	ts.Handler.ServeHTTP(rec, bearerReq(t, http.MethodPost, "/api/bots/managed_bot/token", owner.Token, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotate = %d: %s", rec.Code, rec.Body.String())
 	}
 }

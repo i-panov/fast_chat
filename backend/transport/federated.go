@@ -96,7 +96,7 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 			return nil, &statusError{ErrorMessage: msgRemoteServerMismatch, code: http.StatusForbidden}
 		}
 
-		view, alreadyExists, err := svc.CreateFederatedChat(ctx, input.Body.ChatID, input.Body.Members, server, fm.ServerDomain())
+		view, alreadyExists, err := svc.CreateFederatedChat(ctx, input.Body.ChatID, input.Body.Members, server, fm.ServerDomain(), input.Body.BotID)
 		if err != nil {
 			return nil, federatedOrInternalError(err)
 		}
@@ -440,6 +440,7 @@ type federatedCreateChatInput struct {
 		ChatID       string   `json:"chatId,omitempty"`
 		Members      []string `json:"members,omitempty"`
 		RemoteServer string   `json:"remoteServer,omitempty"`
+		BotID        string   `json:"botId,omitempty"`
 	}
 }
 

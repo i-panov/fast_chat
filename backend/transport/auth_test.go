@@ -147,7 +147,7 @@ func TestErrorResponseLegacyShape(t *testing.T) {
 
 	// An invalid/nonexistent setup token maps to ErrInvalidSetupToken → 401
 	// with the pre-migration {"error": "..."} shape.
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/auth/complete-registration", strings.NewReader(`{"setupToken":"nope","nick":"alice"}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/auth/complete-registration", strings.NewReader(`{"setupToken":"nope","username":"alice"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 

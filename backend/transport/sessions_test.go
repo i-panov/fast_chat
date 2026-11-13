@@ -271,7 +271,7 @@ func TestCompleteRegistrationReturnsSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	regBody := `{"setupToken":"` + verified.SetupToken + `","nick":"bob","deviceId":"dev-1","deviceName":"Chrome"}`
+	regBody := `{"setupToken":"` + verified.SetupToken + `","username":"bob","displayName":"Bob","deviceId":"dev-1","deviceName":"Chrome"}`
 	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/auth/complete-registration", strings.NewReader(regBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()

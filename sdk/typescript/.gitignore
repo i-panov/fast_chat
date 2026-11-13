@@ -1,0 +1,5 @@
+dist/
+node_modules/
+
+# Local link used while developing the SDK against the frontend install.
+node_modules

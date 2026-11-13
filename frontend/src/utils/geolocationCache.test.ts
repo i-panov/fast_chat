@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	clearLastCachedLocation,
 	getLastCachedLocation,
 	requestGeolocation,
 } from "./geolocationCache.ts";
@@ -19,8 +20,11 @@ function mockPosition(lat: number, lng: number) {
 	});
 }
 
+beforeEach(() => {
+	clearLastCachedLocation();
+});
+
 afterEach(() => {
-	localStorage.clear();
 	Reflect.deleteProperty(navigator, "geolocation");
 });
 
@@ -36,24 +40,8 @@ describe("geolocationCache", () => {
 		expect(getLastCachedLocation()).toEqual({ lat: 10, lng: 20 });
 	});
 
-	it("returns null for invalid stored JSON", () => {
-		localStorage.setItem("lastGeolocation", "not-json{");
-
-		expect(getLastCachedLocation()).toBeNull();
-	});
-
-	it("returns null for non-numeric coordinates", () => {
-		localStorage.setItem(
-			"lastGeolocation",
-			JSON.stringify({ lat: "10", lng: 20 }),
-		);
-
-		expect(getLastCachedLocation()).toBeNull();
-
-		localStorage.setItem(
-			"lastGeolocation",
-			JSON.stringify({ lat: Number.NaN, lng: 20 }),
-		);
+	it("ignores legacy localStorage entries", () => {
+		localStorage.setItem("lastGeolocation", JSON.stringify({ lat: 1, lng: 2 }));
 
 		expect(getLastCachedLocation()).toBeNull();
 	});

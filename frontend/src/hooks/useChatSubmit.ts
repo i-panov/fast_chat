@@ -12,6 +12,7 @@ interface ChatSubmitDeps {
 	pendingLocation: Location | null;
 	editingMessage: EditingMessage | null;
 	pendingChatWith: string | null;
+	pendingChatIsBot?: boolean;
 	activeChatId: string | null;
 	activeThreadId: string | null;
 	replyToMessage: ReplyTarget | null;
@@ -58,6 +59,7 @@ export function useChatSubmit(
 		pendingLocation,
 		editingMessage,
 		pendingChatWith,
+		pendingChatIsBot,
 		activeChatId,
 		activeThreadId,
 		replyToMessage,
@@ -111,6 +113,7 @@ export function useChatSubmit(
 					const { chat } = await createChat(token, {
 						type: "private",
 						withUserId: pendingChatWith,
+						withUserIsBot: pendingChatIsBot,
 					});
 					await chatsRepo.upsert(chat);
 					selectChat(chat.id);
@@ -164,6 +167,7 @@ export function useChatSubmit(
 			pendingLocation,
 			editingMessage,
 			pendingChatWith,
+			pendingChatIsBot,
 			activeChatId,
 			activeThreadId,
 			replyToMessage,

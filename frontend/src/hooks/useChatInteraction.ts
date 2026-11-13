@@ -281,6 +281,7 @@ function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 		handleSearchChange: parts.search.handleSearchChange,
 		pendingChatWith: parts.search.pendingChatWith,
 		pendingChatNick: parts.search.pendingChatNick,
+		pendingChatIsBot: parts.search.pendingChatIsBot,
 		selectPendingChat: parts.search.selectPendingChat,
 		handleDeleteMessage: parts.sender.deleteMessage,
 		handleForwardMessage: async (targetChatId, message) => {
@@ -438,6 +439,7 @@ export function useChatPage(): ChatPageState {
 		pendingLocation: location.pendingLocation,
 		editingMessage: editor.editingMessage,
 		pendingChatWith: search.pendingChatWith,
+		pendingChatIsBot: search.pendingChatIsBot,
 		activeChatId: chatList.activeChatId,
 		activeThreadId: threads.activeThreadId,
 		replyToMessage: editor.replyToMessage,

@@ -1,0 +1,31 @@
+{
+	"name": "@fastchat/bot",
+	"version": "0.1.0",
+	"description": "TypeScript SDK for the Fast Chat Bot API",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"test": "npm run build && node --test dist/test/*.test.js"
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.0",
+		"@types/node": "^22.0.0"
+	},
+	"dependencies": {
+		"libsodium-wrappers": "^0.7.15"
+	}
+}

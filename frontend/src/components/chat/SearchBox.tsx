@@ -1,5 +1,6 @@
 import {
 	ActionIcon,
+	Badge,
 	Button,
 	Group,
 	Paper,
@@ -18,7 +19,7 @@ interface Props {
 	results: User[];
 	showResults: boolean;
 	onQueryChange: (value: string) => void;
-	onSelectUser: (userId: string, nick: string) => void;
+	onSelectUser: (userId: string, nick: string, isBot?: boolean) => void;
 	onCreateGroup: () => void;
 }
 
@@ -58,7 +59,7 @@ export function SearchBox({
 				const user = results[activeIndex];
 				if (user !== undefined) {
 					e.preventDefault();
-					onSelectUser(user.id, user.nick);
+					onSelectUser(user.id, user.nick, user.isBot === true);
 				}
 			}
 		}
@@ -155,7 +156,7 @@ export function SearchBox({
 									fullWidth
 									justify="flex-start"
 									style={{ borderRadius: 0 }}
-									onClick={() => onSelectUser(u.id, u.nick)}
+									onClick={() => onSelectUser(u.id, u.nick, u.isBot === true)}
 									role="option"
 									aria-selected={i === activeIndex}
 								>
@@ -166,7 +167,16 @@ export function SearchBox({
 											token={activeAccount?.token}
 											size={24}
 										/>
-										<Text size="sm">@{u.nick}</Text>
+										<Text size="sm">
+											{u.displayName !== undefined && u.displayName !== ""
+												? u.displayName
+												: `@${u.username ?? u.nick}`}
+										</Text>
+										{u.isBot === true && (
+											<Badge size="xs" variant="light" color="grape">
+												{t("search.bot")}
+											</Badge>
+										)}
 										{u.online && (
 											<Text size="xs" c="dimmed" ml={4}>
 												{t("search.online")}

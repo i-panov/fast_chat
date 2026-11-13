@@ -12,12 +12,14 @@ import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { getCurrentLocale } from "../../i18n.ts";
 import type {
 	FileInfo,
+	InlineKeyboardMarkup,
 	Location,
 	MessageDeliveryStatus,
 	ReactionSummary,
 	ReplyToInfo,
 } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
+import { InlineKeyboard } from "./bubble/InlineKeyboard.tsx";
 import { MessageAttachments } from "./bubble/MessageAttachments.tsx";
 import { MessageAuthor } from "./bubble/MessageAuthor.tsx";
 import { MessageBody } from "./bubble/MessageBody.tsx";
@@ -76,6 +78,7 @@ export interface MessageBubbleProps {
 	// fileKeys maps file ID to decryption key for encrypted files.
 	fileKeys?: Record<string, FileKey>;
 	reactions?: ReactionSummary[];
+	replyMarkup?: InlineKeyboardMarkup;
 }
 
 function isWithinTTL(createdAt: string, ttl: number): boolean {
@@ -141,7 +144,8 @@ function deepPropsEqual(
 		deepEq(prev.files, next.files) &&
 		deepEq(prev.location, next.location) &&
 		deepEq(prev.fileKeys, next.fileKeys) &&
-		deepEq(prev.reactions, next.reactions)
+		deepEq(prev.reactions, next.reactions) &&
+		deepEq(prev.replyMarkup, next.replyMarkup)
 	);
 }
 
@@ -310,6 +314,7 @@ export const MessageBubble = memo(function MessageBubble({
 	undecryptable,
 	fileKeys,
 	reactions,
+	replyMarkup,
 }: MessageBubbleProps) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
@@ -439,6 +444,13 @@ export const MessageBubble = memo(function MessageBubble({
 						encrypted={encrypted}
 						undecryptable={undecryptable}
 					/>
+					{replyMarkup !== undefined && (
+						<InlineKeyboard
+							chatId={chatId}
+							messageId={msgId}
+							markup={replyMarkup}
+						/>
+					)}
 				</Paper>
 				<MessageMenuButton onOpen={openMenuAt} />
 			</div>

@@ -63,10 +63,12 @@ type verifyCodeOutput struct {
 
 type completeRegistrationInput struct {
 	Body struct {
-		SetupToken string `json:"setupToken,omitempty"`
-		Nick       string `json:"nick,omitempty"`
-		DeviceID   string `json:"deviceId,omitempty"`
-		DeviceName string `json:"deviceName,omitempty"`
+		SetupToken  string `json:"setupToken,omitempty"`
+		Username    string `json:"username,omitempty"    required:"false"`
+		DisplayName string `json:"displayName,omitempty" required:"false"`
+		Nick        string `json:"nick,omitempty"        required:"false"` // legacy alias for username
+		DeviceID    string `json:"deviceId,omitempty"`
+		DeviceName  string `json:"deviceName,omitempty"`
 	}
 }
 
@@ -93,6 +95,8 @@ type refreshTokenOutput struct {
 // RegisterAuth adds auth operations to the given Huma API. Unauthenticated
 // endpoints (send-code, verify-code, complete-registration) are open;
 // refresh-token requires a valid Bearer token.
+//
+//nolint:funlen // auth endpoints share one registration block.
 func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.Hub, cfg *APIConfig) {
 	huma.Register(api, huma.Operation{
 		OperationID: "send-code",
@@ -165,7 +169,11 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 			UserAgent: userAgentFromContext(ctx),
 		}
 
-		res, err := svc.CompleteRegistration(ctx, input.Body.SetupToken, input.Body.Nick, device)
+		username := input.Body.Username
+		if username == "" {
+			username = input.Body.Nick
+		}
+		res, err := svc.CompleteRegistration(ctx, input.Body.SetupToken, username, input.Body.DisplayName, device)
 		if err != nil {
 			return nil, mapServerError(err)
 		}
@@ -462,7 +470,7 @@ func AuthMiddleware(st *store.Store) func(ctx huma.Context, next func(huma.Conte
 
 		next(huma.WithValue(ctx, authContextKey{}, &authUser{
 			ID:        user.ID,
-			Nick:      user.Nick,
+			Nick:      user.Username,
 			SessionID: session.ID,
 		}))
 	}

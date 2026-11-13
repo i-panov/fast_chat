@@ -395,3 +395,25 @@ func normalizeTimestampColumnUTC(db *gorm.DB, table, column string) error {
 		lastRowID = chunkLast
 	}
 }
+
+// migrateLegacyUserColumnNames renames the old users.nick column before
+// AutoMigrate adds users.username. The project had no production users, but a
+// development database may still carry the old shape.
+func migrateLegacyUserColumnNames(db *gorm.DB) error {
+	if !db.Migrator().HasTable(&model.User{}) {
+		return nil
+	}
+	hasNick := db.Migrator().HasColumn(&model.User{}, "nick")
+	hasUsername := db.Migrator().HasColumn(&model.User{}, "username")
+	switch {
+	case hasNick && !hasUsername:
+		return db.Exec("ALTER TABLE users RENAME COLUMN nick TO username").Error
+	case hasNick && hasUsername:
+		if err := db.Exec("UPDATE users SET username = nick WHERE username = ''").Error; err != nil {
+			return err
+		}
+		return db.Exec("ALTER TABLE users DROP COLUMN nick").Error
+	default:
+		return nil
+	}
+}

@@ -125,7 +125,7 @@ func (s *Service) StartCall(ctx context.Context, callerID, chatID, offer string)
 
 	s.sendEvent(calleeID, sse.Event{Event: eventCallIncoming, Data: map[string]any{
 		callIDKey:   call.ID,
-		"from":      map[string]string{"id": callerID, "nick": s.nickOf(ctx, callerID)},
+		keyFrom:     map[string]string{"id": callerID, "nick": s.nickOf(ctx, callerID)},
 		keyChatID:   chatID,
 		keyOffer:    offer,
 		"expiresAt": call.ExpiresAt.Format(time.RFC3339),
@@ -372,7 +372,7 @@ func (s *Service) nickOf(ctx context.Context, userID string) string {
 		return userID
 	}
 
-	return user.Nick
+	return user.Username
 }
 
 // callPushPayload is the notification body for an incoming call.

@@ -63,6 +63,7 @@ func NewService(subject, keysDir string, onExpired func(endpoint string)) (*Serv
 		// services (service.IsValidPushEndpoint), so a safe dialer is
 		// not required here. The timeout is: a push service that stops
 		// answering must not hold the sending goroutine forever.
+		// nosemgrep: fast-chat-inline-http-client -- endpoints are allowlisted.
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		onExpired:  onExpired,
 		sem:        make(chan struct{}, maxPushConcurrency),

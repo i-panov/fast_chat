@@ -4,8 +4,8 @@ import type { CachedFile } from "./schema.ts";
 const MAX_CACHED_FILES = 200;
 // Bounds for the local media cache. Large files are not cached implicitly:
 // video/audio would otherwise fill the origin quota after a few views.
-export const MAX_CACHE_BYTES = 200 * 1024 * 1024;
-export const MAX_AUTO_CACHE_BYTES = 50 * 1024 * 1024;
+const MAX_CACHE_BYTES = 200 * 1024 * 1024;
+const MAX_AUTO_CACHE_BYTES = 50 * 1024 * 1024;
 
 // Keep the cache inside the browser quota as well as the fixed cap. The
 // estimate API is advisory; when it is unavailable the fixed cap applies.

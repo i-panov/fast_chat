@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
@@ -167,6 +168,43 @@ async function doSendMessage(
 	} = params;
 	const { user, token } = deps;
 	if (user === null) return false;
+
+	const chat = await chatsRepo.getById(chatId);
+	if (chat?.isBotChat === true && chat.botEncryptionMode !== "e2ee") {
+		// Plaintext bot chats: the server has to hand the text to the bot.
+		if ((pendingFiles ?? []).length > 0 || location !== undefined) return false;
+		const botMsgId = genId();
+		const botNow = new Date().toISOString();
+		const stored: Message = {
+			id: botMsgId,
+			chatId,
+			fromId: user.id,
+			fromNick: user.nick,
+			text,
+			encrypted: false,
+			createdAt: botNow,
+		};
+		if (inThreadId !== undefined) {
+			await threadMessagesRepo.upsert(stored, inThreadId, "queued");
+		} else {
+			await messagesRepo.upsert(stored, "queued");
+		}
+		await outboxRepo.enqueue({
+			kind: "send",
+			opId: genId(),
+			chatId,
+			msgId: botMsgId,
+			text,
+			encrypted: false,
+			replyToId,
+			pendingFileClientIds: [],
+			createdAt: botNow,
+			attempts: 0,
+			threadId: inThreadId,
+		});
+		scheduleSync();
+		return true;
+	}
 
 	const msgId = genId();
 	const now = new Date().toISOString();

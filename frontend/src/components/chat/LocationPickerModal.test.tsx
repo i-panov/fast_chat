@@ -3,6 +3,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Location } from "../../types/api.ts";
+import {
+	clearLastCachedLocation,
+	requestGeolocation,
+} from "../../utils/geolocationCache.ts";
 import { LocationPickerModal } from "./LocationPickerModal.tsx";
 
 type MapClickEvent = { latlng: { lat: number; lng: number } };
@@ -81,7 +85,7 @@ function clickSend() {
 beforeEach(() => {
 	clickHandlers.length = 0;
 	setView.mockClear();
-	localStorage.clear();
+	clearLastCachedLocation();
 	rejectGeolocation();
 });
 
@@ -105,7 +109,9 @@ describe("location picker modal", () => {
 	});
 
 	it("applies the cached location", async () => {
-		localStorage.setItem("lastGeolocation", JSON.stringify({ lat: 1, lng: 2 }));
+		acceptGeolocation(1, 2);
+		await requestGeolocation();
+		rejectGeolocation();
 		const onConfirm = vi.fn();
 		renderModal({ onConfirm });
 

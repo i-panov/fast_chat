@@ -118,7 +118,8 @@ func (s *Service) CreateFederatedChat(
 	chatID string,
 	members []string,
 	remoteServer,
-	localServer string,
+	localServer,
+	botID string,
 ) (ChatView, bool, error) {
 
 	if len(members) != federatedChatMembers {
@@ -127,6 +128,15 @@ func (s *Service) CreateFederatedChat(
 
 	if !FederatedChatMembersValid(members, remoteServer, localServer) {
 		return ChatView{}, false, ErrFederatedMembersNotValid
+	}
+	if botID != "" {
+		if !UserIDBelongsToServer(botID, localServer) {
+			return ChatView{}, false, ErrFederatedMembersNotValid
+		}
+		bot, ok := s.store.GetBot(ctx, botID)
+		if !ok || !bot.IsActive {
+			return ChatView{}, false, ErrBotNotActive
+		}
 	}
 
 	if _, ok := s.store.GetChat(ctx, chatID); ok {
@@ -138,10 +148,20 @@ func (s *Service) CreateFederatedChat(
 		Members:      members,
 		CreatedAt:    time.Now().UTC(),
 		RemoteServer: remoteServer,
+		BotID:        botID,
 	}
 
 	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
 		return ChatView{}, false, err
+	}
+	if botID != "" {
+		for _, memberID := range members {
+			if memberID != botID {
+				if err := s.store.CreateBotChat(ctx, botID, memberID, chatID); err != nil {
+					return ChatView{}, false, err
+				}
+			}
+		}
 	}
 
 	// Realtime fan-out is part of this use case (pre-migration parity): every local
@@ -304,6 +324,9 @@ func (s *Service) SendFederatedMessage(
 	}
 	if msg.ThreadID == "" {
 		s.forwardFederatedGroupMessage(ctx, chat, in)
+		if chat.BotID != "" {
+			s.AppendBotMessageUpdate(ctx, chat.ID, msg)
+		}
 	}
 
 	return msg, nil
@@ -465,6 +488,7 @@ type FederatedChatDTO struct {
 	Name      string    `json:"name"`
 	OwnerID   string    `json:"ownerId"`
 	Members   []string  `json:"members"`
+	BotID     string    `json:"botId,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -545,6 +569,7 @@ func (s *Service) federatedChats(ctx context.Context, chatIDs []string) []Federa
 			Name:      chats[idx].Name,
 			OwnerID:   chats[idx].OwnerID,
 			Members:   chats[idx].Members,
+			BotID:     chats[idx].BotID,
 			CreatedAt: chats[idx].CreatedAt,
 		})
 	}
@@ -667,7 +692,7 @@ func (s *Service) forwardFederatedGroupMessage(ctx context.Context, chat *model.
 			"id":               in.ID,
 			"fromId":           in.FromID,
 			"fromNick":         in.FromNick,
-			"text":             in.Text,
+			keyText:            in.Text,
 			"replyToId":        in.ReplyToID,
 			"location":         in.Location,
 			"encrypted":        in.Encrypted,

@@ -102,6 +102,7 @@ func New(deps *Deps) *Transport {
 	RegisterChats(api, deps.Svc, deps.FedClient, cfg)
 	RegisterMessages(api, deps.Svc, deps.Store, deps.FedClient, cfg)
 	RegisterFiles(api, deps.Store, deps.Svc, deps.FedClient, cfg)
+	registerBots(api, deps.Svc)
 	RegisterSync(api, deps.Svc)
 	RegisterFederated(api, deps.Store, deps.Svc, deps.FedManager, cfg)
 
@@ -245,7 +246,8 @@ func (f *fallbackBuffer) Write(payload []byte) (int, error) {
 	if f.passthrough {
 		// Middleware passthrough: fallbackBuffer forwards handler-produced
 		// responses (JSON/SSE/file streams) to the real writer and never renders
-		// user input itself. codeql[go/reflected-xss]
+		// user input itself.
+		// codeql[go/reflected-xss]
 		return f.ResponseWriter.Write(payload)
 	}
 

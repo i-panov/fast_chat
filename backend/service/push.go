@@ -181,12 +181,15 @@ func (s *Service) SendPushForMessage(
 		return
 	}
 
+	body := ""
+	if chat.BotID != "" && !msg.Encrypted {
+		// Plaintext bot chats can show a short preview; encrypted ones must not.
+		body = previewBotText(msg.Text)
+	}
 	payload := PushPayload{
 		Title: msg.FromNick,
-		// The server does not know the recipient's language and the
-		// message content is E2E-encrypted anyway; keep the body empty
-		// so the notification is just the sender's nickname.
-		Tag: "chat-" + chat.ID,
+		Body:  body,
+		Tag:   "chat-" + chat.ID,
 		Data: PushPayloadData{
 			ChatID:    chat.ID,
 			MessageID: msg.ID,
@@ -200,4 +203,13 @@ func (s *Service) SendPushForMessage(
 	}
 
 	sendPushBounded(s.push, raw, subs)
+}
+
+func previewBotText(text string) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) > 120 {
+		runes = runes[:120]
+		return string(runes) + "…"
+	}
+	return string(runes)
 }

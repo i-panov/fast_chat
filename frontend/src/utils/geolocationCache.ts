@@ -1,32 +1,19 @@
 import type { Location } from "../types/api.ts";
 
-const CACHED_LOCATION_KEY = "lastGeolocation";
+// Kept in memory only: coordinates are sensitive and must not survive the
+// session or be readable by another script on the origin.
+let cachedLocation: Location | null = null;
 
 export function getLastCachedLocation(): Location | null {
-	try {
-		const raw = localStorage.getItem(CACHED_LOCATION_KEY);
-		if (raw === null) return null;
-		const parsed = JSON.parse(raw) as { lat: unknown; lng: unknown };
-		if (
-			typeof parsed.lat === "number" &&
-			typeof parsed.lng === "number" &&
-			!Number.isNaN(parsed.lat) &&
-			!Number.isNaN(parsed.lng)
-		) {
-			return { lat: parsed.lat, lng: parsed.lng };
-		}
-		return null;
-	} catch {
-		return null;
-	}
+	return cachedLocation;
+}
+
+export function clearLastCachedLocation(): void {
+	cachedLocation = null;
 }
 
 function saveLastCachedLocation(loc: Location): void {
-	try {
-		localStorage.setItem(CACHED_LOCATION_KEY, JSON.stringify(loc));
-	} catch {
-		// localStorage may be full or blocked
-	}
+	cachedLocation = { lat: loc.lat, lng: loc.lng };
 }
 
 export function requestGeolocation(

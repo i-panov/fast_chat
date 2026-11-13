@@ -45,11 +45,6 @@ export class RecoveryRequiredError extends Error {
 // rotate the public key and make the other devices unable to read new
 // messages, so the UI must ask the user to restore a backup or sign out
 // everywhere first.
-export class MultiDeviceKeyRequiredError extends Error {
-	constructor() {
-		super("account has other active devices and no key backup");
-	}
-}
 
 // Raised for the first key on a single-device account. Generating it makes
 // old history unreadable, so the UI must ask before doing it.
@@ -407,25 +402,6 @@ export async function clearLocalKeys(): Promise<void> {
 		db.delete("meta", PRIVATE_KEY_META),
 		db.delete("meta", PUBLIC_KEY_UPLOADED_META),
 	]).catch(() => {});
-}
-
-export async function getRecipientPublicKeys(
-	token: string,
-	userIds: string[],
-): Promise<Map<string, string>> {
-	const out = new Map<string, string>();
-	// Parallel fetch with limit of 4 to avoid overwhelming the server
-	const chunkSize = 4;
-	for (let i = 0; i < userIds.length; i += chunkSize) {
-		const chunk = userIds.slice(i, i + chunkSize);
-		const keys = await Promise.all(
-			chunk.map((id) => getRecipientPublicKey(token, id)),
-		);
-		for (let j = 0; j < chunk.length; j++) {
-			out.set(chunk[j], keys[j]);
-		}
-	}
-	return out;
 }
 
 // getRecipientDeviceKeys returns the active device keys of every member.

@@ -56,21 +56,22 @@ func escapeLike(value string) string {
 // CreateUserWithSession creates the account and its first session in one
 // transaction. The returned token is plaintext and sent to the client once.
 func (s *Store) CreateUserWithSession(
-	ctx context.Context, email, nick, serverDomain, deviceID, deviceName, userAgent string, ttl time.Duration,
+	ctx context.Context, email, username, displayName, serverDomain, deviceID, deviceName, userAgent string, ttl time.Duration,
 ) (*model.User, *model.Session, string, error) {
 
 	if ttl <= 0 {
 		return nil, nil, "", errInvalidTTL
 	}
 
-	fullID := nick + ":" + serverDomain
+	fullID := username + ":" + serverDomain
 	now := time.Now().UTC()
 	token := GenerateID()
 
 	user := &model.User{
-		ID:    fullID,
-		Email: email,
-		Nick:  nick,
+		ID:          fullID,
+		Email:       email,
+		Username:    username,
+		DisplayName: displayName,
 	}
 	session := &model.Session{
 		ID:         GenerateID(),
@@ -104,7 +105,7 @@ func (s *Store) CreateUserWithSession(
 			switch {
 			case strings.Contains(msg, ".email") || strings.Contains(msg, ": email"):
 				return nil, nil, "", ErrEmailTaken
-			case strings.Contains(msg, ".nick") || strings.Contains(msg, ": nick"):
+			case strings.Contains(msg, ".username") || strings.Contains(msg, ": username"):
 				return nil, nil, "", ErrNicknameTaken
 			}
 		}
@@ -121,11 +122,11 @@ func (s *Store) CreateUserWithSession(
 
 // CreateUser keeps the pre-session signature working for callers that do not
 // have device information: it creates the account with a legacy session.
-func (s *Store) CreateUser(ctx context.Context, email, nick, serverDomain string, tokenExpiry time.Duration) (*model.User, error) {
+func (s *Store) CreateUser(ctx context.Context, email, username, serverDomain string, tokenExpiry time.Duration) (*model.User, error) {
 	if tokenExpiry <= 0 {
 		tokenExpiry = 24 * time.Hour
 	}
-	user, _, _, err := s.CreateUserWithSession(ctx, email, nick, serverDomain, legacyDeviceID, "Legacy session", "", tokenExpiry)
+	user, _, _, err := s.CreateUserWithSession(ctx, email, username, username, serverDomain, legacyDeviceID, "Legacy session", "", tokenExpiry)
 	return user, err
 }
 
@@ -231,18 +232,21 @@ func (s *Store) GetUsersByIDs(ctx context.Context, userIDs []string) map[string]
 	}
 
 	var rows []struct {
-		ID   string
-		Nick string
+		ID       string
+		Username string
 	}
 
 	for start := 0; start < len(userIDs); start += deleteBatchIDs {
 		end := min(start+deleteBatchIDs, len(userIDs))
 
 		var chunk []struct {
-			ID   string
-			Nick string
+			ID       string
+			Username string
 		}
-		if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id IN ?", userIDs[start:end]).Select("id, nick").Scan(&chunk).Error; err != nil {
+		query := s.db.WithContext(ctx).Model(&model.User{}).
+			Where("id IN ?", userIDs[start:end]).
+			Select(`id, COALESCE(NULLIF(display_name, ''), username) AS username`)
+		if err := query.Scan(&chunk).Error; err != nil {
 			slog.Warn("GetUsersByIDs failed", "err", err)
 			return map[string]string{}
 		}
@@ -251,13 +255,13 @@ func (s *Store) GetUsersByIDs(ctx context.Context, userIDs []string) map[string]
 	}
 
 	for _, r := range rows {
-		out[r.ID] = r.Nick
+		out[r.ID] = r.Username
 	}
 
 	return out
 }
 
-// SearchUsers returns users whose nick contains the query (case-insensitive),
+// SearchUsers returns users whose username or display name contains the query (case-insensitive),
 // excluding excludeID. NOTE: LIKE '%...%' prevents index usage in SQLite.
 // Acceptable for the expected user base (<10K users). If performance becomes
 // an issue, add a FTS5 virtual table and migrate SearchUsers to MATCH.
@@ -265,7 +269,9 @@ func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []mode
 	q := escapeLike(strings.ToLower(query))
 
 	var users []model.User
-	if err := s.db.WithContext(ctx).Where("LOWER(nick) LIKE ? ESCAPE '\\' AND id != ?", "%"+q+"%", excludeID).Find(&users).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Where(`(LOWER(username) LIKE ? ESCAPE '\' OR LOWER(display_name) LIKE ? ESCAPE '\') AND id != ?`, "%"+q+"%", "%"+q+"%", excludeID).
+		Find(&users).Error; err != nil {
 		slog.Warn("SearchUsers failed", "err", err)
 		return []model.PublicUser{}
 	}
