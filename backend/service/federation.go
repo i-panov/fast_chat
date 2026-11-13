@@ -139,7 +139,20 @@ func (s *Service) CreateFederatedChat(
 		}
 	}
 
-	if _, ok := s.store.GetChat(ctx, chatID); ok {
+	if existing, ok := s.store.GetChat(ctx, chatID); ok {
+		if botID != "" && existing.BotID != botID {
+			if err := s.store.SetChatBotID(ctx, chatID, botID); err != nil {
+				return ChatView{}, false, err
+			}
+			for _, memberID := range members {
+				if memberID == botID {
+					continue
+				}
+				if err := s.store.CreateBotChat(ctx, botID, memberID, chatID); err != nil {
+					return ChatView{}, false, err
+				}
+			}
+		}
 		return ChatView{}, true, nil
 	}
 
@@ -208,7 +221,7 @@ type FederatedInboundMessage struct {
 // enriching the reply snapshot, and fans out the new-message event. Returns
 // the stored message for the transport response.
 //
-//nolint:gocyclo,cyclop // validation, reply, files and fan-out share one transaction boundary.
+//nolint:gocyclo,cyclop,gocognit,funlen // validation, reply, files and fan-out share one transaction boundary.
 func (s *Service) SendFederatedMessage(
 	ctx context.Context,
 	chat *model.Chat,
@@ -326,6 +339,13 @@ func (s *Service) SendFederatedMessage(
 		s.forwardFederatedGroupMessage(ctx, chat, in)
 		if chat.BotID != "" {
 			s.AppendBotMessageUpdate(ctx, chat.ID, msg)
+			if in.FromID == chat.BotID {
+				for _, memberID := range chat.Members {
+					if UserIDBelongsToServer(memberID, s.cfg.Server.Domain) {
+						s.SendPushForMessage(ctx, chat, msg, "", memberID)
+					}
+				}
+			}
 		}
 	}
 
@@ -689,15 +709,15 @@ func (s *Service) forwardFederatedGroupMessage(ctx context.Context, chat *model.
 		}
 		seen[domain] = struct{}{}
 		body := map[string]any{
-			"id":               in.ID,
-			"fromId":           in.FromID,
-			"fromNick":         in.FromNick,
-			keyText:            in.Text,
-			"replyToId":        in.ReplyToID,
-			"location":         in.Location,
-			"encrypted":        in.Encrypted,
-			"encryptedPayload": in.EncryptedPayload,
-			"files":            in.Files,
+			"id":                in.ID,
+			"fromId":            in.FromID,
+			"fromNick":          in.FromNick,
+			keyText:             in.Text,
+			"replyToId":         in.ReplyToID,
+			"location":          in.Location,
+			keyEncrypted:        in.Encrypted,
+			keyEncryptedPayload: in.EncryptedPayload,
+			"files":             in.Files,
 		}
 		url := s.fed.URL(domain, "/api/federated/chats/"+chat.ID+"/messages")
 		if _, err := s.fed.Request(ctx, "POST", url, body); err != nil {

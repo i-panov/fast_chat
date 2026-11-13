@@ -18,8 +18,10 @@ import (
 )
 
 const (
-	keyFrom = "from"
-	keyText = "text"
+	keyFrom             = "from"
+	keyText             = "text"
+	keyEncrypted        = "encrypted"
+	keyEncryptedPayload = "encryptedPayload"
 )
 
 var (
@@ -29,6 +31,7 @@ var (
 	ErrBotNotActive       = errors.New("bot is not active")
 	ErrBotSelfChat        = errors.New("cannot open a bot chat with a bot")
 	ErrBotMarkupInvalid   = errors.New("invalid inline keyboard")
+	ErrBotActionInvalid   = errors.New("unsupported bot action")
 )
 
 var botBaseRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_]{0,26}[a-z0-9])?$`)
@@ -164,9 +167,14 @@ func (s *Service) OpenBotChat(ctx context.Context, userID, username string) (Cha
 	return view, nil
 }
 
+func (s *Service) PruneBotData(ctx context.Context) error {
+	return s.store.PruneBotData(ctx, time.Now().UTC().Add(-7*24*time.Hour))
+}
+
 // PollBotUpdates implements long polling. A small DB poll is enough for the
 // single-process SQLite deployment; a notifier can replace it later.
 func (s *Service) PollBotUpdates(ctx context.Context, botID string, offset uint64, limit int, timeout time.Duration) ([]model.BotUpdate, error) {
+	s.pruneBotDataOnce(ctx)
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
@@ -249,7 +257,7 @@ func (s *Service) sendBotMessage(
 			groupURL := s.fed.URL(chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages")
 			if _, err := s.fed.Request(ctx, "POST", groupURL, map[string]any{
 				"id": msg.ID, "fromId": botID, "fromNick": user.DisplayName,
-				"text": msg.Text, "encrypted": encrypted, "encryptedPayload": payload,
+				"text": msg.Text, keyEncrypted: encrypted, keyEncryptedPayload: payload,
 			}); err != nil {
 				log().Warn("federated bot reply failed", "err", err)
 			}
@@ -264,16 +272,25 @@ func (s *Service) AppendBotMessageUpdate(ctx context.Context, chatID string, msg
 	if !ok {
 		return
 	}
+	from := map[string]any{
+		"id": msg.FromID, "username": msg.FromNick, "display_name": msg.FromNick,
+		"is_bot": false,
+	}
+	if user, ok := s.store.GetUserByID(ctx, msg.FromID); ok {
+		from["username"] = user.Username
+		from["display_name"] = user.DisplayName
+		from["is_bot"] = user.IsBot
+	}
 	payload, err := json.Marshal(map[string]any{
 		"update_id": 0,
 		"message": map[string]any{
-			"message_id": msg.ID,
-			"chat_id":    chatID,
-			keyFrom: map[string]any{
-				"id": msg.FromID, "username": msg.FromNick, "display_name": msg.FromNick,
-			},
-			keyText: msg.Text,
-			"date":  msg.CreatedAt,
+			"message_id":        msg.ID,
+			"chat_id":           chatID,
+			keyFrom:             from,
+			keyText:             msg.Text,
+			keyEncrypted:        msg.Encrypted,
+			"encrypted_payload": msg.EncryptedPayload,
+			"date":              msg.CreatedAt,
 		},
 	})
 	if err != nil {
@@ -326,21 +343,32 @@ func (s *Service) CreateBotCallback(ctx context.Context, userID, chatID, message
 	if err != nil || msg.FromID != bc.BotID {
 		return nil, ErrMessageNotFound
 	}
-	if data == "" || len(data) > 64 {
+	if data == "" {
 		return nil, ErrBotMarkupInvalid
 	}
-	valid := false
-	if msg.ReplyMarkup != nil {
-		for _, row := range msg.ReplyMarkup.InlineKeyboard {
-			for _, button := range row {
-				if button.CallbackData == data {
-					valid = true
+	if msg.Encrypted {
+		// The markup lives inside the encrypted payload, so the server
+		// cannot validate it; the bot validates the decrypted data.
+		if len(data) > 256 || !strings.HasPrefix(data, "fcbenc:") {
+			return nil, ErrBotMarkupInvalid
+		}
+	} else {
+		if len(data) > 64 {
+			return nil, ErrBotMarkupInvalid
+		}
+		valid := false
+		if msg.ReplyMarkup != nil {
+			for _, row := range msg.ReplyMarkup.InlineKeyboard {
+				for _, button := range row {
+					if button.CallbackData == data {
+						valid = true
+					}
 				}
 			}
 		}
-	}
-	if !valid {
-		return nil, ErrBotMarkupInvalid
+		if !valid {
+			return nil, ErrBotMarkupInvalid
+		}
 	}
 	user, _ := s.store.GetUserByID(ctx, userID)
 	query := &model.BotCallbackQuery{
@@ -367,7 +395,13 @@ func (s *Service) CreateBotCallback(ctx context.Context, userID, chatID, message
 }
 
 // AnswerBotCallback records the bot's answer; v1 does not push it to the UI.
-func (s *Service) AnswerBotCallback(ctx context.Context, botID, callbackID, text string, showAlert bool) error {
+func (s *Service) AnswerBotCallback(
+	ctx context.Context,
+	botID, callbackID, text string,
+	showAlert, encrypted bool,
+	payload string,
+) error {
+
 	query, ok := s.store.GetBotCallbackQuery(ctx, callbackID, botID)
 	if !ok {
 		return ErrMessageNotFound
@@ -376,9 +410,11 @@ func (s *Service) AnswerBotCallback(ctx context.Context, botID, callbackID, text
 		return err
 	}
 	s.sendEvent(query.UserID, sse.Event{Event: eventBotCallbackAnswer, Data: map[string]any{
-		"callbackQueryId": callbackID,
-		"text":            text,
-		"showAlert":       showAlert,
+		"callbackQueryId":  callbackID,
+		"text":             text,
+		"showAlert":        showAlert,
+		"encrypted":        encrypted,
+		"encryptedPayload": payload,
 	}})
 	return nil
 }
@@ -415,6 +451,8 @@ func (s *Service) EditBotMessage(
 	ctx context.Context,
 	botID, chatID, messageID, text string,
 	markup *model.InlineKeyboardMarkup,
+	encrypted bool,
+	payload string,
 ) (*model.Message, error) {
 
 	bc, ok := s.store.GetBotChatByChatID(ctx, chatID)
@@ -432,8 +470,9 @@ func (s *Service) EditBotMessage(
 	if err := validateInlineKeyboard(markup); err != nil {
 		return nil, err
 	}
-	encrypted := false
-	payload := ""
+	if !encrypted {
+		payload = ""
+	}
 	if err := s.store.EditRawMessage(ctx, chatID, messageID, text, time.Now().UTC(), nil, false, &encrypted, &payload); err != nil {
 		return nil, err
 	}
@@ -518,4 +557,57 @@ func (s *Service) ListUserDeviceKeys(ctx context.Context, userID string) ([]Devi
 
 func (s *Service) GetBotChatForUser(ctx context.Context, botID, userID string) (*model.BotChat, bool) {
 	return s.store.GetBotChat(ctx, botID, userID)
+}
+
+type BotChatInfo struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+}
+
+func (s *Service) GetBotChat(ctx context.Context, botID, chatID string) (BotChatInfo, error) {
+	bc, ok := s.store.GetBotChatByChatID(ctx, chatID)
+	if !ok || bc.BotID != botID {
+		return BotChatInfo{}, ErrChatNotFound
+	}
+	user, ok := s.store.GetUserByID(ctx, bc.UserID)
+	if !ok {
+		return BotChatInfo{}, ErrUserNotFound
+	}
+	return BotChatInfo{
+		ID: chatID, Type: "private", Username: user.Username, DisplayName: user.DisplayName,
+	}, nil
+}
+
+func (s *Service) BotChatAction(ctx context.Context, botID, chatID, action string) error {
+	bc, ok := s.store.GetBotChatByChatID(ctx, chatID)
+	if !ok || bc.BotID != botID {
+		return ErrChatNotFound
+	}
+	if action != "typing" {
+		return ErrBotActionInvalid
+	}
+	chat, ok := s.store.GetChat(ctx, chatID)
+	if !ok {
+		return ErrChatNotFound
+	}
+	user, ok := s.store.GetUserByID(ctx, botID)
+	if !ok {
+		return ErrUserNotFound
+	}
+	s.HandleTyping(ctx, chat, chatID, botID, user.DisplayName, true)
+	return nil
+}
+
+func (s *Service) pruneBotDataOnce(ctx context.Context) {
+	s.botPruneMu.Lock()
+	defer s.botPruneMu.Unlock()
+	if time.Since(s.lastBotPrune) < time.Hour {
+		return
+	}
+	s.lastBotPrune = time.Now()
+	if err := s.PruneBotData(ctx); err != nil {
+		log().Warn("bot data prune failed", "err", err)
+	}
 }

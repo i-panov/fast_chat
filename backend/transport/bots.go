@@ -88,6 +88,43 @@ func registerBots(api huma.API, svc *service.Service) {
 	})
 
 	huma.Register(api, huma.Operation{
+		OperationID: "bot-get-chat",
+		Method:      http.MethodPost,
+		Path:        "/api/bot-api/getChat",
+		Summary:     "Get a bot chat",
+	}, func(ctx context.Context, input *botChatInput) (*botChatOutput, error) {
+		bot, _, err := botFromContext(ctx, svc)
+		if err != nil {
+			return nil, err
+		}
+		chat, err := svc.GetBotChat(ctx, bot.UserID, input.Body.ChatID)
+		if err != nil {
+			return nil, botError(err)
+		}
+		var out botChatOutput
+		out.Status = http.StatusOK
+		out.Body.OK = true
+		out.Body.Result = chat
+		return &out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "bot-chat-action",
+		Method:      http.MethodPost,
+		Path:        "/api/bot-api/sendChatAction",
+		Summary:     "Send a chat action such as typing",
+	}, func(ctx context.Context, input *botChatActionInput) (*botOKOutput, error) {
+		bot, _, err := botFromContext(ctx, svc)
+		if err != nil {
+			return nil, err
+		}
+		if err := svc.BotChatAction(ctx, bot.UserID, input.Body.ChatID, input.Body.Action); err != nil {
+			return nil, botError(err)
+		}
+		return newBotOKOutput(), nil
+	})
+
+	huma.Register(api, huma.Operation{
 		OperationID: "bot-get-me",
 		Method:      http.MethodGet,
 		Path:        "/api/bot-api/getMe",
@@ -169,7 +206,11 @@ func registerBots(api huma.API, svc *service.Service) {
 		if err != nil {
 			return nil, err
 		}
-		msg, err := svc.EditBotMessage(ctx, bot.UserID, input.Body.ChatID, input.Body.MessageID, input.Body.Text, input.Body.ReplyMarkup)
+		msg, err := svc.EditBotMessage(
+			ctx, bot.UserID, input.Body.ChatID, input.Body.MessageID,
+			input.Body.Text, input.Body.ReplyMarkup,
+			input.Body.Encrypted, input.Body.EncryptedPayload,
+		)
 		if err != nil {
 			return nil, botError(err)
 		}
@@ -193,11 +234,7 @@ func registerBots(api huma.API, svc *service.Service) {
 		if err := svc.DeleteBotMessage(ctx, bot.UserID, input.Body.ChatID, input.Body.MessageID); err != nil {
 			return nil, botError(err)
 		}
-		var out botOKOutput
-		out.Status = http.StatusOK
-		out.Body.OK = true
-		out.Body.Result = true
-		return &out, nil
+		return newBotOKOutput(), nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -217,11 +254,7 @@ func registerBots(api huma.API, svc *service.Service) {
 		if err := svc.SetBotEncryptionKey(ctx, bot.UserID, encodePublicKey(raw)); err != nil {
 			return nil, errInternal
 		}
-		var out botOKOutput
-		out.Status = http.StatusOK
-		out.Body.OK = true
-		out.Body.Result = true
-		return &out, nil
+		return newBotOKOutput(), nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -258,14 +291,14 @@ func registerBots(api huma.API, svc *service.Service) {
 		if err != nil {
 			return nil, err
 		}
-		if err := svc.AnswerBotCallback(ctx, bot.UserID, input.Body.CallbackQueryID, input.Body.Text, input.Body.ShowAlert); err != nil {
+		if err := svc.AnswerBotCallback(
+			ctx, bot.UserID, input.Body.CallbackQueryID,
+			input.Body.Text, input.Body.ShowAlert,
+			input.Body.Encrypted, input.Body.EncryptedPayload,
+		); err != nil {
 			return nil, botError(err)
 		}
-		var out botOKOutput
-		out.Status = http.StatusOK
-		out.Body.OK = true
-		out.Body.Result = true
-		return &out, nil
+		return newBotOKOutput(), nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -343,6 +376,8 @@ func botError(err error) error {
 		return &statusError{ErrorMessage: "empty message", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrBotMarkupInvalid):
 		return &statusError{ErrorMessage: "invalid inline keyboard", code: http.StatusBadRequest}
+	case errors.Is(err, service.ErrBotActionInvalid):
+		return &statusError{ErrorMessage: "unsupported chat action", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrMessageNotFound):
 		return &statusError{ErrorMessage: "message not found", code: http.StatusNotFound}
 	default:
@@ -401,10 +436,12 @@ type botSendMessageInput struct {
 
 type botEditMessageInput struct {
 	Body struct {
-		ChatID      string                      `json:"chat_id"`    //nolint:tagliatelle // Bot API uses snake_case
-		MessageID   string                      `json:"message_id"` //nolint:tagliatelle // Bot API uses snake_case
-		Text        string                      `json:"text"`
-		ReplyMarkup *model.InlineKeyboardMarkup `json:"reply_markup,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
+		ChatID           string                      `json:"chat_id"`    //nolint:tagliatelle // Bot API uses snake_case
+		MessageID        string                      `json:"message_id"` //nolint:tagliatelle // Bot API uses snake_case
+		Text             string                      `json:"text"`
+		ReplyMarkup      *model.InlineKeyboardMarkup `json:"reply_markup,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
+		Encrypted        bool                        `json:"encrypted,omitempty"`
+		EncryptedPayload string                      `json:"encrypted_payload,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
 	}
 }
 
@@ -417,9 +454,11 @@ type botDeleteMessageInput struct {
 
 type botAnswerCallbackInput struct {
 	Body struct {
-		CallbackQueryID string `json:"callback_query_id"` //nolint:tagliatelle // Bot API uses snake_case
-		Text            string `json:"text"`
-		ShowAlert       bool   `json:"show_alert"` //nolint:tagliatelle // Bot API uses snake_case
+		CallbackQueryID  string `json:"callback_query_id"` //nolint:tagliatelle // Bot API uses snake_case
+		Text             string `json:"text"`
+		ShowAlert        bool   `json:"show_alert"` //nolint:tagliatelle // Bot API uses snake_case
+		Encrypted        bool   `json:"encrypted,omitempty"`
+		EncryptedPayload string `json:"encrypted_payload,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
 	}
 }
 
@@ -461,6 +500,14 @@ type botSendMessageOutput struct {
 }
 
 func (o *botSendMessageOutput) GetStatus() int { return o.Status }
+
+func newBotOKOutput() *botOKOutput {
+	var out botOKOutput
+	out.Status = http.StatusOK
+	out.Body.OK = true
+	out.Body.Result = true
+	return &out
+}
 
 type botOKOutput struct {
 	Status int
@@ -563,3 +610,26 @@ type botUserKeysOutput struct {
 }
 
 func (o *botUserKeysOutput) GetStatus() int { return o.Status }
+
+type botChatInput struct {
+	Body struct {
+		ChatID string `json:"chat_id"` //nolint:tagliatelle // Bot API uses snake_case
+	}
+}
+
+type botChatOutput struct {
+	Status int
+	Body   struct {
+		OK     bool                `json:"ok"`
+		Result service.BotChatInfo `json:"result"`
+	}
+}
+
+func (o *botChatOutput) GetStatus() int { return o.Status }
+
+type botChatActionInput struct {
+	Body struct {
+		ChatID string `json:"chat_id"` //nolint:tagliatelle // Bot API uses snake_case
+		Action string `json:"action"`
+	}
+}

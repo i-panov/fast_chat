@@ -2,7 +2,7 @@ import sodium from "libsodium-wrappers";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import i18n from "../i18n.ts";
-import type { FileInfo, Message } from "../types/api.ts";
+import type { FileInfo, InlineKeyboardMarkup, Message } from "../types/api.ts";
 import { fileTypeForMime } from "../utils/fileType.ts";
 import {
 	decryptContent,
@@ -89,6 +89,7 @@ export async function decryptMessageContent(
 	location?: { lat: number; lng: number };
 	fileKeys: Record<string, FileKey>;
 	fileMeta: Record<string, FileMeta>;
+	replyMarkup?: InlineKeyboardMarkup;
 } | null> {
 	if (!msg.encryptedPayload) return null;
 
@@ -107,6 +108,7 @@ export async function decryptMessageContent(
 			location: content.location,
 			fileKeys: content.fileKeys ?? {},
 			fileMeta: content.fileMeta ?? {},
+			replyMarkup: content.replyMarkup,
 		};
 	} catch {
 		return null;
@@ -186,6 +188,7 @@ function toMessage(m: EncryptedMessageLike): Message {
 		createdAt: m.createdAt,
 		editedAt: m.editedAt,
 		replyTo: m.replyTo,
+		replyMarkup: m.replyMarkup,
 		files: m.files,
 		location: m.location,
 		deliveryStatus: m.deliveryStatus,
@@ -221,6 +224,7 @@ export async function decryptMessage(
 		if (content !== null) {
 			out.text = content.text;
 			out.location = content.location;
+			out.replyMarkup = content.replyMarkup;
 			out.fileKeys = content.fileKeys;
 			out.files = applyFileMeta(out.files, content.fileMeta);
 		} else {

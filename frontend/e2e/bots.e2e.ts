@@ -64,6 +64,11 @@ test("bot API and TypeScript SDK exchange a message and a callback", async ({
 	expect(opened.ok()).toBeTruthy();
 	const chat = (await opened.json()) as { chat: { id: string } };
 
+	const chatInfo = await bot.getChat(chat.chat.id);
+	expect(chatInfo.id).toBe(chat.chat.id);
+	expect(chatInfo.type).toBe("private");
+	await bot.sendChatAction(chat.chat.id, "typing");
+
 	const sent = await request.post(`/api/chats/${chat.chat.id}/messages`, {
 		headers: auth,
 		data: { text: "ping" },

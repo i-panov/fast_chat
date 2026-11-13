@@ -21,6 +21,14 @@ interface DeviceKey {
 	publicKey: string;
 }
 
+export interface ReplyButton {
+	text: string;
+	callbackData?: string;
+	url?: string;
+}
+
+export type ReplyMarkup = ReplyButton[][];
+
 export async function generateEncryptionKeyPair(): Promise<EncryptionKeyPair> {
 	await sodium.ready;
 	const pair = sodium.crypto_box_keypair();
@@ -35,7 +43,7 @@ export async function decryptBotMessage(
 	payloadJSON: string,
 	botID: string,
 	key: EncryptionKeyPair,
-): Promise<{ text: string }> {
+): Promise<{ text: string; replyMarkup?: unknown }> {
 	await sodium.ready;
 	const payload = JSON.parse(payloadJSON) as EncryptedPayload;
 	for (const envelope of payload.envelopes) {
@@ -53,7 +61,10 @@ export async function decryptBotMessage(
 				sodium.from_base64(payload.nonce),
 				msgKey,
 			);
-			return JSON.parse(new TextDecoder().decode(plain)) as { text: string };
+			return JSON.parse(new TextDecoder().decode(plain)) as {
+				text: string;
+				replyMarkup?: unknown;
+			};
 		} catch {
 			// Try the next envelope.
 		}
@@ -64,6 +75,7 @@ export async function decryptBotMessage(
 export async function encryptBotReply(
 	text: string,
 	devices: DeviceKey[],
+	markup?: ReplyMarkup,
 ): Promise<{ text: string; payload: string }> {
 	await sodium.ready;
 	if (devices.length === 0) throw new Error("no user device keys");
@@ -73,7 +85,19 @@ export async function encryptBotReply(
 	const nonce = sodium.randombytes_buf(
 		sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
 	);
-	const plain = new TextEncoder().encode(JSON.stringify({ text }));
+	const content: Record<string, unknown> = { text };
+	if (markup !== undefined) {
+		content.replyMarkup = {
+			inline_keyboard: markup.map((row) =>
+				row.map((button) => ({
+					text: button.text,
+					callback_data: button.callbackData,
+					url: button.url,
+				})),
+			),
+		};
+	}
+	const plain = new TextEncoder().encode(JSON.stringify(content));
 	const ciphertext = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
 		plain,
 		null,
@@ -93,4 +117,30 @@ export async function encryptBotReply(
 		envelopes,
 	};
 	return { text: sodium.to_base64(ciphertext), payload: JSON.stringify(payload) };
+}
+
+export async function encryptCallbackData(
+	data: string,
+	botPublicKey: string,
+): Promise<string> {
+	await sodium.ready;
+	const sealed = sodium.crypto_box_seal(
+		new TextEncoder().encode(data),
+		sodium.from_base64(botPublicKey),
+	);
+	return "fcbenc:" + sodium.to_base64(sealed);
+}
+
+export async function decryptCallbackData(
+	data: string,
+	key: EncryptionKeyPair,
+): Promise<string> {
+	if (!data.startsWith("fcbenc:")) return data;
+	await sodium.ready;
+	const plain = sodium.crypto_box_seal_open(
+		sodium.from_base64(data.slice("fcbenc:".length)),
+		sodium.from_base64(key.publicKey),
+		sodium.from_base64(key.privateKey),
+	);
+	return new TextDecoder().decode(plain);
 }

@@ -221,6 +221,14 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *FederatedChatDTO) {
 	existing, ok := s.store.GetChat(ctx, chat.ID)
 	if ok {
+		if chat.BotID != "" && existing.BotID != chat.BotID {
+			if err := s.store.SetChatBotID(ctx, existing.ID, chat.BotID); err != nil {
+				log().Warn("federated bot chat metadata could not be restored", "chatID", chat.ID, "err", err)
+			} else {
+				existing.BotID = chat.BotID
+				s.ensureBotChatReplica(ctx, existing)
+			}
+		}
 		s.syncRemoteChatMembers(ctx, peer, existing, chat)
 		return
 	}
@@ -237,6 +245,7 @@ func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *Feder
 		OwnerID:      chat.OwnerID,
 		Members:      chat.Members,
 		RemoteServer: peer,
+		BotID:        chat.BotID,
 		CreatedAt:    createdAt,
 	}
 
@@ -244,12 +253,32 @@ func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *Feder
 		log().Warn("federated chat could not be created", "peer", peer, "chatID", chat.ID, "err", err)
 		return
 	}
+	s.ensureBotChatReplica(ctx, remote)
 
 	// The local members learn about the chat right away, the same way they
 	// learn about a chat the peer created.
 	enriched := s.EnrichChat(ctx, remote)
 	for _, memberID := range remote.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventChatCreated, Data: enriched})
+	}
+}
+
+// ensureBotChatReplica restores the local bot lookup when a federated chat
+// replica carries bot metadata after a catch-up.
+func (s *Service) ensureBotChatReplica(ctx context.Context, chat *model.Chat) {
+	if chat.BotID == "" {
+		return
+	}
+	if _, ok := s.store.GetBot(ctx, chat.BotID); !ok {
+		return
+	}
+	for _, memberID := range chat.Members {
+		if memberID == chat.BotID {
+			continue
+		}
+		if err := s.store.CreateBotChat(ctx, chat.BotID, memberID, chat.ID); err != nil {
+			log().Warn("federated bot chat replica could not be created", "chatID", chat.ID, "err", err)
+		}
 	}
 }
 

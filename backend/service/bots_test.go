@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,7 +124,7 @@ func TestBotInlineCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AnswerBotCallback(ctx, created.User.ID, q.ID, "ok", false); err != nil {
+	if err := s.AnswerBotCallback(ctx, created.User.ID, q.ID, "ok", false, false, ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -147,7 +148,7 @@ func TestBotEditAndDeleteOwnMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := s.EditBotMessage(ctx, created.User.ID, view.ID, msg.ID, "after", nil)
+	updated, err := s.EditBotMessage(ctx, created.User.ID, view.ID, msg.ID, "after", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,5 +214,40 @@ func TestBotEncryptionMode(t *testing.T) {
 	}
 	if !msg.Encrypted || msg.Text != "ciphertext" {
 		t.Fatalf("msg = %+v", msg)
+	}
+}
+
+func TestBotUpdateCarriesEncryptionAndAuthor(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateBot(ctx, owner.ID, "update_bot", "Update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := s.OpenBotChat(ctx, owner.ID, "update_bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := &model.Message{
+		ID: "m1", ChatID: view.ID, FromID: owner.ID, FromNick: "Alice",
+		Text: "cipher", Encrypted: true, EncryptedPayload: `{"v":1}`,
+		CreatedAt: time.Now().UTC(),
+	}
+	s.AppendBotMessageUpdate(ctx, view.ID, msg)
+	updates, err := s.PollBotUpdates(ctx, created.User.ID, 0, 10, 0)
+	if err != nil || len(updates) != 1 {
+		t.Fatalf("updates = %v err=%v", updates, err)
+	}
+	if !strings.Contains(updates[0].Payload, `"encrypted_payload":"{\"v\":1}"`) {
+		t.Fatalf("payload = %s", updates[0].Payload)
+	}
+	if !strings.Contains(updates[0].Payload, `"username":"alice"`) ||
+		!strings.Contains(updates[0].Payload, `"is_bot":false`) {
+
+		t.Fatalf("from payload = %s", updates[0].Payload)
 	}
 }

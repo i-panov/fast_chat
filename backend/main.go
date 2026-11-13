@@ -341,6 +341,7 @@ func newTransport(
 			VerifyCode: rl.verifyCode,
 			Register:   rl.register,
 			SSEAuth:    rl.sseAuth,
+			BotAPI:     rl.botAPI,
 		},
 	})
 
@@ -656,6 +657,7 @@ type limiters struct {
 	verifyCode *ratelimit.RateLimiter
 	register   *ratelimit.RateLimiter
 	sseAuth    *ratelimit.RateLimiter
+	botAPI     *ratelimit.RateLimiter
 }
 
 func newLimiters(cfg *config.Config) *limiters {
@@ -665,6 +667,7 @@ func newLimiters(cfg *config.Config) *limiters {
 		verifyCode: ratelimit.New(cfg.RateLimits.VerifyCode.Limit, cfg.RateLimits.VerifyCode.Window, 10000),
 		register:   ratelimit.New(cfg.RateLimits.Register.Limit, cfg.RateLimits.Register.Window, 10000),
 		sseAuth:    ratelimit.New(60, time.Minute, 10000),
+		botAPI:     ratelimit.New(120, time.Minute, 10000),
 	}
 }
 
@@ -676,7 +679,7 @@ func (l *limiters) closeAll() {
 		return
 	}
 
-	for _, rl := range []*ratelimit.RateLimiter{l.general, l.sendCode, l.verifyCode, l.register, l.sseAuth} {
+	for _, rl := range []*ratelimit.RateLimiter{l.general, l.sendCode, l.verifyCode, l.register, l.sseAuth, l.botAPI} {
 		if rl != nil {
 			rl.Close()
 		}

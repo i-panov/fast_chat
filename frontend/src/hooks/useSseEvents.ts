@@ -8,6 +8,8 @@ import { messagesRepo } from "../db/messagesRepo.ts";
 import { notify } from "../db/notify.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
+import { getMyKeyPair } from "../e2ee/keys.ts";
+import { decryptMessageContent } from "../e2ee/message.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
 import type {
 	Chat,
@@ -20,6 +22,7 @@ import { useSse } from "../useSse.ts";
 
 interface UseSseEventsParams {
 	token: string;
+	userId?: string;
 	addTypingUser: (payload: TypingPayload) => void;
 	clearTyping: (chatId: string, userId: string) => void;
 	onTokenExpiring: (currentToken: string) => Promise<void>;
@@ -145,17 +148,43 @@ function chatFromEvent(data: unknown): Chat | null {
 	return null;
 }
 
-function showBotCallbackAnswer(data: unknown): void {
-	const answer = data as { text?: string; showAlert?: boolean };
+async function showBotCallbackAnswer(
+	data: unknown,
+	userId: string | undefined,
+): Promise<void> {
+	const answer = data as {
+		text?: string;
+		showAlert?: boolean;
+		encrypted?: boolean;
+		encryptedPayload?: string;
+	};
 	if (answer.text === undefined || answer.text === "") return;
+	let text = answer.text;
+	if (answer.encrypted === true && answer.encryptedPayload !== undefined) {
+		if (userId === undefined) return;
+		try {
+			const key = await getMyKeyPair();
+			if (key === null) return;
+			const content = await decryptMessageContent(
+				{ text: answer.text, encryptedPayload: answer.encryptedPayload },
+				userId,
+				key,
+			);
+			if (content === null) return;
+			text = content.text;
+		} catch {
+			return;
+		}
+	}
 	notifications.show({
-		message: answer.text,
+		message: text,
 		color: answer.showAlert === true ? "red" : "teal",
 	});
 }
 
 export function useSseEvents({
 	token,
+	userId,
 	addTypingUser,
 	clearTyping,
 	onTokenExpiring,
@@ -163,9 +192,13 @@ export function useSseEvents({
 	callManager,
 }: UseSseEventsParams) {
 	const tokenRef = useRef(token);
+	const userIdRef = useRef(userId);
 	useEffect(() => {
 		tokenRef.current = token;
 	}, [token]);
+	useEffect(() => {
+		userIdRef.current = userId;
+	}, [userId]);
 
 	const handler = useCallback(
 		// eslint-disable-next-line max-statements
@@ -175,7 +208,7 @@ export function useSseEvents({
 				return;
 			}
 			if (event === "bot_callback_answer") {
-				showBotCallbackAnswer(data);
+				void showBotCallbackAnswer(data, userIdRef.current);
 				return;
 			}
 			if (event === "new_message" || event === "message_updated") {

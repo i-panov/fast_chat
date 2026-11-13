@@ -84,6 +84,7 @@ export interface FileMeta {
 // sees plaintext text, location, file metadata, or reply previews.
 export interface MessageContent {
 	text: string;
+	replyMarkup?: import("../types/api.ts").InlineKeyboardMarkup;
 	location?: { lat: number; lng: number };
 	replyToText?: string;
 	// fileKeys maps file ID to its decryption key. Only encrypted files have

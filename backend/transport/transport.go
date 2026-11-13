@@ -6,6 +6,8 @@ package transport
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -116,6 +118,7 @@ type RateLimiters struct {
 	VerifyCode *ratelimit.RateLimiter
 	Register   *ratelimit.RateLimiter
 	SSEAuth    *ratelimit.RateLimiter
+	BotAPI     *ratelimit.RateLimiter
 }
 
 // rateLimitMiddleware applies route-specific rate limits before the request
@@ -129,6 +132,17 @@ func rateLimitMiddleware(rl *RateLimiters) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var limiter *ratelimit.RateLimiter
+
+			if strings.HasPrefix(r.URL.Path, "/api/bot-api/") && rl.BotAPI != nil {
+				token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				if token != "" {
+					sum := sha256.Sum256([]byte(token))
+					if !rl.BotAPI.Allow(hex.EncodeToString(sum[:])) {
+						http.Error(w, "too many requests", http.StatusTooManyRequests)
+						return
+					}
+				}
+			}
 
 			if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/auth/") {
 				switch r.URL.Path {

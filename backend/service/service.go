@@ -7,6 +7,7 @@ package service
 import (
 	"log/slog"
 	"sync"
+	"time"
 
 	"fast_chat/calls"
 	"fast_chat/config"
@@ -55,7 +56,9 @@ type Service struct {
 	// authMu serializes the per-account login + trim step. Without it two
 	// concurrent logins can both pass the session cap before either trims,
 	// or race the same-device SELECT→INSERT.
-	authMu sync.Mutex
+	authMu       sync.Mutex
+	botPruneMu   sync.Mutex
+	lastBotPrune time.Time
 }
 
 // ServerDomain returns the local federation domain.

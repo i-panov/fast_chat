@@ -227,5 +227,7 @@
 	"bot.callbackSent": "Callback sent to the bot",
 	"search.bot": "bot",
 	"login.usernameInvalid": "Username: 3–32 lowercase letters, digits and _",
-	"login.displayName": "Display name (optional)"
+	"login.displayName": "Display name (optional)",
+	"chat.botE2EE": "E2EE · only you and the bot can read messages",
+	"chat.botPlaintext": "Bot chat · the server sees messages in plain text"
 }

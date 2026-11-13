@@ -230,3 +230,12 @@ func (s *Store) SetBotEncryptionKey(ctx context.Context, userID, publicKey strin
 			Update("public_key", publicKey).Error
 	})
 }
+
+func (s *Store) PruneBotData(ctx context.Context, before time.Time) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("created_at < ?", before).Delete(&model.BotUpdate{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("created_at < ?", before).Delete(&model.BotCallbackQuery{}).Error
+	})
+}

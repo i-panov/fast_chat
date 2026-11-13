@@ -229,5 +229,7 @@
 	"bot.callbackSent": "Нажатие отправлено боту",
 	"search.bot": "бот",
 	"login.usernameInvalid": "Username: 3–32 символа, только латиница, цифры и _",
-	"login.displayName": "Отображаемое имя (необязательно)"
+	"login.displayName": "Отображаемое имя (необязательно)",
+	"chat.botE2EE": "E2EE · сообщения видны только вам и боту",
+	"chat.botPlaintext": "Чат с ботом · сервер видит сообщения в открытом виде"
 }

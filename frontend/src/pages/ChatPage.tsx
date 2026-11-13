@@ -177,7 +177,11 @@ function ChatHeaderSlot({
 			: `@${chatTitle(s.activeChat, userId)}`;
 	const subtitle = isGroup
 		? t("chat.membersCount", { count: s.activeChat.members.length })
-		: undefined;
+		: s.activeChat.isBotChat === true
+			? s.activeChat.botEncryptionMode === "e2ee"
+				? t("chat.botE2EE")
+				: t("chat.botPlaintext")
+			: undefined;
 	const otherMember =
 		isGroup || isSelf
 			? undefined

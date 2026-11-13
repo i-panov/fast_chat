@@ -1,10 +1,17 @@
-import { decryptBotMessage, encryptBotReply, generateEncryptionKeyPair, type EncryptionKeyPair } from "./crypto.js";
+import {
+	decryptBotMessage,
+	decryptCallbackData,
+	encryptBotReply,
+	encryptCallbackData,
+	generateEncryptionKeyPair,
+	type EncryptionKeyPair,
+} from "./crypto.js";
 
 export interface BotUser {
 	id: string;
 	username: string;
 	displayName: string;
-	isBot: true;
+	isBot: boolean;
 	encryptionMode: "server" | "e2ee";
 }
 
@@ -16,6 +23,13 @@ export interface InlineKeyboardButton {
 
 export interface InlineKeyboardMarkup {
 	inlineKeyboard: InlineKeyboardButton[][];
+}
+
+export interface BotChat {
+	id: string;
+	type: "private";
+	username: string;
+	displayName: string;
 }
 
 export interface BotMessage {
@@ -83,7 +97,7 @@ interface RawUser {
 	id: string;
 	username: string;
 	display_name: string;
-	is_bot: boolean;
+	is_bot?: boolean;
 	encryption_mode?: "server" | "e2ee";
 }
 
@@ -125,6 +139,7 @@ export class BotClient {
 	private offset = 0;
 	private encryptionKey?: EncryptionKeyPair;
 	private chatUsers = new Map<string, string>();
+	private callbackUsers = new Map<string, string>();
 
 	constructor(options: BotClientOptions) {
 		this.token = options.token;
@@ -174,13 +189,14 @@ export class BotClient {
 		options?: SendMessageOptions,
 	): Promise<BotMessage> {
 		if (this.encryptionKey !== undefined) {
-			if (options?.replyMarkup !== undefined) {
-				throw new Error("inline buttons are not supported in e2ee mode");
-			}
 			const userID = this.chatUsers.get(chatId);
 			if (userID === undefined) throw new Error("unknown chat user");
 			const devices = await this.getUserDeviceKeys(userID);
-			const encrypted = await encryptBotReply(text, devices);
+			const encrypted = await encryptBotReply(
+				text,
+				devices,
+				await this.encryptedMarkup(options?.replyMarkup),
+			);
 			const raw = await this.request<RawMessage>(
 				"POST",
 				"/api/bot-api/sendMessage",
@@ -222,6 +238,28 @@ export class BotClient {
 		text: string,
 		options?: SendMessageOptions,
 	): Promise<BotMessage> {
+		if (this.encryptionKey !== undefined) {
+			const userID = this.chatUsers.get(chatId);
+			if (userID === undefined) throw new Error("unknown chat user");
+			const devices = await this.getUserDeviceKeys(userID);
+			const encrypted = await encryptBotReply(
+				text,
+				devices,
+				await this.encryptedMarkup(options?.replyMarkup),
+			);
+			const raw = await this.request<RawMessage>(
+				"POST",
+				"/api/bot-api/editMessageText",
+				{
+					chat_id: chatId,
+					message_id: messageId,
+					text: encrypted.text,
+					encrypted: true,
+					encrypted_payload: encrypted.payload,
+				},
+			);
+			return { ...(await this.toMessage(raw, false)), text };
+		}
 		const raw = await this.request<RawMessage>(
 			"POST",
 			"/api/bot-api/editMessageText",
@@ -254,11 +292,38 @@ export class BotClient {
 	}
 
 
+	async getChat(chatId: string): Promise<BotChat> {
+		return this.request<BotChat>("POST", "/api/bot-api/getChat", {
+			chat_id: chatId,
+		});
+	}
+
+	async sendChatAction(chatId: string, action = "typing"): Promise<void> {
+		await this.request("POST", "/api/bot-api/sendChatAction", {
+			chat_id: chatId,
+			action,
+		});
+	}
+
 	async answerCallbackQuery(
 		callbackQueryId: string,
 		text?: string,
 		showAlert = false,
 	): Promise<void> {
+		if (this.encryptionKey !== undefined && text !== undefined && text !== "") {
+			const userID = this.callbackUsers.get(callbackQueryId);
+			if (userID === undefined) throw new Error("unknown callback user");
+			const devices = await this.getUserDeviceKeys(userID);
+			const encrypted = await encryptBotReply(text, devices);
+			await this.request("POST", "/api/bot-api/answerCallbackQuery", {
+				callback_query_id: callbackQueryId,
+				text: encrypted.text,
+				show_alert: showAlert,
+				encrypted: true,
+				encrypted_payload: encrypted.payload,
+			});
+			return;
+		}
 		await this.request("POST", "/api/bot-api/answerCallbackQuery", {
 			callback_query_id: callbackQueryId,
 			text,
@@ -273,6 +338,29 @@ export class BotClient {
 		});
 		this.encryptionKey = key;
 		return key;
+	}
+
+	private async encryptedMarkup(
+		markup?: InlineKeyboardMarkup,
+	): Promise<Array<Array<{ text: string; callbackData?: string; url?: string }>> | undefined> {
+		if (markup === undefined || this.encryptionKey === undefined) return undefined;
+		return Promise.all(
+			markup.inlineKeyboard.map(async (row) =>
+				Promise.all(
+					row.map(async (button) => ({
+						text: button.text,
+						callbackData:
+							button.callbackData === undefined
+								? undefined
+								: await encryptCallbackData(
+										button.callbackData,
+										this.encryptionKey?.publicKey ?? "",
+									),
+						url: button.url,
+					})),
+				),
+			),
+		);
 	}
 
 	async getUserDeviceKeys(userID: string): Promise<UserDeviceKey[]> {
@@ -332,20 +420,25 @@ export class BotClient {
 
 	private async toUpdate(raw: RawUpdate): Promise<BotUpdate> {
 		const message = raw.message === undefined ? undefined : await this.toMessage(raw.message);
-		return {
-			updateId: raw.update_id,
-			message,
-			callbackQuery:
-				raw.callback_query === undefined
-					? undefined
-					: {
-							id: raw.callback_query.id,
-							from: toUser(raw.callback_query.from),
-							messageId: raw.callback_query.message_id,
-							chatId: raw.callback_query.chat_id,
-							data: raw.callback_query.data,
-						},
-		};
+		let callbackQuery: BotCallbackQuery | undefined;
+		if (raw.callback_query !== undefined) {
+			const data =
+				this.encryptionKey === undefined
+					? raw.callback_query.data
+					: await decryptCallbackData(
+							raw.callback_query.data,
+							this.encryptionKey,
+						);
+			callbackQuery = {
+				id: raw.callback_query.id,
+				from: toUser(raw.callback_query.from),
+				messageId: raw.callback_query.message_id,
+				chatId: raw.callback_query.chat_id,
+				data,
+			};
+			this.callbackUsers.set(callbackQuery.id, callbackQuery.from.id);
+		}
+		return { updateId: raw.update_id, message, callbackQuery };
 	}
 
 	private async toMessage(raw: RawMessage, decrypt = true): Promise<BotMessage> {
@@ -354,6 +447,20 @@ export class BotClient {
 			const me = await this.getMe();
 			const content = await decryptBotMessage(raw.text, raw.encrypted_payload, me.id, this.encryptionKey);
 			base.text = content.text;
+			if (content.replyMarkup !== undefined && typeof content.replyMarkup === "object") {
+				const markup = content.replyMarkup as {
+					inline_keyboard?: Array<Array<{ text: string; callback_data?: string; url?: string }>>;
+				};
+				base.replyMarkup = {
+					inlineKeyboard: (markup.inline_keyboard ?? []).map((row) =>
+						row.map((button) => ({
+							text: button.text,
+							callbackData: button.callback_data,
+							url: button.url,
+						})),
+					),
+				};
+			}
 		}
 		this.chatUsers.set(base.chatId, base.from.id);
 		return base;
@@ -396,7 +503,7 @@ function toUser(raw: RawUser): BotUser {
 		id: raw.id,
 		username: raw.username,
 		displayName: raw.display_name,
-		isBot: true,
+		isBot: raw.is_bot ?? true,
 		encryptionMode: raw.encryption_mode ?? "server",
 	};
 }

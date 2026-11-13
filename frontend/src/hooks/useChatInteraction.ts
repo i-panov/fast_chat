@@ -73,6 +73,7 @@ function useChatLifecycle({
 
 	useSseEvents({
 		token: token ?? "",
+		userId,
 		addTypingUser,
 		clearTyping,
 		onTokenExpiring: async (currentToken: string) => {
