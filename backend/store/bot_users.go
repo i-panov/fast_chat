@@ -31,3 +31,12 @@ func (s *Store) SetChatBot(ctx context.Context, chatID, botID, encryptionMode st
 		Where("id = ?", chatID).
 		Updates(map[string]any{"bot_id": botID, "bot_encryption_mode": encryptionMode}).Error
 }
+
+// ChatIDsByBotID lists chat ids where botID is the bot participant.
+func (s *Store) ChatIDsByBotID(ctx context.Context, botID string) ([]string, error) {
+	var ids []string
+	err := s.db.WithContext(ctx).Model(&model.Chat{}).
+		Where("bot_id = ?", botID).
+		Pluck("id", &ids).Error
+	return ids, err
+}

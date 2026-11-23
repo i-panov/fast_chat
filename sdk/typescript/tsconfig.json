@@ -18,6 +18,7 @@
 			"node"
 		],
 		"typeRoots": [
+			"./node_modules/@types",
 			"../../frontend/node_modules/@types"
 		]
 	},

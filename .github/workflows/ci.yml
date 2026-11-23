@@ -129,3 +129,25 @@ jobs:
           name: playwright-artifacts
           path: frontend/test-results/
           retention-days: 7
+
+  sdk:
+    name: SDKs (TypeScript, Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Test TypeScript SDK
+        run: npm ci && npm test
+        working-directory: sdk/typescript
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Test Python SDK
+        run: uv sync --frozen && uv run python -m unittest discover -s tests -v
+        working-directory: sdk/python

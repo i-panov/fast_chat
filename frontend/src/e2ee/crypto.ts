@@ -1,4 +1,7 @@
 import sodium from "libsodium-wrappers";
+
+const BASE64_PADDING = /=+$/;
+
 import type { FileKey } from "./file-crypto.ts";
 
 export interface Envelope {
@@ -35,6 +38,18 @@ export async function generateKeyPair(): Promise<KeyPair> {
 	};
 }
 
+// Server-stored keys use padded standard base64, while libsodium emits
+// URL-safe unpadded values. Accept both instead of relying on one variant.
+export function decodeBase64(value: string): Uint8Array {
+	const normalized = value
+		.replace(/-/g, "+")
+		.replace(/_/g, "/")
+		.replace(BASE64_PADDING, "");
+	const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+	const binary = atob(padded);
+	return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
 // Seal the message key to every recipient's public key. Only the holder
 // of the matching private key can open its envelope.
 export async function sealMessageKey(
@@ -46,7 +61,7 @@ export async function sealMessageKey(
 	return recipients.map((r) => ({
 		keyId: r.keyId,
 		box: sodium.to_base64(
-			sodium.crypto_box_seal(msgKey, sodium.from_base64(r.publicKey)),
+			sodium.crypto_box_seal(msgKey, decodeBase64(r.publicKey)),
 		),
 	}));
 }
@@ -58,9 +73,9 @@ export async function openMessageKey(
 ): Promise<Uint8Array> {
 	await ensureSodium();
 	return sodium.crypto_box_seal_open(
-		sodium.from_base64(envelope.box),
-		sodium.from_base64(publicKey),
-		sodium.from_base64(privateKey),
+		decodeBase64(envelope.box),
+		decodeBase64(publicKey),
+		decodeBase64(privateKey),
 	);
 }
 
@@ -135,9 +150,9 @@ export async function decryptContent(
 	await ensureSodium();
 	const plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
 		null,
-		sodium.from_base64(encrypted.ciphertext),
+		decodeBase64(encrypted.ciphertext),
 		null,
-		sodium.from_base64(encrypted.nonce),
+		decodeBase64(encrypted.nonce),
 		msgKey,
 	);
 
@@ -174,9 +189,9 @@ export async function decryptText(
 	await ensureSodium();
 	const plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
 		null,
-		sodium.from_base64(ciphertext),
+		decodeBase64(ciphertext),
 		null,
-		sodium.from_base64(nonce),
+		decodeBase64(nonce),
 		msgKey,
 	);
 	return sodium.to_string(plain);

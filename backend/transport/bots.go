@@ -450,6 +450,16 @@ func botError(err error) error {
 		return &statusError{ErrorMessage: "bot chat not found", code: http.StatusNotFound}
 	case errors.Is(err, service.ErrEmptyMessage):
 		return &statusError{ErrorMessage: "empty message", code: http.StatusBadRequest}
+	case errors.Is(err, service.ErrMessageTooLong):
+		return &statusError{ErrorMessage: "message too long", code: http.StatusBadRequest}
+	case errors.Is(err, service.ErrInvalidCoordinates):
+		return &statusError{ErrorMessage: "invalid coordinates", code: http.StatusBadRequest}
+	case errors.Is(err, service.ErrTooManyFiles):
+		return &statusError{ErrorMessage: "too many files", code: http.StatusBadRequest}
+	case errors.Is(err, service.ErrBotEncryptionRequired), errors.Is(err, service.ErrBotEncryptionForbidden):
+		return &statusError{ErrorMessage: err.Error(), code: http.StatusBadRequest}
+	case isEncryptedPayloadError(err):
+		return &statusError{ErrorMessage: err.Error(), code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrBotMarkupInvalid):
 		return &statusError{ErrorMessage: "invalid inline keyboard", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrBotActionInvalid):

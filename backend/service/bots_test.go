@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -208,7 +210,10 @@ func TestBotEncryptionMode(t *testing.T) {
 	if view.BotEncryptionMode != "e2ee" {
 		t.Fatalf("mode = %q", view.BotEncryptionMode)
 	}
-	msg, err := s.SendBotEncryptedMessage(ctx, created.User.ID, view.ID, "ciphertext", `{"v":1}`)
+	nonce := base64.RawURLEncoding.EncodeToString(make([]byte, 24))
+	box := base64.RawURLEncoding.EncodeToString(make([]byte, 80))
+	payload := fmt.Sprintf(`{"v":1,"nonce":%q,"envelopes":[{"keyId":"u1","box":%q}]}`, nonce, box)
+	msg, err := s.SendBotEncryptedMessage(ctx, created.User.ID, view.ID, "ciphertext", payload)
 	if err != nil {
 		t.Fatal(err)
 	}

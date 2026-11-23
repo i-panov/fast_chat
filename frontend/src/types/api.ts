@@ -105,7 +105,7 @@ export type MessageStatus = "sent" | "queued" | "failed";
 
 export type MessageDeliveryStatus = "sent" | "delivered" | "read";
 
-interface InlineKeyboardButton {
+export interface InlineKeyboardButton {
 	text: string;
 	callback_data?: string;
 	url?: string;

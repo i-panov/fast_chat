@@ -170,6 +170,18 @@ type sentinelErrPair struct {
 var errThreadNotFound = &statusError{ErrorMessage: "thread not found", code: http.StatusNotFound}
 
 var sentinelErrors = []sentinelErrPair{
+	{
+		sentinel: service.ErrBotEncryptionRequired,
+		target:   &statusError{ErrorMessage: service.ErrBotEncryptionRequired.Error(), code: http.StatusBadRequest},
+	},
+	{
+		sentinel: service.ErrBotEncryptionForbidden,
+		target:   &statusError{ErrorMessage: service.ErrBotEncryptionForbidden.Error(), code: http.StatusBadRequest},
+	},
+	{
+		sentinel: service.ErrBotMarkupInvalid,
+		target:   &statusError{ErrorMessage: service.ErrBotMarkupInvalid.Error(), code: http.StatusBadRequest},
+	},
 	// Auth domain.
 	{
 		sentinel: service.ErrInvalidEmail,

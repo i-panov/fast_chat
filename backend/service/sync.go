@@ -12,14 +12,17 @@ const syncDefaultSince = "1970-01-01T00:00:00Z"
 
 // SyncChatDTO describes a changed chat in the sync response.
 type SyncChatDTO struct {
-	ID               string       `json:"id"`
-	Type             string       `json:"type"`
-	Name             string       `json:"name"`
-	OwnerID          string       `json:"ownerId"`
-	AvatarURL        string       `json:"avatarUrl,omitempty"`
-	PinnedMessageIDs []string     `json:"pinnedMessageIds,omitempty"` //nolint:tagliatelle // the API uses lower-case Id
-	Members          []MemberView `json:"members"`
-	CreatedAt        time.Time    `json:"createdAt"`
+	ID                string       `json:"id"`
+	Type              string       `json:"type"`
+	Name              string       `json:"name"`
+	OwnerID           string       `json:"ownerId"`
+	AvatarURL         string       `json:"avatarUrl,omitempty"`
+	PinnedMessageIDs  []string     `json:"pinnedMessageIds,omitempty"` //nolint:tagliatelle // the API uses lower-case Id
+	Members           []MemberView `json:"members"`
+	BotID             string       `json:"botId,omitempty"`
+	IsBotChat         bool         `json:"isBotChat,omitempty"`
+	BotEncryptionMode string       `json:"botEncryptionMode,omitempty"`
+	CreatedAt         time.Time    `json:"createdAt"`
 }
 
 // SyncDeletedMessageDTO is a tombstone for a deleted message.
@@ -80,8 +83,6 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 
 	chatIDs, memberIDs := collectChatAndMemberIDs(chats)
 
-	nicks := s.store.GetUsersByIDs(ctx, memberIDs)
-
 	onlineStatus := make(map[string]bool, len(memberIDs))
 	for _, id := range memberIDs {
 		onlineStatus[id] = s.store.IsOnline(id)
@@ -127,7 +128,7 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 
 	return SyncResponse{
 		ServerNow:       time.Now().UTC(),
-		Chats:           s.buildChats(ctx, chats, nicks),
+		Chats:           s.buildChats(ctx, chats, nil, onlineStatus),
 		Messages:        messages,
 		ThreadMessages:  threadMessages,
 		DeletedMessages: deletedMessages,
@@ -187,36 +188,101 @@ func ParseSince(sinceStr string) (time.Time, error) {
 // was renamed, a member that was added or removed — none of them change the
 // creation date of the chat. The list holds only the chats the user belongs
 // to, so sending it whole is cheap and leaves no gap.
-func (s *Service) buildChats(ctx context.Context, chats []*model.Chat, nicks map[string]string) []SyncChatDTO {
+func (s *Service) buildChats(ctx context.Context, chats []*model.Chat, _ map[string]string, online ...map[string]bool) []SyncChatDTO {
 	if len(chats) == 0 {
 		return []SyncChatDTO{}
 	}
 
 	out := make([]SyncChatDTO, 0, len(chats))
 
+	memberIDs := make(map[string]struct{})
 	for _, chat := range chats {
-		dto := SyncChatDTO{
-			ID:        chat.ID,
-			Type:      chat.Type,
-			Name:      chat.Name,
-			OwnerID:   chat.OwnerID,
-			Members:   s.collectMembers(ctx, chat, nicks),
-			CreatedAt: chat.CreatedAt,
+		for _, memberID := range chat.Members {
+			memberIDs[memberID] = struct{}{}
 		}
-
+	}
+	ids := make([]string, 0, len(memberIDs))
+	for id := range memberIDs {
+		ids = append(ids, id)
+	}
+	users := s.store.GetUsersFullByIDs(ctx, ids)
+	botIDs := make([]string, 0)
+	fileIDs := make([]string, 0)
+	chatIDs := make([]string, 0, len(chats))
+	for _, chat := range chats {
+		chatIDs = append(chatIDs, chat.ID)
+		if chat.BotID != "" {
+			botIDs = append(botIDs, chat.BotID)
+		}
 		if chat.AvatarFileID != "" {
-			if f, err := s.store.GetFile(ctx, chat.AvatarFileID); err == nil {
-				dto.AvatarURL = f.ToFileInfo().URL
-			}
+			fileIDs = append(fileIDs, chat.AvatarFileID)
 		}
-		if ids, err := s.store.GetPinnedMessageIDs(ctx, chat.ID); err == nil {
-			dto.PinnedMessageIDs = ids
+	}
+	bots := s.store.GetBotsByUserIDs(ctx, botIDs)
+	files := s.store.GetFilesByIDs(ctx, fileIDs)
+	pins := s.store.GetPinnedMessageIDsByChats(ctx, chatIDs)
+	for _, chat := range chats {
+		var onlineStatus map[string]bool
+		if len(online) > 0 {
+			onlineStatus = online[0]
 		}
-
-		out = append(out, dto)
+		view := s.enrichSyncChat(chat, users, bots, files, pins, onlineStatus)
+		out = append(out, SyncChatDTO(view))
 	}
 
 	return out
+}
+
+func (s *Service) enrichSyncChat(
+	chat *model.Chat,
+	users map[string]*model.User,
+	bots map[string]*model.Bot,
+	files map[string]*model.File,
+	pins map[string][]string,
+	onlineStatus map[string]bool,
+) ChatView {
+
+	view := ChatView{
+		ID: chat.ID, Type: chat.Type, Name: chat.Name, OwnerID: chat.OwnerID,
+		BotID: chat.BotID, IsBotChat: chat.BotID != "", BotEncryptionMode: chat.BotEncryptionMode,
+		CreatedAt: chat.CreatedAt,
+	}
+	if chat.AvatarFileID != "" {
+		if f, ok := files[chat.AvatarFileID]; ok {
+			view.AvatarURL = f.ToFileInfo().URL
+		}
+	}
+	if bot, ok := bots[chat.BotID]; ok {
+		view.BotEncryptionMode = bot.EncryptionMode
+	}
+	view.PinnedMessageIDs = pins[chat.ID]
+	for _, memberID := range chat.Members {
+		nick := ""
+		online := onlineStatus[memberID]
+		if onlineStatus == nil {
+			online = s.store.IsOnline(memberID)
+		}
+		memberView := MemberView{ID: memberID, Nick: nick, Online: online}
+		if user, ok := users[memberID]; ok {
+			if nick == "" {
+				nick = user.DisplayName
+				if nick == "" {
+					nick = user.Username
+				}
+				memberView.Nick = nick
+			}
+			memberView.Username = user.Username
+			memberView.DisplayName = user.DisplayName
+			memberView.IsBot = user.IsBot
+			if user.AvatarFileID != "" {
+				memberView.AvatarURL = "/api/files/" + user.AvatarFileID
+			}
+		} else if nick == "" {
+			memberView.Nick = memberID
+		}
+		view.Members = append(view.Members, memberView)
+	}
+	return view
 }
 
 func (s *Service) buildDeletedMessages(
@@ -276,24 +342,4 @@ func (s *Service) buildDeletedChats(
 	}
 
 	return out, page, nil
-}
-
-func (s *Service) collectMembers(
-	_ context.Context,
-	chat *model.Chat,
-	nicks map[string]string,
-) []MemberView {
-
-	out := make([]MemberView, 0, len(chat.Members))
-
-	for _, member := range chat.Members {
-		nick, ok := nicks[member]
-		if !ok {
-			nick = member
-		}
-
-		out = append(out, MemberView{ID: member, Nick: nick, Online: s.store.IsOnline(member)})
-	}
-
-	return out
 }

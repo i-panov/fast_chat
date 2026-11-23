@@ -3,7 +3,10 @@ import { notifications } from "@mantine/notifications";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { pressBotCallback } from "../../../api.ts";
-import type { InlineKeyboardMarkup } from "../../../types/api.ts";
+import type {
+	InlineKeyboardButton,
+	InlineKeyboardMarkup,
+} from "../../../types/api.ts";
 import { useAuth } from "../../../useAuth.tsx";
 
 interface Props {
@@ -33,9 +36,13 @@ export function InlineKeyboard({ chatId, messageId, markup }: Props) {
 		}
 	}
 
+	const rows: InlineKeyboardButton[][] = Array.isArray(markup?.inline_keyboard)
+		? markup.inline_keyboard
+		: [];
+
 	return (
 		<Stack gap={4} mt={6}>
-			{markup.inline_keyboard.map((row) => (
+			{rows.map((row) => (
 				<Group
 					key={row
 						.map(
@@ -47,7 +54,9 @@ export function InlineKeyboard({ chatId, messageId, markup }: Props) {
 					grow
 				>
 					{row.map((button) =>
-						button.url !== undefined ? (
+						button.url !== undefined &&
+						(button.url.startsWith("http://") ||
+							button.url.startsWith("https://")) ? (
 							<Anchor
 								key={`${button.text}:${button.url}`}
 								href={button.url}

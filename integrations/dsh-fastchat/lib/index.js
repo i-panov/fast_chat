@@ -7,8 +7,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { stat } from "node:fs/promises";
 import z from "@deepseek-ai/schemastery";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionSeq } from "@deepseek-ai/dsh-session";
@@ -28,6 +30,9 @@ export const Config = z.object({
       baseUrl: z.string().default("http://localhost:8080"),
       provider: z.string().default(""),
       model: z.string().default(""),
+      preset: z.string().default("standard"),
+      allowedChatIds: z.array(z.string()).default([]),
+      allowedUserIds: z.array(z.string()).default([]),
     }),
   ),
 });
@@ -38,7 +43,7 @@ function log(message, ...args) {
 
 function sessionIdFor(bot, chatId) {
   const digest = createHash("sha256")
-    .update(`${bot.name}\0${bot.cwd}\0${chatId}`)
+    .update(`${bot.token}\0${bot.name}\0${bot.cwd}\0${chatId}`)
     .digest("hex")
     .slice(0, 20);
   return `session-fastchat-${digest}`;
@@ -86,8 +91,9 @@ async function saveIncomingFiles(bot, message) {
         /[^a-zA-Z0-9._-]/g,
         "_",
       );
-      const path = join(dir, `${file.id}-${safeName}`);
-      await writeFile(path, Buffer.from(bytes));
+      const safeId = String(file.id).replace(/[^a-zA-Z0-9._-]/g, "_");
+      const path = join(dir, `${safeId}-${safeName}`);
+      await writeFile(path, Buffer.from(bytes), { flag: "wx" });
       saved.push(path);
     } catch (error) {
       log(`could not download ${file.id}:`, error);
@@ -108,11 +114,22 @@ async function getAgent(ctx, bot, chatId, handles, handlesKey, sessionBots) {
     sessionId,
     meta: { cwd: resolve(bot.cwd) },
   };
+  const presets = ctx.get("agentPresets");
+  if (presets !== undefined) {
+    const preset = await presets.resolve(bot.preset || "standard");
+    options.meta.agentPreset = preset.id;
+    options.setup = async (agentCtx) => {
+      await presets.mount(agentCtx, preset.id);
+    };
+  }
   if ((bot.provider ?? "") !== "" && (bot.model ?? "") !== "") {
     options.agentOptions = { provider: bot.provider, model: bot.model };
   }
   try {
-    const handle = await ctx.agents.resume({ resumeSessionId: sessionId });
+    const handle = await ctx.agents.resume({
+      resumeSessionId: sessionId,
+      setup: options.setup,
+    });
     handles.set(handlesKey, handle);
     sessionBots.set(handle.agent.session.id, { bot, chatId });
     return handle.agent;
@@ -125,20 +142,67 @@ async function getAgent(ctx, bot, chatId, handles, handlesKey, sessionBots) {
 }
 
 async function runBot(ctx, botConfig, signal, handles, sessionBots) {
+  const cwd = await realpath(resolve(botConfig.cwd));
+  const cwdStat = await stat(cwd);
+  const home = await realpath(homedir());
+  if (!cwdStat.isDirectory() || cwd === resolve("/") || cwd === home) {
+    throw new Error(`refusing unsafe Fast Chat cwd: ${cwd}`);
+  }
+  const tokenHash = createHash("sha256").update(botConfig.token).digest("hex").slice(0, 16);
+  const offsetPath = resolve(cwd, ".fastchat", `offset-${tokenHash}`);
+  let initialOffset = 0;
+  try {
+    initialOffset = Number.parseInt(await readFile(offsetPath, "utf8"), 10) || 0;
+  } catch {
+    // first run
+  }
+  await mkdir(resolve(cwd, ".fastchat"), { recursive: true });
+  let offsetWrite = Promise.resolve();
   const bot = {
     ...botConfig,
-    cwd: resolve(botConfig.cwd),
+    cwd,
     client: new BotClient({
       token: botConfig.token,
       baseUrl: botConfig.baseUrl || "http://localhost:8080",
+      initialOffset,
+      onOffset: (offset) => {
+        offsetWrite = offsetWrite
+          .then(async () => {
+            const tmp = `${offsetPath}.tmp`;
+            await writeFile(tmp, String(offset));
+            await rename(tmp, offsetPath);
+          })
+          .catch(() => {});
+      },
     }),
   };
+  const me = await bot.client.getMe();
+  if (me.encryptionMode === "e2ee") {
+    log(`bot ${bot.name || "unnamed"} is E2EE; this plugin has no key, skipping`);
+    return;
+  }
   const agentByChat = new Map();
-  let queue = Promise.resolve();
+  const queues = new Map();
 
   bot.client.onMessage((message) => {
-    queue = queue
+    if (bot.allowedChatIds.length > 0 && !bot.allowedChatIds.includes(message.chatId)) {
+      void bot.client.sendMessage(message.chatId, "This chat is not allowed.").catch(() => {});
+      return;
+    }
+    if (bot.allowedUserIds.length > 0 && !bot.allowedUserIds.includes(message.from.id)) {
+      void bot.client.sendMessage(message.chatId, "You are not allowed to use this bot.").catch(() => {});
+      return;
+    }
+    const previous = queues.get(message.chatId) ?? Promise.resolve();
+    const queue = previous
       .then(async () => {
+        if (message.encrypted === true || message.undecryptable === true) {
+          await bot.client.sendMessage(
+            message.chatId,
+            "This bot does not support E2EE messages.",
+          );
+          return;
+        }
         const text = String(message.text || "").trim();
         const files = await saveIncomingFiles(bot, message);
         const parts = [text];
@@ -182,7 +246,11 @@ async function runBot(ctx, botConfig, signal, handles, sessionBots) {
         let answer = result.text.trim();
         for (const file of result.files) {
           try {
-            const path = resolve(bot.cwd, file.path);
+            const path = await realpath(resolve(bot.cwd, file.path));
+            const rel = relative(bot.cwd, path);
+            if (rel.startsWith("..") || isAbsolute(rel)) {
+              throw new Error("presented file is outside the workspace");
+            }
             const bytes = await readFile(path);
             const uploaded = await bot.client.uploadFile(
               new Uint8Array(bytes),
@@ -193,8 +261,7 @@ async function runBot(ctx, botConfig, signal, handles, sessionBots) {
               uploaded.id,
               file.description || answer,
             );
-            if (answer !== "") {
-              // The caption already carries the answer; do not duplicate it.
+            if (file.description === undefined && answer !== "") {
               answer = "";
             }
           } catch (error) {
@@ -204,9 +271,10 @@ async function runBot(ctx, botConfig, signal, handles, sessionBots) {
         if (answer !== "") await bot.client.sendMessage(message.chatId, answer);
       })
       .catch((error) => log(`turn failed:`, error));
+    queues.set(message.chatId, queue);
   });
 
-  log(`bot ${bot.name || bot.token.slice(0, 8)} -> ${bot.cwd}`);
+  log(`bot ${bot.name || "unnamed"} -> ${bot.cwd}`);
   await bot.client.start(signal);
 }
 

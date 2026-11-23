@@ -225,7 +225,7 @@ func TestSendMessageRejectsIDUsedByAnotherChat(t *testing.T) {
 
 func TestValidateEncryptedPayloadAcceptsURLSafeBase64(t *testing.T) {
 	nonce := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 24))
-	box := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 48))
+	box := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 80))
 	payload := `{"v":1,"nonce":"` + nonce + `","envelopes":[{"keyId":"u1","box":"` + box + `"}]}`
 	if err := ValidateEncryptedPayload(true, payload); err != nil {
 		t.Fatalf("URL-safe payload rejected: %v", err)

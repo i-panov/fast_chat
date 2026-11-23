@@ -24,6 +24,64 @@ export interface EncryptResult {
 
 const UNDECRYPTABLE_I18N_KEY = "message.undecryptable";
 
+function sanitizeLocation(value: unknown): Message["location"] {
+	if (value === null || typeof value !== "object") return;
+	const lat = (value as { lat?: unknown }).lat;
+	const lng = (value as { lng?: unknown }).lng;
+	if (
+		typeof lat !== "number" ||
+		typeof lng !== "number" ||
+		!Number.isFinite(lat) ||
+		!Number.isFinite(lng) ||
+		lat < -90 ||
+		lat > 90 ||
+		lng < -180 ||
+		lng > 180
+	) {
+		return;
+	}
+	return { lat, lng };
+}
+
+function sanitizeMarkup(value: unknown): InlineKeyboardMarkup | undefined {
+	if (value === null || typeof value !== "object") return;
+	const rows = (value as { inline_keyboard?: unknown }).inline_keyboard;
+	if (!Array.isArray(rows) || rows.length > 8) return;
+	const out: InlineKeyboardMarkup["inline_keyboard"] = [];
+	for (const row of rows) {
+		if (!Array.isArray(row) || row.length > 8) return;
+		const buttons: InlineKeyboardMarkup["inline_keyboard"][number] = [];
+		for (const button of row) {
+			if (button === null || typeof button !== "object") return;
+			const text = (button as { text?: unknown }).text;
+			const callbackData = (button as { callback_data?: unknown })
+				.callback_data;
+			const url = (button as { url?: unknown }).url;
+			if (typeof text !== "string" || text.length === 0 || text.length > 64) {
+				return;
+			}
+			if (typeof callbackData === "string" && typeof url === "string") return;
+			if (typeof callbackData !== "string" && typeof url !== "string") return;
+			if (typeof callbackData === "string" && callbackData.length > 256) return;
+			if (
+				typeof url === "string" &&
+				!url.startsWith("http://") &&
+				!url.startsWith("https://")
+			) {
+				return;
+			}
+			buttons.push({
+				text,
+				callback_data:
+					typeof callbackData === "string" ? callbackData : undefined,
+				url: typeof url === "string" ? url : undefined,
+			});
+		}
+		out.push(buttons);
+	}
+	return { inline_keyboard: out };
+}
+
 // encryptMessageText encrypts plaintext to every recipient's public key
 // and returns the ciphertext plus the envelope payload. Only the holder
 // of a recipient's private key can open its envelope.
@@ -103,12 +161,13 @@ export async function decryptMessageContent(
 			msgKey,
 		);
 
+		if (typeof content.text !== "string") return null;
 		return {
 			text: content.text,
-			location: content.location,
+			location: sanitizeLocation(content.location),
 			fileKeys: content.fileKeys ?? {},
 			fileMeta: content.fileMeta ?? {},
-			replyMarkup: content.replyMarkup,
+			replyMarkup: sanitizeMarkup(content.replyMarkup),
 		};
 	} catch {
 		return null;
@@ -228,8 +287,31 @@ export async function decryptMessage(
 			out.fileKeys = content.fileKeys;
 			out.files = applyFileMeta(out.files, content.fileMeta);
 		} else {
-			// Fall back to legacy v1 (text-only encryption).
-			out.text = await decryptMessageText(message, userId, key);
+			// Fall back to legacy v1 (text-only encryption), but do not
+			// display a malformed v2 JSON payload as the message text.
+			const legacy = await decryptMessageText(message, userId, key);
+			if (legacy.trim().startsWith("{")) {
+				try {
+					const parsed: unknown = JSON.parse(legacy);
+					if (
+						parsed !== null &&
+						typeof parsed === "object" &&
+						("fileKeys" in parsed ||
+							"replyMarkup" in parsed ||
+							"text" in parsed)
+					) {
+						throw new Error("invalid encrypted content");
+					}
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						error.message === "invalid encrypted content"
+					) {
+						throw error;
+					}
+				}
+			}
+			out.text = legacy;
 		}
 	} catch {
 		out.text = i18n.t(UNDECRYPTABLE_I18N_KEY);

@@ -143,6 +143,7 @@ dead-code:
 test:
 	make backend:test
 	make frontend:test
+	make sdk:test
 
 coverage: coverage\:backend coverage\:frontend
 
@@ -180,3 +181,11 @@ dev:
 	@echo "Second instance (federation test):"
 	@echo "  make backend:run BACKEND_PORT=8081 FRONTEND_PORT=5174"
 	@echo "  make frontend:run FRONTEND_PORT=5174 API_PROXY=http://localhost:8081"
+
+UV ?= $(shell command -v uv 2>/dev/null || echo /home/ilya/.local/bin/uv)
+
+sdk\:test:
+	cd sdk/typescript && npm_config_cache=/tmp/fastchat-npm-cache npm install && npm_config_cache=/tmp/fastchat-npm-cache npm test
+	cd sdk/python && UV_CACHE_DIR=/tmp/fastchat-uv-cache $(UV) sync --frozen && UV_CACHE_DIR=/tmp/fastchat-uv-cache $(UV) run python -m unittest discover -s tests -v
+
+.PHONY: sdk\:test

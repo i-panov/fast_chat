@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -711,7 +713,12 @@ func TestFederationPairRemoteBotChat(t *testing.T) {
 		return ok
 	})
 
-	status, body = pair.a.doJSON(t, http.MethodPost, "/api/chats/"+chatID+"/messages", alice.Token, map[string]any{"text": "ping"})
+	nonce := base64.RawURLEncoding.EncodeToString(make([]byte, 24))
+	box := base64.RawURLEncoding.EncodeToString(make([]byte, 80))
+	payload := fmt.Sprintf(`{"v":1,"nonce":%q,"envelopes":[{"keyId":%q,"box":%q}]}`, nonce, created.User.ID, box)
+	status, body = pair.a.doJSON(t, http.MethodPost, "/api/chats/"+chatID+"/messages", alice.Token, map[string]any{
+		"text": "ciphertext", "encrypted": true, "encryptedPayload": payload,
+	})
 	if status != http.StatusCreated {
 		t.Fatalf("send = %d %v", status, body)
 	}
@@ -726,7 +733,7 @@ func TestFederationPairRemoteBotChat(t *testing.T) {
 	}
 
 	status, body = pair.b.doJSON(t, http.MethodPost, "/api/bot-api/sendMessage", created.Token, map[string]any{
-		"chat_id": chatID, "text": "pong",
+		"chat_id": chatID, "text": "ciphertext", "encrypted": true, "encrypted_payload": payload,
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("reply = %d %v", status, body)
@@ -739,6 +746,6 @@ func TestFederationPairRemoteBotChat(t *testing.T) {
 
 	eventually(t, "bot reply on A", func() bool {
 		msg, err := pair.a.store.GetMessage(ctx, chatID, replyID)
-		return err == nil && msg.Text == "pong"
+		return err == nil && msg.Encrypted && msg.Text != ""
 	})
 }

@@ -18,6 +18,7 @@ const me = {
 
 test("getMe maps the bot profile", async () => {
 	const client = new BotClient({
+		mode: "server",
 		token: "t",
 		baseUrl: "https://chat.test",
 		fetch: async () => jsonResponse({ ok: true, result: me }),
@@ -30,6 +31,7 @@ test("getMe maps the bot profile", async () => {
 test("sendMessage uses the Bot API envelope and snake_case body", async () => {
 	let body: unknown;
 	const client = new BotClient({
+		mode: "server",
 		token: "t",
 		baseUrl: "https://chat.test",
 		fetch: async (_url, init) => {
@@ -61,6 +63,7 @@ test("sendMessage uses the Bot API envelope and snake_case body", async () => {
 
 test("getUpdates maps message and callback query", async () => {
 	const client = new BotClient({
+		mode: "server",
 		token: "t",
 		fetch: async () =>
 			jsonResponse({
@@ -96,6 +99,7 @@ test("getUpdates maps message and callback query", async () => {
 
 test("API errors become BotApiError", async () => {
 	const client = new BotClient({
+		mode: "server",
 		token: "t",
 		fetch: async () =>
 			jsonResponse(
@@ -113,6 +117,7 @@ test("API errors become BotApiError", async () => {
 test("answerCallbackQuery accepts the ok envelope", async () => {
 	let called = false;
 	const client = new BotClient({
+		mode: "server",
 		token: "t",
 		fetch: async () => {
 			called = true;
@@ -126,6 +131,7 @@ test("answerCallbackQuery accepts the ok envelope", async () => {
 test("editMessageText and deleteMessage hit their endpoints", async () => {
 	const paths: string[] = [];
 	const client = new BotClient({
+		mode: "server",
 		token: "t",
 		fetch: async (url) => {
 			paths.push(new URL(String(url)).pathname);
@@ -153,6 +159,7 @@ test("editMessageText and deleteMessage hit their endpoints", async () => {
 
 test("getUserDeviceKeys accepts the server array shape", async () => {
 	const client = new BotClient({
+		mode: "server",
 		token: "t",
 		fetch: async () =>
 			jsonResponse({

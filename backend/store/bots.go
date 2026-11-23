@@ -226,8 +226,12 @@ func (s *Store) SetBotEncryptionKey(ctx context.Context, userID, publicKey strin
 			Updates(map[string]any{"encryption_mode": "e2ee", "updated_at": time.Now().UTC()}).Error; err != nil {
 			return err
 		}
-		return tx.Model(&model.User{}).Where("id = ?", userID).
-			Update("public_key", publicKey).Error
+		if err := tx.Model(&model.User{}).Where("id = ?", userID).
+			Update("public_key", publicKey).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.Chat{}).Where("bot_id = ?", userID).
+			Update("bot_encryption_mode", "e2ee").Error
 	})
 }
 
@@ -238,4 +242,26 @@ func (s *Store) PruneBotData(ctx context.Context, before time.Time) error {
 		}
 		return tx.Where("created_at < ?", before).Delete(&model.BotCallbackQuery{}).Error
 	})
+}
+
+// GetBotsByUserIDs loads bot profiles for many user ids in one query.
+//
+//nolint:dupl // mirrors the generic file batch loader.
+func (s *Store) GetBotsByUserIDs(ctx context.Context, userIDs []string) map[string]*model.Bot {
+	out := make(map[string]*model.Bot, len(userIDs))
+	if len(userIDs) == 0 {
+		return out
+	}
+	for start := 0; start < len(userIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(userIDs))
+		var bots []model.Bot
+		if err := s.db.WithContext(ctx).Where("user_id IN ?", userIDs[start:end]).Find(&bots).Error; err != nil {
+			slog.Warn("GetBotsByUserIDs failed", "err", err)
+			continue
+		}
+		for idx := range bots {
+			out[bots[idx].UserID] = &bots[idx]
+		}
+	}
+	return out
 }

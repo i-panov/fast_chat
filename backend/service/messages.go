@@ -68,8 +68,9 @@ const (
 	MaxEncryptedPayloadLen = 32768
 	// xchachaNonceLen is libsodium crypto_aead_xchacha20poly1305_ietf_NPUBBYTES.
 	xchachaNonceLen = 24
-	// sealedBoxLen is a sealed X25519 box: ephemeral public key + MAC.
-	sealedBoxLen = 48
+	// sealedBoxLen is the full sealed box for a 32-byte message key:
+	// ephemeral public key (32) + MAC (16) + message key (32).
+	sealedBoxLen = 80
 )
 
 // Realtime event names and payload keys used by the message domain.
@@ -247,7 +248,7 @@ func ValidateEncryptedPayload(encrypted bool, payload string) error {
 		return ErrMissingEnvelopes
 	}
 
-	// Sealed boxes are 48 bytes: 32-byte ephemeral key + 16-byte MAC.
+	// Sealed boxes for the 32-byte message key are 80 bytes: 32-byte ephemeral key + 16-byte MAC + 32-byte key.
 	for _, e := range data.Envelopes {
 		if e.KeyID == "" {
 			return ErrEmptyKeyID
@@ -451,6 +452,8 @@ func (s *Service) GetThreadMessages(ctx context.Context, threadID, userID string
 // SendMessage persists a message in a chat. The chat is authoritative: a
 // thread id only selects the container, so the chat a message is written under
 // is always chat.ID.
+//
+//nolint:gocyclo,cyclop // payload, bot mode, blocking and attachments share validation.
 func (s *Service) SendMessage(
 	ctx context.Context,
 	chat *model.Chat,
@@ -467,7 +470,23 @@ func (s *Service) SendMessage(
 	if err := s.ValidateSendInput(input); err != nil {
 		return nil, err
 	}
-	if chat.Type == "private" {
+	if chat.BotID != "" {
+		mode := chat.BotEncryptionMode
+		if bot, ok := s.store.GetBot(ctx, chat.BotID); ok {
+			mode = bot.EncryptionMode
+		}
+		if mode == EncryptionModeE2EE {
+			if !input.Encrypted {
+				return nil, ErrBotEncryptionRequired
+			}
+			if len(input.FileIDs) > 0 || len(input.FileHashes) > 0 || input.Location != nil {
+				return nil, ErrBotMarkupInvalid
+			}
+		} else if input.Encrypted {
+			return nil, ErrBotEncryptionForbidden
+		}
+	}
+	if chat.Type == callChatTypePrivate {
 		for _, memberID := range chat.Members {
 			if memberID != fromID && s.IsBlockedBetween(ctx, fromID, memberID) {
 				return nil, ErrUserBlocked
@@ -574,6 +593,8 @@ func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *
 // EditMessage loads, authorizes and edits a message, resolving file hashes
 // and setting files. It returns the updated message plus the resolved edit
 // payload so the transport can fan out federation/push payloads unchanged.
+//
+//nolint:gocyclo,cyclop // edit validation, bot mode, files, location and threads share one flow.
 func (s *Service) EditMessage(
 	ctx context.Context,
 	chatID string,
@@ -606,6 +627,23 @@ func (s *Service) EditMessage(
 	edit, err := ParseEditPayload(req, msg.Encrypted, msg.EncryptedPayload)
 	if err != nil {
 		return model.Message{}, EditPayload{}, err
+	}
+
+	if chat, ok := s.store.GetChat(ctx, chatID); ok && chat.BotID != "" {
+		mode := chat.BotEncryptionMode
+		if bot, found := s.store.GetBot(ctx, chat.BotID); found {
+			mode = bot.EncryptionMode
+		}
+		if mode == EncryptionModeE2EE {
+			if !edit.Encrypted {
+				return model.Message{}, EditPayload{}, ErrBotEncryptionRequired
+			}
+			if len(edit.FileIDs) > 0 || len(edit.FileHashes) > 0 || edit.Location != nil {
+				return model.Message{}, EditPayload{}, ErrBotMarkupInvalid
+			}
+		} else if edit.Encrypted {
+			return model.Message{}, EditPayload{}, ErrBotEncryptionForbidden
+		}
 	}
 
 	hasLocation := edit.Location != nil

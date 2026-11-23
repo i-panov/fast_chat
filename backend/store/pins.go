@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"log/slog"
 
 	"gorm.io/gorm/clause"
 
@@ -68,4 +69,24 @@ func (s *Store) GetPinnedMessages(ctx context.Context, chatID string) ([]model.M
 		}
 	}
 	return out, nil
+}
+
+// GetPinnedMessageIDsByChats batches pins for a chat list.
+func (s *Store) GetPinnedMessageIDsByChats(ctx context.Context, chatIDs []string) map[string][]string {
+	out := make(map[string][]string, len(chatIDs))
+	if len(chatIDs) == 0 {
+		return out
+	}
+	for start := 0; start < len(chatIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(chatIDs))
+		var pins []model.ChatPin
+		if err := s.db.WithContext(ctx).Where("chat_id IN ?", chatIDs[start:end]).Order("created_at DESC").Find(&pins).Error; err != nil {
+			slog.Warn("GetPinnedMessageIDsByChats failed", "err", err)
+			continue
+		}
+		for idx := range pins {
+			out[pins[idx].ChatID] = append(out[pins[idx].ChatID], pins[idx].MessageID)
+		}
+	}
+	return out
 }

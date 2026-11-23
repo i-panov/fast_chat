@@ -8,9 +8,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fast_chat/internal/ids"
 	"fast_chat/model"
@@ -22,19 +24,24 @@ const (
 	keyText             = "text"
 	keyEncrypted        = "encrypted"
 	keyEncryptedPayload = "encryptedPayload"
+	keyLocation         = "location"
 	// EncryptionModeServer is the plaintext bot mode.
 	EncryptionModeServer = "server"
+	// EncryptionModeE2EE is the end-to-end encrypted bot mode.
+	EncryptionModeE2EE = "e2ee"
 )
 
 var (
-	ErrBotUsernameInvalid  = errors.New("bot username must match the username rules and end with _bot")
-	ErrBotUsernameTaken    = errors.New("bot username taken")
-	ErrBotOwnerRequired    = errors.New("bot owner is required")
-	ErrBotNotActive        = errors.New("bot is not active")
-	ErrBotSelfChat         = errors.New("cannot open a bot chat with a bot")
-	ErrBotMarkupInvalid    = errors.New("invalid inline keyboard")
-	ErrBotActionInvalid    = errors.New("unsupported bot action")
-	ErrBotAttachmentRemote = errors.New("files and locations are not supported for federated bot chats")
+	ErrBotUsernameInvalid     = errors.New("bot username must match the username rules and end with _bot")
+	ErrBotUsernameTaken       = errors.New("bot username taken")
+	ErrBotOwnerRequired       = errors.New("bot owner is required")
+	ErrBotNotActive           = errors.New("bot is not active")
+	ErrBotSelfChat            = errors.New("cannot open a bot chat with a bot")
+	ErrBotMarkupInvalid       = errors.New("invalid inline keyboard")
+	ErrBotEncryptionRequired  = errors.New("encrypted message required for this bot")
+	ErrBotEncryptionForbidden = errors.New("plaintext message required for this bot")
+	ErrBotActionInvalid       = errors.New("unsupported bot action")
+	ErrBotAttachmentRemote    = errors.New("files and locations are not supported for federated bot chats")
 )
 
 var botBaseRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_]{0,26}[a-z0-9])?$`)
@@ -199,7 +206,24 @@ func (s *Service) PollBotUpdates(ctx context.Context, botID string, offset uint6
 }
 
 func (s *Service) SetBotEncryptionKey(ctx context.Context, botID, publicKey string) error {
-	return s.store.SetBotEncryptionKey(ctx, botID, publicKey)
+	if err := s.store.SetBotEncryptionKey(ctx, botID, publicKey); err != nil {
+		return err
+	}
+	chatIDs, err := s.store.ChatIDsByBotID(ctx, botID)
+	if err != nil {
+		return err
+	}
+	for _, chatID := range chatIDs {
+		chat, ok := s.store.GetChat(ctx, chatID)
+		if !ok {
+			continue
+		}
+		view := s.EnrichChat(ctx, chat)
+		for _, memberID := range chat.Members {
+			s.sendEvent(memberID, sse.Event{Event: eventChatUpdated, Data: view})
+		}
+	}
+	return nil
 }
 
 // SendBotMessage stores a plaintext bot message and pushes it to the human
@@ -223,7 +247,33 @@ func (s *Service) SendBotLocation(ctx context.Context, botID, chatID string, lat
 	return s.sendBotMessage(ctx, botID, chatID, "", nil, false, "", nil, &model.Location{Lat: lat, Lng: lng})
 }
 
-//nolint:gocyclo,cyclop,nestif // attachments, markup, push and federation share one send path.
+type federationEnqueuer interface {
+	Post(ctx context.Context, remoteServer, path string, body any)
+	Patch(ctx context.Context, remoteServer, path string, body any)
+	Delete(ctx context.Context, remoteServer, path string)
+}
+
+func (s *Service) queueFederation(ctx context.Context, remoteServer, method, path string, body any) {
+	if fed, ok := s.fed.(federationEnqueuer); ok {
+		switch method {
+		case "POST":
+			fed.Post(ctx, remoteServer, path, body)
+		case "PATCH":
+			fed.Patch(ctx, remoteServer, path, body)
+		case "DELETE":
+			fed.Delete(ctx, remoteServer, path)
+		}
+		return
+	}
+	if s.fed == nil {
+		return
+	}
+	if _, err := s.fed.Request(ctx, method, s.fed.URL(remoteServer, path), body); err != nil {
+		log().Warn("federated bot message failed", "err", err)
+	}
+}
+
+//nolint:gocyclo,gocognit,cyclop // attachments, markup, push and federation share one send path.
 func (s *Service) sendBotMessage(
 	ctx context.Context,
 	botID, chatID, text string,
@@ -238,6 +288,22 @@ func (s *Service) sendBotMessage(
 	if !ok || !bot.IsActive {
 		return nil, ErrBotNotActive
 	}
+	if chat, found := s.store.GetChat(ctx, chatID); found && chat.RemoteServer != "" && markup != nil {
+		return nil, ErrBotAttachmentRemote
+	}
+	if bot.EncryptionMode == EncryptionModeE2EE {
+		if !encrypted {
+			return nil, ErrBotEncryptionRequired
+		}
+		if err := ValidateEncryptedPayload(true, payload); err != nil {
+			return nil, err
+		}
+		if markup != nil || len(fileIDs) > 0 || location != nil {
+			return nil, ErrBotMarkupInvalid
+		}
+	} else if encrypted {
+		return nil, ErrBotEncryptionForbidden
+	}
 	bc, ok := s.store.GetBotChatByChatID(ctx, chatID)
 	if !ok || bc.BotID != botID {
 		return nil, ErrChatNotFound
@@ -251,14 +317,24 @@ func (s *Service) sendBotMessage(
 		return nil, ErrChatNotFound
 	}
 	text = strings.TrimSpace(text)
+	maxLen := MaxMessageLen
+	if encrypted {
+		maxLen = EncryptedMaxLen
+	}
+	if utf8.RuneCountInString(text) > maxLen {
+		return nil, ErrMessageTooLong
+	}
 	resolvedFiles := s.ResolveMessageFiles(ctx, botID, fileIDs, nil)
+	if len(resolvedFiles) > MaxMessageFiles {
+		return nil, ErrTooManyFiles
+	}
 	if text == "" && len(resolvedFiles) == 0 && location == nil {
 		return nil, ErrEmptyMessage
 	}
 	if encrypted && (len(resolvedFiles) > 0 || location != nil) {
 		return nil, ErrBotMarkupInvalid
 	}
-	if chat.RemoteServer != "" && (len(resolvedFiles) > 0 || location != nil) {
+	if chat.RemoteServer != "" && (len(resolvedFiles) > 0 || location != nil || markup != nil) {
 		return nil, ErrBotAttachmentRemote
 	}
 	if err := validateInlineKeyboard(markup); err != nil {
@@ -285,13 +361,10 @@ func (s *Service) sendBotMessage(
 		s.sendEvent(bc.UserID, sse.Event{Event: eventNewMessage, Data: msg})
 		s.SendPushForMessage(ctx, chat, msg, "", bc.UserID)
 		if chat.RemoteServer != "" && s.fed != nil {
-			groupURL := s.fed.URL(chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages")
-			if _, err := s.fed.Request(ctx, "POST", groupURL, map[string]any{
+			s.queueFederation(ctx, chat.RemoteServer, "POST", "/api/federated/chats/"+chat.ID+"/messages", map[string]any{
 				"id": msg.ID, "fromId": botID, "fromNick": user.DisplayName,
-				"text": msg.Text, keyEncrypted: encrypted, keyEncryptedPayload: payload,
-			}); err != nil {
-				log().Warn("federated bot reply failed", "err", err)
-			}
+				keyText: msg.Text, keyEncrypted: encrypted, keyEncryptedPayload: payload,
+			})
 		}
 	}
 	return msg, nil
@@ -321,7 +394,7 @@ func (s *Service) AppendBotMessageUpdate(ctx context.Context, chatID string, msg
 			keyText:             msg.Text,
 			keyEncrypted:        msg.Encrypted,
 			"encrypted_payload": msg.EncryptedPayload,
-			"location":          msg.Location,
+			keyLocation:         msg.Location,
 			"files":             msg.Files,
 			"date":              msg.CreatedAt,
 		},
@@ -439,6 +512,22 @@ func (s *Service) AnswerBotCallback(
 	if !ok {
 		return ErrMessageNotFound
 	}
+	bot, ok := s.store.GetBot(ctx, botID)
+	if !ok || !bot.IsActive {
+		return ErrBotNotActive
+	}
+	if bot.EncryptionMode == EncryptionModeE2EE {
+		if text != "" && !encrypted {
+			return ErrBotEncryptionRequired
+		}
+		if encrypted {
+			if err := ValidateEncryptedPayload(true, payload); err != nil {
+				return err
+			}
+		}
+	} else if encrypted {
+		return ErrBotEncryptionForbidden
+	}
 	if err := s.store.AnswerBotCallbackQuery(ctx, callbackID, botID, text, showAlert); err != nil {
 		return err
 	}
@@ -480,6 +569,7 @@ func (s *Service) SetBotEnabled(ctx context.Context, ownerID, username string, e
 	return s.store.SetBotActive(ctx, bot.UserID, enabled)
 }
 
+//nolint:gocyclo,cyclop // mode, markup, reply markup and federation share one edit path.
 func (s *Service) EditBotMessage(
 	ctx context.Context,
 	botID, chatID, messageID, text string,
@@ -496,9 +586,36 @@ func (s *Service) EditBotMessage(
 	if err != nil || msg.FromID != botID {
 		return nil, ErrMessageNotFound
 	}
+	bot, ok := s.store.GetBot(ctx, botID)
+	if !ok || !bot.IsActive {
+		return nil, ErrBotNotActive
+	}
+	if chat, found := s.store.GetChat(ctx, chatID); found && chat.RemoteServer != "" && markup != nil {
+		return nil, ErrBotAttachmentRemote
+	}
+	if bot.EncryptionMode == EncryptionModeE2EE {
+		if !encrypted {
+			return nil, ErrBotEncryptionRequired
+		}
+		if err := ValidateEncryptedPayload(true, payload); err != nil {
+			return nil, err
+		}
+		if markup != nil {
+			return nil, ErrBotMarkupInvalid
+		}
+	} else if encrypted {
+		return nil, ErrBotEncryptionForbidden
+	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil, ErrEmptyMessage
+	}
+	maxLen := MaxMessageLen
+	if encrypted {
+		maxLen = EncryptedMaxLen
+	}
+	if utf8.RuneCountInString(text) > maxLen {
+		return nil, ErrMessageTooLong
 	}
 	if err := validateInlineKeyboard(markup); err != nil {
 		return nil, err
@@ -517,6 +634,11 @@ func (s *Service) EditBotMessage(
 		return nil, err
 	}
 	s.sendEvent(bc.UserID, sse.Event{Event: eventMessageUpdated, Data: updated})
+	if chat, ok := s.store.GetChat(ctx, chatID); ok && chat.RemoteServer != "" && s.fed != nil {
+		s.queueFederation(ctx, chat.RemoteServer, "PATCH", "/api/federated/chats/"+chatID+"/messages/"+messageID, map[string]any{
+			"text": text, keyEncrypted: encrypted, keyEncryptedPayload: payload,
+		})
+	}
 	return &updated, nil
 }
 
@@ -533,6 +655,9 @@ func (s *Service) DeleteBotMessage(ctx context.Context, botID, chatID, messageID
 		return err
 	}
 	s.sendEvent(bc.UserID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{keyChatID: chatID, keyMessageID: messageID}})
+	if chat, ok := s.store.GetChat(ctx, chatID); ok && chat.RemoteServer != "" && s.fed != nil {
+		s.queueFederation(ctx, chat.RemoteServer, "DELETE", "/api/federated/chats/"+chatID+"/messages/"+messageID, nil)
+	}
 	return nil
 }
 
@@ -570,6 +695,30 @@ type DeviceKey struct {
 }
 
 func (s *Service) ListUserDeviceKeys(ctx context.Context, userID string) ([]DeviceKey, error) {
+	remote := RemoteServerFromIDFor(userID, s.cfg.Federation.AllowPrivateAddresses)
+	if remote != "" && remote != s.cfg.Server.Domain {
+		if s.fed == nil {
+			return nil, ErrUserNotFound
+		}
+		data, err := s.fed.Request(ctx, "GET", s.fed.URL(remote, "/api/federated/users/"+url.PathEscape(userID)+"/device-keys"), nil)
+		if err != nil {
+			return nil, err
+		}
+		var result struct {
+			Devices []struct {
+				ID        string `json:"id"`
+				PublicKey string `json:"publicKey"`
+			} `json:"devices"`
+		}
+		if err := json.Unmarshal(data, &result); err != nil {
+			return nil, err
+		}
+		out := make([]DeviceKey, 0, len(result.Devices))
+		for _, device := range result.Devices {
+			out = append(out, DeviceKey{ID: device.ID, PublicKey: device.PublicKey})
+		}
+		return out, nil
+	}
 	devices, err := s.store.ListUserDevices(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -609,7 +758,7 @@ func (s *Service) GetBotChat(ctx context.Context, botID, chatID string) (BotChat
 		return BotChatInfo{}, ErrUserNotFound
 	}
 	return BotChatInfo{
-		ID: chatID, Type: "private", Username: user.Username, DisplayName: user.DisplayName,
+		ID: chatID, Type: callChatTypePrivate, Username: user.Username, DisplayName: user.DisplayName,
 	}, nil
 }
 

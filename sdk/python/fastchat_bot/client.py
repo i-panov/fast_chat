@@ -318,13 +318,19 @@ class BotClient:
             )
         )
 
-    def download_file(self, file_id: str) -> bytes:
+    def download_file(
+        self,
+        file_id: str,
+        *,
+        max_bytes: int = 50 * 1024 * 1024,
+    ) -> bytes:
         if self.encryption_key is not None or self._require_mode() == "e2ee":
             raise BotAPIError("encrypted bot files are not supported")
         return self._request(
             "GET",
             f"/api/bot-api/files/{urllib.parse.quote(file_id)}",
             raw_response=True,
+            max_bytes=max_bytes,
         )
 
     def run(
@@ -342,6 +348,7 @@ class BotClient:
         """
         offset = initial_offset
         backoff = 1.0
+        handler_failures = 0
         while stop is None or not stop():
             try:
                 updates = self.get_updates(offset=offset, timeout=25)
@@ -360,34 +367,42 @@ class BotClient:
                         on_callback(update.callback_query)
                 except Exception:
                     logger.exception("Fast Chat update handler failed")
-                    continue
+                    handler_failures += 1
+                    if handler_failures < 3:
+                        time.sleep(backoff)
+                        backoff = min(backoff * 2, 30.0)
+                        break
+                    handler_failures = 0
+                else:
+                    handler_failures = 0
                 offset = max(offset, update.update_id + 1)
 
     def _to_update(self, raw: dict[str, Any]) -> BotUpdate:
         message = None
         if isinstance(raw.get("message"), dict):
             message = _message(raw["message"])
-            self._chat_users[message.chat_id] = message.from_user.id
-            if (
-                self.encryption_key is not None
-                and message.encrypted
-                and message.encrypted_payload
-            ):
-                try:
-                    content = decrypt_content(
-                        message.text,
-                        message.encrypted_payload,
-                        self._bot_id or self.get_me().id,
-                        self.encryption_key,
-                    )
-                    message.text = str(content.get("text", ""))
-                    markup = content.get("replyMarkup")
-                    message.reply_markup = (
-                        markup if isinstance(markup, dict) else None
-                    )
-                except Exception:
+            if not message.from_user.is_bot:
+                self._chat_users[message.chat_id] = message.from_user.id
+            if message.encrypted:
+                if self.encryption_key is None or not message.encrypted_payload:
                     message.undecryptable = True
                     message.text = "[encrypted message]"
+                else:
+                    try:
+                        content = decrypt_content(
+                            message.text,
+                            message.encrypted_payload,
+                            self._bot_id or self.get_me().id,
+                            self.encryption_key,
+                        )
+                        message.text = str(content.get("text", ""))
+                        markup = content.get("replyMarkup")
+                        message.reply_markup = (
+                            markup if isinstance(markup, dict) else None
+                        )
+                    except Exception:
+                        message.undecryptable = True
+                        message.text = "[encrypted message]"
 
         callback = None
         callback_raw = raw.get("callback_query")
@@ -408,6 +423,8 @@ class BotClient:
                     )
                 except Exception:
                     callback.undecryptable = True
+            elif callback.data.startswith("fcbenc:"):
+                callback.undecryptable = True
         return BotUpdate(
             update_id=int(raw.get("update_id", 0)),
             message=message,
@@ -424,6 +441,7 @@ class BotClient:
         content_type: str | None = None,
         timeout: float | None = None,
         raw_response: bool = False,
+        max_bytes: int | None = None,
     ):
         data = raw_body
         headers = {"Authorization": f"Bearer {self.token}"}
@@ -443,7 +461,13 @@ class BotClient:
             with urllib.request.urlopen(
                 req, timeout=timeout or self.timeout
             ) as response:
-                payload = response.read()
+                payload = (
+                    response.read()
+                    if max_bytes is None
+                    else response.read(max_bytes + 1)
+                )
+                if max_bytes is not None and len(payload) > max_bytes:
+                    raise BotAPIError("file is too large")
                 if raw_response:
                     return payload
                 if not payload:

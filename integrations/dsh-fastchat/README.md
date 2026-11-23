@@ -38,18 +38,24 @@ work in.
 ```yaml
 # ~/.dsh/profiles/web/cordis.patch.yml (or the matching profile path)
 - id: fastchat
-  module: dsh-fastchat
+  name: dsh-fastchat
   config:
     bots:
       - name: fastchat
         token: fcb_project_a_token
         cwd: /home/ilya/projects/project-a
         baseUrl: https://chat.example.com
+        preset: standard
+        allowedChatIds: []   # empty = allow every chat of this bot
+        allowedUserIds: []   # empty = allow every user
 
       - name: billing
         token: fcb_project_b_token
         cwd: /home/ilya/projects/project-b
         baseUrl: https://chat.example.com
+        preset: standard
+        allowedChatIds: []   # empty = allow every chat of this bot
+        allowedUserIds: []   # empty = allow every user
 ```
 
 Create one bot per project through `@fastchat_bot`:

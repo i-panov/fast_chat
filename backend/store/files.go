@@ -303,3 +303,25 @@ func (s *Store) CreateRemoteFile(ctx context.Context, file *model.File) error {
 	}
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(file).Error
 }
+
+// GetFilesByIDs loads file metadata for many ids in one query.
+//
+//nolint:dupl // mirrors the generic bot batch loader.
+func (s *Store) GetFilesByIDs(ctx context.Context, ids []string) map[string]*model.File {
+	out := make(map[string]*model.File, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	for start := 0; start < len(ids); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(ids))
+		var files []model.File
+		if err := s.db.WithContext(ctx).Where("id IN ?", ids[start:end]).Find(&files).Error; err != nil {
+			slog.Warn("GetFilesByIDs failed", "err", err)
+			continue
+		}
+		for idx := range files {
+			out[files[idx].ID] = &files[idx]
+		}
+	}
+	return out
+}

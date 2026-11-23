@@ -56,6 +56,7 @@ export interface BotMessage {
 	encryptedPayload?: string;
 	files?: BotFile[];
 	location?: BotLocation;
+	undecryptable?: boolean;
 }
 
 export interface BotCallbackQuery {
@@ -64,6 +65,7 @@ export interface BotCallbackQuery {
 	messageId: string;
 	chatId: string;
 	data: string;
+	undecryptable?: boolean;
 }
 
 export interface BotUpdate {
@@ -81,9 +83,12 @@ export interface BotClientOptions {
 	baseUrl?: string;
 	fetch?: typeof fetch;
 	encryptionKey?: EncryptionKeyPair;
+	initialOffset?: number;
+	onOffset?: (offset: number) => void;
+	mode?: "server" | "e2ee";
 }
 
-interface UserDeviceKey {
+export interface UserDeviceKey {
 	id: string;
 	publicKey: string;
 }
@@ -104,6 +109,8 @@ type Handler<T> = (value: T) => void | Promise<void>;
 interface ApiEnvelope<T> {
 	ok: boolean;
 	result: T;
+	error?: string;
+	code?: string | number;
 	error_code?: number;
 	description?: string;
 }
@@ -153,8 +160,11 @@ export class BotClient {
 	private readonly callbackHandlers: Handler<BotCallbackQuery>[] = [];
 	private running = false;
 	private controller: AbortController | null = null;
-	private offset = 0;
+	private offset: number;
 	private encryptionKey?: EncryptionKeyPair;
+	private mode?: "server" | "e2ee";
+	private modeCheckedAt = 0;
+	private readonly onOffset?: (offset: number) => void;
 	private chatUsers = new Map<string, string>();
 	private callbackUsers = new Map<string, string>();
 
@@ -163,6 +173,10 @@ export class BotClient {
 		this.baseUrl = (options.baseUrl ?? "http://localhost:8080").replace(/\/$/, "");
 		this.fetchImpl = options.fetch ?? globalThis.fetch;
 		this.encryptionKey = options.encryptionKey;
+		this.offset = options.initialOffset ?? 0;
+		this.onOffset = options.onOffset;
+		this.mode = options.mode;
+		if (options.mode !== undefined) this.modeCheckedAt = Date.now();
 	}
 
 	onMessage(handler: Handler<BotMessage>): this {
@@ -176,9 +190,9 @@ export class BotClient {
 	}
 
 	async getMe(): Promise<BotUser> {
-		return toUser(
-			await this.request<RawUser>("GET", "/api/bot-api/getMe"),
-		);
+		const user = toUser(await this.request<RawUser>("GET", "/api/bot-api/getMe"));
+		this.mode = user.encryptionMode;
+		return user;
 	}
 
 	async getUpdates(options?: {
@@ -198,6 +212,19 @@ export class BotClient {
 			options?.signal,
 		);
 		return Promise.all(raw.map((update) => this.toUpdate(update)));
+	}
+
+	private async requireMode(): Promise<"server" | "e2ee"> {
+		if (this.mode === undefined || Date.now() - this.modeCheckedAt > 60_000) {
+			await this.getMe();
+		}
+		return this.mode ?? "server";
+	}
+
+	private async rejectPlaintextE2EE(): Promise<void> {
+		if (this.encryptionKey === undefined && (await this.requireMode()) === "e2ee") {
+			throw new BotApiError("bot is in e2ee mode; an encryption key is required", 0, 0);
+		}
 	}
 
 	async sendMessage(
@@ -226,6 +253,7 @@ export class BotClient {
 			);
 			return { ...(await this.toMessage(raw, false)), text };
 		}
+		await this.rejectPlaintextE2EE();
 		const raw = await this.request<RawMessage>(
 			"POST",
 			"/api/bot-api/sendMessage",
@@ -277,6 +305,7 @@ export class BotClient {
 			);
 			return { ...(await this.toMessage(raw, false)), text };
 		}
+		await this.rejectPlaintextE2EE();
 		const raw = await this.request<RawMessage>(
 			"POST",
 			"/api/bot-api/editMessageText",
@@ -314,7 +343,7 @@ export class BotClient {
 		filename: string,
 		mimeType = "application/octet-stream",
 	): Promise<BotFile> {
-		if (this.encryptionKey !== undefined) {
+		if (this.encryptionKey !== undefined || (await this.requireMode()) === "e2ee") {
 			throw new Error("encrypted bot files are not supported");
 		}
 		const form = new FormData();
@@ -330,13 +359,18 @@ export class BotClient {
 		return result.file;
 	}
 
-	async downloadFile(fileId: string): Promise<ArrayBuffer> {
+	async downloadFile(fileId: string, maxBytes = 50 * 1024 * 1024): Promise<ArrayBuffer> {
+		if (this.encryptionKey !== undefined || (await this.requireMode()) === "e2ee") {
+			throw new Error("encrypted bot files are not supported");
+		}
 		const response = await this.fetchImpl(
 			`${this.baseUrl}/api/bot-api/files/${encodeURIComponent(fileId)}`,
 			{ headers: { Authorization: `Bearer ${this.token}` } },
 		);
 		if (!response.ok) throw new BotApiError(await response.text(), response.status, response.status);
-		return response.arrayBuffer();
+		const body = await response.arrayBuffer();
+		if (body.byteLength > maxBytes) throw new BotApiError("file is too large", 0, 0);
+		return body;
 	}
 
 	async sendFile(
@@ -344,7 +378,7 @@ export class BotClient {
 		fileId: string,
 		caption?: string,
 	): Promise<BotMessage> {
-		if (this.encryptionKey !== undefined) {
+		if (this.encryptionKey !== undefined || (await this.requireMode()) === "e2ee") {
 			throw new Error("encrypted bot files are not supported");
 		}
 		const raw = await this.request<RawMessage>(
@@ -360,7 +394,7 @@ export class BotClient {
 		latitude: number,
 		longitude: number,
 	): Promise<BotMessage> {
-		if (this.encryptionKey !== undefined) {
+		if (this.encryptionKey !== undefined || (await this.requireMode()) === "e2ee") {
 			throw new Error("encrypted bot locations are not supported");
 		}
 		const raw = await this.request<RawMessage>(
@@ -403,6 +437,7 @@ export class BotClient {
 			});
 			return;
 		}
+		if (text !== undefined && text !== "") await this.rejectPlaintextE2EE();
 		await this.request("POST", "/api/bot-api/answerCallbackQuery", {
 			callback_query_id: callbackQueryId,
 			text,
@@ -416,6 +451,7 @@ export class BotClient {
 			publicKey: key.publicKey,
 		});
 		this.encryptionKey = key;
+		this.mode = "e2ee";
 		return key;
 	}
 
@@ -426,17 +462,19 @@ export class BotClient {
 		return Promise.all(
 			markup.inlineKeyboard.map(async (row) =>
 				Promise.all(
-					row.map(async (button) => ({
-						text: button.text,
-						callbackData:
+					row.map(async (button) => {
+						const callbackData =
 							button.callbackData === undefined
 								? undefined
 								: await encryptCallbackData(
 										button.callbackData,
 										this.encryptionKey?.publicKey ?? "",
-									),
-						url: button.url,
-					})),
+									);
+						if (callbackData !== undefined && callbackData.length > 256) {
+							throw new BotApiError("encrypted callback data is too long", 0, 0);
+						}
+						return { text: button.text, callbackData, url: button.url };
+					}),
 				),
 			),
 		);
@@ -462,6 +500,7 @@ export class BotClient {
 		const abort = () => this.controller?.abort();
 		signal?.addEventListener("abort", abort, { once: true });
 		let backoff = 1000;
+		let handlerFailures = 0;
 
 		try {
 			while (this.running) {
@@ -472,17 +511,30 @@ export class BotClient {
 					});
 					backoff = 1000;
 					for (const update of updates) {
+						try {
+							if (update.message !== undefined) {
+								for (const handler of this.messageHandlers) await handler(update.message);
+							}
+							if (update.callbackQuery !== undefined) {
+								for (const handler of this.callbackHandlers) await handler(update.callbackQuery);
+							}
+						} catch {
+							if (!this.running) return;
+							handlerFailures += 1;
+							if (handlerFailures < 3) {
+								await sleep(backoff, this.controller.signal);
+								backoff = Math.min(backoff * 2, 30_000);
+								break;
+							}
+							handlerFailures = 0;
+						}
+						handlerFailures = 0;
 						this.offset = Math.max(this.offset, update.updateId + 1);
-						if (update.message !== undefined) {
-							for (const handler of this.messageHandlers) await handler(update.message);
-						}
-						if (update.callbackQuery !== undefined) {
-							for (const handler of this.callbackHandlers) await handler(update.callbackQuery);
-						}
+						this.onOffset?.(this.offset);
 					}
 				} catch (error) {
 					if (!this.running || this.controller.signal.aborted) return;
-					await sleep(backoff);
+					await sleep(backoff, this.controller.signal);
 					backoff = Math.min(backoff * 2, 30_000);
 				}
 			}
@@ -498,50 +550,80 @@ export class BotClient {
 	}
 
 	private async toUpdate(raw: RawUpdate): Promise<BotUpdate> {
-		const message = raw.message === undefined ? undefined : await this.toMessage(raw.message);
+		let message: BotMessage | undefined;
+		if (raw.message !== undefined) {
+			message = await this.toMessage(raw.message);
+		}
 		let callbackQuery: BotCallbackQuery | undefined;
 		if (raw.callback_query !== undefined) {
-			const data =
-				this.encryptionKey === undefined
-					? raw.callback_query.data
-					: await decryptCallbackData(
-							raw.callback_query.data,
-							this.encryptionKey,
-						);
+			let data = raw.callback_query.data;
+			let undecryptable = false;
+			if (this.encryptionKey !== undefined) {
+				try {
+					data = await decryptCallbackData(data, this.encryptionKey);
+				} catch {
+					undecryptable = true;
+				}
+			} else if (data.startsWith("fcbenc:")) {
+				undecryptable = true;
+			}
 			callbackQuery = {
 				id: raw.callback_query.id,
 				from: toUser(raw.callback_query.from),
 				messageId: raw.callback_query.message_id,
 				chatId: raw.callback_query.chat_id,
 				data,
+				undecryptable,
 			};
 			this.callbackUsers.set(callbackQuery.id, callbackQuery.from.id);
+			this.chatUsers.set(callbackQuery.chatId, callbackQuery.from.id);
 		}
 		return { updateId: raw.update_id, message, callbackQuery };
 	}
 
 	private async toMessage(raw: RawMessage, decrypt = true): Promise<BotMessage> {
 		const base = toMessage(raw);
+		if (
+			decrypt &&
+			raw.encrypted === true &&
+			(this.encryptionKey === undefined || raw.encrypted_payload === undefined)
+		) {
+			base.undecryptable = true;
+			base.text = "[encrypted message]";
+		}
 		if (decrypt && this.encryptionKey !== undefined && raw.encrypted === true && raw.encrypted_payload !== undefined) {
-			const me = await this.getMe();
-			const content = await decryptBotMessage(raw.text, raw.encrypted_payload, me.id, this.encryptionKey);
-			base.text = content.text;
-			if (content.replyMarkup !== undefined && typeof content.replyMarkup === "object") {
-				const markup = content.replyMarkup as {
-					inline_keyboard?: Array<Array<{ text: string; callback_data?: string; url?: string }>>;
-				};
-				base.replyMarkup = {
-					inlineKeyboard: (markup.inline_keyboard ?? []).map((row) =>
-						row.map((button) => ({
-							text: button.text,
-							callbackData: button.callback_data,
-							url: button.url,
-						})),
-					),
-				};
+			try {
+				const me = await this.getMe();
+				const content = await decryptBotMessage(raw.text, raw.encrypted_payload, me.id ?? "", this.encryptionKey);
+				base.text = typeof content.text === "string" ? content.text : "";
+				const markup = content.replyMarkup;
+				if (markup !== undefined && markup !== null && typeof markup === "object") {
+					const rows = (markup as { inline_keyboard?: unknown }).inline_keyboard;
+					if (Array.isArray(rows)) {
+						base.replyMarkup = {
+							inlineKeyboard: rows
+								.filter(Array.isArray)
+								.map((row) =>
+									(row as Array<{ text?: unknown; callback_data?: unknown; url?: unknown }>)
+										.filter((button) => typeof button?.text === "string")
+										.map((button) => ({
+											text: button.text as string,
+											callbackData:
+												typeof button.callback_data === "string"
+													? button.callback_data
+													: undefined,
+											url: typeof button.url === "string" ? button.url : undefined,
+										})),
+								),
+						};
+					}
+				}
+			} catch {
+				base.undecryptable = true;
+				base.text = "[encrypted message]";
 			}
 		}
-		this.chatUsers.set(base.chatId, base.from.id);
+		if (!base.from.isBot) this.chatUsers.set(base.chatId, base.from.id);
 		return base;
 	}
 
@@ -568,7 +650,7 @@ export class BotClient {
 		}
 		if (!response.ok || envelope.ok !== true) {
 			throw new BotApiError(
-				envelope.description ?? `HTTP ${response.status}`,
+				envelope.error ?? envelope.description ?? `HTTP ${response.status}`,
 				response.status,
 				envelope.error_code ?? response.status,
 			);
@@ -614,6 +696,29 @@ function toMessage(raw: RawMessage): BotMessage {
 }
 
 
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted === true) {
+			resolve();
+			return;
+		}
+		const timer = setTimeout(resolve, ms);
+		signal?.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timer);
+				resolve();
+			},
+			{ once: true },
+		);
+	});
 }
+
+export {
+	decryptBotMessage,
+	decryptCallbackData,
+	encryptBotReply,
+	encryptCallbackData,
+	generateEncryptionKeyPair,
+} from "./crypto.js";
+export type { EncryptionKeyPair } from "./crypto.js";

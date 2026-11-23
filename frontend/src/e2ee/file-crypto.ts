@@ -1,5 +1,5 @@
 import sodium from "libsodium-wrappers";
-import { ensureSodium } from "./crypto.ts";
+import { decodeBase64, ensureSodium } from "./crypto.ts";
 
 // computePlaintextHash returns the SHA-256 hex digest of the file content.
 // SHA-256 matches the server's own hash computation for unencrypted files,
@@ -49,8 +49,8 @@ export async function encryptBytes(
 	fileKey: FileKey,
 ): Promise<Uint8Array> {
 	await ensureSodium();
-	const key = sodium.from_base64(fileKey.key);
-	const nonce = sodium.from_base64(fileKey.nonce);
+	const key = decodeBase64(fileKey.key);
+	const nonce = decodeBase64(fileKey.nonce);
 
 	return sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
 		data,
@@ -79,8 +79,8 @@ export async function encryptFileStream(
 	fileKey: FileKey,
 ): Promise<Uint8Array> {
 	await ensureSodium();
-	const key = sodium.from_base64(fileKey.key);
-	const nonce = sodium.from_base64(fileKey.nonce);
+	const key = decodeBase64(fileKey.key);
+	const nonce = decodeBase64(fileKey.nonce);
 	const data = new Uint8Array(await blob.arrayBuffer());
 
 	return sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
@@ -98,8 +98,8 @@ export async function decryptFileStream(
 	fileKey: FileKey,
 ): Promise<Uint8Array> {
 	await ensureSodium();
-	const key = sodium.from_base64(fileKey.key);
-	const nonce = sodium.from_base64(fileKey.nonce);
+	const key = decodeBase64(fileKey.key);
+	const nonce = decodeBase64(fileKey.nonce);
 
 	return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
 		null,

@@ -153,7 +153,7 @@ func (s *Service) applyFederatedDelta(ctx context.Context, peer string, delta *S
 
 	for _, deleted := range delta.DeletedMessages {
 		chat, ok := s.store.GetChat(ctx, deleted.ChatID)
-		if !ok {
+		if !ok || chat.RemoteServer != peer {
 			continue
 		}
 
@@ -177,8 +177,12 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 	}
 
 	chat, ok := s.store.GetChat(ctx, msg.ChatID)
-	if !ok {
-		log().Info("federation message skipped: unknown chat", "peer", peer, "chatID", msg.ChatID)
+	if !ok || chat.RemoteServer != peer {
+		log().Info("federation message skipped: foreign chat", "peer", peer, "chatID", msg.ChatID)
+		return
+	}
+	if !containsMember(chat.Members, msg.FromID) {
+		log().Info("federation message skipped: author is not a member", "peer", peer, "from", msg.FromID)
 		return
 	}
 
@@ -207,6 +211,7 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 		EncryptedPayload: msg.EncryptedPayload,
 	}
 
+	in.Peer = peer
 	if _, err := s.SendFederatedMessage(ctx, chat, in, maxLen); err != nil {
 		log().Info("federation message could not be applied", "peer", peer, "messageID", msg.ID, "err", err)
 	}
@@ -219,14 +224,32 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 // sides. A change of the membership has to reach the local members even when
 // the change itself was made while this server was offline.
 func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *FederatedChatDTO) {
+	if chat.BotID != "" && !containsMember(chat.Members, chat.BotID) {
+		log().Warn("federated chat has bot outside members", "chatID", chat.ID)
+		return
+	}
+	mode := chat.BotEncryptionMode
+	if chat.BotID != "" && !UserIDBelongsToServer(chat.BotID, peer) {
+		if bot, ok := s.store.GetBot(ctx, chat.BotID); ok {
+			mode = bot.EncryptionMode
+		}
+	}
 	existing, ok := s.store.GetChat(ctx, chat.ID)
 	if ok {
-		if chat.BotID != "" && (existing.BotID != chat.BotID || existing.BotEncryptionMode != chat.BotEncryptionMode) {
-			if err := s.store.SetChatBot(ctx, existing.ID, chat.BotID, chat.BotEncryptionMode); err != nil {
+		if existing.RemoteServer != peer {
+			return
+		}
+		if chat.BotID != "" && (existing.BotID != chat.BotID || existing.BotEncryptionMode != mode) {
+			if err := s.store.SetChatBot(ctx, existing.ID, chat.BotID, mode); err != nil {
 				log().Warn("federated bot chat metadata could not be restored", "chatID", chat.ID, "err", err)
 			} else {
 				existing.BotID = chat.BotID
+				existing.BotEncryptionMode = mode
 				s.ensureBotChatReplica(ctx, existing)
+				view := s.EnrichChat(ctx, existing)
+				for _, memberID := range existing.Members {
+					s.sendEvent(memberID, sse.Event{Event: eventChatUpdated, Data: view})
+				}
 			}
 		}
 		s.syncRemoteChatMembers(ctx, peer, existing, chat)
@@ -246,7 +269,7 @@ func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *Feder
 		Members:           chat.Members,
 		RemoteServer:      peer,
 		BotID:             chat.BotID,
-		BotEncryptionMode: chat.BotEncryptionMode,
+		BotEncryptionMode: mode,
 		CreatedAt:         createdAt,
 	}
 

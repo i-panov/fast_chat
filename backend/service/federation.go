@@ -113,6 +113,24 @@ func (s *Service) validFileIDsForMembers(ctx context.Context, members, fileIDs [
 // CreateFederatedChat creates a chat on behalf of a remote server after
 // validating membership constraints. Returns the enriched view, and true if it
 // already existed (idempotent). When alreadyExists is true the view is zero.
+
+func sameMemberSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	set := make(map[string]struct{}, len(left))
+	for _, id := range left {
+		set[id] = struct{}{}
+	}
+	for _, id := range right {
+		if _, ok := set[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+//nolint:gocognit,nestif // validation and idempotent update share one path.
 func (s *Service) CreateFederatedChat(
 	ctx context.Context,
 	chatID string,
@@ -131,7 +149,7 @@ func (s *Service) CreateFederatedChat(
 	}
 	mode := ""
 	if botID != "" {
-		if !UserIDBelongsToServer(botID, localServer) {
+		if !UserIDBelongsToServer(botID, localServer) || !containsMember(members, botID) {
 			return ChatView{}, false, ErrFederatedMembersNotValid
 		}
 		bot, ok := s.store.GetBot(ctx, botID)
@@ -142,6 +160,9 @@ func (s *Service) CreateFederatedChat(
 	}
 
 	if existing, ok := s.store.GetChat(ctx, chatID); ok {
+		if existing.RemoteServer != remoteServer || existing.Type != callChatTypePrivate || !sameMemberSet(existing.Members, members) {
+			return ChatView{}, false, ErrFederatedMembersNotValid
+		}
 		if botID != "" && (existing.BotID != botID || existing.BotEncryptionMode != mode) {
 			if err := s.store.SetChatBot(ctx, chatID, botID, mode); err != nil {
 				return ChatView{}, false, err
@@ -208,6 +229,9 @@ func (s *Service) SearchFederatedUsers(ctx context.Context, query string) []mode
 // FederatedInboundMessage carries the decoded, validated fields of an inbound
 // federated message request before persistence.
 type FederatedInboundMessage struct {
+	// Peer is the server that delivered this message. Empty for local
+	// callers; transport/catch-up set it to the authenticated peer.
+	Peer             string
 	ID               string
 	FromID           string
 	FromNick         string
@@ -236,8 +260,36 @@ func (s *Service) SendFederatedMessage(
 		return nil, err
 	}
 
-	if !UserIDBelongsToServer(in.FromID, chat.RemoteServer) {
-		return nil, ErrFederatedFromNotRemote
+	sourceServer := chat.RemoteServer
+	if in.Peer != "" {
+		sourceServer = in.Peer
+	}
+	if !UserIDBelongsToServer(in.FromID, sourceServer) {
+		// The authoritative owner may relay a message from another member
+		// server; the author must still be a member of this group.
+		if chat.RemoteServer != in.Peer ||
+			!containsMember(chat.Members, in.FromID) ||
+			UserIDBelongsToServer(in.FromID, s.cfg.Server.Domain) {
+
+			return nil, ErrFederatedFromNotRemote
+		}
+	}
+
+	if chat.BotID != "" {
+		mode := chat.BotEncryptionMode
+		if bot, ok := s.store.GetBot(ctx, chat.BotID); ok {
+			mode = bot.EncryptionMode
+		}
+		if mode == EncryptionModeE2EE {
+			if !in.Encrypted {
+				return nil, ErrBotEncryptionRequired
+			}
+			if len(in.Files) > 0 || in.Location != nil {
+				return nil, ErrBotMarkupInvalid
+			}
+		} else if in.Encrypted {
+			return nil, ErrBotEncryptionForbidden
+		}
 	}
 
 	if in.ID == "" {
@@ -437,7 +489,43 @@ func (s *Service) EditFederatedMessage(
 		}
 	}
 
+	s.forwardFederatedEdit(ctx, chat, messageID, threadID, stored.FromID, edit)
 	return &updated, nil
+}
+
+func (s *Service) forwardFederatedEdit(
+	ctx context.Context,
+	chat *model.Chat,
+	messageID, threadID, fromID string,
+	edit *EditPayload,
+) {
+
+	if s.fed == nil || s.cfg == nil || chat.RemoteServer != "" {
+		return
+	}
+	senderDomain := RemoteServerFromID(fromID)
+	seen := make(map[string]struct{})
+	for _, memberID := range chat.Members {
+		domain := s.remoteServerFromID(memberID)
+		if domain == "" || domain == s.cfg.Server.Domain || domain == senderDomain {
+			continue
+		}
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		body := map[string]any{
+			keyText: edit.Text, keyEncrypted: edit.Encrypted,
+			keyEncryptedPayload: edit.EncryptedPayload,
+			keyLocation:         edit.RawLocation, "clearLocation": edit.ClearLocation,
+			"fileIDs": edit.FileIDs,
+		}
+		path := "/api/federated/chats/" + chat.ID + "/messages/" + messageID
+		if threadID != "" {
+			path = "/api/federated/chats/" + chat.ID + "/threads/" + threadID + "/messages/" + messageID
+		}
+		s.queueFederation(ctx, domain, "PATCH", path, body)
+	}
 }
 
 // DeleteFederatedMessage validates and applies an inbound federated deletion,
@@ -473,14 +561,28 @@ func (s *Service) DeleteFederatedMessage(
 	for _, memberID := range chat.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{keyChatID: chat.ID, keyMessageID: messageID}})
 	}
-
+	if s.fed != nil && s.cfg != nil && chat.RemoteServer == "" {
+		senderDomain := RemoteServerFromID(stored.FromID)
+		seen := make(map[string]struct{})
+		for _, memberID := range chat.Members {
+			domain := s.remoteServerFromID(memberID)
+			if domain == "" || domain == s.cfg.Server.Domain || domain == senderDomain {
+				continue
+			}
+			if _, ok := seen[domain]; ok {
+				continue
+			}
+			seen[domain] = struct{}{}
+			s.queueFederation(ctx, domain, "DELETE", "/api/federated/chats/"+chat.ID+"/messages/"+messageID, nil)
+		}
+	}
 	return nil
 }
 
 // HandleFederatedTyping fans out an inbound typing indicator to every chat
 // member except the originating user.
 func (s *Service) HandleFederatedTyping(
-	_ context.Context,
+	ctx context.Context,
 	chat *model.Chat,
 	userID,
 	nick string,
@@ -488,6 +590,24 @@ func (s *Service) HandleFederatedTyping(
 ) {
 
 	s.broadcastTyping(chat, userID, nick, active)
+	if s.fed == nil || s.cfg == nil || chat.RemoteServer != "" {
+		return
+	}
+	senderDomain := RemoteServerFromID(userID)
+	seen := make(map[string]struct{})
+	for _, memberID := range chat.Members {
+		domain := s.remoteServerFromID(memberID)
+		if domain == "" || domain == s.cfg.Server.Domain || domain == senderDomain {
+			continue
+		}
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		s.queueFederation(ctx, domain, "POST", "/api/federated/chats/"+chat.ID+"/typing", map[string]any{
+			"userId": userID, keyNick: nick, "active": active,
+		})
+	}
 }
 
 // SyncFederatedResponse is the shape of the federation catchup response.
@@ -719,7 +839,7 @@ func (s *Service) forwardFederatedGroupMessage(ctx context.Context, chat *model.
 			"fromNick":          in.FromNick,
 			keyText:             in.Text,
 			"replyToId":         in.ReplyToID,
-			"location":          in.Location,
+			keyLocation:         in.Location,
 			keyEncrypted:        in.Encrypted,
 			keyEncryptedPayload: in.EncryptedPayload,
 			"files":             in.Files,

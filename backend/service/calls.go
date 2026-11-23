@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	keyNick = "nick"
 	// callChatTypePrivate is the type of a chat with exactly two
 	// participants. A call is only possible in such a chat.
 	callChatTypePrivate = "private"
@@ -125,7 +126,7 @@ func (s *Service) StartCall(ctx context.Context, callerID, chatID, offer string)
 
 	s.sendEvent(calleeID, sse.Event{Event: eventCallIncoming, Data: map[string]any{
 		callIDKey:   call.ID,
-		keyFrom:     map[string]string{"id": callerID, "nick": s.nickOf(ctx, callerID)},
+		keyFrom:     map[string]string{"id": callerID, keyNick: s.nickOf(ctx, callerID)},
 		keyChatID:   chatID,
 		keyOffer:    offer,
 		"expiresAt": call.ExpiresAt.Format(time.RFC3339),

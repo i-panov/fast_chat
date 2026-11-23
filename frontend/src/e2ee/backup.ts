@@ -1,5 +1,5 @@
 import sodium from "libsodium-wrappers";
-import { ensureSodium, type KeyPair } from "./crypto.ts";
+import { decodeBase64, ensureSodium, type KeyPair } from "./crypto.ts";
 
 // libsodium-wrappers is compiled without the password-hashing (Argon2id)
 // primitives, so the passphrase KDF uses the browser's native WebCrypto
@@ -145,8 +145,8 @@ export async function decryptBackup(
 	let ciphertext: Uint8Array;
 	try {
 		salt = fromBase64(payload.salt);
-		nonce = sodium.from_base64(payload.nonce);
-		ciphertext = sodium.from_base64(payload.ct);
+		nonce = decodeBase64(payload.nonce);
+		ciphertext = decodeBase64(payload.ct);
 	} catch {
 		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}

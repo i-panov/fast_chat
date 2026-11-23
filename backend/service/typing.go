@@ -70,7 +70,7 @@ func (s *Service) broadcastTyping(
 	}
 
 	if active && nick != "" {
-		payload["nick"] = nick
+		payload[keyNick] = nick
 	}
 
 	event := sse.Event{Event: eventName, Data: payload}

@@ -27,6 +27,7 @@ Copy this directory into the Hermes plugin directory:
 ```bash
 mkdir -p ~/.hermes/plugins
 cp -R integrations/hermes-fastchat ~/.hermes/plugins/fastchat
+hermes plugins enable fastchat
 ```
 
 Or install it as a pip-distributed plugin with the entry point from
@@ -85,7 +86,7 @@ hermes gateway
 - outgoing files, images, voice and video are uploaded through the Fast Chat
   Bot API and sent as file messages;
 - `fastchat_send_location` tool lets the agent send latitude/longitude; it
-  accepts optional `token` and `base_url` for config-only setups;
+  uses the adapter's env credentials and never accepts token/base URL from the model;
 - `/help` and slash commands work through the normal Hermes gateway flow.
 
 The adapter uses `asyncio.to_thread` around the Python Bot SDK, so it does not

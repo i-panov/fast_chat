@@ -292,3 +292,21 @@ func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []mode
 
 	return out
 }
+
+// GetUsersFullByIDs returns users keyed by id in bounded chunks, for callers
+// that render many members at once.
+func (s *Store) GetUsersFullByIDs(ctx context.Context, userIDs []string) map[string]*model.User {
+	out := make(map[string]*model.User, len(userIDs))
+	for start := 0; start < len(userIDs); start += deleteBatchIDs {
+		end := min(start+deleteBatchIDs, len(userIDs))
+		var users []model.User
+		if err := s.db.WithContext(ctx).Where("id IN ?", userIDs[start:end]).Find(&users).Error; err != nil {
+			slog.Warn("GetUsersFullByIDs failed", "err", err)
+			continue
+		}
+		for idx := range users {
+			out[users[idx].ID] = &users[idx]
+		}
+	}
+	return out
+}

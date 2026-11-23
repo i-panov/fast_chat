@@ -28,6 +28,16 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
+try:  # Hermes >= 0.7 exposes scoped profile secrets.
+    from gateway.platforms._shared import extra_or_secret as _extra_or_secret
+except Exception:  # pragma: no cover - older Hermes
+    _extra_or_secret = None
+
+try:
+    from hermes_constants import get_hermes_home as _get_hermes_home
+except Exception:  # pragma: no cover
+    _get_hermes_home = None
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "http://localhost:8080"
@@ -40,12 +50,29 @@ class _NoRedirect(HTTPRedirectHandler):
 
 _NO_REDIRECT_OPENER = build_opener(_NoRedirect)
 
+# chat_id -> (bot token, base URL), populated by the connected adapter. The
+# model only chooses a chat; credentials never travel through tool arguments.
+_CHAT_CREDENTIALS: dict[str, tuple[str, str]] = {}
+
 
 def _env_or_extra(
     config: PlatformConfig, env: str, key: str, default: str = ""
 ) -> str:
     extra = getattr(config, "extra", {}) or {}
-    return os.getenv(env) or str(extra.get(key, default) or default)
+    typed = getattr(config, "token", "") if key == "token" else ""
+    if _extra_or_secret is not None:
+        try:
+            scoped = _extra_or_secret(extra, key, env)
+            if scoped:
+                return str(scoped)
+        except Exception:
+            pass
+    return (
+        str(extra.get(key, "") or "")
+        or str(typed or "")
+        or os.getenv(env)
+        or default
+    )
 
 
 class FastChatAdapter(BasePlatformAdapter):
@@ -62,6 +89,7 @@ class FastChatAdapter(BasePlatformAdapter):
         self._stop = asyncio.Event()
         self._temp_files: list[str] = []
         self._offset = 0
+        self._dispatch_failures = 0
         self._bot_id = ""
         self._offset_file: Optional[Path] = None
 
@@ -279,7 +307,11 @@ class FastChatAdapter(BasePlatformAdapter):
         }
 
     def _offset_path(self) -> Path:
-        home = Path(os.getenv("HERMES_HOME") or (Path.home() / ".hermes"))
+        home = (
+            Path(_get_hermes_home())
+            if _get_hermes_home is not None
+            else Path(os.getenv("HERMES_HOME") or (Path.home() / ".hermes"))
+        )
         digest = hashlib.sha256(
             f"{self._base_url}\0{self._bot_id}".encode()
         ).hexdigest()[:20]
@@ -325,15 +357,23 @@ class FastChatAdapter(BasePlatformAdapter):
                         await self._dispatch_message(update.message)
                     except Exception as exc:  # noqa: BLE001 - keep polling
                         logger.warning("Fast Chat dispatch failed: %s", exc)
-                        continue
+                        self._dispatch_failures += 1
+                        if self._dispatch_failures < 3:
+                            await asyncio.sleep(1)
+                            continue
+                        logger.error("dropping poison Fast Chat update")
+                        self._dispatch_failures = 0
+                    else:
+                        self._dispatch_failures = 0
                 self._offset = max(self._offset, update.update_id + 1)
                 await asyncio.to_thread(self._save_offset)
 
     async def _dispatch_message(self, message: BotMessage) -> None:
+        _CHAT_CREDENTIALS[message.chat_id] = (self._token, self._base_url)
         if self._message_handler is None:
             return
-        if message.undecryptable:
-            logger.warning("Fast Chat message could not be decrypted; dropping it")
+        if message.undecryptable or message.encrypted:
+            logger.warning("Fast Chat encrypted message cannot be handled; dropping it")
             return
         parts = [message.text]
         media_urls: list[str] = []
@@ -342,7 +382,9 @@ class FastChatAdapter(BasePlatformAdapter):
             parts.append(f"[file: {file.original_name or file.id}]")
             try:
                 data = await asyncio.to_thread(
-                    self._client.download_file, file.id
+                    self._client.download_file,
+                    file.id,
+                    max_bytes=50 * 1024 * 1024,
                 )
                 suffix = Path(file.original_name or "").suffix or ".bin"
                 fd, path = tempfile.mkstemp(prefix="fastchat-", suffix=suffix)
@@ -440,11 +482,10 @@ def _env_enablement() -> Optional[dict[str, Any]]:
 
 
 def _send_location_tool(args: dict[str, Any], **kwargs) -> str:
-    token = str(args.get("token") or os.getenv("FASTCHAT_BOT_TOKEN", ""))
-    base_url = str(
-        args.get("base_url")
-        or os.getenv("FASTCHAT_BOT_BASE_URL", DEFAULT_BASE_URL)
-    )
+    credentials = _CHAT_CREDENTIALS.get(str(args.get("chat_id", "")))
+    if credentials is None:
+        return json.dumps({"ok": False, "error": "Fast Chat chat is not connected"})
+    token, base_url = credentials
     try:
         client = BotClient(token, base_url)
         message = client.send_location(
@@ -473,8 +514,6 @@ def register(ctx) -> None:
                     "chat_id": {"type": "string"},
                     "latitude": {"type": "number"},
                     "longitude": {"type": "number"},
-                    "token": {"type": "string"},
-                    "base_url": {"type": "string"},
                 },
                 "required": ["chat_id", "latitude", "longitude"],
             },

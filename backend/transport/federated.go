@@ -156,7 +156,7 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 		Summary:     "Apply an owner rename to a group replica",
 		Security:    fedSecurity,
 	}, func(ctx context.Context, input *federatedRenameGroupInput) (*federatedCreateGroupOutput, error) {
-		chat, err := federatedChatForSource(ctx, st, input.ID)
+		chat, err := federatedChatForMutation(ctx, st, input.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -180,7 +180,7 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 		Summary:     "Delete a group replica",
 		Security:    fedSecurity,
 	}, func(ctx context.Context, input *federatedGroupIDInput) (*statusOutput, error) {
-		chat, err := federatedChatForSource(ctx, st, input.ID)
+		chat, err := federatedChatForMutation(ctx, st, input.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -200,7 +200,7 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 		Summary:     "Remove a member from a federated group replica",
 		Security:    fedSecurity,
 	}, func(ctx context.Context, input *federatedGroupMemberInput) (*statusOutput, error) {
-		chat, err := federatedChatForSource(ctx, st, input.ID)
+		chat, err := federatedChatForMutation(ctx, st, input.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -231,6 +231,7 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 		}
 
 		msg, err := svc.SendFederatedMessage(ctx, chat, &service.FederatedInboundMessage{
+			Peer:             federatedServerFromContext(ctx),
 			ID:               input.Body.ID,
 			FromID:           input.Body.FromID,
 			FromNick:         input.Body.FromNick,
@@ -282,7 +283,7 @@ func registerFederatedChatMutations(api huma.API, st *store.Store, svc *service.
 		Summary:     "Receive a message deletion from a remote server",
 		Security:    fedSecurity,
 	}, func(ctx context.Context, input *federatedDeleteMessageInput) (*statusOutput, error) {
-		chat, err := federatedChatForSource(ctx, st, input.ID)
+		chat, err := federatedChatForPeerAction(ctx, st, input.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -301,7 +302,7 @@ func registerFederatedChatMutations(api huma.API, st *store.Store, svc *service.
 		Summary:     "Receive a typing indicator from a remote server",
 		Security:    fedSecurity,
 	}, func(ctx context.Context, input *federatedTypingInput) (*statusOutput, error) {
-		chat, err := federatedChatForSource(ctx, st, input.ID)
+		chat, err := federatedChatForPeerAction(ctx, st, input.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -352,6 +353,21 @@ func registerFederatedSync(api huma.API, svc *service.Service) {
 	})
 }
 
+// federatedChatForMutation requires the authenticated peer to own the chat.
+// Group renames/deletes/member removals must never be accepted from a mere
+// member server.
+func federatedChatForMutation(ctx context.Context, st *store.Store, chatID string) (*model.Chat, error) {
+	chat, ok := st.GetChat(ctx, chatID)
+	if !ok {
+		return nil, &statusError{ErrorMessage: msgChatNotFound, code: http.StatusNotFound}
+	}
+	remoteServer := federatedServerFromContext(ctx)
+	if remoteServer == "" || chat.RemoteServer != remoteServer {
+		return nil, &statusError{ErrorMessage: msgNotMember, code: http.StatusForbidden}
+	}
+	return chat, nil
+}
+
 // federatedChatForSource loads the chat and verifies the request originates
 // from the server that owns it (pre-migration authorizeFederatedSource).
 func federatedChatForSource(ctx context.Context, st *store.Store, chatID string) (*model.Chat, error) {
@@ -361,10 +377,39 @@ func federatedChatForSource(ctx context.Context, st *store.Store, chatID string)
 	}
 
 	remoteServer := federatedServerFromContext(ctx)
-	if remoteServer == "" || chat.RemoteServer != remoteServer {
+	if remoteServer == "" {
 		return nil, &statusError{ErrorMessage: msgNotMember, code: http.StatusForbidden}
 	}
+	if chat.RemoteServer == remoteServer {
+		return chat, nil
+	}
+	// A locally owned group accepts messages from any server that has a
+	// member in it; the sender itself is validated against that peer.
+	if chat.RemoteServer == "" {
+		for _, member := range chat.Members {
+			if service.UserIDBelongsToServer(member, remoteServer) {
+				return chat, nil
+			}
+		}
+	}
+	return nil, &statusError{ErrorMessage: msgNotMember, code: http.StatusForbidden}
+}
 
+// federatedChatForPeerAction is like federatedChatForSource but marks the
+// authenticated peer as the source for author/typing checks. This is needed
+// for edit/delete/typing in a locally owned group, where the chat itself has
+// no RemoteServer.
+func federatedChatForPeerAction(ctx context.Context, st *store.Store, chatID string) (*model.Chat, error) {
+	chat, err := federatedChatForSource(ctx, st, chatID)
+	if err != nil {
+		return nil, err
+	}
+	peer := federatedServerFromContext(ctx)
+	if chat.RemoteServer == "" {
+		clone := *chat
+		clone.RemoteServer = peer
+		return &clone, nil
+	}
 	return chat, nil
 }
 
@@ -379,7 +424,7 @@ func federatedEdit(
 	req *service.DecodedEditRequest,
 ) (*federatedMessageOutput, error) {
 
-	chat, err := federatedChatForSource(ctx, st, chatID)
+	chat, err := federatedChatForPeerAction(ctx, st, chatID)
 	if err != nil {
 		return nil, err
 	}

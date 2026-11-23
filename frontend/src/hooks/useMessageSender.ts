@@ -169,8 +169,17 @@ async function doSendMessage(
 	} = params;
 	const { user, token } = deps;
 	if (user === null) return false;
-
 	const chat = await chatsRepo.getById(chatId);
+
+	if (
+		chat?.isBotChat === true &&
+		chat.botEncryptionMode !== "server" &&
+		chat.botEncryptionMode !== "e2ee"
+	) {
+		// Fail closed: a bot chat with an unknown mode must not silently
+		// downgrade to plaintext.
+		return false;
+	}
 	if (
 		chat?.isBotChat === true &&
 		chat.botEncryptionMode === "e2ee" &&
@@ -179,7 +188,7 @@ async function doSendMessage(
 		return false;
 	}
 
-	if (chat?.isBotChat === true && chat.botEncryptionMode !== "e2ee") {
+	if (chat?.isBotChat === true && chat.botEncryptionMode === "server") {
 		// Plaintext bot chats: files stay plaintext too, because the bot
 		// protocol has no encrypted file transport.
 		const forcedFiles = (pendingFiles ?? []).map((file) => ({
@@ -300,6 +309,7 @@ async function doSendMessage(
 	return true;
 }
 
+// eslint-disable-next-line complexity
 async function doEditMessage(
 	params: EditMessageParams,
 	deps: SenderDeps,
@@ -315,14 +325,26 @@ async function doEditMessage(
 		threadId: inThreadId,
 	} = params;
 	const { token, user } = deps;
+	const chat = await chatsRepo.getById(chatId);
 
 	const current = inThreadId
 		? await threadMessagesRepo.getById(inThreadId, messageId)
 		: await messagesRepo.getById(chatId, messageId);
 	if (current === undefined) return false;
 
-	const blobIds = await deps.prepareFiles(pendingFiles ?? [], token);
-	const newFileInfos: FileInfo[] = (pendingFiles ?? []).map(buildStoredFile);
+	if (
+		chat?.isBotChat === true &&
+		chat.botEncryptionMode === "e2ee" &&
+		((pendingFiles ?? []).length > 0 || location !== undefined)
+	) {
+		return false;
+	}
+	const filesForEdit =
+		chat?.isBotChat === true && chat.botEncryptionMode === "server"
+			? (pendingFiles ?? []).map((file) => ({ ...file, encrypted: false }))
+			: (pendingFiles ?? []);
+	const blobIds = await deps.prepareFiles(filesForEdit, token);
+	const newFileInfos: FileInfo[] = filesForEdit.map(buildStoredFile);
 	const {
 		fileKeys: newKeys,
 		fileMeta: newMeta,
@@ -359,12 +381,56 @@ async function doEditMessage(
 	const nextLocation: Location | undefined =
 		clearLocation === true ? undefined : (location ?? current.location);
 
+	if (
+		chat?.isBotChat === true &&
+		chat.botEncryptionMode !== "server" &&
+		chat.botEncryptionMode !== "e2ee"
+	) {
+		await dropPreparedBlobs(blobIds);
+		return false;
+	}
 	const nextStatus = statusForEdit(
 		current.status === "deleted" ? "sent" : current.status,
 	);
 	const { status: _ignored, _updatedAt: _u, ...base } = current;
 	void _ignored;
 	void _u;
+
+	if (chat?.isBotChat === true && chat.botEncryptionMode === "server") {
+		const updated: Message = {
+			...base,
+			text,
+			encrypted: false,
+			encryptedPayload: undefined,
+			files: mergedFiles,
+			location: nextLocation,
+			editedAt: now,
+		};
+		if (inThreadId !== undefined) {
+			await threadMessagesRepo.upsert(updated, inThreadId, nextStatus);
+		} else {
+			await messagesRepo.upsert(updated, nextStatus);
+		}
+		await outboxRepo.enqueue({
+			kind: "edit",
+			opId: genId(),
+			chatId,
+			messageId,
+			text,
+			encrypted: false,
+			pendingFileClientIds: uploadClientIds,
+			fileHashes,
+			keptFileIds,
+			filesToRemove: filesToRemove ?? [],
+			clearLocation: clearLocation === true,
+			clientEditedAt: now,
+			createdAt: now,
+			attempts: 0,
+			threadId: inThreadId,
+		});
+		scheduleSync();
+		return true;
+	}
 
 	const encrypted = await encryptContentOrCleanup(
 		deps,

@@ -194,6 +194,7 @@ func registerFederatedDeviceKeys(api huma.API, st *store.Store) {
 		Method:      http.MethodGet,
 		Path:        "/api/federated/users/{userId}/device-keys",
 		Summary:     "Serve a user's E2EE device keys to a peer server",
+		Security:    fedSecurity,
 	}, func(ctx context.Context, input *deviceKeysPathInput) (*deviceKeysOutput, error) {
 		devices, err := st.ListUserDevices(ctx, input.UserID)
 		if err != nil {
