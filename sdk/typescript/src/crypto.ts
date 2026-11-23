@@ -29,6 +29,16 @@ export interface ReplyButton {
 
 export type ReplyMarkup = ReplyButton[][];
 
+function decodeBase64(value: string): Uint8Array {
+	const normalized = value
+		.replace(/-/g, "+")
+		.replace(/_/g, "/")
+		.replace(/=+$/, "");
+	const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+	const binary = atob(padded);
+	return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
 export async function generateEncryptionKeyPair(): Promise<EncryptionKeyPair> {
 	await sodium.ready;
 	const pair = sodium.crypto_box_keypair();
@@ -50,15 +60,15 @@ export async function decryptBotMessage(
 		if (envelope.keyId !== botID) continue;
 		try {
 			const msgKey = sodium.crypto_box_seal_open(
-				sodium.from_base64(envelope.box),
-				sodium.from_base64(key.publicKey),
-				sodium.from_base64(key.privateKey),
+				decodeBase64(envelope.box),
+				decodeBase64(key.publicKey),
+				decodeBase64(key.privateKey),
 			);
 			const plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
 				null,
-				sodium.from_base64(text),
+				decodeBase64(text),
 				null,
-				sodium.from_base64(payload.nonce),
+				decodeBase64(payload.nonce),
 				msgKey,
 			);
 			return JSON.parse(new TextDecoder().decode(plain)) as {
@@ -108,7 +118,7 @@ export async function encryptBotReply(
 	const envelopes = devices.map((device) => ({
 		keyId: device.id,
 		box: sodium.to_base64(
-			sodium.crypto_box_seal(msgKey, sodium.from_base64(device.publicKey)),
+			sodium.crypto_box_seal(msgKey, decodeBase64(device.publicKey)),
 		),
 	}));
 	const payload: EncryptedPayload = {
@@ -126,7 +136,7 @@ export async function encryptCallbackData(
 	await sodium.ready;
 	const sealed = sodium.crypto_box_seal(
 		new TextEncoder().encode(data),
-		sodium.from_base64(botPublicKey),
+		decodeBase64(botPublicKey),
 	);
 	return "fcbenc:" + sodium.to_base64(sealed);
 }
@@ -138,9 +148,9 @@ export async function decryptCallbackData(
 	if (!data.startsWith("fcbenc:")) return data;
 	await sodium.ready;
 	const plain = sodium.crypto_box_seal_open(
-		sodium.from_base64(data.slice("fcbenc:".length)),
-		sodium.from_base64(key.publicKey),
-		sodium.from_base64(key.privateKey),
+		decodeBase64(data.slice("fcbenc:".length)),
+		decodeBase64(key.publicKey),
+		decodeBase64(key.privateKey),
 	);
 	return new TextDecoder().decode(plain);
 }

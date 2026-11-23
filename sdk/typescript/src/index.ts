@@ -126,7 +126,7 @@ interface RawMessage {
 	files?: BotFile[];
 	location?: BotLocation;
 	date: string;
-	replyMarkup?: {
+	reply_markup?: {
 		inline_keyboard: Array<
 			Array<{ text: string; callback_data?: string; url?: string }>
 		>;
@@ -443,12 +443,12 @@ export class BotClient {
 	}
 
 	async getUserDeviceKeys(userID: string): Promise<UserDeviceKey[]> {
-		const result = await this.request<{ devices: Array<{ id: string; publicKey: string }> }>(
-			"POST",
-			"/api/bot-api/getUserDeviceKeys",
-			{ userId: userID },
-		);
-		return result.devices.map((device) => ({
+		const result = await this.request<
+			| Array<{ id: string; publicKey: string }>
+			| { devices: Array<{ id: string; publicKey: string }> }
+		>("POST", "/api/bot-api/getUserDeviceKeys", { userId: userID });
+		const devices = Array.isArray(result) ? result : result.devices;
+		return devices.map((device) => ({
 			id: device.id,
 			publicKey: device.publicKey,
 		}));
@@ -582,7 +582,7 @@ function toUser(raw: RawUser): BotUser {
 		id: raw.id,
 		username: raw.username,
 		displayName: raw.display_name,
-		isBot: raw.is_bot ?? true,
+		isBot: raw.is_bot ?? false,
 		encryptionMode: raw.encryption_mode ?? "server",
 	};
 }
@@ -599,10 +599,10 @@ function toMessage(raw: RawMessage): BotMessage {
 		location: raw.location,
 		date: raw.date,
 		replyMarkup:
-			raw.replyMarkup === undefined
+			raw.reply_markup === undefined
 				? undefined
 				: {
-						inlineKeyboard: raw.replyMarkup.inline_keyboard.map((row) =>
+						inlineKeyboard: raw.reply_markup.inline_keyboard.map((row) =>
 							row.map((button) => ({
 								text: button.text,
 								callbackData: button.callback_data,

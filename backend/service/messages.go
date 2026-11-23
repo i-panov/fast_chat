@@ -238,7 +238,7 @@ func ValidateEncryptedPayload(encrypted bool, payload string) error {
 
 	// XChaCha20 nonce is exactly 24 bytes (libsodium
 	// crypto_aead_xchacha20poly1305_ietf_NPUBBYTES).
-	nonceRaw, err := base64.StdEncoding.DecodeString(data.Nonce)
+	nonceRaw, err := decodeEncryptedBase64(data.Nonce)
 	if err != nil || len(nonceRaw) != xchachaNonceLen {
 		return ErrInvalidNonce
 	}
@@ -252,13 +252,32 @@ func ValidateEncryptedPayload(encrypted bool, payload string) error {
 		if e.KeyID == "" {
 			return ErrEmptyKeyID
 		}
-		boxRaw, err := base64.StdEncoding.DecodeString(e.Box)
+		boxRaw, err := decodeEncryptedBase64(e.Box)
 		if err != nil || len(boxRaw) != sealedBoxLen {
 			return ErrInvalidBox
 		}
 	}
 
 	return nil
+}
+
+// decodeEncryptedBase64 accepts both standard and URL-safe base64, with or
+// without padding. The browser (libsodium) and Python SDK emit URL-safe
+// values while older clients and tests use StdEncoding.
+func decodeEncryptedBase64(value string) ([]byte, error) {
+	encodings := []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	}
+	for _, encoding := range encodings {
+		raw, err := encoding.DecodeString(value)
+		if err == nil {
+			return raw, nil
+		}
+	}
+	return nil, ErrInvalidEncryptedPayload
 }
 
 // ValidateSendInput validates the common send constraints shared between

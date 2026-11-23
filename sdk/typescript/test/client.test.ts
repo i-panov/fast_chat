@@ -150,3 +150,16 @@ test("editMessageText and deleteMessage hit their endpoints", async () => {
 });
 
 
+
+test("getUserDeviceKeys accepts the server array shape", async () => {
+	const client = new BotClient({
+		token: "t",
+		fetch: async () =>
+			jsonResponse({
+				ok: true,
+				result: [{ id: "u1", publicKey: "cHVibGlj" }],
+			}),
+	});
+	const keys = await client.getUserDeviceKeys("u1");
+	assert.deepEqual(keys, [{ id: "u1", publicKey: "cHVibGlj" }]);
+});
