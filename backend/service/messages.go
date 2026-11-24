@@ -453,7 +453,7 @@ func (s *Service) GetThreadMessages(ctx context.Context, threadID, userID string
 // thread id only selects the container, so the chat a message is written under
 // is always chat.ID.
 //
-//nolint:gocyclo,cyclop // payload, bot mode, blocking and attachments share validation.
+//nolint:gocyclo,cyclop // bot mode, payload, blocking and attachments share validation.
 func (s *Service) SendMessage(
 	ctx context.Context,
 	chat *model.Chat,
@@ -479,7 +479,7 @@ func (s *Service) SendMessage(
 			if !input.Encrypted {
 				return nil, ErrBotEncryptionRequired
 			}
-			if len(input.FileIDs) > 0 || len(input.FileHashes) > 0 || input.Location != nil {
+			if input.Location != nil {
 				return nil, ErrBotMarkupInvalid
 			}
 		} else if input.Encrypted {
@@ -498,6 +498,15 @@ func (s *Service) SendMessage(
 	// file ids for uploads it just made and content hashes for files it
 	// already owns; anything else is dropped rather than attached.
 	fileIDs := s.ResolveMessageFiles(ctx, fromID, input.FileIDs, input.FileHashes)
+	if chat.BotID != "" {
+		mode := chat.BotEncryptionMode
+		if bot, ok := s.store.GetBot(ctx, chat.BotID); ok {
+			mode = bot.EncryptionMode
+		}
+		if mode == EncryptionModeE2EE && !s.filesEncrypted(ctx, fileIDs) {
+			return nil, ErrBotEncryptionRequired
+		}
+	}
 
 	if len(fileIDs) > MaxMessageFiles {
 		return nil, ErrTooManyFiles
@@ -638,7 +647,7 @@ func (s *Service) EditMessage(
 			if !edit.Encrypted {
 				return model.Message{}, EditPayload{}, ErrBotEncryptionRequired
 			}
-			if len(edit.FileIDs) > 0 || len(edit.FileHashes) > 0 || edit.Location != nil {
+			if edit.Location != nil {
 				return model.Message{}, EditPayload{}, ErrBotMarkupInvalid
 			}
 		} else if edit.Encrypted {
@@ -656,6 +665,15 @@ func (s *Service) EditMessage(
 	// does not own are dropped: a file id that leaked from another chat must
 	// not become a way to pull the content into a message.
 	fileIDs := s.ResolveMessageFiles(ctx, userID, edit.FileIDs, edit.FileHashes)
+	if chat, ok := s.store.GetChat(ctx, chatID); ok && chat.BotID != "" {
+		mode := chat.BotEncryptionMode
+		if bot, found := s.store.GetBot(ctx, chat.BotID); found {
+			mode = bot.EncryptionMode
+		}
+		if mode == EncryptionModeE2EE && !s.filesEncrypted(ctx, fileIDs) {
+			return model.Message{}, EditPayload{}, ErrBotEncryptionRequired
+		}
+	}
 
 	if len(fileIDs) > MaxMessageFiles {
 		return model.Message{}, EditPayload{}, ErrTooManyFiles

@@ -1,4 +1,15 @@
-import { deleteMessage, editMessage, sendMessage, uploadFile } from "../api.ts";
+import {
+	addMessageReaction,
+	deleteMessage,
+	editMessage,
+	markMessagesRead,
+	pinMessage,
+	removeMessageReaction,
+	sendMessage,
+	unpinMessage,
+	uploadFile,
+} from "../api.ts";
+import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
@@ -73,6 +84,23 @@ async function runOp(op: OutboxOp, token: string): Promise<void> {
 		case "delete":
 			await runDelete(op, token);
 			return;
+		case "reaction":
+			if (op.action === "add") {
+				await addMessageReaction(token, op.chatId, op.messageId, op.emoji);
+			} else {
+				await removeMessageReaction(token, op.chatId, op.messageId, op.emoji);
+			}
+			await outboxRepo.remove(op.opId);
+			return;
+		case "pin":
+			if (op.pinned) await pinMessage(token, op.chatId, op.messageId);
+			else await unpinMessage(token, op.chatId, op.messageId);
+			await outboxRepo.remove(op.opId);
+			return;
+		case "read":
+			await markMessagesRead(token, op.chatId, op.messageIds);
+			await outboxRepo.remove(op.opId);
+			return;
 	}
 }
 
@@ -124,12 +152,12 @@ async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
 	const uploaded = await uploadPendingFiles(op.pendingFileClientIds, token, op);
 
 	let fileIDs: string[] | undefined;
-	if (uploaded.length > 0) {
-		fileIDs = uploaded;
-	} else if (op.keptFileIds.length > 0) {
-		fileIDs = op.keptFileIds;
-	} else {
-		fileIDs = undefined;
+	if (
+		uploaded.length > 0 ||
+		op.keptFileIds.length > 0 ||
+		op.filesToRemove.length > 0
+	) {
+		fileIDs = [...op.keptFileIds, ...uploaded];
 	}
 
 	if (op.threadId !== undefined) {
@@ -195,6 +223,32 @@ async function runDelete(
 }
 
 async function failOp(op: OutboxOp, _err: unknown): Promise<void> {
+	if (op.kind === "pin") {
+		const chat = await chatsRepo.getById(op.chatId);
+		if (chat !== undefined) {
+			const current = chat.pinnedMessageIds ?? [];
+			const pinned =
+				op.previousPinned === true
+					? [op.messageId, ...current.filter((id) => id !== op.messageId)]
+					: current.filter((id) => id !== op.messageId);
+			await chatsRepo.upsert({ ...chat, pinnedMessageIds: pinned });
+		}
+	}
+	if (op.kind === "reaction") {
+		if (op.threadId !== undefined) {
+			await threadMessagesRepo.updateReactions(
+				op.threadId,
+				op.messageId,
+				op.previousReactions,
+			);
+		} else {
+			await messagesRepo.updateReactions(
+				op.chatId,
+				op.messageId,
+				op.previousReactions,
+			);
+		}
+	}
 	if (op.kind === "send" || op.kind === "edit") {
 		const chatId = op.chatId;
 		const messageId = op.kind === "send" ? op.msgId : op.messageId;
@@ -203,6 +257,13 @@ async function failOp(op: OutboxOp, _err: unknown): Promise<void> {
 		} else {
 			await messagesRepo.markStatus(chatId, messageId, "failed");
 		}
+	}
+	if (op.kind === "reaction" || op.kind === "pin" || op.kind === "read") {
+		// These are idempotent UI state changes with a bounded retry budget:
+		// once terminally rejected, drop them instead of retrying every
+		// reconnect forever. Optimistic state above is reverted first.
+		await outboxRepo.remove(op.opId);
+		return;
 	}
 	// A definitively failed delete keeps the local row: removing it locally
 	// while the server kept it resurrects the message as a ghost on the

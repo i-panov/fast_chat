@@ -51,6 +51,8 @@ class BotMessage:
     reply_markup: dict[str, Any] | None = None
     encrypted_payload: str = ""
     undecryptable: bool = False
+    file_keys: dict[str, Any] = field(default_factory=dict)
+    file_meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

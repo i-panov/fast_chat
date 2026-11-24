@@ -101,6 +101,22 @@ export const threadMessagesRepo = {
 		notify();
 	},
 
+	async updateReactions(
+		threadId: string,
+		messageId: string,
+		reactions: Message["reactions"],
+	): Promise<void> {
+		const db = await getDB();
+		const existing = await db.get("threadMessages", messageId);
+		if (existing === undefined || existing.threadId !== threadId) return;
+		await db.put("threadMessages", {
+			...existing,
+			reactions,
+			_updatedAt: new Date().toISOString(),
+		});
+		notify();
+	},
+
 	async upsertMany(
 		messages: Message[],
 		threadId: string,

@@ -39,6 +39,12 @@ class DeviceKey:
     public_key: str
 
 
+@dataclass(frozen=True, slots=True)
+class FileKey:
+    nonce: str
+    key: str
+
+
 def generate_key_pair() -> EncryptionKeyPair:
     public, private = crypto_box_keypair()
     return EncryptionKeyPair(_b64(public), _b64(private))
@@ -158,3 +164,28 @@ def _b64(value: bytes) -> str:
 def _unb64(value: str) -> bytes:
     padded = value + "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(padded)
+
+
+def generate_file_key() -> FileKey:
+    return FileKey(
+        _b64(os.urandom(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES)),
+        _b64(os.urandom(crypto_aead_xchacha20poly1305_ietf_KEYBYTES)),
+    )
+
+
+def encrypt_file_bytes(data: bytes, file_key: FileKey) -> bytes:
+    return crypto_aead_xchacha20poly1305_ietf_encrypt(
+        data,
+        None,
+        _unb64(file_key.nonce),
+        _unb64(file_key.key),
+    )
+
+
+def decrypt_file_bytes(data: bytes, file_key: FileKey) -> bytes:
+    return crypto_aead_xchacha20poly1305_ietf_decrypt(
+        data,
+        None,
+        _unb64(file_key.nonce),
+        _unb64(file_key.key),
+    )

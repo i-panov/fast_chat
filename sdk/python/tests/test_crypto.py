@@ -64,6 +64,18 @@ class CryptoTests(unittest.TestCase):
         self.assertTrue(buttons[0]["callback_data"].startswith("fcbenc:"))
         self.assertEqual(buttons[1]["url"], "https://example.com")
 
+    def test_file_round_trip(self) -> None:
+        from fastchat_bot.crypto import (
+            decrypt_file_bytes,
+            encrypt_file_bytes,
+            generate_file_key,
+        )
+
+        key = generate_file_key()
+        plaintext = b"attachment bytes"
+        encrypted = encrypt_file_bytes(plaintext, key)
+        self.assertNotEqual(encrypted, plaintext)
+        self.assertEqual(decrypt_file_bytes(encrypted, key), plaintext)
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,8 +37,10 @@ import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
 import { OnlineDot } from "../components/shared/OnlineDot.tsx";
 import ChatContext from "../context/ChatContext.tsx";
 import { chatsRepo } from "../db/chatsRepo.ts";
+import { outboxRepo } from "../db/outboxRepo.ts";
 import { useChatPage } from "../hooks/useChatInteraction.ts";
 import { usePushNotifications } from "../hooks/usePushNotifications.ts";
+import { scheduleSync } from "../sync/syncEngine.ts";
 import type { Message } from "../types/api.ts";
 import { chatTitle } from "../utils/chat.ts";
 
@@ -359,7 +361,19 @@ function ActiveChatView({ s, userId }: { s: ChatPageState; userId: string }) {
 		async (chatId: string, messageId: string) => {
 			if (chat === undefined || token === undefined) return;
 			const pinned = chat.pinnedMessageIds?.includes(messageId) === true;
-			if (pinned) {
+			if (typeof navigator !== "undefined" && !navigator.onLine) {
+				await outboxRepo.enqueue({
+					kind: "pin",
+					opId: crypto.randomUUID(),
+					chatId,
+					messageId,
+					pinned: !pinned,
+					previousPinned: pinned,
+					createdAt: new Date().toISOString(),
+					attempts: 0,
+				});
+				scheduleSync();
+			} else if (pinned) {
 				await unpinMessage(token, chatId, messageId);
 			} else {
 				await pinMessage(token, chatId, messageId);

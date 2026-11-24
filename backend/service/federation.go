@@ -284,7 +284,7 @@ func (s *Service) SendFederatedMessage(
 			if !in.Encrypted {
 				return nil, ErrBotEncryptionRequired
 			}
-			if len(in.Files) > 0 || in.Location != nil {
+			if in.Location != nil {
 				return nil, ErrBotMarkupInvalid
 			}
 		} else if in.Encrypted {
@@ -842,7 +842,7 @@ func (s *Service) forwardFederatedGroupMessage(ctx context.Context, chat *model.
 			keyLocation:         in.Location,
 			keyEncrypted:        in.Encrypted,
 			keyEncryptedPayload: in.EncryptedPayload,
-			"files":             in.Files,
+			keyFiles:            in.Files,
 		}
 		url := s.fed.URL(domain, "/api/federated/chats/"+chat.ID+"/messages")
 		if _, err := s.fed.Request(ctx, "POST", url, body); err != nil {

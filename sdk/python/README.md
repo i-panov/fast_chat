@@ -58,3 +58,7 @@ E2EE is supported for text, inline keyboards, callback data and callback
 answers. Files and locations remain plaintext-only, matching the server
 protocol. Pass a saved `EncryptionKeyPair` to `BotClient` after the first
 `enable_e2ee()` call; the SDK does not persist private keys.
+
+## Encrypted files
+
+`send_encrypted_file` uploads ciphertext with the plaintext hash and sends hash-keyed `file_keys`/`file_meta`. `download_file` returns ciphertext; use `decrypt_file_bytes` with the matching key. Locations travel in encrypted `send_message` content.

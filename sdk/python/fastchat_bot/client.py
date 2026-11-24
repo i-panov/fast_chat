@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -13,11 +14,14 @@ from typing import Any, Callable
 from .crypto import (
     DeviceKey,
     EncryptionKeyPair,
+    FileKey,
     decrypt_callback_data,
     decrypt_content,
     encrypt_callback_data,
     encrypt_content,
+    encrypt_file_bytes,
     encrypt_reply_markup,
+    generate_file_key,
     generate_key_pair,
 )
 from .types import (
@@ -124,6 +128,10 @@ class BotClient:
         text: str,
         *,
         reply_markup: dict[str, Any] | None = None,
+        files: list[str] | None = None,
+        location: dict[str, float] | None = None,
+        file_keys: dict[str, FileKey] | None = None,
+        file_meta: dict[str, Any] | None = None,
     ) -> BotMessage:
         if self.encryption_key is not None:
             user_id = self._chat_users.get(chat_id)
@@ -136,6 +144,15 @@ class BotClient:
             content: dict[str, Any] = {"text": text}
             if markup is not None:
                 content["replyMarkup"] = markup
+            if location is not None:
+                content["location"] = location
+            if file_keys is not None:
+                content["fileKeys"] = {
+                    key: {"nonce": value.nonce, "key": value.key}
+                    for key, value in file_keys.items()
+                }
+            if file_meta is not None:
+                content["fileMeta"] = file_meta
             ciphertext, payload = encrypt_content(content, devices)
             raw = self._request(
                 "POST",
@@ -145,6 +162,7 @@ class BotClient:
                     "text": ciphertext,
                     "encrypted": True,
                     "encrypted_payload": payload,
+                    "files": [{"id": file_id} for file_id in files] if files else None,
                 },
             )
             message = _message(raw)
@@ -154,9 +172,49 @@ class BotClient:
 
         self._reject_plaintext_e2ee()
         body: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if files:
+            body["files"] = [{"id": file_id} for file_id in files]
+        if location is not None:
+            body["location"] = location
         if reply_markup is not None:
             body["reply_markup"] = reply_markup
         return _message(self._request("POST", "/api/bot-api/sendMessage", body))
+
+    def send_encrypted_file(
+        self,
+        chat_id: str,
+        data: bytes,
+        filename: str,
+        mime_type: str = "application/octet-stream",
+        caption: str = "",
+    ) -> BotMessage:
+        if self._require_mode() != "e2ee" or self.encryption_key is None:
+            raise BotAPIError("send_encrypted_file requires an e2ee bot")
+        if len(data) > 50 * 1024 * 1024:
+            raise BotAPIError("file is too large")
+        key = generate_file_key()
+        ciphertext = encrypt_file_bytes(data, key)
+        file_hash = hashlib.sha256(data).hexdigest()
+        uploaded = self.upload_file(
+            ciphertext,
+            filename,
+            mime_type,
+            encrypted=True,
+            plaintext_hash=file_hash,
+        )
+        return self.send_message(
+            chat_id,
+            caption,
+            files=[uploaded.id],
+            file_keys={file_hash: key},
+            file_meta={
+                file_hash: {
+                    "mimeType": mime_type,
+                    "name": filename,
+                    "size": len(data),
+                }
+            },
+        )
 
     def edit_message_text(
         self,
@@ -165,7 +223,13 @@ class BotClient:
         text: str,
         *,
         reply_markup: dict[str, Any] | None = None,
+        files: list[str] | None = None,
+        location: dict[str, float] | None = None,
+        file_keys: dict[str, FileKey] | None = None,
+        file_meta: dict[str, Any] | None = None,
     ) -> BotMessage:
+        if files or location is not None or file_keys or file_meta:
+            raise BotAPIError("edit_message_text does not support files or location")
         if self.encryption_key is not None:
             user_id = self._chat_users.get(chat_id)
             if user_id is None:
@@ -259,9 +323,14 @@ class BotClient:
         data: bytes,
         filename: str,
         mime_type: str = "application/octet-stream",
+        *,
+        encrypted: bool = False,
+        plaintext_hash: str | None = None,
     ) -> BotFile:
-        if self.encryption_key is not None or self._require_mode() == "e2ee":
-            raise BotAPIError("encrypted bot files are not supported")
+        if self._require_mode() == "e2ee" and not encrypted:
+            raise BotAPIError("encrypted upload is required in e2ee mode")
+        if encrypted and not plaintext_hash:
+            raise BotAPIError("plaintext hash is required for encrypted uploads")
         boundary = f"----fastchat{uuid.uuid4().hex}"
         safe_name = filename.replace('"', "").replace("\r", "").replace("\n", "")
         mime_type = mime_type.replace("\r", "").replace("\n", "")
@@ -269,11 +338,16 @@ class BotClient:
             mime_type = (
                 mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
             )
+        extra = ""
+        if encrypted:
+            extra += f'--{boundary}\r\nContent-Disposition: form-data; name="encrypted"\r\n\r\ntrue\r\n'
+        if plaintext_hash:
+            extra += f'--{boundary}\r\nContent-Disposition: form-data; name="hash"\r\n\r\n{plaintext_hash}\r\n'
         body = (
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="file"; filename="{safe_name}"\r\n'
             f"Content-Type: {mime_type}\r\n\r\n"
-        ).encode() + data + f"\r\n--{boundary}--\r\n".encode()
+        ).encode() + data + f"\r\n{extra}--{boundary}--\r\n".encode()
         raw = self._request(
             "POST",
             "/api/bot-api/uploadFile",
@@ -324,8 +398,6 @@ class BotClient:
         *,
         max_bytes: int = 50 * 1024 * 1024,
     ) -> bytes:
-        if self.encryption_key is not None or self._require_mode() == "e2ee":
-            raise BotAPIError("encrypted bot files are not supported")
         return self._request(
             "GET",
             f"/api/bot-api/files/{urllib.parse.quote(file_id)}",
@@ -384,6 +456,8 @@ class BotClient:
             if not message.from_user.is_bot:
                 self._chat_users[message.chat_id] = message.from_user.id
             if message.encrypted:
+                message.location = None
+                message.reply_markup = None
                 if self.encryption_key is None or not message.encrypted_payload:
                     message.undecryptable = True
                     message.text = "[encrypted message]"
@@ -400,6 +474,38 @@ class BotClient:
                         message.reply_markup = (
                             markup if isinstance(markup, dict) else None
                         )
+                        location = content.get("location")
+                        if isinstance(location, dict):
+                            try:
+                                message.location = BotLocation(
+                                    float(location["lat"]), float(location["lng"])
+                                )
+                            except (KeyError, TypeError, ValueError):
+                                pass
+                        if isinstance(content.get("fileKeys"), dict):
+                            message.file_keys = {
+                                str(key): FileKey(
+                                    nonce=str(value["nonce"]),
+                                    key=str(value["key"]),
+                                )
+                                for key, value in content["fileKeys"].items()
+                                if isinstance(value, dict)
+                                and "nonce" in value
+                                and "key" in value
+                            }
+                        if isinstance(content.get("fileMeta"), dict):
+                            message.file_meta = content["fileMeta"]
+                            message.files = [
+                                file
+                                for file in message.files
+                                if file.hash in message.file_meta
+                            ]
+                            for file in message.files:
+                                meta = message.file_meta.get(file.hash)
+                                if isinstance(meta, dict):
+                                    file.mime_type = str(meta.get("mimeType", file.mime_type))
+                                    file.original_name = str(meta.get("name", file.original_name))
+                                    file.size = int(meta.get("size", file.size))
                     except Exception:
                         message.undecryptable = True
                         message.text = "[encrypted message]"

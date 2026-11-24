@@ -193,7 +193,10 @@ describe("processOutbox edits and deletes", () => {
 
 		expect(editMessageMock).toHaveBeenCalledWith(
 			"tok",
-			expect.objectContaining({ threadId: "thread-1", fileIDs: ["file-1"] }),
+			expect.objectContaining({
+				threadId: "thread-1",
+				fileIDs: ["kept-1", "file-1"],
+			}),
 		);
 		expect((await threadMessagesRepo.getById("thread-1", "tm1"))?.status).toBe(
 			"sent",

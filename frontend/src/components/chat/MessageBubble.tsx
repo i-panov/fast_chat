@@ -458,6 +458,7 @@ export const MessageBubble = memo(function MessageBubble({
 				chatId={chatId}
 				messageId={msgId}
 				reactions={reactions}
+				threadId={threadId}
 				disabled={status === "queued" || status === "failed"}
 			/>
 			<BubbleThreadLink

@@ -53,6 +53,7 @@ _NO_REDIRECT_OPENER = build_opener(_NoRedirect)
 # chat_id -> (bot token, base URL), populated by the connected adapter. The
 # model only chooses a chat; credentials never travel through tool arguments.
 _CHAT_CREDENTIALS: dict[str, tuple[str, str]] = {}
+_LAST_CHAT_ID = ""
 
 
 def _env_or_extra(
@@ -369,7 +370,9 @@ class FastChatAdapter(BasePlatformAdapter):
                 await asyncio.to_thread(self._save_offset)
 
     async def _dispatch_message(self, message: BotMessage) -> None:
+        global _LAST_CHAT_ID
         _CHAT_CREDENTIALS[message.chat_id] = (self._token, self._base_url)
+        _LAST_CHAT_ID = message.chat_id
         if self._message_handler is None:
             return
         if message.undecryptable or message.encrypted:
@@ -482,14 +485,20 @@ def _env_enablement() -> Optional[dict[str, Any]]:
 
 
 def _send_location_tool(args: dict[str, Any], **kwargs) -> str:
-    credentials = _CHAT_CREDENTIALS.get(str(args.get("chat_id", "")))
+    requested = str(args.get("chat_id", ""))
+    chat_id = _LAST_CHAT_ID
+    if requested and requested != chat_id:
+        return json.dumps({"ok": False, "error": "location target is not the active chat"})
+    if not chat_id:
+        return json.dumps({"ok": False, "error": "Fast Chat chat is not connected"})
+    credentials = _CHAT_CREDENTIALS.get(chat_id)
     if credentials is None:
         return json.dumps({"ok": False, "error": "Fast Chat chat is not connected"})
     token, base_url = credentials
     try:
         client = BotClient(token, base_url)
         message = client.send_location(
-            str(args["chat_id"]),
+            chat_id,
             float(args["latitude"]),
             float(args["longitude"]),
         )

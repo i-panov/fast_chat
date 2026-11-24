@@ -143,6 +143,8 @@ export async function prepareFiles(
 ): Promise<PreparedFile[]> {
 	const out: PreparedFile[] = [];
 
+	const seenHashes = new Set<string>();
+
 	try {
 		for (const pf of pending) {
 			if (pf.file.size > MaxSendableFileSize) {
@@ -155,6 +157,10 @@ export async function prepareFiles(
 			// Single read of the file bytes for both hashing and encryption.
 			const raw = new Uint8Array(await pf.file.arrayBuffer());
 			const plaintextHash = await hashBytes(raw);
+			if (seenHashes.has(plaintextHash)) {
+				throw new Error(`duplicate attachment content: ${pf.originalName}`);
+			}
+			seenHashes.add(plaintextHash);
 			const fileMeta: FileMeta = {
 				mimeType: pf.mimeType,
 				name: pf.originalName,

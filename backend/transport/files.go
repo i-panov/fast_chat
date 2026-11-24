@@ -179,6 +179,9 @@ func uploadFile(
 	if errKey != "" {
 		return nil, &statusError{ErrorMessage: errKey, code: http.StatusBadRequest}
 	}
+	if bot, ok := st.GetBot(ctx, uploader); ok && bot.EncryptionMode == "e2ee" && !encrypted {
+		return nil, &statusError{ErrorMessage: "encrypted file required for this bot", code: http.StatusBadRequest}
+	}
 
 	staged, err := filestage.StageAndHashFile(file, clientHash, encrypted, cfg.Uploads.Dir)
 	if err != nil {
@@ -224,7 +227,7 @@ func uploadFile(
 		return nil, &statusError{ErrorMessage: "failed to save file", code: http.StatusInternalServerError}
 	}
 
-	saved, err := st.SaveFile(ctx, staged.Hash, staged.MimeType, staged.Size, header.Filename, staged.RelativePath, uploader)
+	saved, err := st.SaveFileEncrypted(ctx, staged.Hash, staged.MimeType, staged.Size, header.Filename, staged.RelativePath, uploader, encrypted)
 	if err != nil {
 		// The rename already happened, so the deferred TempPath cleanup no
 		// longer applies: remove the renamed file best-effort instead of

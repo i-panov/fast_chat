@@ -122,7 +122,7 @@ async function removeSendOrEditOp(
 			((o.kind === "send" && o.msgId === messageId) ||
 				(o.kind === "edit" && o.messageId === messageId)),
 	);
-	if (op !== undefined && op.kind !== "delete") {
+	if (op !== undefined && (op.kind === "send" || op.kind === "edit")) {
 		if (op.pendingFileClientIds.length > 0) {
 			await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
 		}
@@ -180,14 +180,6 @@ async function doSendMessage(
 		// downgrade to plaintext.
 		return false;
 	}
-	if (
-		chat?.isBotChat === true &&
-		chat.botEncryptionMode === "e2ee" &&
-		((pendingFiles ?? []).length > 0 || location !== undefined)
-	) {
-		return false;
-	}
-
 	if (chat?.isBotChat === true && chat.botEncryptionMode === "server") {
 		// Plaintext bot chats: files stay plaintext too, because the bot
 		// protocol has no encrypted file transport.
@@ -242,7 +234,10 @@ async function doSendMessage(
 	// Keys are indexed by plaintext hash (not file ID) because the server
 	// assigns different IDs to the same content on each side.
 	const prepared = await deps.prepareFiles(pendingFiles ?? [], token);
-	const fileInfos: FileInfo[] = (pendingFiles ?? []).map(buildStoredFile);
+	const fileInfos: FileInfo[] = (pendingFiles ?? []).map((file, index) => ({
+		...buildStoredFile(file),
+		hash: prepared[index]?.plaintextHash,
+	}));
 	const { fileKeys, fileMeta, fileHashes, uploadClientIds } =
 		buildFileMaps(prepared);
 
@@ -309,7 +304,6 @@ async function doSendMessage(
 	return true;
 }
 
-// eslint-disable-next-line complexity
 async function doEditMessage(
 	params: EditMessageParams,
 	deps: SenderDeps,
@@ -332,19 +326,15 @@ async function doEditMessage(
 		: await messagesRepo.getById(chatId, messageId);
 	if (current === undefined) return false;
 
-	if (
-		chat?.isBotChat === true &&
-		chat.botEncryptionMode === "e2ee" &&
-		((pendingFiles ?? []).length > 0 || location !== undefined)
-	) {
-		return false;
-	}
 	const filesForEdit =
 		chat?.isBotChat === true && chat.botEncryptionMode === "server"
 			? (pendingFiles ?? []).map((file) => ({ ...file, encrypted: false }))
 			: (pendingFiles ?? []);
 	const blobIds = await deps.prepareFiles(filesForEdit, token);
-	const newFileInfos: FileInfo[] = filesForEdit.map(buildStoredFile);
+	const newFileInfos: FileInfo[] = filesForEdit.map((file, index) => ({
+		...buildStoredFile(file),
+		hash: blobIds[index]?.plaintextHash,
+	}));
 	const {
 		fileKeys: newKeys,
 		fileMeta: newMeta,

@@ -3,7 +3,10 @@ import {
 	decryptCallbackData,
 	encryptBotReply,
 	encryptCallbackData,
+	encryptFileBytes,
 	generateEncryptionKeyPair,
+	generateFileKey,
+	hashBytes,
 	type EncryptionKeyPair,
 } from "./crypto.js";
 
@@ -54,6 +57,8 @@ export interface BotMessage {
 	replyMarkup?: InlineKeyboardMarkup;
 	encrypted?: boolean;
 	encryptedPayload?: string;
+	fileKeys?: Record<string, import("./crypto.js").FileKey>;
+	fileMeta?: Record<string, import("./crypto.js").FileMeta>;
 	files?: BotFile[];
 	location?: BotLocation;
 	undecryptable?: boolean;
@@ -76,6 +81,10 @@ export interface BotUpdate {
 
 export interface SendMessageOptions {
 	replyMarkup?: InlineKeyboardMarkup;
+	files?: string[];
+	location?: { lat: number; lng: number };
+	fileKeys?: Record<string, import("./crypto.js").FileKey>;
+	fileMeta?: Record<string, import("./crypto.js").FileMeta>;
 }
 
 export interface BotClientOptions {
@@ -240,6 +249,11 @@ export class BotClient {
 				text,
 				devices,
 				await this.encryptedMarkup(options?.replyMarkup),
+				{
+					location: options?.location,
+					fileKeys: options?.fileKeys,
+					fileMeta: options?.fileMeta,
+				},
 			);
 			const raw = await this.request<RawMessage>(
 				"POST",
@@ -249,6 +263,7 @@ export class BotClient {
 					text: encrypted.text,
 					encrypted: true,
 					encrypted_payload: encrypted.payload,
+					files: options?.files?.map((id) => ({ id })),
 				},
 			);
 			return { ...(await this.toMessage(raw, false)), text };
@@ -260,6 +275,8 @@ export class BotClient {
 			{
 				chat_id: chatId,
 				text,
+				files: options?.files?.map((id) => ({ id })),
+				location: options?.location,
 				reply_markup:
 					options?.replyMarkup === undefined
 						? undefined
@@ -283,6 +300,14 @@ export class BotClient {
 		text: string,
 		options?: SendMessageOptions,
 	): Promise<BotMessage> {
+		if (
+			(options?.files?.length ?? 0) > 0 ||
+			options?.location !== undefined ||
+			options?.fileKeys !== undefined ||
+			options?.fileMeta !== undefined
+		) {
+			throw new BotApiError("editMessageText does not support files or location", 0, 0);
+		}
 		if (this.encryptionKey !== undefined) {
 			const userID = this.chatUsers.get(chatId);
 			if (userID === undefined) throw new Error("unknown chat user");
@@ -291,6 +316,11 @@ export class BotClient {
 				text,
 				devices,
 				await this.encryptedMarkup(options?.replyMarkup),
+				{
+					location: options?.location,
+					fileKeys: options?.fileKeys,
+					fileMeta: options?.fileMeta,
+				},
 			);
 			const raw = await this.request<RawMessage>(
 				"POST",
@@ -301,6 +331,7 @@ export class BotClient {
 					text: encrypted.text,
 					encrypted: true,
 					encrypted_payload: encrypted.payload,
+					files: options?.files?.map((id) => ({ id })),
 				},
 			);
 			return { ...(await this.toMessage(raw, false)), text };
@@ -330,6 +361,33 @@ export class BotClient {
 		return toMessage(raw);
 	}
 
+	async sendEncryptedFile(
+		chatId: string,
+		data: Uint8Array,
+		filename: string,
+		mimeType = "application/octet-stream",
+		caption = "",
+	): Promise<BotMessage> {
+		if ((await this.requireMode()) !== "e2ee" || this.encryptionKey === undefined) {
+			throw new BotApiError("sendEncryptedFile requires an e2ee bot", 0, 0);
+		}
+		if (data.byteLength > 50 * 1024 * 1024) {
+			throw new BotApiError("file is too large", 0, 0);
+		}
+		const key = await generateFileKey();
+		const ciphertext = await encryptFileBytes(data, key);
+		const hash = await hashBytes(data);
+		const uploaded = await this.uploadFile(ciphertext, filename, mimeType, {
+			encrypted: true,
+			hash,
+		});
+		return this.sendMessage(chatId, caption, {
+			files: [uploaded.id],
+			fileKeys: { [hash]: key },
+			fileMeta: { [hash]: { mimeType, name: filename, size: data.byteLength } },
+		});
+	}
+
 	async deleteMessage(chatId: string, messageId: string): Promise<void> {
 		await this.request("POST", "/api/bot-api/deleteMessage", {
 			chat_id: chatId,
@@ -342,13 +400,22 @@ export class BotClient {
 		data: Uint8Array | ArrayBuffer | Blob,
 		filename: string,
 		mimeType = "application/octet-stream",
+		options?: { encrypted?: boolean; hash?: string },
 	): Promise<BotFile> {
-		if (this.encryptionKey !== undefined || (await this.requireMode()) === "e2ee") {
-			throw new Error("encrypted bot files are not supported");
+		if (
+			(await this.requireMode()) === "e2ee" &&
+			options?.encrypted !== true
+		) {
+			throw new Error("encrypted upload is required in e2ee mode");
+		}
+		if (options?.encrypted === true && options.hash === undefined) {
+			throw new Error("plaintext hash is required for encrypted uploads");
 		}
 		const form = new FormData();
 		const blob = data instanceof Blob ? data : new Blob([data as BlobPart], { type: mimeType });
 		form.append("file", blob, filename);
+		if (options?.encrypted === true) form.append("encrypted", "true");
+		if (options?.hash !== undefined) form.append("hash", options.hash);
 		const response = await this.fetchImpl(`${this.baseUrl}/api/bot-api/uploadFile`, {
 			method: "POST",
 			headers: { Authorization: `Bearer ${this.token}` },
@@ -360,9 +427,6 @@ export class BotClient {
 	}
 
 	async downloadFile(fileId: string, maxBytes = 50 * 1024 * 1024): Promise<ArrayBuffer> {
-		if (this.encryptionKey !== undefined || (await this.requireMode()) === "e2ee") {
-			throw new Error("encrypted bot files are not supported");
-		}
 		const response = await this.fetchImpl(
 			`${this.baseUrl}/api/bot-api/files/${encodeURIComponent(fileId)}`,
 			{ headers: { Authorization: `Bearer ${this.token}` } },
@@ -596,6 +660,22 @@ export class BotClient {
 				const me = await this.getMe();
 				const content = await decryptBotMessage(raw.text, raw.encrypted_payload, me.id ?? "", this.encryptionKey);
 				base.text = typeof content.text === "string" ? content.text : "";
+				base.location = content.location;
+				base.fileKeys = content.fileKeys;
+				base.fileMeta = content.fileMeta;
+				base.files = (raw.files ?? [])
+					.filter((file) => file.hash !== undefined && content.fileMeta?.[file.hash] !== undefined)
+					.map((file) => {
+					const meta = file.hash === undefined ? undefined : content.fileMeta?.[file.hash];
+					return meta === undefined
+						? file
+						: {
+								...file,
+								mimeType: meta.mimeType,
+								originalName: meta.name,
+								size: meta.size,
+							};
+				});
 				const markup = content.replyMarkup;
 				if (markup !== undefined && markup !== null && typeof markup === "object") {
 					const rows = (markup as { inline_keyboard?: unknown }).inline_keyboard;
@@ -717,8 +797,13 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 export {
 	decryptBotMessage,
 	decryptCallbackData,
+	decryptFileBytes,
 	encryptBotReply,
 	encryptCallbackData,
+	encryptFileBytes,
 	generateEncryptionKeyPair,
+	generateFileKey,
+	hashBytes,
 } from "./crypto.js";
+export type { FileKey, FileMeta } from "./crypto.js";
 export type { EncryptionKeyPair } from "./crypto.js";

@@ -209,6 +209,7 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 		Location:         msg.Location,
 		Encrypted:        msg.Encrypted,
 		EncryptedPayload: msg.EncryptedPayload,
+		Files:            msg.Files,
 	}
 
 	in.Peer = peer

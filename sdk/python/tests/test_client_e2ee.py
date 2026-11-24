@@ -127,5 +127,33 @@ class EncryptedClientTests(unittest.TestCase):
         self.assertNotEqual(sent[0]["text"], "done")
         self.assertIn("encrypted_payload", sent[0])
 
+    def test_edit_rejects_attachments(self) -> None:
+        client = BotClient("token", encryption_key=generate_key_pair())
+        with self.assertRaises(Exception):
+            client.edit_message_text("c1", "m1", "x", files=["f1"])
+
+    def test_send_encrypted_file_attaches_file(self) -> None:
+        bot_key = generate_key_pair()
+        user_key = generate_key_pair()
+        client = BotClient("token", encryption_key=bot_key)
+        client._mode = "e2ee"
+        client._chat_users["c1"] = "user:test"
+        sent: list[dict] = []
+
+        def fake_request(method, path, body=None, **kwargs):
+            if path == "/api/bot-api/getUserDeviceKeys":
+                return [{"id": "user:test", "publicKey": user_key.public_key}]
+            if path == "/api/bot-api/uploadFile":
+                return {"file": {"id": "f1", "originalName": "a.txt", "mimeType": "text/plain", "size": 3, "hash": "h"}}
+            if path == "/api/bot-api/sendMessage":
+                sent.append(body or {})
+                return {"message_id": "m1", "chat_id": "c1", "from": {"id": "bot:test", "username": "b", "display_name": "B", "is_bot": True}, "text": "x", "date": "2026-01-01"}
+            raise AssertionError(path)
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            client.send_encrypted_file("c1", b"abc", "a.txt", "text/plain")
+        self.assertEqual(sent[0]["files"][0]["id"], "f1")
+        self.assertTrue(sent[0]["encrypted"])
+
 if __name__ == "__main__":
     unittest.main()

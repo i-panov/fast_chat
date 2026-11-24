@@ -25,6 +25,7 @@ const (
 	keyEncrypted        = "encrypted"
 	keyEncryptedPayload = "encryptedPayload"
 	keyLocation         = "location"
+	keyFiles            = "files"
 	// EncryptionModeServer is the plaintext bot mode.
 	EncryptionModeServer = "server"
 	// EncryptionModeE2EE is the end-to-end encrypted bot mode.
@@ -165,7 +166,7 @@ func (s *Service) OpenBotChat(ctx context.Context, userID, username string) (Cha
 	if err != nil {
 		return ChatView{}, err
 	}
-	if err := s.store.SetChatBotID(ctx, chat.ID, botUser.ID); err != nil {
+	if err := s.store.SetChatBot(ctx, chat.ID, botUser.ID, bot.EncryptionMode); err != nil {
 		return ChatView{}, err
 	}
 	if err := s.store.CreateBotChat(ctx, botUser.ID, userID, chat.ID); err != nil {
@@ -236,6 +237,16 @@ func (s *Service) SendBotEncryptedMessage(ctx context.Context, botID, chatID, ci
 	return s.sendBotMessage(ctx, botID, chatID, ciphertext, nil, true, payload, nil, nil)
 }
 
+// SendBotMessageWithFiles attaches already-uploaded files to a bot message.
+func (s *Service) SendBotMessageWithFiles(
+	ctx context.Context, botID, chatID, text string,
+	markup *model.InlineKeyboardMarkup, fileIDs []string,
+	encrypted bool, payload string, location *model.Location,
+) (*model.Message, error) {
+
+	return s.sendBotMessage(ctx, botID, chatID, text, markup, encrypted, payload, fileIDs, location)
+}
+
 func (s *Service) SendBotFile(ctx context.Context, botID, chatID, fileID, caption string) (*model.Message, error) {
 	return s.sendBotMessage(ctx, botID, chatID, caption, nil, false, "", []string{fileID}, nil)
 }
@@ -298,7 +309,7 @@ func (s *Service) sendBotMessage(
 		if err := ValidateEncryptedPayload(true, payload); err != nil {
 			return nil, err
 		}
-		if markup != nil || len(fileIDs) > 0 || location != nil {
+		if markup != nil || location != nil {
 			return nil, ErrBotMarkupInvalid
 		}
 	} else if encrypted {
@@ -325,16 +336,22 @@ func (s *Service) sendBotMessage(
 		return nil, ErrMessageTooLong
 	}
 	resolvedFiles := s.ResolveMessageFiles(ctx, botID, fileIDs, nil)
+	if encrypted && !s.filesEncrypted(ctx, resolvedFiles) {
+		return nil, ErrBotEncryptionRequired
+	}
 	if len(resolvedFiles) > MaxMessageFiles {
 		return nil, ErrTooManyFiles
 	}
 	if text == "" && len(resolvedFiles) == 0 && location == nil {
 		return nil, ErrEmptyMessage
 	}
-	if encrypted && (len(resolvedFiles) > 0 || location != nil) {
+	if location != nil && !ValidCoords(location.Lat, location.Lng) {
+		return nil, ErrInvalidCoordinates
+	}
+	if encrypted && location != nil {
 		return nil, ErrBotMarkupInvalid
 	}
-	if chat.RemoteServer != "" && (len(resolvedFiles) > 0 || location != nil || markup != nil) {
+	if chat.RemoteServer != "" && (location != nil || markup != nil) {
 		return nil, ErrBotAttachmentRemote
 	}
 	if err := validateInlineKeyboard(markup); err != nil {
@@ -363,7 +380,7 @@ func (s *Service) sendBotMessage(
 		if chat.RemoteServer != "" && s.fed != nil {
 			s.queueFederation(ctx, chat.RemoteServer, "POST", "/api/federated/chats/"+chat.ID+"/messages", map[string]any{
 				"id": msg.ID, "fromId": botID, "fromNick": user.DisplayName,
-				keyText: msg.Text, keyEncrypted: encrypted, keyEncryptedPayload: payload,
+				keyText: msg.Text, keyEncrypted: encrypted, keyEncryptedPayload: payload, keyFiles: msg.Files,
 			})
 		}
 	}
@@ -371,6 +388,16 @@ func (s *Service) sendBotMessage(
 }
 
 // AppendBotMessageUpdate queues a user message for the bot's getUpdates.
+func (s *Service) filesEncrypted(ctx context.Context, fileIDs []string) bool {
+	for _, id := range fileIDs {
+		file, err := s.store.GetFile(ctx, id)
+		if err != nil || !file.Encrypted {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Service) AppendBotMessageUpdate(ctx context.Context, chatID string, msg *model.Message) {
 	bc, ok := s.store.GetBotChatByChatID(ctx, chatID)
 	if !ok {
@@ -395,7 +422,7 @@ func (s *Service) AppendBotMessageUpdate(ctx context.Context, chatID string, msg
 			keyEncrypted:        msg.Encrypted,
 			"encrypted_payload": msg.EncryptedPayload,
 			keyLocation:         msg.Location,
-			"files":             msg.Files,
+			keyFiles:            msg.Files,
 			"date":              msg.CreatedAt,
 		},
 	})
@@ -735,6 +762,26 @@ func (s *Service) ListUserDeviceKeys(ctx context.Context, userID string) ([]Devi
 		}
 	}
 	return out, nil
+}
+
+// FetchFederatedFile returns the bytes of a remote file placeholder through
+// the signed federation client.
+func (s *Service) FetchFederatedFile(ctx context.Context, fileID string) ([]byte, *model.File, error) {
+	file, err := s.store.GetFile(ctx, fileID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if file.RemoteServer == "" {
+		return nil, file, nil
+	}
+	if s.fed == nil {
+		return nil, nil, ErrFileNotFound
+	}
+	body, err := s.fed.Request(ctx, "GET", s.fed.URL(file.RemoteServer, "/api/federated/files/"+url.PathEscape(fileID)), nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	return body, file, nil
 }
 
 func (s *Service) GetBotChatForUser(ctx context.Context, botID, userID string) (*model.BotChat, bool) {

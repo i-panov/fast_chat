@@ -153,3 +153,21 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
 			}),
 	);
 });
+
+// Ask an open window to flush the outbox; the same code path is used by the
+// normal online transition. Full background processing without a window is
+// intentionally left to the app because the outbox lives in IndexedDB and
+// uses the authenticated API client.
+self.addEventListener("sync", (event: Event) => {
+	const syncEvent = event as ExtendableEvent & { tag?: string };
+	if (syncEvent.tag !== "fastchat-outbox") return;
+	syncEvent.waitUntil(
+		self.clients
+			.matchAll({ type: "window", includeUncontrolled: true })
+			.then((clients) => {
+				for (const client of clients) {
+					client.postMessage({ type: "FASTCHAT_SYNC" });
+				}
+			}),
+	);
+});

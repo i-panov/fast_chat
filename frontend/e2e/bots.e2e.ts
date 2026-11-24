@@ -1,8 +1,10 @@
 import { type APIRequestContext, expect, test } from "@playwright/test";
+import { decryptBotMessage } from "../../sdk/typescript/src/crypto.ts";
 import { BotClient } from "../../sdk/typescript/src/index.ts";
 
 interface Account {
 	token: string;
+	sessionId?: string;
 	user: { id: string; username: string; nick: string };
 }
 
@@ -113,4 +115,106 @@ test("bot API and TypeScript SDK exchange a message and a callback", async ({
 	if (callback === undefined) throw new Error("SDK did not receive callback");
 	expect(callback.data).toBe("yes");
 	await bot.answerCallbackQuery(callback.id, "ok");
+});
+
+test("E2EE bot sends encrypted file and location", async ({ request }) => {
+	const user = await account(request);
+	const auth = { Authorization: `Bearer ${user.token}` };
+	const suffix = `${Date.now().toString(36)}${Math.random().toString(16).slice(2, 5)}`;
+	const created = await request.post("/api/bots", {
+		headers: auth,
+		data: { username: `e2ee_${suffix}_bot`, displayName: "E2EE Bot" },
+	});
+	expect(created.ok()).toBeTruthy();
+	const creation = (await created.json()) as {
+		token: string;
+		bot: { id: string; username: string };
+	};
+
+	const sodium = (await import("libsodium-wrappers")).default;
+	await sodium.ready;
+	const userPair = sodium.crypto_box_keypair();
+	const userKey = {
+		publicKey: sodium.to_base64(userPair.publicKey),
+		privateKey: sodium.to_base64(userPair.privateKey),
+	};
+	const registered = await request.put("/api/users/device-key", {
+		headers: auth,
+		data: { publicKey: userKey.publicKey },
+	});
+	expect(registered.ok()).toBeTruthy();
+
+	const bot = new BotClient({
+		token: creation.token,
+		baseUrl: "http://localhost:8081",
+	});
+	const botKey = await bot.enableE2EE();
+	expect(botKey.publicKey).not.toBe("");
+	const opened = await request.post("/api/bot-chats", {
+		headers: auth,
+		data: { username: creation.bot.username },
+	});
+	const chat = (await opened.json()) as { chat: { id: string } };
+
+	(bot as unknown as { chatUsers: Map<string, string> }).chatUsers.set(
+		chat.chat.id,
+		user.user.id,
+	);
+	const plaintext = new TextEncoder().encode("encrypted attachment");
+	await bot.sendEncryptedFile(
+		chat.chat.id,
+		plaintext,
+		"secret.txt",
+		"text/plain",
+	);
+	await bot.sendMessage(chat.chat.id, "", {
+		location: { lat: 55.75, lng: 37.61 },
+	});
+
+	const messagesResponse = await request.get(
+		`/api/chats/${chat.chat.id}/messages?limit=10`,
+		{ headers: auth },
+	);
+	const messages = (await messagesResponse.json()) as {
+		messages: Array<{
+			id: string;
+			text: string;
+			encrypted: boolean;
+			encryptedPayload: string;
+			files?: Array<{ id: string; hash: string; originalName: string }>;
+		}>;
+	};
+	const fileMessage = messages.messages.find(
+		(message) => message.files?.length,
+	);
+	const locationMessage = messages.messages.find(
+		(message) => message.encrypted && !message.files?.length,
+	);
+	if (fileMessage === undefined || locationMessage === undefined)
+		throw new Error("encrypted messages missing");
+	const fileContent = await decryptBotMessage(
+		fileMessage.text,
+		fileMessage.encryptedPayload,
+		user.sessionId ?? "bot-e2e",
+		userKey,
+	);
+	const locationContent = await decryptBotMessage(
+		locationMessage.text,
+		locationMessage.encryptedPayload,
+		user.sessionId ?? "bot-e2e",
+		userKey,
+	);
+	expect(locationContent.location).toEqual({ lat: 55.75, lng: 37.61 });
+	const file = fileMessage.files?.[0];
+	if (file === undefined) throw new Error("file missing");
+	const fileKey = fileContent.fileKeys?.[file.hash];
+	if (fileKey === undefined) throw new Error("file key missing");
+	const download = await request.get(`/api/files/${file.id}`, {
+		headers: auth,
+	});
+	expect(download.ok()).toBeTruthy();
+	const decrypted = await (
+		await import("../../sdk/typescript/src/crypto.ts")
+	).decryptFileBytes(new Uint8Array(await download.body()), fileKey);
+	expect(new TextDecoder().decode(decrypted)).toBe("encrypted attachment");
 });

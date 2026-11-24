@@ -291,3 +291,40 @@ func TestBotSendsFileAndLocation(t *testing.T) {
 		t.Fatalf("location = %+v", withLocation.Location)
 	}
 }
+
+func TestBotE2EEFileEnforcement(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	owner, err := s.store.CreateUser(ctx, "files@test.local", "files", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateBot(ctx, owner.ID, "files_bot", "Files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetBotEncryptionKey(ctx, created.User.ID, "cHVibGlj"); err != nil {
+		t.Fatal(err)
+	}
+	view, err := s.OpenBotChat(ctx, owner.ID, "files_bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := s.store.SaveFileEncrypted(ctx, "plain-hash", "text/plain", 4, "a.txt", "a.txt", created.User.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := s.store.SaveFileEncrypted(ctx, "enc-hash", "text/plain", 4, "b.txt", "b.txt", created.User.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := base64.RawURLEncoding.EncodeToString(make([]byte, 24))
+	box := base64.RawURLEncoding.EncodeToString(make([]byte, 80))
+	payload := fmt.Sprintf(`{"v":1,"nonce":%q,"envelopes":[{"keyId":"u1","box":%q}]}`, nonce, box)
+	if _, err := s.SendBotMessageWithFiles(ctx, created.User.ID, view.ID, "x", nil, []string{plaintext.ID}, true, payload, nil); err == nil {
+		t.Fatal("plaintext file accepted in e2ee bot chat")
+	}
+	if _, err := s.SendBotMessageWithFiles(ctx, created.User.ID, view.ID, "x", nil, []string{encrypted.ID}, true, payload, nil); err != nil {
+		t.Fatalf("encrypted file rejected: %v", err)
+	}
+}

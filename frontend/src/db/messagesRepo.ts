@@ -77,6 +77,22 @@ export const messagesRepo = {
 		notify();
 	},
 
+	async updateReactions(
+		chatId: string,
+		messageId: string,
+		reactions: Message["reactions"],
+	): Promise<void> {
+		const db = await getDB();
+		const existing = await db.get("messages", messageId);
+		if (existing === undefined || existing.chatId !== chatId) return;
+		await db.put("messages", {
+			...existing,
+			reactions,
+			_updatedAt: new Date().toISOString(),
+		});
+		notify();
+	},
+
 	async upsertMany(
 		messages: Message[],
 		status: StoredStatus = "sent",

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"fast_chat/model"
@@ -13,6 +14,7 @@ import (
 
 var (
 	ErrFileNotFound = errors.New("file not found")
+	ErrFileConflict = errors.New("federated file id conflict")
 )
 
 // SaveFile inserts a new file record owned by uploadedBy. The same content
@@ -23,6 +25,15 @@ var (
 // uploadedBy is the account that performed the upload. It is what makes the
 // attachment rights checkable later: only the owner may attach the file.
 func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64, originalName, storagePath, uploadedBy string) (*model.File, error) {
+	return s.SaveFileEncrypted(ctx, hash, mimeType, size, originalName, storagePath, uploadedBy, false)
+}
+
+// SaveFileEncrypted stores file metadata and whether the bytes are ciphertext.
+func (s *Store) SaveFileEncrypted(
+	ctx context.Context, hash, mimeType string, size int64,
+	originalName, storagePath, uploadedBy string, encrypted bool,
+) (*model.File, error) {
+
 	file := &model.File{
 		ID:           GenerateID(),
 		Hash:         hash,
@@ -31,6 +42,7 @@ func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64,
 		OriginalName: originalName,
 		StoragePath:  storagePath,
 		UploadedBy:   uploadedBy,
+		Encrypted:    encrypted,
 		CreatedAt:    time.Now().UTC(),
 	}
 
@@ -46,7 +58,7 @@ func (s *Store) SaveFile(ctx context.Context, hash, mimeType string, size int64,
 // file dedup needs.
 func (s *Store) FindFileByHash(ctx context.Context, hash string) (*model.File, bool) {
 	var f model.File
-	if err := s.db.WithContext(ctx).Where("hash = ?", hash).First(&f).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("hash = ? AND encrypted = ? AND remote_server = ?", hash, false, "").First(&f).Error; err != nil {
 		return nil, false
 	}
 
@@ -57,12 +69,15 @@ func (s *Store) FindFileByHash(ctx context.Context, hash string) (*model.File, b
 // hash. A user may only attach files they uploaded themselves, so resolving
 // a client-supplied hash has to be scoped to the caller.
 func (s *Store) FindFileByHashForUploader(ctx context.Context, hash, uploadedBy string) (*model.File, bool) {
-	var f model.File
-	if err := s.db.WithContext(ctx).Where("hash = ? AND uploaded_by = ?", hash, uploadedBy).First(&f).Error; err != nil {
+	var file model.File
+	err := s.db.WithContext(ctx).
+		Where("hash = ? AND uploaded_by = ? AND encrypted = ? AND remote_server = ?", hash, uploadedBy, false, "").
+		First(&file).Error
+	if err != nil {
 		return nil, false
 	}
 
-	return &f, true
+	return &file, true
 }
 
 // FindLegacyFileByHash returns a record stored before the ownership column
@@ -83,7 +98,7 @@ func (s *Store) FindLegacyFileByHash(ctx context.Context, hash string) (*model.F
 func (s *Store) FileExistsByHash(ctx context.Context, hash, uploadedBy string) bool {
 	var count int64
 	if err := s.db.WithContext(ctx).Model(&model.File{}).
-		Where("hash = ? AND uploaded_by = ?", hash, uploadedBy).
+		Where("hash = ? AND uploaded_by = ? AND encrypted = ? AND remote_server = ?", hash, uploadedBy, false, "").
 		Count(&count).Error; err != nil {
 		return false
 	}
@@ -95,12 +110,15 @@ func (s *Store) FileExistsByHash(ctx context.Context, hash, uploadedBy string) b
 // (hash, original name) pair. It is used to reuse the user's own record when
 // the same content is uploaded again under the same name.
 func (s *Store) FindFileByHashAndName(ctx context.Context, hash, name, uploadedBy string) (*model.File, bool) {
-	var f model.File
-	if err := s.db.WithContext(ctx).Where("hash = ? AND original_name = ? AND uploaded_by = ?", hash, name, uploadedBy).First(&f).Error; err != nil {
+	var file model.File
+	err := s.db.WithContext(ctx).
+		Where("hash = ? AND original_name = ? AND uploaded_by = ? AND encrypted = ? AND remote_server = ?", hash, name, uploadedBy, false, "").
+		First(&file).Error
+	if err != nil {
 		return nil, false
 	}
 
-	return &f, true
+	return &file, true
 }
 
 func (s *Store) GetFile(ctx context.Context, fileID string) (*model.File, error) {
@@ -301,7 +319,18 @@ func (s *Store) CreateRemoteFile(ctx context.Context, file *model.File) error {
 	if file.CreatedAt.IsZero() {
 		file.CreatedAt = time.Now().UTC()
 	}
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(file).Error
+	var existing model.File
+	err := s.db.WithContext(ctx).Where("id = ?", file.ID).First(&existing).Error
+	if err == nil {
+		if existing.RemoteServer == file.RemoteServer && existing.UploadedBy == file.UploadedBy {
+			return nil
+		}
+		return ErrFileConflict
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(file).Error
 }
 
 // GetFilesByIDs loads file metadata for many ids in one query.

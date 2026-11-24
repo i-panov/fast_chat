@@ -170,3 +170,35 @@ test("getUserDeviceKeys accepts the server array shape", async () => {
 	const keys = await client.getUserDeviceKeys("u1");
 	assert.deepEqual(keys, [{ id: "u1", publicKey: "cHVibGlj" }]);
 });
+
+test("sendEncryptedFile attaches the uploaded file", async () => {
+	const { generateEncryptionKeyPair } = await import("../src/crypto.js");
+	const botKey = await generateEncryptionKeyPair();
+	const userKey = await generateEncryptionKeyPair();
+	let sent: Record<string, unknown> | undefined;
+	const client = new BotClient({
+		token: "t",
+		mode: "e2ee",
+		encryptionKey: botKey,
+		fetch: async (url, init) => {
+			const path = new URL(String(url)).pathname;
+			if (path === "/api/bot-api/getMe") {
+				return jsonResponse({ ok: true, result: { id: "bot:test", username: "b", display_name: "B", is_bot: true, encryption_mode: "e2ee" } });
+			}
+			if (path === "/api/bot-api/getUserDeviceKeys") {
+				return jsonResponse({ ok: true, result: [{ id: "user:test", publicKey: userKey.publicKey }] });
+			}
+			if (path === "/api/bot-api/uploadFile") {
+				return jsonResponse({ file: { id: "f1", mimeType: "text/plain", size: 1, originalName: "a.txt" } });
+			}
+			if (path === "/api/bot-api/sendMessage") {
+				sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				return jsonResponse({ ok: true, result: { message_id: "m1", chat_id: "c1", from: { id: "bot:test", username: "b", display_name: "B", is_bot: true }, text: "x", date: "2026-01-01" } });
+			}
+			throw new Error(path);
+		},
+	});
+	(client as unknown as { chatUsers: Map<string, string> }).chatUsers.set("c1", "user:test");
+	await client.sendEncryptedFile("c1", new Uint8Array([1, 2, 3]), "a.txt", "text/plain");
+	assert.deepEqual((sent?.files as Array<{ id: string }>)[0], { id: "f1" });
+});

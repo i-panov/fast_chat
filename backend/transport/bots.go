@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -155,18 +156,28 @@ func registerBots(api huma.API, st *store.Store, svc *service.Service, cfg *conf
 		if err != nil {
 			return nil, err
 		}
-		file, err := st.GetFile(ctx, input.FileID)
-		if err != nil || file.RemoteServer != "" {
+		if _, err := st.GetFile(ctx, input.FileID); err != nil {
 			return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
 		}
 		if !svc.UserCanAccessFile(ctx, bot.UserID, input.FileID) {
 			return nil, &statusError{ErrorMessage: "not a member", code: http.StatusForbidden}
+		}
+		remoteBody, file, err := svc.FetchFederatedFile(ctx, input.FileID)
+		if err != nil {
+			if errors.Is(err, service.ErrFileNotFound) {
+				return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+			}
+			return nil, &statusError{ErrorMessage: "failed to fetch federated file", code: http.StatusBadGateway}
 		}
 		fullPath := filepath.Join(cfg.Uploads.Dir, file.StoragePath)
 		return &huma.StreamResponse{Body: func(hctx huma.Context) {
 			r, w := humachi.Unwrap(hctx)
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("Content-Type", file.MimeType)
+			if file.RemoteServer != "" {
+				http.ServeContent(w, r, file.OriginalName, file.CreatedAt, bytes.NewReader(remoteBody))
+				return
+			}
 			http.ServeFile(w, r, fullPath)
 		}}, nil
 	})
@@ -265,8 +276,24 @@ func registerBots(api huma.API, st *store.Store, svc *service.Service, cfg *conf
 			return nil, err
 		}
 		var msg *model.Message
+		fileIDs := make([]string, 0, len(input.Body.Files))
+		for _, file := range input.Body.Files {
+			if file.ID != "" {
+				fileIDs = append(fileIDs, file.ID)
+			}
+		}
 		if input.Body.Encrypted {
-			msg, err = svc.SendBotEncryptedMessage(ctx, bot.UserID, input.Body.ChatID, input.Body.Text, input.Body.EncryptedPayload)
+			// E2EE markup/location live inside the encrypted content; the
+			// plaintext fields are intentionally ignored.
+			msg, err = svc.SendBotMessageWithFiles(
+				ctx, bot.UserID, input.Body.ChatID, input.Body.Text,
+				nil, fileIDs, true, input.Body.EncryptedPayload, nil,
+			)
+		} else if len(fileIDs) > 0 || input.Body.Location != nil {
+			msg, err = svc.SendBotMessageWithFiles(
+				ctx, bot.UserID, input.Body.ChatID, input.Body.Text,
+				input.Body.ReplyMarkup, fileIDs, false, "", input.Body.Location,
+			)
 		} else {
 			msg, err = svc.SendBotMessage(ctx, bot.UserID, input.Body.ChatID, input.Body.Text, input.Body.ReplyMarkup)
 		}
@@ -285,6 +312,9 @@ func registerBots(api huma.API, st *store.Store, svc *service.Service, cfg *conf
 		bot, user, err := botFromContext(ctx, svc)
 		if err != nil {
 			return nil, err
+		}
+		if len(input.Body.Files) > 0 || input.Body.Location != nil {
+			return nil, &statusError{ErrorMessage: "edit does not support files or location", code: http.StatusBadRequest}
 		}
 		msg, err := svc.EditBotMessage(
 			ctx, bot.UserID, input.Body.ChatID, input.Body.MessageID,
@@ -517,11 +547,15 @@ type botSendMessageInput struct {
 		ChatID           string                      `json:"chat_id"` //nolint:tagliatelle // Bot API uses snake_case
 		Text             string                      `json:"text"`
 		ReplyMarkup      *model.InlineKeyboardMarkup `json:"reply_markup,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
-		Files            []model.FileInfo            `json:"files,omitempty"`
+		Files            []botFileRef                `json:"files,omitempty"`
 		Location         *model.Location             `json:"location,omitempty"`
 		Encrypted        bool                        `json:"encrypted,omitempty"`
 		EncryptedPayload string                      `json:"encrypted_payload,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
 	}
+}
+
+type botFileRef struct {
+	ID string `json:"id"`
 }
 
 type botEditMessageInput struct {
@@ -530,7 +564,7 @@ type botEditMessageInput struct {
 		MessageID        string                      `json:"message_id"` //nolint:tagliatelle // Bot API uses snake_case
 		Text             string                      `json:"text"`
 		ReplyMarkup      *model.InlineKeyboardMarkup `json:"reply_markup,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
-		Files            []model.FileInfo            `json:"files,omitempty"`
+		Files            []botFileRef                `json:"files,omitempty"`
 		Location         *model.Location             `json:"location,omitempty"`
 		Encrypted        bool                        `json:"encrypted,omitempty"`
 		EncryptedPayload string                      `json:"encrypted_payload,omitempty"` //nolint:tagliatelle // Bot API uses snake_case

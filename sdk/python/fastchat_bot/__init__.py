@@ -6,7 +6,15 @@ chats.
 """
 
 from .client import BotAPIError, BotClient
-from .crypto import DeviceKey, EncryptionKeyPair, generate_key_pair
+from .crypto import (
+    DeviceKey,
+    EncryptionKeyPair,
+    FileKey,
+    decrypt_file_bytes,
+    encrypt_file_bytes,
+    generate_file_key,
+    generate_key_pair,
+)
 from .types import (
     BotCallbackQuery,
     BotChat,
@@ -29,5 +37,9 @@ __all__ = [
     "BotCallbackQuery",
     "DeviceKey",
     "EncryptionKeyPair",
+    "FileKey",
+    "generate_file_key",
+    "encrypt_file_bytes",
+    "decrypt_file_bytes",
     "generate_key_pair",
 ]

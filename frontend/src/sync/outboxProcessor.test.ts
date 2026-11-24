@@ -13,15 +13,31 @@ vi.mock("../api.ts", () => ({
 	editMessage: vi.fn(),
 	deleteMessage: vi.fn(),
 	uploadFile: vi.fn(),
+	addMessageReaction: vi.fn(),
+	removeMessageReaction: vi.fn(),
+	pinMessage: vi.fn(),
+	unpinMessage: vi.fn(),
+	markMessagesRead: vi.fn(),
 }));
 
 import type { Mock } from "vitest";
-import { deleteMessage, editMessage, sendMessage, uploadFile } from "../api.ts";
+import {
+	addMessageReaction,
+	deleteMessage,
+	editMessage,
+	markMessagesRead,
+	pinMessage,
+	sendMessage,
+	uploadFile,
+} from "../api.ts";
 
 const sendMessageMock = sendMessage as Mock;
 const editMessageMock = editMessage as Mock;
 const deleteMessageMock = deleteMessage as Mock;
 const uploadFileMock = uploadFile as Mock;
+const addMessageReactionMock = addMessageReaction as Mock;
+const pinMessageMock = pinMessage as Mock;
+const markMessagesReadMock = markMessagesRead as Mock;
 
 function sendOp(overrides: Partial<OutboxOpSend> = {}): OutboxOpSend {
 	return {
@@ -44,6 +60,9 @@ beforeEach(() => {
 	editMessageMock.mockResolvedValue({ message: {} });
 	deleteMessageMock.mockResolvedValue({ status: "ok" });
 	uploadFileMock.mockResolvedValue({ file: { id: "file-1" } });
+	addMessageReactionMock.mockResolvedValue({ reactions: [] });
+	pinMessageMock.mockResolvedValue({ status: "ok" });
+	markMessagesReadMock.mockResolvedValue({ status: "ok" });
 });
 
 describe("extractRetryAfterMs", () => {
@@ -365,5 +384,51 @@ describe("processOutbox", () => {
 			expect.objectContaining({ fileIDs: ["file-1"] }),
 		);
 		expect(await outboxRepo.list()).toHaveLength(0);
+	});
+});
+
+describe("offline UI action outbox", () => {
+	it("sends a queued reaction and removes the op", async () => {
+		await outboxRepo.enqueue({
+			kind: "reaction",
+			opId: "r1",
+			chatId: "c1",
+			messageId: "m1",
+			emoji: "👍",
+			action: "add",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			attempts: 0,
+		});
+		await processOutbox("tok");
+		expect(addMessageReactionMock).toHaveBeenCalledWith(
+			"tok",
+			"c1",
+			"m1",
+			"👍",
+		);
+		expect(await outboxRepo.list()).toHaveLength(0);
+	});
+
+	it("sends a queued pin and read batch", async () => {
+		await outboxRepo.enqueue({
+			kind: "pin",
+			opId: "p1",
+			chatId: "c1",
+			messageId: "m1",
+			pinned: true,
+			createdAt: "2026-01-01T00:00:01.000Z",
+			attempts: 0,
+		});
+		await outboxRepo.enqueue({
+			kind: "read",
+			opId: "rd1",
+			chatId: "c1",
+			messageIds: ["m1"],
+			createdAt: "2026-01-01T00:00:02.000Z",
+			attempts: 0,
+		});
+		await processOutbox("tok");
+		expect(pinMessageMock).toHaveBeenCalledWith("tok", "c1", "m1");
+		expect(markMessagesReadMock).toHaveBeenCalledWith("tok", "c1", ["m1"]);
 	});
 });

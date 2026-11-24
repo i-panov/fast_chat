@@ -21,6 +21,17 @@ interface DeviceKey {
 	publicKey: string;
 }
 
+export interface FileKey {
+	nonce: string;
+	key: string;
+}
+
+export interface FileMeta {
+	mimeType: string;
+	name: string;
+	size: number;
+}
+
 export interface ReplyButton {
 	text: string;
 	callbackData?: string;
@@ -48,12 +59,20 @@ export async function generateEncryptionKeyPair(): Promise<EncryptionKeyPair> {
 	};
 }
 
+export interface BotContent {
+	text: string;
+	replyMarkup?: unknown;
+	location?: { lat: number; lng: number };
+	fileKeys?: Record<string, FileKey>;
+	fileMeta?: Record<string, FileMeta>;
+}
+
 export async function decryptBotMessage(
 	text: string,
 	payloadJSON: string,
 	botID: string,
 	key: EncryptionKeyPair,
-): Promise<{ text: string; replyMarkup?: unknown }> {
+): Promise<BotContent> {
 	await sodium.ready;
 	const payload = JSON.parse(payloadJSON) as EncryptedPayload;
 	for (const envelope of payload.envelopes) {
@@ -71,10 +90,7 @@ export async function decryptBotMessage(
 				decodeBase64(payload.nonce),
 				msgKey,
 			);
-			return JSON.parse(new TextDecoder().decode(plain)) as {
-				text: string;
-				replyMarkup?: unknown;
-			};
+			return JSON.parse(new TextDecoder().decode(plain)) as BotContent;
 		} catch {
 			// Try the next envelope.
 		}
@@ -86,6 +102,11 @@ export async function encryptBotReply(
 	text: string,
 	devices: DeviceKey[],
 	markup?: ReplyMarkup,
+	extra?: {
+		location?: { lat: number; lng: number };
+		fileKeys?: Record<string, FileKey>;
+		fileMeta?: Record<string, FileMeta>;
+	},
 ): Promise<{ text: string; payload: string }> {
 	await sodium.ready;
 	if (devices.length === 0) throw new Error("no user device keys");
@@ -96,6 +117,9 @@ export async function encryptBotReply(
 		sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
 	);
 	const content: Record<string, unknown> = { text };
+	if (extra?.location !== undefined) content.location = extra.location;
+	if (extra?.fileKeys !== undefined) content.fileKeys = extra.fileKeys;
+	if (extra?.fileMeta !== undefined) content.fileMeta = extra.fileMeta;
 	if (markup !== undefined) {
 		content.replyMarkup = {
 			inline_keyboard: markup.map((row) =>
@@ -153,4 +177,55 @@ export async function decryptCallbackData(
 		decodeBase64(key.privateKey),
 	);
 	return new TextDecoder().decode(plain);
+}
+
+export async function generateFileKey(): Promise<FileKey> {
+	await sodium.ready;
+	return {
+		nonce: sodium.to_base64(
+			sodium.randombytes_buf(
+				sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
+			),
+		),
+		key: sodium.to_base64(
+			sodium.randombytes_buf(
+				sodium.crypto_aead_xchacha20poly1305_ietf_KEYBYTES,
+			),
+		),
+	};
+}
+
+export async function hashBytes(data: Uint8Array): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", data as unknown as BufferSource);
+	return Array.from(new Uint8Array(digest))
+		.map((byte) => byte.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+export async function encryptFileBytes(
+	data: Uint8Array,
+	fileKey: FileKey,
+): Promise<Uint8Array> {
+	await sodium.ready;
+	return sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+		data,
+		null,
+		null,
+		decodeBase64(fileKey.nonce),
+		decodeBase64(fileKey.key),
+	);
+}
+
+export async function decryptFileBytes(
+	ciphertext: Uint8Array,
+	fileKey: FileKey,
+): Promise<Uint8Array> {
+	await sodium.ready;
+	return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
+		null,
+		ciphertext,
+		null,
+		decodeBase64(fileKey.nonce),
+		decodeBase64(fileKey.key),
+	);
 }

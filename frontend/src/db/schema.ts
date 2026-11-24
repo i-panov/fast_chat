@@ -114,7 +114,49 @@ interface OutboxOpDelete {
 	threadId?: string;
 }
 
-export type OutboxOp = OutboxOpSend | OutboxOpEdit | OutboxOpDelete;
+export interface OutboxOpReaction {
+	kind: "reaction";
+	opId: string;
+	status?: "pending" | "failed";
+	chatId: string;
+	messageId: string;
+	emoji: string;
+	action: "add" | "remove";
+	previousReactions?: ReactionSummary[];
+	threadId?: string;
+	createdAt: string;
+	attempts: number;
+}
+
+export interface OutboxOpPin {
+	kind: "pin";
+	opId: string;
+	status?: "pending" | "failed";
+	chatId: string;
+	messageId: string;
+	pinned: boolean;
+	previousPinned?: boolean;
+	createdAt: string;
+	attempts: number;
+}
+
+export interface OutboxOpRead {
+	kind: "read";
+	opId: string;
+	status?: "pending" | "failed";
+	chatId: string;
+	messageIds: string[];
+	createdAt: string;
+	attempts: number;
+}
+
+export type OutboxOp =
+	| OutboxOpSend
+	| OutboxOpEdit
+	| OutboxOpDelete
+	| OutboxOpReaction
+	| OutboxOpPin
+	| OutboxOpRead;
 
 export interface PendingBlob {
 	id: string;

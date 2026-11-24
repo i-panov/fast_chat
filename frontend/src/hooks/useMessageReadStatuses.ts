@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef } from "react";
 import { markMessagesRead } from "../api.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
+import { outboxRepo } from "../db/outboxRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { extractRetryAfterMs } from "../sync/outboxProcessor.ts";
+import { scheduleSync } from "../sync/syncEngine.ts";
 import { useAuth } from "../useAuth.tsx";
 
 const DEBOUNCE_MS = 300;
@@ -36,6 +38,27 @@ export function useMessageReadStatuses({
 		const messageIds = Array.from(pendingRef.current).slice(0, MAX_BATCH_SIZE);
 		for (const id of messageIds) {
 			pendingRef.current.delete(id);
+		}
+
+		if (typeof navigator !== "undefined" && !navigator.onLine) {
+			await outboxRepo.enqueue({
+				kind: "read",
+				opId: crypto.randomUUID(),
+				chatId,
+				messageIds,
+				createdAt: new Date().toISOString(),
+				attempts: 0,
+			});
+			if (isInThread === true) {
+				await threadMessagesRepo.markAsRead(messageIds);
+			} else {
+				await messagesRepo.markAsRead(messageIds);
+			}
+			scheduleSync();
+			if (pendingRef.current.size > 0) {
+				scheduleFlushRef.current?.();
+			}
+			return;
 		}
 
 		try {

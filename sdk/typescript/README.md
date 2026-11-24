@@ -43,3 +43,7 @@ The SDK only supports long polling. Bot chats are plaintext by default. Call
 new bot chats to encrypted text, encrypted inline keyboards and encrypted
 callback data. Files and locations are plaintext and are not available in
 E2EE mode.
+
+## Encrypted files
+
+`sendEncryptedFile` uploads ciphertext with the plaintext hash and sends hash-keyed `fileKeys`/`fileMeta`. `downloadFile` returns ciphertext; decrypt it with `decryptFileBytes` and the matching key. Locations travel in encrypted `sendMessage` content.

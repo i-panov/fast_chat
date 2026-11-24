@@ -43,3 +43,16 @@ test("encrypted buttons and callback data round-trip", async () => {
 	});
 	assert.equal(await decryptCallbackData(callback, bot), "yes");
 });
+
+test("file bytes round-trip", async () => {
+	const {
+		decryptFileBytes,
+		encryptFileBytes,
+		generateFileKey,
+	} = await import("../src/index.js");
+	const key = await generateFileKey();
+	const plaintext = new TextEncoder().encode("attachment bytes");
+	const encrypted = await encryptFileBytes(plaintext, key);
+	assert.notDeepEqual(encrypted, plaintext);
+	assert.deepEqual(await decryptFileBytes(encrypted, key), plaintext);
+});

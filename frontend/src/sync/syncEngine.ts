@@ -71,7 +71,31 @@ export function subscribeSyncState(fn: Listener): () => void {
 	};
 }
 
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+	navigator.serviceWorker.addEventListener("message", (event) => {
+		if ((event.data as { type?: string } | null)?.type === "FASTCHAT_SYNC") {
+			scheduleSync();
+		}
+	});
+}
+
 export function scheduleSync(): void {
+	if (
+		typeof navigator !== "undefined" &&
+		"serviceWorker" in navigator &&
+		!navigator.onLine
+	) {
+		void navigator.serviceWorker.ready
+			.then((registration) => {
+				const sync = (
+					registration as ServiceWorkerRegistration & {
+						sync?: { register(tag: string): Promise<void> };
+					}
+				).sync;
+				return sync?.register("fastchat-outbox");
+			})
+			.catch(() => {});
+	}
 	if (debounceTimer !== null) clearTimeout(debounceTimer);
 	debounceTimer = setTimeout(() => {
 		debounceTimer = null;
@@ -141,7 +165,26 @@ function isTransientSyncError(err: unknown): boolean {
 	return true;
 }
 
+type LockManagerLike = {
+	request(
+		name: string,
+		callback: (lock: unknown) => Promise<void>,
+	): Promise<void>;
+};
+
 async function processOutboxAndPull(): Promise<void> {
+	const locks = (navigator as Navigator & { locks?: LockManagerLike }).locks;
+	if (locks !== undefined) {
+		const accountKey = getActiveAccountKey();
+		await locks.request(`fastchat-sync:${accountKey}`, async () => {
+			await processOutboxAndPullUnlocked();
+		});
+		return;
+	}
+	await processOutboxAndPullUnlocked();
+}
+
+async function processOutboxAndPullUnlocked(): Promise<void> {
 	const token = currentToken();
 	if (token === null) return;
 	// Capture the account up front: getDB() resolves the database lazily,

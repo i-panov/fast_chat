@@ -263,6 +263,15 @@ export async function decryptMessage(
 	if (!message.encrypted) return toMessage(message);
 
 	const out = toMessage(message);
+	const serverFiles = message.files;
+	// Server-controlled fields on an encrypted message are not authenticated
+	// until the content is decrypted.
+	out.files = undefined;
+	out.location = undefined;
+	out.replyMarkup = undefined;
+	if (message.replyTo !== undefined) {
+		out.replyTo = { ...message.replyTo, files: undefined, location: undefined };
+	}
 
 	if (key === null) {
 		out.text = i18n.t(UNDECRYPTABLE_I18N_KEY);
@@ -271,6 +280,8 @@ export async function decryptMessage(
 			out.replyTo = {
 				...message.replyTo,
 				text: i18n.t(UNDECRYPTABLE_I18N_KEY),
+				files: undefined,
+				location: undefined,
 			};
 		}
 
@@ -285,7 +296,15 @@ export async function decryptMessage(
 			out.location = content.location;
 			out.replyMarkup = content.replyMarkup;
 			out.fileKeys = content.fileKeys;
-			out.files = applyFileMeta(out.files, content.fileMeta);
+			const authenticatedFiles = (serverFiles ?? []).filter(
+				(file) =>
+					file.hash !== undefined &&
+					content.fileMeta?.[file.hash] !== undefined,
+			);
+			out.files = applyFileMeta(
+				authenticatedFiles.length > 0 ? authenticatedFiles : undefined,
+				content.fileMeta ?? {},
+			);
 		} else {
 			// Fall back to legacy v1 (text-only encryption), but do not
 			// display a malformed v2 JSON payload as the message text.
@@ -346,6 +365,8 @@ export async function decryptMessage(
 		out.replyTo = {
 			...message.replyTo,
 			text: parentText,
+			files: undefined,
+			location: undefined,
 		};
 	}
 

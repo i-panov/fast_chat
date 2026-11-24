@@ -497,3 +497,36 @@ describe("File encryption", () => {
 		expect(new TextDecoder().decode(plain)).toBe("shared content");
 	});
 });
+
+describe("encrypted server-controlled fields", () => {
+	it("does not expose server files or location without decryption", async () => {
+		const msg = {
+			id: "m1",
+			chatId: "c1",
+			fromId: "b:test",
+			fromNick: "Bot",
+			text: "ciphertext",
+			encrypted: true,
+			encryptedPayload: "{}",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			files: [
+				{
+					id: "f1",
+					hash: "h1",
+					mimeType: "text/plain",
+					size: 1,
+					originalName: "a.txt",
+					fileType: "file" as const,
+					url: "/api/files/f1",
+				},
+			],
+			location: { lat: 1, lng: 2 },
+			replyMarkup: { inline_keyboard: [[{ text: "x", callback_data: "x" }]] },
+		} satisfies Message;
+		const out = await decryptMessage(msg, "u1", null);
+		expect(out.undecryptable).toBe(true);
+		expect(out.files).toBeUndefined();
+		expect(out.location).toBeUndefined();
+		expect(out.replyMarkup).toBeUndefined();
+	});
+});
