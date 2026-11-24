@@ -228,7 +228,18 @@ export async function createNewKey(token: string): Promise<KeyPair> {
 	if (accountScope() !== scope) {
 		throw new Error(ACCOUNT_CHANGED);
 	}
-	return ensureAccountKeys(token);
+
+	try {
+		return await ensureAccountKeys(token);
+	} catch (err) {
+		if (!(err instanceof NewKeyConfirmationRequiredError)) throw err;
+		// A concurrent caller claimed the confirmation between the click and
+		// this flight. The user already confirmed, so ask once more instead
+		// of leaving the dialog open as if the button did nothing.
+		confirmNewKey();
+
+		return ensureAccountKeys(token);
+	}
 }
 
 // uploadKeyBackup encrypts the given key pair under the password and

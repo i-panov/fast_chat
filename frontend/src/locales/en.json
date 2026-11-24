@@ -301,5 +301,6 @@
 	"admin.target": "Target",
 	"admin.confirm": "Confirm",
 	"admin.cancel": "Cancel",
-	"admin.loadMore": "Load older messages"
+	"admin.loadMore": "Load older messages",
+	"chat.back": "Back"
 }

@@ -24,6 +24,14 @@ export function setActiveAccountKey(key: string | null): void {
 	notify();
 }
 
+// setActiveAccountKeySilently selects the database without waking the live
+// queries. AuthProvider calls it during render: child effects run before the
+// provider's own effect, so the first key lookup of a page load must already
+// see the account's database instead of the shared pre-account one.
+export function setActiveAccountKeySilently(key: string | null): void {
+	activeAccountKey = key;
+}
+
 function dbNameFor(key: string | null): string {
 	return key === null ? DB_NAME : `${DB_NAME}_${key}`;
 }

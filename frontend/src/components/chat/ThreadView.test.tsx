@@ -69,6 +69,7 @@ function state(overrides: Partial<ChatPageState> = {}): ChatPageState {
 		pendingChatWith: null,
 		pendingChatNick: null,
 		selectPendingChat: () => {},
+		cancelPendingChat: () => {},
 		inputText: "",
 		setInputText: () => {},
 		handleSend: () => Promise.resolve(),

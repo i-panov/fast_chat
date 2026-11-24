@@ -75,6 +75,7 @@ export interface ChatPageState {
 	pendingChatIsBot?: boolean;
 	pendingChatNick: string | null;
 	selectPendingChat: (withUserId: string, withUserNick: string) => void;
+	cancelPendingChat: () => void;
 
 	inputText: string;
 	setInputText: (v: string) => void;

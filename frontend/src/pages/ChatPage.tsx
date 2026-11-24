@@ -2,8 +2,9 @@
 // layout module.
 /* eslint-disable max-lines */
 import { ActionIcon, Center, Group, Paper, Stack, Text } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { Pin, Settings } from "lucide-react";
+import { ArrowLeft, Pin, Settings } from "lucide-react";
 import type * as React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -81,6 +82,7 @@ function ChatHeader({
 	pinnedButton,
 	callButton,
 	onOpenSettings,
+	onBack,
 }: {
 	title: string;
 	subtitle?: string;
@@ -90,6 +92,7 @@ function ChatHeader({
 	pinnedButton?: React.ReactNode;
 	callButton?: React.ReactNode;
 	onOpenSettings?: () => void;
+	onBack?: () => void;
 }) {
 	const { t } = useTranslation();
 
@@ -103,7 +106,18 @@ function ChatHeader({
 				borderBottom: PANEL_BORDER,
 			}}
 		>
-			<Group justify="space-between" wrap="nowrap">
+			<Group justify="space-between" wrap="nowrap" gap="xs">
+				{onBack !== undefined && (
+					<ActionIcon
+						variant="subtle"
+						color="gray"
+						size="lg"
+						onClick={onBack}
+						aria-label={t("chat.back")}
+					>
+						<ArrowLeft size={20} />
+					</ActionIcon>
+				)}
 				<div style={{ minWidth: 0, flex: 1 }}>
 					<Group gap={6} wrap="nowrap">
 						<Text fw={600} truncate>
@@ -151,10 +165,12 @@ function ChatHeaderSlot({
 	s,
 	userId,
 	pinnedButton,
+	onBack,
 }: {
 	s: ChatPageState;
 	userId: string;
 	pinnedButton?: React.ReactNode;
+	onBack?: () => void;
 }): React.ReactElement | null {
 	const { t } = useTranslation();
 
@@ -163,7 +179,13 @@ function ChatHeaderSlot({
 	const typingNick = typingNicks[0]?.nick;
 
 	if (s.pendingChatWith !== null) {
-		return <ChatHeader title={`@${s.pendingChatNick ?? ""}`} badge="newChat" />;
+		return (
+			<ChatHeader
+				title={`@${s.pendingChatNick ?? ""}`}
+				badge="newChat"
+				onBack={onBack}
+			/>
+		);
 	}
 
 	if (s.activeChat === undefined) {
@@ -198,6 +220,7 @@ function ChatHeaderSlot({
 			subtitle={subtitle}
 			pinnedButton={pinnedButton}
 			typingNick={typingNick}
+			onBack={onBack}
 			online={isGroup || isSelf ? undefined : (otherMember?.online ?? false)}
 			callButton={
 				<CallButton
@@ -224,13 +247,22 @@ function ChatHeaderSlot({
 	);
 }
 
-function ChatSidebar({ s, userId }: { s: ChatPageState; userId: string }) {
+function ChatSidebar({
+	s,
+	userId,
+	fullWidth = false,
+}: {
+	s: ChatPageState;
+	userId: string;
+	fullWidth?: boolean;
+}) {
 	return (
 		<Paper
 			component="aside"
 			style={{
-				width: "300px",
-				minWidth: "300px",
+				width: fullWidth ? "100%" : "300px",
+				minWidth: fullWidth ? 0 : "300px",
+				flex: fullWidth ? 1 : undefined,
 				borderRadius: 0,
 				borderRight: PANEL_BORDER,
 				background: PANEL_BACKGROUND,
@@ -305,12 +337,20 @@ function ChatInputBar({
 	);
 }
 
-function PendingChatView({ s, userId }: { s: ChatPageState; userId: string }) {
+function PendingChatView({
+	s,
+	userId,
+	onBack,
+}: {
+	s: ChatPageState;
+	userId: string;
+	onBack?: () => void;
+}) {
 	const { t } = useTranslation();
 
 	return (
 		<>
-			<ChatHeaderSlot s={s} userId={userId} />
+			<ChatHeaderSlot s={s} userId={userId} onBack={onBack} />
 			<div
 				style={{
 					flex: 1,
@@ -328,7 +368,15 @@ function PendingChatView({ s, userId }: { s: ChatPageState; userId: string }) {
 	);
 }
 
-function ActiveChatView({ s, userId }: { s: ChatPageState; userId: string }) {
+function ActiveChatView({
+	s,
+	userId,
+	onBack,
+}: {
+	s: ChatPageState;
+	userId: string;
+	onBack?: () => void;
+}) {
 	const { t } = useTranslation();
 	const showAuthorForGroup = s.activeChat?.type === "group";
 	const [pinsOpen, setPinsOpen] = useState(false);
@@ -393,6 +441,7 @@ function ActiveChatView({ s, userId }: { s: ChatPageState; userId: string }) {
 			<ChatHeaderSlot
 				s={s}
 				userId={userId}
+				onBack={onBack}
 				pinnedButton={
 					canPin ? (
 						<ActionIcon
@@ -487,13 +536,30 @@ function ActiveChatView({ s, userId }: { s: ChatPageState; userId: string }) {
 	);
 }
 
+// eslint-disable-next-line max-lines-per-function -- the page owns the layout, routing and call windows in one place.
 export function ChatPage() {
 	const s = useChatPage();
 	const { selectChat, handleOpenThread } = s;
 	const { t } = useTranslation();
+	const isMobile = useMediaQuery("(max-width: 48em)") === true;
 	const [messageSearchOpen, setMessageSearchOpen] = useState(false);
 
 	usePushNotifications(s.activeAccount?.token ?? "");
+
+	const mobileChatOpen =
+		isMobile &&
+		(s.activeChat !== undefined ||
+			s.pendingChatWith !== null ||
+			s.activeThread !== null);
+
+	const closeMobileChat = useCallback(() => {
+		if (s.activeThread !== null) {
+			s.handleCloseThread();
+			return;
+		}
+		s.cancelPendingChat();
+		s.selectChat(null);
+	}, [s.activeThread, s.handleCloseThread, s.cancelPendingChat, s.selectChat]);
 
 	const routeSearch = useSearch({ from: "/chat", shouldThrow: false });
 	const navigate = useNavigate();
@@ -582,48 +648,72 @@ export function ChatPage() {
 				/>
 				<AudioPlayerBar />
 				<div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-					<ErrorBoundary>
-						<ChatSidebar s={s} userId={s.user.id} />
-					</ErrorBoundary>
-					<Paper
-						component="main"
-						style={{
-							flex: 1,
-							minHeight: 0,
-							borderRadius: 0,
-							background: "var(--mantine-color-dark-9)",
-						}}
-					>
-						{s.activeThread !== null ? (
-							<ThreadView />
-						) : (
-							<Stack h="100%" gap={0}>
-								{s.pendingChatWith !== null ? (
-									<PendingChatView s={s} userId={s.user.id} />
-								) : s.activeChat === undefined ? (
-									<Center style={{ flex: 1 }}>
-										<Text ta="center" c="dimmed" size="sm">
-											{t("chat.selectPrompt")}
-										</Text>
-									</Center>
-								) : (
-									<ActiveChatView s={s} userId={s.user.id} />
-								)}
-							</Stack>
-						)}
-					</Paper>
+					{(!isMobile || !mobileChatOpen) && (
+						<ErrorBoundary>
+							<ChatSidebar s={s} userId={s.user.id} fullWidth={isMobile} />
+						</ErrorBoundary>
+					)}
+					{(!isMobile || mobileChatOpen) && (
+						<Paper
+							component="main"
+							style={{
+								flex: 1,
+								minHeight: 0,
+								borderRadius: 0,
+								background: "var(--mantine-color-dark-9)",
+							}}
+						>
+							{s.activeThread !== null ? (
+								<ThreadView />
+							) : (
+								<Stack h="100%" gap={0}>
+									{s.pendingChatWith !== null ? (
+										<PendingChatView
+											s={s}
+											userId={s.user.id}
+											onBack={isMobile ? closeMobileChat : undefined}
+										/>
+									) : s.activeChat === undefined ? (
+										<Center style={{ flex: 1 }}>
+											<Text ta="center" c="dimmed" size="sm">
+												{t("chat.selectPrompt")}
+											</Text>
+										</Center>
+									) : (
+										<ActiveChatView
+											s={s}
+											userId={s.user.id}
+											onBack={isMobile ? closeMobileChat : undefined}
+										/>
+									)}
+								</Stack>
+							)}
+						</Paper>
+					)}
 					{callPanelOpen(s) && (
 						<Paper
 							component="aside"
-							style={{
-								width: "300px",
-								minWidth: "300px",
-								borderRadius: 0,
-								borderLeft: PANEL_BORDER,
-								background: PANEL_BACKGROUND,
-								padding: 8,
-								overflowY: "auto",
-							}}
+							style={
+								isMobile
+									? {
+											position: "fixed",
+											inset: "48px 0 0",
+											zIndex: 300,
+											borderRadius: 0,
+											background: PANEL_BACKGROUND,
+											padding: 8,
+											overflowY: "auto",
+										}
+									: {
+											width: "300px",
+											minWidth: "300px",
+											borderRadius: 0,
+											borderLeft: PANEL_BORDER,
+											background: PANEL_BACKGROUND,
+											padding: 8,
+											overflowY: "auto",
+										}
+							}
 						>
 							<ActiveCallOverlay
 								open={true}

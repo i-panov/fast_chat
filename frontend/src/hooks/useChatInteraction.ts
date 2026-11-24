@@ -284,6 +284,7 @@ function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 		pendingChatNick: parts.search.pendingChatNick,
 		pendingChatIsBot: parts.search.pendingChatIsBot,
 		selectPendingChat: parts.search.selectPendingChat,
+		cancelPendingChat: parts.search.clearPendingChat,
 		handleDeleteMessage: parts.sender.deleteMessage,
 		handleForwardMessage: async (targetChatId, message) => {
 			if (message.undecryptable === true) return false;

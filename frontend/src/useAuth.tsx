@@ -12,7 +12,8 @@ import {
 	refreshToken,
 	revokeSession,
 } from "./api.ts";
-import { setActiveAccountKey } from "./db/init.ts";
+import { setActiveAccountKey, setActiveAccountKeySilently } from "./db/init.ts";
+import { notify } from "./db/notify.ts";
 import { clearLocalKeys } from "./e2ee/keys.ts";
 import { getRouter } from "./router.tsx";
 import {
@@ -304,6 +305,7 @@ function useSessionHydration(
 	}, [activeAccount, setAccounts]);
 }
 
+// eslint-disable-next-line max-lines-per-function -- account state, token rotation and storage sync share one reducer-like hook.
 function useAuthState() {
 	const [accounts, setAccounts] = useState<StoredAccount[]>(readAccounts);
 	const [activeToken, setActiveToken] = useState<string | null>(() =>
@@ -510,9 +512,18 @@ function useAuthState() {
 			? (accounts.find((a) => a.token === activeToken) ?? null)
 			: null;
 
+	// Select the account database synchronously: the children's effects run
+	// before this provider's effects, and a key lookup in that window must
+	// not read the shared pre-account database (the key would be generated
+	// there and the "new key" prompt would return after every reload).
+	setActiveAccountKeySilently(activeAccount?.user.id ?? null);
+
 	useEffect(() => {
 		const accountKey = activeAccount?.user.id ?? null;
 		setActiveAccountKey(accountKey);
+		// The render-time selection above is silent by design; the live
+		// queries still have to re-read from the new database.
+		notify();
 
 		// The Service Worker cannot read the session storage: mirror the
 		// active credentials so Background Sync can flush the outbox after

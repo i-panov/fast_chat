@@ -17,6 +17,12 @@ import { AuthProvider } from "../useAuth.tsx";
 import { ChatPage } from "./ChatPage.tsx";
 
 const navigate = vi.hoisted(() => vi.fn());
+const media = vi.hoisted(() => ({ mobile: false }));
+
+vi.mock("@mantine/hooks", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@mantine/hooks")>();
+	return { ...actual, useMediaQuery: () => media.mobile };
+});
 
 const startCall = vi.hoisted(() =>
 	vi.fn(() => Promise.resolve({ callId: "c-1", state: "ringing" })),
@@ -125,6 +131,7 @@ function sseHandler(): SseHandler {
 }
 
 const SELECT_PROMPT = /selectPrompt|Select/;
+const BACK_BUTTON_RE = /chat\.back|Back|Назад/;
 const FIND_OPTIONS = { timeout: 5000 };
 const MEMBER_COUNT = /chat\.membersCount|member/;
 const SETTINGS_LABEL = /Settings|chat\.settings/;
@@ -294,6 +301,41 @@ describe("chat page", () => {
 				throw new Error("active header missing");
 			}
 		});
+	});
+
+	it("shows one pane on a phone and returns to the list", async () => {
+		seedAccount();
+		await chatsRepo.upsert(groupChat());
+		media.mobile = true;
+
+		try {
+			renderPage();
+
+			// Only the list is visible; the empty-chat pane is not squeezed
+			// next to a 300px sidebar.
+			await screen.findByText("Team");
+			expect(screen.queryByText(SELECT_PROMPT)).toBeNull();
+
+			fireEvent.click(screen.getByText("Team"));
+
+			await waitFor(() => {
+				const headers = [...document.querySelectorAll("header")];
+				if (!headers.some((h) => h.textContent?.includes("Team"))) {
+					throw new Error("active header missing");
+				}
+			});
+			const back = await screen.findByRole("button", { name: BACK_BUTTON_RE });
+			fireEvent.click(back);
+
+			await waitFor(() => {
+				expect(
+					screen.queryByRole("button", { name: BACK_BUTTON_RE }),
+				).toBeNull();
+			});
+			expect(await screen.findByText("Team")).toBeTruthy();
+		} finally {
+			media.mobile = false;
+		}
 	});
 
 	it("starts a call from the chat header", async () => {

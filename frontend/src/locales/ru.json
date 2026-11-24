@@ -303,5 +303,6 @@
 	"admin.target": "Цель",
 	"admin.confirm": "Подтвердить",
 	"admin.cancel": "Отмена",
-	"admin.loadMore": "Загрузить более старые"
+	"admin.loadMore": "Загрузить более старые",
+	"chat.back": "Назад"
 }
