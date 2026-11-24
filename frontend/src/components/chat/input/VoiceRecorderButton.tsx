@@ -1,4 +1,4 @@
-import { ActionIcon, Text, Tooltip } from "@mantine/core";
+import { ActionIcon, Button, Group, Text, Tooltip } from "@mantine/core";
 import { Mic, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -29,6 +29,13 @@ function pickMimeType(): string | undefined {
 	);
 }
 
+function formatDuration(seconds: number): string {
+	const minutes = Math.floor(seconds / 60);
+	const rest = seconds % 60;
+
+	return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
 /** Maps a getUserMedia failure to a message the user can act on. */
 function recordingErrorKey(error: unknown): string {
 	if (error instanceof DOMException) {
@@ -57,10 +64,22 @@ function stopTracks(stream: MediaStream | null): void {
 
 interface Props {
 	onAttachFiles?: (files: File[]) => void | Promise<void>;
+	/** Tells the composer to hide the input and attachments while recording. */
+	onRecordingChange?: (recording: boolean) => void;
+	/** Idle trigger is hidden when there is something to send. */
+	hidden?: boolean;
 }
 
-// eslint-disable-next-line max-lines-per-function -- permission handling, recording lifecycle and two button states share one media stream.
-export function VoiceRecorderButton({ onAttachFiles }: Props) {
+// The recorder owns the whole composer row while it is active: the text
+// input, the attach menu and the send button disappear, and a timer with
+// Cancel/Send takes their place. The component stays mounted across the
+// transition, so the MediaRecorder and the stream survive the layout change.
+// eslint-disable-next-line max-lines-per-function -- the recorder owns the permission, MediaRecorder and composer states.
+export function VoiceRecorderButton({
+	onAttachFiles,
+	onRecordingChange,
+	hidden = false,
+}: Props) {
 	const { t } = useTranslation();
 	const [requesting, setRequesting] = useState(false);
 	const [recording, setRecording] = useState(false);
@@ -75,6 +94,7 @@ export function VoiceRecorderButton({ onAttachFiles }: Props) {
 	// recorder; a late answer of an older or unmounted request is discarded.
 	const requestIdRef = useRef(0);
 	const requestInFlightRef = useRef(false);
+	const discardRef = useRef(false);
 
 	useEffect(() => {
 		return () => {
@@ -144,8 +164,6 @@ export function VoiceRecorderButton({ onAttachFiles }: Props) {
 	async function start() {
 		if (requestInFlightRef.current || recorderRef.current !== null) return;
 
-		// Checked before mediaDevices: the browser hides that object outside
-		// a secure context, and "unsupported" would be the wrong advice.
 		if (window.isSecureContext === false) {
 			emitNotification(t("input.recordInsecure"));
 			return;
@@ -160,10 +178,12 @@ export function VoiceRecorderButton({ onAttachFiles }: Props) {
 			return;
 		}
 
+		discardRef.current = false;
 		requestInFlightRef.current = true;
 		const requestId = requestIdRef.current + 1;
 		requestIdRef.current = requestId;
 		setRequesting(true);
+		onRecordingChange?.(true);
 
 		try {
 			const stream = await requestStream(requestId);
@@ -171,6 +191,7 @@ export function VoiceRecorderButton({ onAttachFiles }: Props) {
 				if (requestId === requestIdRef.current) {
 					setRequesting(false);
 					requestInFlightRef.current = false;
+					onRecordingChange?.(false);
 					emitNotification(t("input.recordTimeout"));
 				}
 				return;
@@ -195,15 +216,21 @@ export function VoiceRecorderButton({ onAttachFiles }: Props) {
 				cleanup();
 				setRecording(false);
 				setRequesting(false);
+				onRecordingChange?.(false);
 				emitNotification(t(RECORD_FAILED_KEY));
 			};
 			recorder.onstop = () => {
 				const duration = secondsRef.current;
 				const type = recorder.mimeType || "audio/webm";
 				const blob = new Blob(chunksRef.current, { type });
+				const discarded = discardRef.current;
+				discardRef.current = false;
 				cleanup();
 				setRecording(false);
 				setRequesting(false);
+				onRecordingChange?.(false);
+
+				if (discarded) return;
 
 				if (blob.size === 0) {
 					emitNotification(t(RECORD_FAILED_KEY));
@@ -227,9 +254,10 @@ export function VoiceRecorderButton({ onAttachFiles }: Props) {
 
 			recorderRef.current = recorder;
 			requestInFlightRef.current = false;
-			setSeconds(0);
 			setRequesting(false);
+			setSeconds(0);
 			setRecording(true);
+			onRecordingChange?.(true);
 			recorder.start();
 			timerRef.current = setInterval(() => {
 				secondsRef.current += 1;
@@ -243,6 +271,7 @@ export function VoiceRecorderButton({ onAttachFiles }: Props) {
 			setRecording(false);
 			setRequesting(false);
 			if (requestId === requestIdRef.current) {
+				onRecordingChange?.(false);
 				emitNotification(t(recordingErrorKey(error)));
 			}
 		}
@@ -254,43 +283,78 @@ export function VoiceRecorderButton({ onAttachFiles }: Props) {
 		}
 	}
 
-	if (requesting) {
+	function cancel() {
+		discardRef.current = true;
+		if (recorderRef.current?.state === "recording") {
+			recorderRef.current.stop();
+			return;
+		}
+
+		// A pending permission prompt cannot be cancelled: invalidate it so
+		// the late stream is stopped instead of starting a recorder.
+		requestIdRef.current += 1;
+		cleanup();
+		setRequesting(false);
+		setRecording(false);
+		onRecordingChange?.(false);
+	}
+
+	if (requesting || recording) {
 		return (
-			<Tooltip label={t("input.requestingMic")}>
-				<ActionIcon
-					variant="subtle"
-					color="gray"
-					size="lg"
-					loading
-					disabled
-					style={{ marginBottom: 2 }}
-					aria-label={t("input.requestingMic")}
-				>
-					<Mic size={20} />
-				</ActionIcon>
-			</Tooltip>
+			<Group
+				justify="space-between"
+				align="center"
+				gap="xs"
+				style={{ flex: 1, minWidth: 0 }}
+			>
+				<Group gap="xs" align="center" wrap="nowrap">
+					<span
+						style={{
+							width: 10,
+							height: 10,
+							borderRadius: "50%",
+							flexShrink: 0,
+							background: "var(--mantine-color-red-6)",
+						}}
+					/>
+					<Text
+						size="sm"
+						fw={600}
+						style={{ fontVariantNumeric: "tabular-nums" }}
+					>
+						{formatDuration(seconds)}
+					</Text>
+					<Text size="xs" c="dimmed" truncate>
+						{t(requesting ? "input.requestingMic" : "input.recording")}
+					</Text>
+				</Group>
+				<Group gap="xs" wrap="nowrap">
+					<Button
+						type="button"
+						variant="subtle"
+						color="gray"
+						size="compact-sm"
+						onClick={cancel}
+					>
+						{t("input.cancel")}
+					</Button>
+					{recording && (
+						<Button
+							type="button"
+							color="red"
+							size="compact-sm"
+							leftSection={<Square size={12} />}
+							onClick={stop}
+						>
+							{t("input.send")}
+						</Button>
+					)}
+				</Group>
+			</Group>
 		);
 	}
 
-	if (recording) {
-		return (
-			<Tooltip label={t("input.stopRecording")}>
-				<ActionIcon
-					variant="filled"
-					color="red"
-					size="lg"
-					onClick={stop}
-					style={{ marginBottom: 2 }}
-					aria-label={t("input.stopRecording")}
-				>
-					<Square size={16} />
-					<Text size="xs" style={{ marginLeft: 4 }}>
-						{seconds}
-					</Text>
-				</ActionIcon>
-			</Tooltip>
-		);
-	}
+	if (hidden) return null;
 
 	return (
 		<Tooltip label={t("input.recordVoice")}>

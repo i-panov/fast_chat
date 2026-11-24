@@ -302,5 +302,10 @@
 	"admin.confirm": "Confirm",
 	"admin.cancel": "Cancel",
 	"admin.loadMore": "Load older messages",
-	"chat.back": "Back"
+	"chat.back": "Back",
+	"input.attachPhoto": "Photo",
+	"input.attachVideo": "Video",
+	"input.attachAudio": "Audio",
+	"input.recording": "Recording",
+	"input.cancel": "Cancel"
 }

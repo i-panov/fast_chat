@@ -98,6 +98,15 @@ async function openAs(
 }
 
 const SEARCH_PLACEHOLDER_RE = /Search users|Поиск пользователей/;
+const MIC_RE = /Voice message|Голосовое сообщение/;
+const ATTACH_RE = /Attach file|Прикрепить файл/;
+const PHOTO_ITEM_RE = /Photo|Фото/;
+const VIDEO_ITEM_RE = /Video|Видео/;
+const AUDIO_ITEM_RE = /Audio|Аудио/;
+const LOCATION_ITEM_RE = /location/i;
+const CANCEL_RE = /^(Cancel|Отмена)$/;
+const COMPOSER_PLACEHOLDER_RE = /Type a message|Напишите/;
+const SEND_BUTTON_RE = /^(Send|Отправить)$/;
 
 test("a phone shows the list and the chat one at a time", async ({
 	browser,
@@ -144,6 +153,50 @@ test("a phone shows the list and the chat one at a time", async ({
 
 		const back = page.getByRole("button", { name: "Back" });
 		await expect(back).toBeVisible({ timeout: 10_000 });
+
+		// The composer fits: a wide textarea and an icon send action, not the
+		// text button squeezed against the attach icons.
+		const input = page.getByPlaceholder(COMPOSER_PLACEHOLDER_RE);
+		await expect(input).toBeVisible();
+		const box = await input.boundingBox();
+		expect(box?.width ?? 0).toBeGreaterThan(170);
+		// Empty composer: the microphone is the only right-hand action, the
+		// send button is hidden. Typing swaps them.
+		const mic = page.getByRole("button", { name: MIC_RE });
+		await expect(mic).toBeVisible();
+		await expect(
+			page.getByRole("button", { name: SEND_BUTTON_RE }),
+		).toHaveCount(0);
+
+		await input.fill("Привет");
+		await expect(
+			page.getByRole("button", { name: SEND_BUTTON_RE }),
+		).toBeVisible();
+		await expect(mic).toHaveCount(0);
+		await input.fill("");
+		await expect(mic).toBeVisible();
+
+		// The paperclip owns file/photo/video/audio/location instead of three
+		// separate buttons.
+		await page.getByRole("button", { name: ATTACH_RE }).click();
+		for (const item of [
+			PHOTO_ITEM_RE,
+			VIDEO_ITEM_RE,
+			AUDIO_ITEM_RE,
+			LOCATION_ITEM_RE,
+		]) {
+			await expect(page.getByRole("menuitem", { name: item })).toBeVisible();
+		}
+		await page.keyboard.press("Escape");
+
+		// Recording replaces the whole composer, including the text input.
+		await mic.click();
+		const cancel = page.getByRole("button", { name: CANCEL_RE });
+		await expect(cancel).toBeVisible({ timeout: 15_000 });
+		await expect(input).toBeHidden();
+		await cancel.click();
+		await expect(input).toBeVisible({ timeout: 10_000 });
+
 		// The list is gone, the chat fills the screen.
 		await expect(search).toHaveCount(0);
 

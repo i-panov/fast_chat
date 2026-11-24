@@ -1,14 +1,27 @@
+// The composer owns the toolbar, previews, banners and the submit action.
+/* eslint-disable max-lines */
 import {
 	ActionIcon,
 	Button,
+	Menu,
 	Paper,
 	Text,
 	Textarea,
 	Tooltip,
 } from "@mantine/core";
-import { MapPin, Paperclip, X } from "lucide-react";
+import { useMediaQuery } from "@mantine/hooks";
+import {
+	FileText,
+	Image,
+	MapPin,
+	Music,
+	Paperclip,
+	Send,
+	Video,
+	X,
+} from "lucide-react";
 import type React from "react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import type { FileInfo, Location, PendingFile } from "../../types/api.ts";
@@ -18,6 +31,8 @@ import { LocationPreview } from "./input/LocationPreview.tsx";
 import { PendingFilePreview } from "./input/PendingFilePreview.tsx";
 import { ReplyFilePreviewInline } from "./input/ReplyFilePreviewInline.tsx";
 import { VoiceRecorderButton } from "./input/VoiceRecorderButton.tsx";
+
+const ATTACH_FILE_KEY = "input.attachFile";
 
 const bannerStyle = {
 	padding: "8px 12px",
@@ -226,6 +241,16 @@ function AttachToolbar({
 	const { t } = useTranslation();
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
+	function pickFiles(accept?: string) {
+		const input = fileInputRef.current;
+		if (input === null) return;
+		// The accept attribute is set per menu item: a photo picker should
+		// not offer PDFs, and the attachment preview depends on the MIME
+		// type the browser reports.
+		input.accept = accept ?? "";
+		input.click();
+	}
+
 	function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
 		if (e.target.files && e.target.files.length > 0 && onAttachFiles) {
 			void onAttachFiles(Array.from(e.target.files));
@@ -242,35 +267,55 @@ function AttachToolbar({
 				style={{ display: "none" }}
 				onChange={handleFileChange}
 			/>
-			<div style={{ display: "flex", alignItems: "flex-end" }}>
-				<Tooltip label={t("input.attachFile")}>
-					<ActionIcon
-						variant="subtle"
-						color="gray"
-						size="lg"
-						onClick={() => fileInputRef.current?.click()}
-						style={{ marginBottom: 2 }}
-						aria-label={t("input.attachFile")}
-					>
-						<Paperclip size={20} />
-					</ActionIcon>
-				</Tooltip>
-				{onOpenLocationPicker !== undefined && (
-					<Tooltip label={t("input.attachLocation")}>
+			<Menu position="top-start" withArrow shadow="md">
+				<Menu.Target>
+					<Tooltip label={t(ATTACH_FILE_KEY)}>
 						<ActionIcon
 							variant="subtle"
 							color="gray"
 							size="lg"
-							onClick={onOpenLocationPicker}
 							style={{ marginBottom: 2 }}
-							aria-label={t("input.attachLocation")}
+							aria-label={t(ATTACH_FILE_KEY)}
 						>
-							<MapPin size={20} />
+							<Paperclip size={20} />
 						</ActionIcon>
 					</Tooltip>
-				)}
-				<VoiceRecorderButton onAttachFiles={onAttachFiles} />
-			</div>
+				</Menu.Target>
+				<Menu.Dropdown>
+					<Menu.Item
+						leftSection={<FileText size={16} />}
+						onClick={() => pickFiles()}
+					>
+						{t(ATTACH_FILE_KEY)}
+					</Menu.Item>
+					<Menu.Item
+						leftSection={<Image size={16} />}
+						onClick={() => pickFiles("image/*")}
+					>
+						{t("input.attachPhoto")}
+					</Menu.Item>
+					<Menu.Item
+						leftSection={<Video size={16} />}
+						onClick={() => pickFiles("video/*")}
+					>
+						{t("input.attachVideo")}
+					</Menu.Item>
+					<Menu.Item
+						leftSection={<Music size={16} />}
+						onClick={() => pickFiles("audio/*")}
+					>
+						{t("input.attachAudio")}
+					</Menu.Item>
+					{onOpenLocationPicker !== undefined && (
+						<Menu.Item
+							leftSection={<MapPin size={16} />}
+							onClick={onOpenLocationPicker}
+						>
+							{t("input.attachLocation")}
+						</Menu.Item>
+					)}
+				</Menu.Dropdown>
+			</Menu>
 		</>
 	);
 }
@@ -298,6 +343,7 @@ function SendButton({
 	existingFiles,
 	pendingLocation,
 	hasExistingLocation,
+	compact,
 }: {
 	editing: boolean;
 	text: string;
@@ -305,21 +351,35 @@ function SendButton({
 	existingFiles: FileInfo[] | undefined;
 	pendingLocation: Location | null | undefined;
 	hasExistingLocation: boolean;
+	compact: boolean;
 }) {
 	const { t } = useTranslation();
+	const label = editing ? t("input.save") : t("input.send");
+	const disabled = isSendDisabled(
+		text,
+		pendingFiles,
+		existingFiles,
+		pendingLocation,
+		hasExistingLocation,
+	);
+
+	if (compact) {
+		return (
+			<ActionIcon
+				type="submit"
+				size="lg"
+				variant="filled"
+				disabled={disabled}
+				aria-label={label}
+			>
+				<Send size={18} />
+			</ActionIcon>
+		);
+	}
+
 	return (
-		<Button
-			type="submit"
-			disabled={isSendDisabled(
-				text,
-				pendingFiles,
-				existingFiles,
-				pendingLocation,
-				hasExistingLocation,
-			)}
-			size="sm"
-		>
-			{editing ? t("input.save") : t("input.send")}
+		<Button type="submit" disabled={disabled} size="sm">
+			{label}
 		</Button>
 	);
 }
@@ -356,12 +416,26 @@ function MessageForm({
 	onCancelEdit: () => void;
 }) {
 	const { t } = useTranslation();
+	const isMobile = useMediaQuery("(max-width: 48em)") === true;
+	const [recording, setRecording] = useState(false);
+	const canSend = !isSendDisabled(
+		text,
+		pendingFiles,
+		existingFiles,
+		pendingLocation,
+		hasExistingLocation,
+	);
+
 	return (
 		<form
 			style={{
 				display: "flex",
-				gap: "8px",
-				padding: "12px",
+				alignItems: "flex-end",
+				gap: isMobile ? 4 : 8,
+				// The gesture bar of a phone overlaps the last row otherwise.
+				padding: isMobile
+					? "8px 8px calc(8px + env(safe-area-inset-bottom))"
+					: 12,
 				borderTop:
 					editing || hasAttachments
 						? undefined
@@ -373,10 +447,12 @@ function MessageForm({
 				onSubmit(e);
 			}}
 		>
-			<AttachToolbar
-				onAttachFiles={onAttachFiles}
-				onOpenLocationPicker={onOpenLocationPicker}
-			/>
+			<div style={{ display: recording ? "none" : "flex" }}>
+				<AttachToolbar
+					onAttachFiles={onAttachFiles}
+					onOpenLocationPicker={onOpenLocationPicker}
+				/>
+			</div>
 			<Textarea
 				placeholder={t("input.placeholder")}
 				value={text}
@@ -384,8 +460,13 @@ function MessageForm({
 					onTextChange(e.target.value);
 					onTypingStart?.();
 				}}
-				style={{ flex: 1 }}
+				style={{
+					flex: 1,
+					minWidth: 0,
+					display: recording ? "none" : undefined,
+				}}
 				size="sm"
+				styles={isMobile ? { input: { fontSize: 16 } } : undefined}
 				autosize
 				minRows={1}
 				maxRows={6}
@@ -407,13 +488,21 @@ function MessageForm({
 					}
 				}}
 			/>
-			<SendButton
-				editing={editing}
-				text={text}
-				pendingFiles={pendingFiles}
-				existingFiles={existingFiles}
-				pendingLocation={pendingLocation}
-				hasExistingLocation={hasExistingLocation}
+			{!recording && canSend && (
+				<SendButton
+					editing={editing}
+					text={text}
+					pendingFiles={pendingFiles}
+					existingFiles={existingFiles}
+					pendingLocation={pendingLocation}
+					hasExistingLocation={hasExistingLocation}
+					compact={isMobile}
+				/>
+			)}
+			<VoiceRecorderButton
+				onAttachFiles={onAttachFiles}
+				onRecordingChange={setRecording}
+				hidden={canSend}
 			/>
 		</form>
 	);

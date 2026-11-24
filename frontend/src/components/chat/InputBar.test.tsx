@@ -5,6 +5,19 @@ import type { FileInfo, PendingFile } from "../../types/api.ts";
 import { AuthProvider } from "../../useAuth.tsx";
 import { InputBar } from "./InputBar.tsx";
 
+const media = vi.hoisted(() => ({ mobile: false }));
+const RECORD_LABEL_RE = /input\.recordVoice|Voice message/;
+const ATTACH_LABEL_RE = /input\.attachFile|Attach file/;
+const ATTACH_PHOTO_RE = /input\.attachPhoto|Photo/;
+const ATTACH_VIDEO_RE = /input\.attachVideo|Video/;
+const ATTACH_AUDIO_RE = /input\.attachAudio|Audio/;
+const ATTACH_LOCATION_RE = /input\.attachLocation|location/i;
+
+vi.mock("@mantine/hooks", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@mantine/hooks")>();
+	return { ...actual, useMediaQuery: () => media.mobile };
+});
+
 function seedAccount() {
 	localStorage.setItem(
 		"accounts",
@@ -172,7 +185,18 @@ describe("input bar", () => {
 				</AuthProvider>
 			</MantineProvider>,
 		);
-		expect(submitButton().disabled).toBe(true);
+		// Nothing to send: the send action is hidden and the microphone is
+		// the only action on the right.
+		expect(
+			[...document.querySelectorAll("button")].some(
+				(button) => button.type === "submit",
+			),
+		).toBe(false);
+		expect(
+			screen.getByRole("button", {
+				name: RECORD_LABEL_RE,
+			}),
+		).toBeTruthy();
 
 		rerender(
 			<MantineProvider>
@@ -216,14 +240,27 @@ describe("input bar", () => {
 		expect(picker.value).toBe("");
 	});
 
-	it("opens the location picker", () => {
+	it("offers file, photo, video, audio and location from the attach menu", async () => {
+		const onAttachFiles = vi.fn();
 		const onOpenLocationPicker = vi.fn();
-		renderBar(props({ onOpenLocationPicker }));
+		renderBar(props({ onAttachFiles, onOpenLocationPicker }));
 
-		const buttons = [...document.querySelectorAll("button")];
-		const lastAction = buttons[1];
-		fireEvent.click(lastAction);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: ATTACH_LABEL_RE,
+			}),
+		);
 
+		for (const label of [
+			ATTACH_PHOTO_RE,
+			ATTACH_VIDEO_RE,
+			ATTACH_AUDIO_RE,
+			ATTACH_LOCATION_RE,
+		]) {
+			expect(await screen.findByText(label)).toBeTruthy();
+		}
+
+		fireEvent.click(await screen.findByText(ATTACH_LOCATION_RE));
 		expect(onOpenLocationPicker).toHaveBeenCalledTimes(1);
 	});
 

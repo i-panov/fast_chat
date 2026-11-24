@@ -7,6 +7,7 @@ import { VoiceRecorderButton } from "./VoiceRecorderButton.tsx";
 const RECORD_LABEL_RE = /input\.recordVoice|Voice message/;
 const REQUESTING_LABEL_RE =
 	/input\.requestingMic|Waiting for microphone access/;
+const CANCEL_LABEL_RE = /input\.cancel|Cancel/;
 
 // biome-ignore lint/complexity/noStaticOnlyClass: the tests only need the static capability check.
 class FakeMediaRecorder {
@@ -77,10 +78,8 @@ describe("VoiceRecorderButton", () => {
 			await Promise.resolve();
 		});
 
-		const pending = screen.getByRole("button", {
-			name: REQUESTING_LABEL_RE,
-		});
-		expect(pending).toBeDisabled();
+		expect(screen.getByText(REQUESTING_LABEL_RE)).toBeTruthy();
+		expect(screen.getByRole("button", { name: CANCEL_LABEL_RE })).toBeTruthy();
 
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(15_000);

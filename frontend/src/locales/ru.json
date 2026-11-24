@@ -304,5 +304,10 @@
 	"admin.confirm": "Подтвердить",
 	"admin.cancel": "Отмена",
 	"admin.loadMore": "Загрузить более старые",
-	"chat.back": "Назад"
+	"chat.back": "Назад",
+	"input.attachPhoto": "Фото",
+	"input.attachVideo": "Видео",
+	"input.attachAudio": "Аудио",
+	"input.recording": "Идёт запись",
+	"input.cancel": "Отмена"
 }
