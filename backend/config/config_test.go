@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -295,5 +296,280 @@ func TestIsValidCORSOrigin(t *testing.T) {
 		if IsValidCORSOrigin(bad) {
 			t.Errorf("IsValidCORSOrigin(%q) = true, want false", bad)
 		}
+	}
+}
+
+func TestLoadPublicDomain(t *testing.T) {
+	yaml := `
+server:
+  host: 127.0.0.1
+  port: 8085
+  public_domain: fastchat.example.com
+database:
+  path: /tmp/test.db
+`
+	cfg, err := Load(writeTestConfig(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Server.Domain != "fastchat.example.com" {
+		t.Errorf("expected Domain=fastchat.example.com, got %s", cfg.Server.Domain)
+	}
+	if cfg.Server.Host != "127.0.0.1" {
+		t.Errorf("expected bind host to stay 127.0.0.1, got %s", cfg.Server.Host)
+	}
+}
+
+func TestLoadPublicDomainWithPort(t *testing.T) {
+	yaml := `
+server:
+  host: 127.0.0.1
+  port: 8085
+  public_domain: chat.example.com:8443
+database:
+  path: /tmp/test.db
+`
+	cfg, err := Load(writeTestConfig(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Server.Domain != "chat.example.com:8443" {
+		t.Errorf("expected Domain=chat.example.com:8443, got %s", cfg.Server.Domain)
+	}
+}
+
+func TestLoadWildcardHostRequiresPublicDomain(t *testing.T) {
+	yaml := `
+server:
+  host: 0.0.0.0
+  port: 8085
+database:
+  path: /tmp/test.db
+`
+	if _, err := Load(writeTestConfig(t, yaml)); !errors.Is(err, ErrPublicDomainRequired) {
+		t.Errorf("expected ErrPublicDomainRequired, got %v", err)
+	}
+}
+
+func TestLoadWildcardHostWithPublicDomain(t *testing.T) {
+	yaml := `
+server:
+  host: 0.0.0.0
+  port: 8085
+  public_domain: chat.example.com
+database:
+  path: /tmp/test.db
+`
+	cfg, err := Load(writeTestConfig(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Server.Domain != "chat.example.com" {
+		t.Errorf("expected Domain=chat.example.com, got %s", cfg.Server.Domain)
+	}
+}
+
+func TestLoadInvalidPublicDomain(t *testing.T) {
+	for _, bad := range []string{
+		"https://chat.example.com",
+		"chat.example.com/",
+		"chat.example.com:0",
+		"chat.example.com:70000",
+		" chat.example.com",
+		"::1",
+	} {
+		yaml := `
+server:
+  host: 127.0.0.1
+  port: 8085
+  public_domain: "` + bad + `"
+database:
+  path: /tmp/test.db
+`
+		if _, err := Load(writeTestConfig(t, yaml)); !errors.Is(err, ErrInvalidPublicDomain) {
+			t.Errorf("public_domain=%q: expected ErrInvalidPublicDomain, got %v", bad, err)
+		}
+	}
+}
+
+func TestLoadPublicDomainFromEnv(t *testing.T) {
+	yaml := `
+server:
+  host: localhost
+  port: 8080
+database:
+  path: /tmp/test.db
+`
+	t.Setenv("FASTCHAT_PUBLIC_DOMAIN", "chat.example.org")
+
+	cfg, err := Load(writeTestConfig(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Server.Domain != "chat.example.org" {
+		t.Errorf("expected Domain=chat.example.org from env, got %s", cfg.Server.Domain)
+	}
+}
+
+func TestLoadRejectsBadServerHost(t *testing.T) {
+	cases := map[string]string{
+		"scheme":       "https://example.com",
+		"path":         "example.com/path",
+		"trailing pad": "localhost ",
+		"host:port":    "127.0.0.1:8080",
+		"garbage v6":   "[::1",
+	}
+
+	for name, host := range cases {
+		t.Run(name, func(t *testing.T) {
+			yaml := `
+server:
+  host: "` + host + `"
+  port: 8085
+  public_domain: chat.example.com
+database:
+  path: /tmp/test.db
+`
+			if _, err := Load(writeTestConfig(t, yaml)); !errors.Is(err, ErrInvalidServerHost) {
+				t.Errorf("host=%q: expected ErrInvalidServerHost, got %v", host, err)
+			}
+		})
+	}
+}
+
+func TestLoadBracketedIPv6Host(t *testing.T) {
+	yaml := `
+server:
+  host: "[::1]"
+  port: 8085
+  public_domain: chat.example.com
+database:
+  path: /tmp/test.db
+`
+	cfg, err := Load(writeTestConfig(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Server.Host != "::1" {
+		t.Errorf("expected brackets stripped from bind host, got %q", cfg.Server.Host)
+	}
+	if cfg.Server.Domain != "chat.example.com" {
+		t.Errorf("expected Domain=chat.example.com, got %q", cfg.Server.Domain)
+	}
+}
+
+func TestLoadWildcardIPv6RequiresPublicDomain(t *testing.T) {
+	for _, host := range []string{"::", "[::]", "0:0:0:0:0:0:0:0"} {
+		yaml := `
+server:
+  host: "` + host + `"
+  port: 8085
+database:
+  path: /tmp/test.db
+`
+		if _, err := Load(writeTestConfig(t, yaml)); !errors.Is(err, ErrPublicDomainRequired) {
+			t.Errorf("host=%q: expected ErrPublicDomainRequired, got %v", host, err)
+		}
+	}
+}
+
+func TestLoadRejectsWildcardPublicDomain(t *testing.T) {
+	for _, domain := range []string{"0.0.0.0", "0.0.0.0:8080", "::", "[::]:443"} {
+		yaml := `
+server:
+  host: 127.0.0.1
+  port: 8085
+  public_domain: "` + domain + `"
+database:
+  path: /tmp/test.db
+`
+		if _, err := Load(writeTestConfig(t, yaml)); !errors.Is(err, ErrInvalidPublicDomain) {
+			t.Errorf("public_domain=%q: expected ErrInvalidPublicDomain, got %v", domain, err)
+		}
+	}
+}
+
+func TestLoadNormalizesPublicDomain(t *testing.T) {
+	cases := map[string]string{
+		"EXAMPLE.com.":         "example.com",
+		"Chat.Example.COM":     "chat.example.com",
+		"chat.example.com:443": "chat.example.com:443",
+		"[2001:db8::1]:443":    "[2001:db8::1]:443",
+	}
+
+	for in, want := range cases {
+		yaml := `
+server:
+  host: 127.0.0.1
+  port: 8085
+  public_domain: "` + in + `"
+database:
+  path: /tmp/test.db
+`
+		cfg, err := Load(writeTestConfig(t, yaml))
+		if err != nil {
+			t.Fatalf("public_domain=%q: %v", in, err)
+		}
+
+		if cfg.Server.Domain != want {
+			t.Errorf("public_domain=%q: Domain=%q, want %q", in, cfg.Server.Domain, want)
+		}
+	}
+}
+
+func TestLoadRejectsBadPublicDomainSuffix(t *testing.T) {
+	for _, domain := range []string{"chat.example.com:", "chat.example.com?x=1", "chat#example.com"} {
+		yaml := `
+server:
+  host: 127.0.0.1
+  port: 8085
+  public_domain: "` + domain + `"
+database:
+  path: /tmp/test.db
+`
+		if _, err := Load(writeTestConfig(t, yaml)); !errors.Is(err, ErrInvalidPublicDomain) {
+			t.Errorf("public_domain=%q: expected ErrInvalidPublicDomain, got %v", domain, err)
+		}
+	}
+}
+
+func TestLoadValidatesHostFromEnv(t *testing.T) {
+	yaml := `
+server:
+  host: localhost
+  port: 8085
+  public_domain: chat.example.com
+database:
+  path: /tmp/test.db
+`
+	t.Setenv("FASTCHAT_HOST", "https://example.com")
+
+	if _, err := Load(writeTestConfig(t, yaml)); !errors.Is(err, ErrInvalidServerHost) {
+		t.Errorf("expected ErrInvalidServerHost from env, got %v", err)
+	}
+}
+
+func TestLoadTrimsDomainFromEnv(t *testing.T) {
+	yaml := `
+server:
+  host: localhost
+  port: 8085
+database:
+  path: /tmp/test.db
+`
+	t.Setenv("FASTCHAT_PUBLIC_DOMAIN", "  chat.example.org\n")
+
+	cfg, err := Load(writeTestConfig(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Server.Domain != "chat.example.org" {
+		t.Errorf("expected trimmed Domain=chat.example.org, got %q", cfg.Server.Domain)
 	}
 }

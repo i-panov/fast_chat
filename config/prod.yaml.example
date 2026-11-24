@@ -12,9 +12,16 @@
 # - Use strong random values for any secrets.
 
 server:
-    # Public host the server binds to (0.0.0.0 to listen on all interfaces).
-    host: 0.0.0.0
+    # Address the server binds to. Behind a local reverse proxy use 127.0.0.1;
+    # 0.0.0.0 (or ::) listens on all interfaces.
+    host: 127.0.0.1
     port: 8080
+    # Address the server is reachable at from other servers. It becomes the
+    # domain part of every user id (nick:domain) and the target of federation
+    # requests, so it must be what peers can actually reach. When omitted, it
+    # falls back to host:port — fine only while the bind address is reachable;
+    # a wildcard bind requires this value.
+    public_domain: chat.example.com
     # Path to the built frontend assets (output of `make build:frontend`).
     static_dir: ../frontend/dist
     # Optional: list the reverse proxies in front of this server, so the client

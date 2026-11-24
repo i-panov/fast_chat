@@ -34,3 +34,7 @@ frontend/playwright-report/
 .idea/
 .gigaide/
 
+
+# Бэкапы, сделанные деплоем вручную (не код).
+backend/data.bak-*/
+config/*.bak-*

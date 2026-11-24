@@ -1,8 +1,8 @@
 BACKEND_PORT ?= 8080
-# Домен сервера вычисляется из хоста и порта: SERVER_DOMAIN должен совпадать
-# с ними, иначе федерация не найдёт соседа.
+# SERVER_HOST — адрес бинда, а не публичный домен. PUBLIC_DOMAIN — необязательная
+# идентичность для ников и федерации: если пусто, домен = SERVER_HOST:BACKEND_PORT.
 SERVER_HOST ?= localhost
-SERVER_DOMAIN ?= $(SERVER_HOST):$(BACKEND_PORT)
+PUBLIC_DOMAIN ?=
 FRONTEND_PORT ?= 5173
 API_PROXY ?= http://localhost:$(BACKEND_PORT)
 
@@ -29,6 +29,7 @@ GOLANGCI_LINT := $(shell go env GOPATH)/bin/golangci-lint
 backend\:run:
 	cd backend && \
 	FASTCHAT_HOST=$(SERVER_HOST) \
+	FASTCHAT_PUBLIC_DOMAIN=$(PUBLIC_DOMAIN) \
 	FASTCHAT_PORT=$(BACKEND_PORT) \
 	FASTCHAT_DB_PATH=$(DB_PATH) \
 	FASTCHAT_UPLOADS_DIR=$(UPLOADS_DIR) \

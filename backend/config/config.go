@@ -19,6 +19,9 @@ import (
 var (
 	ErrDatabasePathRequired = errors.New("database.path is required")
 	ErrServerHostRequired   = errors.New("server.host is required")
+	ErrInvalidServerHost    = errors.New("server.host must be a bind address without scheme or path")
+	ErrInvalidPublicDomain  = errors.New("server.public_domain must be host[:port] without scheme or path")
+	ErrPublicDomainRequired = errors.New("server.public_domain is required when server.host is a wildcard address")
 	ErrInvalidPort          = errors.New("server.port must be 1..65535")
 	ErrInvalidTTL           = errors.New("message_edit_ttl/message_delete_ttl must be >= 0")
 	ErrInvalidFedScheme     = errors.New("federation.scheme must be http or https")
@@ -40,6 +43,10 @@ var (
 // federation traffic.
 const federationSchemeHTTPS = "https"
 
+// maxHostLen is the DNS name limit (RFC 1035). Ids embed the domain, so an
+// overlong value would grow every row that stores a user id.
+const maxHostLen = 253
+
 type Config struct {
 	MessageEditTTL   int              `yaml:"message_edit_ttl"`
 	MessageDeleteTTL int              `yaml:"message_delete_ttl"`
@@ -56,10 +63,21 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host      string `yaml:"host"`
-	Port      int    `yaml:"port"`
-	Domain    string `yaml:"-"` // computed from Host + Port
-	StaticDir string `yaml:"static_dir"`
+	// Host is the address the server binds to: "127.0.0.1" for a server
+	// behind a local reverse proxy, "0.0.0.0" (or "::") for all interfaces.
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+	// PublicDomain is the address the server is reachable at from other
+	// servers: it becomes the domain part of every user id (nick:domain) and
+	// the target of federation requests. It may include a port.
+	//
+	// When empty it is derived from Host and Port. That fits development,
+	// where the bind address is reachable too, but a production server behind
+	// a TLS proxy on :443 must set it explicitly — otherwise every id carries
+	// the internal port and peers would try to reach that port.
+	PublicDomain string `yaml:"public_domain"`
+	Domain       string `yaml:"-"` // computed from PublicDomain or Host + Port
+	StaticDir    string `yaml:"static_dir"`
 	// TrustedProxies lists the IPs/CIDRs of reverse proxies in front of this
 	// server, so the client address can be recovered from X-Forwarded-For.
 	//
@@ -166,10 +184,144 @@ func applyICEDefaults(cfg *Config) {
 	}
 }
 
+// resolveDomain derives the identity domain — the ":domain" part of every
+// user id and the target of federation requests. An explicit public_domain
+// wins; otherwise host:port is used, which is what a dev instance bound to
+// localhost wants. A wildcard bind address has no usable identity of its own,
+// so it demands an explicit public_domain instead of advertising "0.0.0.0".
+func resolveDomain(host, publicDomain string, port int) (string, error) {
+	if publicDomain != "" {
+		return normalizePublicDomain(publicDomain)
+	}
+
+	if isWildcardHost(host) {
+		return "", fmt.Errorf("%w: host=%q", ErrPublicDomainRequired, host)
+	}
+
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		slog.Warn("server.public_domain is empty while the bind address is not public;"+
+			" user ids will carry this address", "host", host)
+	}
+
+	return net.JoinHostPort(host, strconv.Itoa(port)), nil
+}
+
+// isWildcardHost reports whether the bind address covers every interface.
+// Hosts are stored without brackets: normalizeServerHost strips them.
+func isWildcardHost(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsUnspecified()
+	}
+
+	return false
+}
+
+// normalizeServerHost validates the bind address and returns it in the form
+// net.JoinHostPort expects: brackets around IPv6 are removed, so "[::1]"
+// becomes "::1" instead of turning into "[[::1]]:8080" later. A URL, a path or
+// an address that already carries a port is rejected here, otherwise it would
+// fail at listen time with an obscure error.
+func normalizeServerHost(raw string) (string, error) {
+	host := strings.TrimSpace(raw)
+
+	if host == "" || host != raw ||
+		strings.ContainsAny(host, " \t\r\n/") ||
+		strings.Contains(host, "://") {
+		return "", fmt.Errorf("%w: got %q", ErrInvalidServerHost, raw)
+	}
+
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+
+	// A colon is allowed only inside an IPv6 literal: "127.0.0.1:8080" is a
+	// common mistake and net.JoinHostPort would yield "[127.0.0.1:8080]:8080".
+	if strings.Contains(host, ":") && net.ParseIP(host) == nil {
+		return "", fmt.Errorf("%w: got %q (the port has its own option)", ErrInvalidServerHost, raw)
+	}
+
+	if len(host) > maxHostLen {
+		return "", fmt.Errorf("%w: got %d characters", ErrInvalidServerHost, len(host))
+	}
+
+	return host, nil
+}
+
+// normalizePublicDomain accepts "host", "host:port" and "[v6-addr]:port" and
+// returns the canonical form stored in user ids: lower case, no trailing dot,
+// IPv6 in brackets. A bare IPv6 literal is rejected because it is
+// indistinguishable from "host:port" here. Characters the federation layer
+// refuses later (see RemoteServerFromID) are rejected too, so a config that
+// parses cannot produce ids that break federation.
+func normalizePublicDomain(raw string) (string, error) {
+	if raw != strings.TrimSpace(raw) ||
+		strings.ContainsAny(raw, " \t\r\n/") ||
+		strings.ContainsAny(raw, "@?#") {
+		return "", fmt.Errorf("%w: got %q", ErrInvalidPublicDomain, raw)
+	}
+
+	host, port := raw, ""
+
+	switch {
+	case strings.HasPrefix(raw, "["):
+		h, p, err := net.SplitHostPort(raw)
+		if err != nil {
+			return "", fmt.Errorf("%w: got %q", ErrInvalidPublicDomain, raw)
+		}
+
+		host, port = h, p
+
+	case strings.Count(raw, ":") == 1:
+		h, p, err := net.SplitHostPort(raw)
+		if err != nil || p == "" {
+			return "", fmt.Errorf("%w: got %q", ErrInvalidPublicDomain, raw)
+		}
+
+		host, port = h, p
+
+	case strings.Count(raw, ":") > 1:
+		return "", fmt.Errorf("%w: got %q (bracket an IPv6 address as [addr]:port)",
+			ErrInvalidPublicDomain, raw)
+	}
+
+	if host == "" {
+		return "", fmt.Errorf("%w: got %q", ErrInvalidPublicDomain, raw)
+	}
+
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return "", fmt.Errorf("%w: got %q (an unspecified address is not a public identity)",
+			ErrInvalidPublicDomain, raw)
+	}
+
+	if port != "" {
+		parsed, err := strconv.Atoi(port)
+		if err != nil || parsed < 1 || parsed > 65535 {
+			return "", fmt.Errorf("%w: got %q", ErrInvalidPublicDomain, raw)
+		}
+
+		port = strconv.Itoa(parsed)
+	}
+
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+
+	if host == "" || len(host) > maxHostLen {
+		return "", fmt.Errorf("%w: got %q", ErrInvalidPublicDomain, raw)
+	}
+
+	if port != "" {
+		return net.JoinHostPort(host, port), nil
+	}
+
+	return host, nil
+}
+
 // applyEnvOverrides applies the environment variables on top of the values
 // read from the file. The variables exist so a second local instance can run
 // from the same configuration file: the port, the database and the uploads
 // directory have to differ, and the domain follows from the port.
+//
+// FASTCHAT_HOST is the bind address (not the identity); FASTCHAT_PUBLIC_DOMAIN
+// overrides the identity when the bind address is not reachable from outside.
 //
 // Secrets never come from YAML alone: FASTCHAT_SMTP_PASSWORD (or
 // FASTCHAT_SMTP_PASSWORD_FILE) overrides smtp.password, and
@@ -177,8 +329,12 @@ func applyICEDefaults(cfg *Config) {
 // every configured TURN server. A *_FILE value is a path to a file holding
 // the secret (mode 0600); it wins over the plain variable when both are set.
 func applyEnvOverrides(cfg *Config) error {
-	if host := os.Getenv("FASTCHAT_HOST"); host != "" {
+	if host := strings.TrimSpace(os.Getenv("FASTCHAT_HOST")); host != "" {
 		cfg.Server.Host = host
+	}
+
+	if domain := strings.TrimSpace(os.Getenv("FASTCHAT_PUBLIC_DOMAIN")); domain != "" {
+		cfg.Server.PublicDomain = domain
 	}
 
 	if port := os.Getenv("FASTCHAT_PORT"); port != "" {
@@ -290,7 +446,24 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 
-	cfg.Server.Domain = net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
+	// Validate after the environment has been applied: FASTCHAT_HOST and
+	// FASTCHAT_PUBLIC_DOMAIN write into the same fields, so a typo in a unit
+	// file must not reach listen() or the user ids.
+	host, err := normalizeServerHost(cfg.Server.Host)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Server.Host = host
+
+	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
+		return nil, fmt.Errorf("%w: got %d", ErrInvalidPort, cfg.Server.Port)
+	}
+
+	domain, err := resolveDomain(cfg.Server.Host, cfg.Server.PublicDomain, cfg.Server.Port)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Server.Domain = domain
 
 	applyDefaults(&cfg)
 	applyICEDefaults(&cfg)
@@ -303,7 +476,11 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 
+	listen := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
+
 	slog.Info("config loaded",
+		"server_domain", cfg.Server.Domain,
+		"listen", listen,
 		"database_path", cfg.Database.Path,
 		"uploads_dir", cfg.Uploads.Dir,
 		"push_key_path", cfg.Push.KeyPath,

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -560,7 +561,7 @@ func newHTTPServer(
 ) *http.Server {
 
 	return &http.Server{
-		Addr: fmt.Sprintf(":%d", cfg.Server.Port),
+		Addr: net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port)),
 		Handler: httputil.RequestIDMiddleware(
 			requestLogMiddleware(
 				securityHeadersMiddleware(ipExtractor, cfg.CORS.Origin)(
