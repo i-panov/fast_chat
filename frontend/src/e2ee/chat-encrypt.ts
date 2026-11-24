@@ -212,7 +212,7 @@ export async function prepareFiles(
 				plaintextHash,
 				encrypted: true,
 			});
-			out.push({ clientId, fileKey, plaintextHash });
+			out.push({ clientId, fileKey, plaintextHash, fileMeta });
 		}
 	} catch (err) {
 		// A late file (e.g. over the size limit) must not orphan the blobs

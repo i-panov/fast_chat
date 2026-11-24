@@ -141,6 +141,89 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 		expect(new TextDecoder().decode(plain)).toBe("v2 file content");
 	});
 
+	it("keeps an encrypted photo visible after the roundtrip", async () => {
+		// Regression: the encrypted branch of prepareFiles used to drop
+		// fileMeta, so decryptMessage could not authenticate the server's
+		// file row and a photo-only message rendered as an empty bubble.
+		const { prepareFiles, buildFileMaps } = await import("./chat-encrypt.ts");
+		const photo = new File(
+			[new Uint8Array([0xff, 0xd8, 0xff, 0xe0])],
+			"cat.jpg",
+			{
+				type: "image/jpeg",
+			},
+		);
+		const pending = {
+			id: "p1",
+			file: photo,
+			blobUrl: "blob:cat",
+			originalName: "cat.jpg",
+			size: photo.size,
+			mimeType: photo.type,
+			fileType: "photo",
+		} as const;
+
+		const prepared = await prepareFiles([{ ...pending }], "token");
+		const { fileKeys, fileMeta, uploadClientIds } = buildFileMaps(prepared);
+
+		expect(uploadClientIds).toHaveLength(1);
+		const hash = prepared[0]?.plaintextHash;
+		if (hash === undefined) throw new Error("no plaintext hash");
+		expect(fileMeta[hash]).toEqual({
+			mimeType: "image/jpeg",
+			name: "cat.jpg",
+			size: photo.size,
+		});
+
+		const encrypted = await encryptForChat(
+			"token",
+			"chat-v2",
+			{ text: "" },
+			fileKeys,
+			fileMeta,
+		);
+		if (encrypted === null) throw new Error("encryptForChat returned null");
+
+		// What the server stores for an encrypted upload: the client hash and
+		// a sniffed octet-stream type, because it only saw ciphertext.
+		const stored = toMessage("m-v2-photo", encrypted);
+		stored.files = [
+			{
+				id: "server-file-1",
+				mimeType: "application/octet-stream",
+				size: photo.size,
+				originalName: "cat.jpg",
+				fileType: "file",
+				url: "https://srv/f/1",
+				hash,
+			},
+			// A row the sender never authenticated inside the ciphertext. The
+			// reader must drop it even though the message decrypts: the server
+			// strips nothing, so showing it would let it attach any file.
+			{
+				id: "server-forged",
+				mimeType: "text/html",
+				size: 1,
+				originalName: "evil.html",
+				fileType: "file",
+				url: "https://srv/f/2",
+				hash: "b".repeat(64),
+			},
+		];
+
+		const out = await decryptMessage(stored, "bob:test", keyStore.bob);
+
+		expect(out.files?.map((file) => file.id)).toEqual(["server-file-1"]);
+		expect(out.files?.[0]).toMatchObject({
+			id: "server-file-1",
+			mimeType: "image/jpeg",
+			originalName: "cat.jpg",
+			fileType: "photo",
+			hash,
+		});
+		expect(out.fileKeys?.[hash]).toEqual(prepared[0]?.fileKey);
+	});
+
 	it("round-trips text-only content (no location, plaintext files)", async () => {
 		const encrypted = await encryptForChat(
 			"token",
