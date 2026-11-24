@@ -38,3 +38,11 @@ frontend/playwright-report/
 # Бэкапы, сделанные деплоем вручную (не код).
 backend/data.bak-*/
 config/*.bak-*
+
+# npm audit artifacts
+.audit*.json
+
+# Local lint/audit/test logs
+.lint-*.txt
+.test-run.log
+frontend/.eslint.txt

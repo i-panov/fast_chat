@@ -87,6 +87,10 @@ type ServerConfig struct {
 	// range is indistinguishable from a proxy: it gets skipped and the address
 	// it forged to its left becomes the rate limit key.
 	TrustedProxies []string `yaml:"trusted_proxies"`
+	// Admins lists the e-mail addresses that get the administrator role.
+	// E-mail is verified before an account exists, so a configured entry
+	// cannot be claimed by registering a username first.
+	Admins []string `yaml:"admins"`
 }
 
 type DatabaseConfig struct {
@@ -224,9 +228,10 @@ func isWildcardHost(host string) bool {
 func normalizeServerHost(raw string) (string, error) {
 	host := strings.TrimSpace(raw)
 
-	if host == "" || host != raw ||
+	invalidHost := host == "" || host != raw ||
 		strings.ContainsAny(host, " \t\r\n/") ||
-		strings.Contains(host, "://") {
+		strings.Contains(host, "://")
+	if invalidHost {
 		return "", fmt.Errorf("%w: got %q", ErrInvalidServerHost, raw)
 	}
 
@@ -254,9 +259,10 @@ func normalizeServerHost(raw string) (string, error) {
 // refuses later (see RemoteServerFromID) are rejected too, so a config that
 // parses cannot produce ids that break federation.
 func normalizePublicDomain(raw string) (string, error) {
-	if raw != strings.TrimSpace(raw) ||
+	invalidDomain := raw != strings.TrimSpace(raw) ||
 		strings.ContainsAny(raw, " \t\r\n/") ||
-		strings.ContainsAny(raw, "@?#") {
+		strings.ContainsAny(raw, "@?#")
+	if invalidDomain {
 		return "", fmt.Errorf("%w: got %q", ErrInvalidPublicDomain, raw)
 	}
 
@@ -315,6 +321,20 @@ func normalizePublicDomain(raw string) (string, error) {
 	return host, nil
 }
 
+// splitList parses a comma-separated environment value, dropping empty
+// entries so "alice,,bob," means two names.
+func splitList(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+
+	return out
+}
+
 // applyEnvOverrides applies the environment variables on top of the values
 // read from the file. The variables exist so a second local instance can run
 // from the same configuration file: the port, the database and the uploads
@@ -360,6 +380,29 @@ func applyEnvOverrides(cfg *Config) error {
 
 	if path := os.Getenv("FASTCHAT_FEDERATION_KEY_PATH"); path != "" {
 		cfg.Federation.KeyPath = path
+	}
+
+	// The end-to-end suite registers many accounts from one address in a
+	// minute: the limits are configurable so the suite does not trip them.
+	for env, limit := range map[string]*RateLimitConfig{
+		"FASTCHAT_SEND_CODE_LIMIT":    &cfg.RateLimits.SendCode,
+		"FASTCHAT_VERIFY_CODE_LIMIT":  &cfg.RateLimits.VerifyCode,
+		"FASTCHAT_REGISTER_LIMIT":     &cfg.RateLimits.Register,
+		"FASTCHAT_GENERAL_RATE_LIMIT": &cfg.RateLimits.General,
+	} {
+		raw := os.Getenv(env)
+		if raw == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || parsed <= 0 {
+			return fmt.Errorf("%w: %s=%q", ErrInvalidRateLimit, env, raw)
+		}
+		limit.Limit = parsed
+	}
+
+	if admins := os.Getenv("FASTCHAT_ADMINS"); admins != "" {
+		cfg.Server.Admins = splitList(admins)
 	}
 
 	if origin := os.Getenv("FASTCHAT_CORS_ORIGIN"); origin != "" {

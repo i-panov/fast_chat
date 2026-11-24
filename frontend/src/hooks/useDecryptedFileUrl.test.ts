@@ -1,5 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fileCacheRepo } from "../db/fileCacheRepo.ts";
 import { encryptFileStream, generateFileKey } from "../e2ee/file-crypto.ts";
 import type { FileInfo } from "../types/api.ts";
 import { useDecryptedFileUrl } from "./useDecryptedFileUrl.ts";
@@ -72,6 +73,50 @@ describe("useDecryptedFileUrl", () => {
 		await waitFor(() => {
 			expect(result.current.blobUrl).toBe("blob:mock");
 		});
+
+		const calls = createObjectURL.mock.calls;
+		const blob = calls[calls.length - 1]?.[0];
+		if (blob === undefined) throw new Error("createObjectURL not called");
+		const text = new TextDecoder().decode(await blob.arrayBuffer());
+		expect(text).toBe("secret");
+		vi.unstubAllGlobals();
+	});
+
+	it("serves the persisted plaintext after a restart without the network", async () => {
+		const fileKey = await generateFileKey();
+		const ciphertext = await encryptFileStream(new Blob(["secret"]), fileKey);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() =>
+				Promise.resolve(new Response(ciphertext.buffer as ArrayBuffer)),
+			),
+		);
+
+		const first = renderHook(() =>
+			useDecryptedFileUrl(file(), { h1: fileKey }, "tok"),
+		);
+		await waitFor(() => {
+			expect(first.result.current.blobUrl).toBe("blob:mock");
+		});
+		first.unmount();
+
+		// A restart has no in-memory ciphertext and no network: only the
+		// persisted plaintext can satisfy the view.
+		const { clearFileCache } = await import("../utils/fileCache.ts");
+		clearFileCache();
+		await fileCacheRepo.remove("https://srv/f/1");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => Promise.reject(new Error("offline"))),
+		);
+
+		const second = renderHook(() =>
+			useDecryptedFileUrl(file(), { h1: fileKey }, "tok"),
+		);
+		await waitFor(() => {
+			expect(second.result.current.blobUrl).toBe("blob:mock");
+		});
+		expect(second.result.current.error).toBeNull();
 
 		const calls = createObjectURL.mock.calls;
 		const blob = calls[calls.length - 1]?.[0];

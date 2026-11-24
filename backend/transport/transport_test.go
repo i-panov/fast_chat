@@ -51,6 +51,7 @@ func newTransportTestServerWithHub(t *testing.T, rl *RateLimiters) (*Transport, 
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{}, &model.FederationOp{}, &model.FederationCursor{},
 		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{},
+		&model.AdminAuditLog{},
 	); err != nil {
 		t.Fatal(err)
 	}

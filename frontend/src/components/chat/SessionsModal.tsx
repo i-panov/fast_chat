@@ -1,14 +1,17 @@
 import {
 	Alert,
 	Badge,
+	Box,
 	Button,
 	Group,
 	Loader,
 	Modal,
+	Paper,
 	PasswordInput,
 	Stack,
 	Text,
 } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -45,6 +48,9 @@ export function SessionsModal({
 	onLogoutAll,
 }: Props) {
 	const { t } = useTranslation();
+	// The list holds a device name, three badges and up to three actions: on
+	// a phone the dialog takes the whole screen instead of squeezing them.
+	const fullScreen = useMediaQuery("(max-width: 48em)") === true;
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
 	const [deviceKeys, setDeviceKeys] = useState<Map<string, boolean>>(new Map());
 	const [restoreTarget, setRestoreTarget] = useState<SessionInfo | null>(null);
@@ -127,7 +133,8 @@ export function SessionsModal({
 				opened={open}
 				onClose={onClose}
 				title={t("sessions.title")}
-				size="md"
+				size="lg"
+				fullScreen={fullScreen}
 				centered
 			>
 				<Stack gap="md">
@@ -146,100 +153,95 @@ export function SessionsModal({
 									{t("sessions.empty")}
 								</Text>
 							)}
-							{sessions.map((session) => (
-								<Group
-									key={session.id}
-									justify="space-between"
-									wrap="nowrap"
-									style={{
-										padding: "8px 12px",
-										border: "1px solid var(--mantine-color-dark-4)",
-										borderRadius: 4,
-									}}
-								>
-									<div style={{ minWidth: 0 }}>
-										<Group gap={6} wrap="nowrap">
-											<Text size="sm" fw={500} truncate>
-												{session.deviceName || session.deviceId}
-											</Text>
-											{session.current && (
-												<Badge size="xs" variant="light">
-													{t("sessions.thisDevice")}
-												</Badge>
+							{sessions.map((session) => {
+								const hasKey = deviceKeys.has(session.id);
+								const hasBackup = deviceKeys.get(session.id) === true;
+
+								return (
+									<Paper key={session.id} withBorder p="sm" radius="sm">
+										<Stack gap="xs">
+											<Group
+												justify="space-between"
+												align="flex-start"
+												gap="xs"
+												wrap="wrap"
+											>
+												<Box style={{ minWidth: 0, flex: "1 1 200px" }}>
+													<Text size="sm" fw={500} truncate>
+														{session.deviceName || session.deviceId}
+													</Text>
+													<Text size="xs" c="dimmed">
+														{t("sessions.lastSeen", {
+															when: formatDate(session.lastSeenAt),
+														})}
+													</Text>
+												</Box>
+												<Group gap={6} wrap="wrap">
+													{session.current && (
+														<Badge size="xs" variant="light">
+															{t("sessions.thisDevice")}
+														</Badge>
+													)}
+													{hasKey && (
+														<Badge size="xs" variant="outline" color="teal">
+															{t("sessions.key")}
+														</Badge>
+													)}
+													{hasBackup && (
+														<Badge size="xs" variant="outline" color="blue">
+															{t("sessions.keyBackup")}
+														</Badge>
+													)}
+												</Group>
+											</Group>
+											{(hasKey || !session.current) && (
+												<Group gap="xs" justify="flex-end" wrap="wrap">
+													{hasBackup && (
+														<Button
+															size="xs"
+															color="blue"
+															variant="subtle"
+															onClick={() => {
+																setRestorePassword("");
+																setRestoreError(null);
+																setRestoreTarget(session);
+															}}
+														>
+															{t(RESTORE_KEY_LABEL)}
+														</Button>
+													)}
+													{hasKey && (
+														<Button
+															size="xs"
+															color="orange"
+															variant="subtle"
+															loading={revoking === session.id}
+															onClick={() => {
+																void handleRevokeKey(session.id);
+															}}
+														>
+															{t("sessions.revokeKey")}
+														</Button>
+													)}
+													{!session.current && (
+														<Button
+															size="xs"
+															color="red"
+															variant="outline"
+															loading={revoking === session.id}
+															onClick={() => {
+																void handleRevoke(session.id);
+															}}
+														>
+															{t("sessions.revoke")}
+														</Button>
+													)}
+												</Group>
 											)}
-											{deviceKeys.get(session.id) === true && (
-												<Button
-													size="xs"
-													color="blue"
-													variant="subtle"
-													onClick={() => {
-														setRestorePassword("");
-														setRestoreError(null);
-														setRestoreTarget(session);
-													}}
-												>
-													{t(RESTORE_KEY_LABEL)}
-												</Button>
-											)}
-											{deviceKeys.has(session.id) && (
-												<Badge size="xs" variant="outline" color="teal">
-													{t("sessions.key")}
-												</Badge>
-											)}
-											{deviceKeys.get(session.id) === true && (
-												<Badge size="xs" variant="outline" color="blue">
-													{t("sessions.keyBackup")}
-												</Badge>
-											)}
-										</Group>
-										<Text size="xs" c="dimmed">
-											{t("sessions.lastSeen", {
-												when: formatDate(session.lastSeenAt),
-											})}
-										</Text>
-									</div>
-									{deviceKeys.get(session.id) === true && (
-										<Button
-											size="xs"
-											color="blue"
-											variant="subtle"
-											onClick={() => {
-												setRestorePassword("");
-												setRestoreError(null);
-												setRestoreTarget(session);
-											}}
-										>
-											{t(RESTORE_KEY_LABEL)}
-										</Button>
-									)}
-									{deviceKeys.has(session.id) && (
-										<Button
-											size="xs"
-											color="orange"
-											variant="subtle"
-											loading={revoking === session.id}
-											onClick={() => {
-												void handleRevokeKey(session.id);
-											}}
-										>
-											{t("sessions.revokeKey")}
-										</Button>
-									)}
-									{!session.current && (
-										<Button
-											size="xs"
-											color="red"
-											variant="outline"
-											loading={revoking === session.id}
-											onClick={() => {
-												void handleRevoke(session.id);
-											}}
-										>
-											{t("sessions.revoke")}
-										</Button>
-									)}
-								</Group>
-							))}
+										</Stack>
+									</Paper>
+								);
+							})}
 						</Stack>
 					)}
 

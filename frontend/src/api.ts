@@ -746,3 +746,172 @@ export function rotateBotToken(token: string, username: string) {
 		{ method: "POST" },
 	);
 }
+
+// --- Administration -------------------------------------------------------
+
+export interface AdminUser {
+	id: string;
+	username: string;
+	email: string;
+	displayName?: string;
+	isBot: boolean;
+	isAdmin: boolean;
+	banned: boolean;
+	online: boolean;
+}
+
+export interface AdminUserPage {
+	users: AdminUser[];
+	total: number;
+	offset: number;
+	limit: number;
+}
+
+export interface AdminChat {
+	id: string;
+	type: string;
+	name: string;
+	ownerId: string;
+	botId?: string;
+	createdAt: string;
+	remoteServer?: string;
+}
+
+export interface AdminChatPage {
+	chats: AdminChat[];
+	total: number;
+	offset: number;
+	limit: number;
+}
+
+export interface AdminBot {
+	id: string;
+	username: string;
+	displayName: string;
+	ownerId: string;
+	ownerUsername: string;
+	encryptionMode: string;
+	isActive: boolean;
+	isMaster: boolean;
+}
+
+export interface AdminAuditEntry {
+	id: string;
+	actorId: string;
+	action: string;
+	targetType: string;
+	targetId: string;
+	detail?: string;
+	createdAt: string;
+}
+
+function adminQuery(
+	params: Record<string, string | number | undefined>,
+): string {
+	const search = new URLSearchParams();
+	for (const [key, value] of Object.entries(params)) {
+		if (value !== undefined && value !== "") search.set(key, String(value));
+	}
+	const encoded = search.toString();
+
+	return encoded === "" ? "" : `?${encoded}`;
+}
+
+export function adminListUsers(
+	token: string,
+	query: string,
+	offset: number,
+): Promise<AdminUserPage> {
+	return request<AdminUserPage>(
+		`/api/admin/users${adminQuery({ query, limit: 50, offset })}`,
+		token,
+	);
+}
+
+export function adminPatchUser(
+	token: string,
+	userId: string,
+	patch: { isAdmin?: boolean; banned?: boolean },
+): Promise<{ status: string }> {
+	return request<{ status: string }>(
+		`/api/admin/users/${encodeURIComponent(userId)}`,
+		token,
+		{ method: "PATCH", body: JSON.stringify(patch) },
+	);
+}
+
+export function adminListChats(
+	token: string,
+	query: string,
+	offset: number,
+): Promise<AdminChatPage> {
+	return request<AdminChatPage>(
+		`/api/admin/chats${adminQuery({ query, limit: 50, offset })}`,
+		token,
+	);
+}
+
+export function adminDeleteChat(
+	token: string,
+	chatId: string,
+): Promise<{ status: string }> {
+	return request<{ status: string }>(
+		`/api/admin/chats/${encodeURIComponent(chatId)}`,
+		token,
+		{ method: "DELETE" },
+	);
+}
+
+export function adminListMessages(
+	token: string,
+	chatId: string,
+	before?: string,
+): Promise<{ messages: Message[]; nextCursor?: string; hasMore: boolean }> {
+	return request(
+		`/api/admin/chats/${encodeURIComponent(chatId)}/messages${adminQuery({ limit: 50, before })}`,
+		token,
+	);
+}
+
+export function adminDeleteMessage(
+	token: string,
+	chatId: string,
+	messageId: string,
+): Promise<{ status: string }> {
+	return request<{ status: string }>(
+		`/api/admin/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`,
+		token,
+		{ method: "DELETE" },
+	);
+}
+
+export function adminListBots(token: string): Promise<{ bots: AdminBot[] }> {
+	return request<{ bots: AdminBot[] }>("/api/admin/bots", token);
+}
+
+export function adminPatchBot(
+	token: string,
+	botId: string,
+	isActive: boolean,
+): Promise<{ status: string }> {
+	return request<{ status: string }>(
+		`/api/admin/bots/${encodeURIComponent(botId)}`,
+		token,
+		{ method: "PATCH", body: JSON.stringify({ isActive }) },
+	);
+}
+
+export function adminListFederationPeers(
+	token: string,
+): Promise<{ peers: string[] }> {
+	return request<{ peers: string[] }>("/api/admin/federation/peers", token);
+}
+
+export function adminListAudit(
+	token: string,
+): Promise<{ entries: AdminAuditEntry[] }> {
+	return request<{ entries: AdminAuditEntry[] }>(
+		"/api/admin/audit?limit=100",
+		token,
+	);
+}

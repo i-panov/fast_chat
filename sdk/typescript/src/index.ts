@@ -79,6 +79,19 @@ export interface BotUpdate {
 	callbackQuery?: BotCallbackQuery;
 }
 
+export interface BotFileInput {
+	data: Uint8Array | ArrayBuffer | Blob;
+	name: string;
+	mimeType?: string;
+}
+
+export interface BotSendInput {
+	text?: string;
+	files?: BotFileInput[];
+	location?: { lat: number; lng: number };
+	replyMarkup?: InlineKeyboardMarkup;
+}
+
 export interface SendMessageOptions {
 	replyMarkup?: InlineKeyboardMarkup;
 	files?: string[];
@@ -236,12 +249,54 @@ export class BotClient {
 		}
 	}
 
+	async send(chatId: string, input: BotSendInput): Promise<BotMessage> {
+		const mode = await this.requireMode();
+		const files = input.files ?? [];
+		const fileIDs: string[] = [];
+		const fileKeys: Record<string, import("./crypto.js").FileKey> = {};
+		const fileMeta: Record<string, import("./crypto.js").FileMeta> = {};
+		for (const file of files) {
+			const data = file.data instanceof Blob
+				? new Uint8Array(await file.data.arrayBuffer())
+				: file.data instanceof ArrayBuffer
+					? new Uint8Array(file.data)
+					: file.data;
+			const mimeType = file.mimeType ?? "application/octet-stream";
+			if (mode === "e2ee") {
+				const hash = await hashBytes(data);
+				const key = await generateFileKey();
+				const ciphertext = await encryptFileBytes(data, key);
+				const uploaded = await this.uploadFile(ciphertext, file.name, mimeType, {
+					encrypted: true,
+					hash,
+				});
+				fileIDs.push(uploaded.id);
+				fileKeys[hash] = key;
+				fileMeta[hash] = { mimeType, name: file.name, size: data.byteLength };
+			} else {
+				const uploaded = await this.uploadFile(data, file.name, mimeType);
+				fileIDs.push(uploaded.id);
+			}
+		}
+		return this.sendMessage(chatId, input.text ?? "", {
+			files: fileIDs,
+			location: input.location,
+			fileKeys: mode === "e2ee" ? fileKeys : undefined,
+			fileMeta: mode === "e2ee" ? fileMeta : undefined,
+			replyMarkup: input.replyMarkup,
+		});
+	}
+
 	async sendMessage(
 		chatId: string,
 		text: string,
 		options?: SendMessageOptions,
 	): Promise<BotMessage> {
-		if (this.encryptionKey !== undefined) {
+		const e2ee = (await this.requireMode()) === "e2ee";
+		if (e2ee) {
+			if (this.encryptionKey === undefined) {
+				throw new BotApiError("bot is in e2ee mode; an encryption key is required", 0, 0);
+			}
 			const userID = this.chatUsers.get(chatId);
 			if (userID === undefined) throw new Error("unknown chat user");
 			const devices = await this.getUserDeviceKeys(userID);
@@ -308,7 +363,11 @@ export class BotClient {
 		) {
 			throw new BotApiError("editMessageText does not support files or location", 0, 0);
 		}
-		if (this.encryptionKey !== undefined) {
+		const e2ee = (await this.requireMode()) === "e2ee";
+		if (e2ee) {
+			if (this.encryptionKey === undefined) {
+				throw new BotApiError("bot is in e2ee mode; an encryption key is required", 0, 0);
+			}
 			const userID = this.chatUsers.get(chatId);
 			if (userID === undefined) throw new Error("unknown chat user");
 			const devices = await this.getUserDeviceKeys(userID);
@@ -368,23 +427,12 @@ export class BotClient {
 		mimeType = "application/octet-stream",
 		caption = "",
 	): Promise<BotMessage> {
-		if ((await this.requireMode()) !== "e2ee" || this.encryptionKey === undefined) {
+		if ((await this.requireMode()) !== "e2ee") {
 			throw new BotApiError("sendEncryptedFile requires an e2ee bot", 0, 0);
 		}
-		if (data.byteLength > 50 * 1024 * 1024) {
-			throw new BotApiError("file is too large", 0, 0);
-		}
-		const key = await generateFileKey();
-		const ciphertext = await encryptFileBytes(data, key);
-		const hash = await hashBytes(data);
-		const uploaded = await this.uploadFile(ciphertext, filename, mimeType, {
-			encrypted: true,
-			hash,
-		});
-		return this.sendMessage(chatId, caption, {
-			files: [uploaded.id],
-			fileKeys: { [hash]: key },
-			fileMeta: { [hash]: { mimeType, name: filename, size: data.byteLength } },
+		return this.send(chatId, {
+			text: caption,
+			files: [{ data, name: filename, mimeType }],
 		});
 	}
 
@@ -439,16 +487,19 @@ export class BotClient {
 
 	async sendFile(
 		chatId: string,
-		fileId: string,
+		file: string | BotFileInput,
 		caption?: string,
 	): Promise<BotMessage> {
-		if (this.encryptionKey !== undefined || (await this.requireMode()) === "e2ee") {
-			throw new Error("encrypted bot files are not supported");
+		if (typeof file !== "string") {
+			return this.send(chatId, { text: caption ?? "", files: [file] });
+		}
+		if ((await this.requireMode()) === "e2ee") {
+			throw new Error("sendFile requires raw file data in e2ee mode");
 		}
 		const raw = await this.request<RawMessage>(
 			"POST",
 			"/api/bot-api/sendFile",
-			{ chat_id: chatId, file_id: fileId, caption },
+			{ chat_id: chatId, file_id: file, caption },
 		);
 		return toMessage(raw);
 	}
@@ -458,15 +509,7 @@ export class BotClient {
 		latitude: number,
 		longitude: number,
 	): Promise<BotMessage> {
-		if (this.encryptionKey !== undefined || (await this.requireMode()) === "e2ee") {
-			throw new Error("encrypted bot locations are not supported");
-		}
-		const raw = await this.request<RawMessage>(
-			"POST",
-			"/api/bot-api/sendLocation",
-			{ chat_id: chatId, latitude, longitude },
-		);
-		return toMessage(raw);
+		return this.send(chatId, { text: "", location: { lat: latitude, lng: longitude } });
 	}
 
 	async getChat(chatId: string): Promise<BotChat> {

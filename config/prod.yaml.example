@@ -38,6 +38,15 @@ server:
     # trusted_proxies:
     #     - "10.0.0.0/8"
 
+    # E-mail addresses that get the administrator role (the /admin section).
+    # The list is applied at startup to accounts that already exist: register
+    # the administrator first, add the address, then restart the server. The
+    # role is also grantable in /admin; the startup list re-applies, and
+    # removing an address here does not demote the account.
+    # FASTCHAT_ADMINS (comma-separated) overrides the list.
+    # admins:
+    #     - "alice@example.com"
+
 database:
     # SQLite database file path. Use an absolute path on production.
     # Relative paths are resolved against the config file directory.

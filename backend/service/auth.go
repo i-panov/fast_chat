@@ -32,6 +32,7 @@ var (
 	ErrEmailNotAllowed   = errors.New("email not allowed")
 	ErrEmailSendFailed   = errors.New("failed to send email")
 	ErrInvalidCode       = errors.New("invalid code")
+	ErrUserBanned        = errors.New("account banned")
 	ErrInvalidSetupToken = errors.New("invalid setup token")
 	ErrNickInvalid       = errors.New("username must be 3-32 characters")
 	ErrNickColon         = errors.New("nick must not contain ':'")
@@ -98,6 +99,12 @@ func (s *Service) VerifyCode(ctx context.Context, input, code string, device Dev
 
 	user, exists := s.store.GetUserByEmail(ctx, email)
 	if exists {
+		// A banned account must not obtain a new session: deleting the old
+		// sessions alone would let it log straight back in.
+		if user.Banned {
+			return nil, ErrUserBanned
+		}
+
 		device = normalizeDevice(device)
 
 		// Serialize login + trim per process: the cap is enforced after the

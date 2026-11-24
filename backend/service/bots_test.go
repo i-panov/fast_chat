@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -326,5 +327,77 @@ func TestBotE2EEFileEnforcement(t *testing.T) {
 	}
 	if _, err := s.SendBotMessageWithFiles(ctx, created.User.ID, view.ID, "x", nil, []string{encrypted.ID}, true, payload, nil); err != nil {
 		t.Fatalf("encrypted file rejected: %v", err)
+	}
+}
+
+// fakeFileFederation answers every signed request with the canned bytes of a
+// remote file and records the URL, so the test sees which endpoint the
+// placeholder is fetched from.
+type fakeFileFederation struct {
+	body     []byte
+	requests []string
+}
+
+func (f *fakeFileFederation) URL(remoteServer, path string) string {
+	return "https://" + remoteServer + path
+}
+
+func (f *fakeFileFederation) Request(_ context.Context, _, urlStr string, _ any) ([]byte, error) {
+	f.requests = append(f.requests, urlStr)
+
+	return f.body, nil
+}
+
+func TestFetchFederatedBotFile(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+
+	remote := &model.File{
+		ID:           "remote-file-1",
+		Hash:         "remote-hash",
+		MimeType:     "image/png",
+		Size:         4,
+		OriginalName: "photo.png",
+		UploadedBy:   "bob:remote.test",
+		RemoteServer: "remote.test",
+	}
+	if err := s.store.CreateRemoteFile(ctx, remote); err != nil {
+		t.Fatal(err)
+	}
+
+	fed := &fakeFileFederation{body: []byte("data")}
+	s.SetFederationClient(fed)
+
+	body, file, err := s.FetchFederatedFile(ctx, remote.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "data" || file.ID != remote.ID || file.RemoteServer != "remote.test" {
+		t.Fatalf("body=%q file=%+v", body, file)
+	}
+	if len(fed.requests) != 1 || fed.requests[0] != "https://remote.test/api/federated/files/"+remote.ID {
+		t.Fatalf("federation requests = %v", fed.requests)
+	}
+
+	// A local file is not fetched from a peer: its bytes are on this server.
+	local, err := s.store.SaveFile(ctx, "local-hash", "text/plain", 5, "a.txt", "a.txt", "alice:localhost:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, file, err = s.FetchFederatedFile(ctx, local.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != nil || file.ID != local.ID || file.RemoteServer != "" {
+		t.Fatalf("local body=%q file=%+v", body, file)
+	}
+	if len(fed.requests) != 1 {
+		t.Fatalf("a local file must not call the peer: %v", fed.requests)
+	}
+
+	// Without a federated client the placeholder cannot be resolved.
+	s.SetFederationClient(nil)
+	if _, _, err := s.FetchFederatedFile(ctx, remote.ID); !errors.Is(err, ErrFileNotFound) {
+		t.Fatalf("err = %v, want ErrFileNotFound", err)
 	}
 }

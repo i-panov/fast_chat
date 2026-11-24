@@ -422,7 +422,28 @@ func (s *Store) DeleteMessage(ctx context.Context, chatID, messageID, userID str
 		return ErrNotYourMessage
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.deleteMessageTx(s.db.WithContext(ctx), chatID, messageID, nil)
+}
+
+// DeleteMessageAsAdmin removes a message regardless of its author. Moderation
+// needs to take down content the admin did not write; the same transaction and
+// tombstone as a normal delete are reused.
+func (s *Store) DeleteMessageAsAdmin(ctx context.Context, chatID, messageID string, audit *model.AdminAuditLog) error {
+	var msg model.Message
+
+	if err := s.db.WithContext(ctx).Where("chat_id = ? AND id = ?", chatID, messageID).First(&msg).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrMessageNotFound
+		}
+
+		return err
+	}
+
+	return s.deleteMessageTx(s.db.WithContext(ctx), chatID, messageID, audit)
+}
+
+func (s *Store) deleteMessageTx(db *gorm.DB, chatID, messageID string, audit *model.AdminAuditLog) error {
+	return db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
 			return err
 		}
@@ -448,11 +469,15 @@ func (s *Store) DeleteMessage(ctx context.Context, chatID, messageID, userID str
 		// Tombstone: lets the /api/sync delta tell offline clients
 		// that this message was removed. Upsert in case a previous
 		// delete was retried and the tombstone already exists.
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.DeletedMessage{
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.DeletedMessage{
 			ChatID:    chatID,
 			MessageID: messageID,
 			DeletedAt: time.Now().UTC(),
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+
+		return insertAuditTx(tx, audit)
 	})
 }
 

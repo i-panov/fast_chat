@@ -12,6 +12,7 @@ class EncryptedClientTests(unittest.TestCase):
         bot_key = generate_key_pair()
         user_key = generate_key_pair()
         client = BotClient("token", encryption_key=bot_key)
+        client._mode = "e2ee"
         client._bot_id = "bot:test"
         client._chat_users["c1"] = "user:test"
 

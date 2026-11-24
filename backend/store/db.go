@@ -139,6 +139,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&model.BotUpdate{},
 		&model.BotCallbackQuery{},
 		&model.BotFatherState{},
+		&model.AdminAuditLog{},
 	); err != nil {
 		return nil, err
 	}

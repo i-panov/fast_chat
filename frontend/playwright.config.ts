@@ -69,6 +69,12 @@ export default defineConfig({
 				FASTCHAT_DB_PATH: DATABASE,
 				FASTCHAT_UPLOADS_DIR: UPLOADS,
 				FASTCHAT_CORS_ORIGIN: FRONTEND,
+				// The suite registers several accounts from one address in a
+				// minute; the production defaults would rate-limit it.
+				FASTCHAT_SEND_CODE_LIMIT: "1000",
+				FASTCHAT_VERIFY_CODE_LIMIT: "1000",
+				FASTCHAT_REGISTER_LIMIT: "1000",
+				FASTCHAT_GENERAL_RATE_LIMIT: "10000",
 			},
 		},
 		{

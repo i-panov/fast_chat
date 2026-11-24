@@ -196,6 +196,10 @@ var sentinelErrors = []sentinelErrPair{
 		target:   &statusError{ErrorMessage: "failed to send email", code: http.StatusInternalServerError},
 	},
 	{
+		sentinel: service.ErrUserBanned,
+		target:   &statusError{ErrorMessage: "account banned", code: http.StatusForbidden},
+	},
+	{
 		sentinel: service.ErrInvalidCode,
 		target:   &statusError{ErrorMessage: "invalid code", code: http.StatusUnauthorized},
 	},
@@ -227,7 +231,7 @@ var sentinelErrors = []sentinelErrPair{
 	},
 	{
 		sentinel: service.ErrUserNotFound,
-		target:   &statusError{ErrorMessage: "user not found", code: http.StatusNotFound},
+		target:   &statusError{ErrorMessage: msgUserNotFound, code: http.StatusNotFound},
 	},
 	{
 		sentinel: service.ErrWithUserRequired,
@@ -273,7 +277,7 @@ var sentinelErrors = []sentinelErrPair{
 	},
 	{
 		sentinel: service.ErrMessageNotFound,
-		target:   &statusError{ErrorMessage: "message not found", code: http.StatusNotFound},
+		target:   &statusError{ErrorMessage: msgMessageNotFound, code: http.StatusNotFound},
 	},
 	{
 		sentinel: service.ErrInvalidReaction,

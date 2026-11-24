@@ -21,6 +21,10 @@ export function replacementToken(token: string): string | undefined {
 }
 
 export function emitUnauthorized(token: string) {
+	// The Service Worker calls the API too and has no window: there the
+	// background runner handles the expired session by dropping the stored
+	// credentials instead of dispatching an event nobody can hear.
+	if (typeof window === "undefined") return;
 	window.dispatchEvent(
 		new CustomEvent(UNAUTHORIZED_EVENT, { detail: { token } }),
 	);

@@ -497,7 +497,7 @@ func botError(err error) error {
 	case errors.Is(err, service.ErrBotAttachmentRemote):
 		return &statusError{ErrorMessage: "files and locations are not supported in federated bot chats", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrMessageNotFound):
-		return &statusError{ErrorMessage: "message not found", code: http.StatusNotFound}
+		return &statusError{ErrorMessage: msgMessageNotFound, code: http.StatusNotFound}
 	default:
 		return errInternal
 	}

@@ -63,6 +63,12 @@ jobs:
         run: npm ci
         working-directory: frontend
 
+      # The bundle ships these packages to the browser: an advisory in one
+      # of them is an advisory in the product, not only in the toolchain.
+      - name: Audit production dependencies
+        run: make frontend:audit
+        working-directory: .
+
       - name: Type check
         run: npx tsc --noEmit
         working-directory: frontend

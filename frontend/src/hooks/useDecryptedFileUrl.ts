@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
+import { getActiveAccountKey } from "../db/init.ts";
 import type { FileKey } from "../e2ee/file-crypto.ts";
 import { decryptFileStream } from "../e2ee/file-crypto.ts";
 import type { FileInfo } from "../types/api.ts";
+import {
+	cacheDecryptedFile,
+	decryptedCacheKey,
+	getCachedDecryptedFile,
+} from "../utils/fileCache.ts";
 import { useFileUrl } from "./useFileUrl.ts";
 
 // useDecryptedFileUrl fetches a file and, if a decryption key exists for it,
@@ -9,6 +15,11 @@ import { useFileUrl } from "./useFileUrl.ts";
 // file hash first, then by file id: id-keyed files (e.g. legacy uploads
 // without a hash) must not fall through to plaintext. Files without any key
 // are returned as-is (plaintext).
+//
+// The decrypted blob is cached in the account's IndexedDB: a second view (or
+// a restart) does not download and decrypt the same file again. The lookup
+// runs before the ciphertext request, so the cached plaintext is enough on
+// its own; the ciphertext copy may already be evicted.
 export function useDecryptedFileUrl(
 	file: FileInfo | undefined,
 	fileKeys: Record<string, FileKey> | undefined,
@@ -24,7 +35,7 @@ export function useDecryptedFileUrl(
 
 	useEffect(() => {
 		setDecryptError(null);
-		if (!file || !encryptedUrl) {
+		if (!file) {
 			setDecryptedUrl(null);
 			return;
 		}
@@ -34,15 +45,38 @@ export function useDecryptedFileUrl(
 			fileKeys?.[file.id];
 		if (key === undefined) {
 			// No key: file is plaintext.
-			setDecryptedUrl(encryptedUrl);
+			setDecryptedUrl(encryptedUrl ?? null);
 			return;
 		}
 
 		let cancelled = false;
 		let createdUrl: string | null = null;
+		// The account can change while the request is in flight. The write
+		// must land in the database of the account that requested it: a
+		// late write would persist one account's plaintext in another's
+		// IndexedDB, where it survives the first account's logout.
+		const accountKey = getActiveAccountKey();
+		const cacheKey = decryptedCacheKey(file.url, key, file.hash ?? file.id);
 
 		void (async () => {
 			try {
+				const cached = await getCachedDecryptedFile(cacheKey);
+				if (getActiveAccountKey() !== accountKey) return;
+				if (cached !== undefined) {
+					createdUrl = URL.createObjectURL(cached);
+					if (cancelled) {
+						URL.revokeObjectURL(createdUrl);
+						createdUrl = null;
+						return;
+					}
+					setDecryptedUrl(createdUrl);
+					return;
+				}
+
+				// The ciphertext URL is produced by useFileUrl; wait for it
+				// when there is no cached plaintext yet.
+				if (!encryptedUrl) return;
+
 				const resp = await fetch(encryptedUrl);
 				const blob = await resp.blob();
 				const ciphertext = new Uint8Array(await blob.arrayBuffer());
@@ -50,8 +84,15 @@ export function useDecryptedFileUrl(
 				const plainBlob = new Blob([plain as unknown as ArrayBuffer], {
 					type: file.mimeType,
 				});
-				createdUrl = URL.createObjectURL(plainBlob);
+				if (getActiveAccountKey() !== accountKey) return;
 
+				try {
+					await cacheDecryptedFile(cacheKey, plainBlob, accountKey);
+				} catch {
+					// Quota or a blocked database: showing the file still wins.
+				}
+
+				createdUrl = URL.createObjectURL(plainBlob);
 				if (cancelled) {
 					// The cleanup already ran with createdUrl === null: revoke
 					// here so the late URL does not leak.
@@ -75,9 +116,13 @@ export function useDecryptedFileUrl(
 		};
 	}, [file, fileKeys, encryptedUrl]);
 
+	const resolved = file ? decryptedUrl : null;
+
 	return {
-		blobUrl: file ? decryptedUrl : null,
-		loading,
-		error: error ?? decryptError,
+		blobUrl: resolved,
+		loading: loading && resolved === null,
+		// A cached plaintext makes a failed ciphertext request irrelevant:
+		// the attachment is displayable, so do not report an error for it.
+		error: resolved !== null ? null : (error ?? decryptError),
 	};
 }

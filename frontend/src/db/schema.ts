@@ -184,13 +184,25 @@ export interface CachedFile {
 	size: number;
 }
 
+// The decrypted attachment is kept as bytes, not as a Blob: the value has to
+// survive the structured clone of IndexedDB in every browser (and in the test
+// environment), while the Blob is rebuilt by the reader.
+export interface DecryptedFile {
+	key: string;
+	bytes: ArrayBuffer;
+	mimeType: string;
+	cachedAt: number;
+	lastAccessedAt?: number;
+	size: number;
+}
+
 interface MetaEntry {
 	key: string;
 	value: unknown;
 }
 
 export const DB_NAME = "fast_chat";
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 export interface FCSchema extends DBSchema {
 	chats: {
@@ -225,6 +237,11 @@ export interface FCSchema extends DBSchema {
 	fileCache: {
 		key: string;
 		value: CachedFile;
+		indexes: { cachedAt: number };
+	};
+	decryptedFiles: {
+		key: string;
+		value: DecryptedFile;
 		indexes: { cachedAt: number };
 	};
 	meta: {

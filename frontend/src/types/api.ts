@@ -24,6 +24,7 @@ export interface User {
 	avatarUrl?: string;
 	displayName?: string;
 	isBot?: boolean;
+	isAdmin?: boolean;
 }
 
 export interface MemberInfo {

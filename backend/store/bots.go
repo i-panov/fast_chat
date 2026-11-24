@@ -84,10 +84,16 @@ func (s *Store) UpdateBotToken(ctx context.Context, userID, tokenHash, prefix st
 	return nil
 }
 
-func (s *Store) SetBotActive(ctx context.Context, userID string, active bool) error {
-	return s.db.WithContext(ctx).Model(&model.Bot{}).
-		Where("user_id = ?", userID).
-		Updates(map[string]any{"is_active": active, fieldUpdatedAt: time.Now().UTC()}).Error
+func (s *Store) SetBotActive(ctx context.Context, userID string, active bool, audit *model.AdminAuditLog) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.Bot{}).
+			Where("user_id = ?", userID).
+			Updates(map[string]any{"is_active": active, fieldUpdatedAt: time.Now().UTC()}).Error; err != nil {
+			return err
+		}
+
+		return insertAuditTx(tx, audit)
+	})
 }
 
 func (s *Store) DeleteBot(ctx context.Context, userID string) error {

@@ -71,12 +71,61 @@ export function subscribeSyncState(fn: Listener): () => void {
 	};
 }
 
+type BackgroundSyncRegistration = ServiceWorkerRegistration & {
+	sync?: { register(tag: string): Promise<void> };
+	periodicSync?: {
+		register(tag: string, options: { minInterval: number }): Promise<void>;
+	};
+};
+
+// Ask the browser to wake the worker when the connection returns, so queued
+// operations leave even after the tab was closed. Browsers without the API
+// (Safari, Firefox) simply keep the open-window path.
+function registerBackgroundSync(): void {
+	if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+		return;
+	}
+
+	void navigator.serviceWorker.ready
+		.then((registration) => {
+			const sync = (registration as BackgroundSyncRegistration).sync;
+			return sync?.register("fastchat-outbox");
+		})
+		.catch(() => {});
+}
+
+// Periodic sync needs an installed application and a permission; where it is
+// unsupported or denied the call rejects and the regular sync keeps working.
+function registerPeriodicOutboxSync(): void {
+	if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+		return;
+	}
+
+	void navigator.serviceWorker.ready
+		.then((registration) => {
+			const periodic = (registration as BackgroundSyncRegistration)
+				.periodicSync;
+			return periodic?.register("fastchat-outbox", {
+				minInterval: 15 * 60 * 1000,
+			});
+		})
+		.catch(() => {});
+}
+
 if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
 	navigator.serviceWorker.addEventListener("message", (event) => {
 		if ((event.data as { type?: string } | null)?.type === "FASTCHAT_SYNC") {
 			scheduleSync();
 		}
 	});
+
+	registerPeriodicOutboxSync();
+}
+
+if (typeof window !== "undefined") {
+	// Closing the tab while still online leaves no "online" transition to
+	// register the sync on: register it on the way out instead.
+	window.addEventListener("pagehide", registerBackgroundSync);
 }
 
 export function scheduleSync(): void {
@@ -85,16 +134,7 @@ export function scheduleSync(): void {
 		"serviceWorker" in navigator &&
 		!navigator.onLine
 	) {
-		void navigator.serviceWorker.ready
-			.then((registration) => {
-				const sync = (
-					registration as ServiceWorkerRegistration & {
-						sync?: { register(tag: string): Promise<void> };
-					}
-				).sync;
-				return sync?.register("fastchat-outbox");
-			})
-			.catch(() => {});
+		registerBackgroundSync();
 	}
 	if (debounceTimer !== null) clearTimeout(debounceTimer);
 	debounceTimer = setTimeout(() => {

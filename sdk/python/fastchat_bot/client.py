@@ -122,6 +122,49 @@ class BotClient:
         if self.encryption_key is None and self._require_mode() == "e2ee":
             raise BotAPIError("bot is in e2ee mode; an encryption key is required")
 
+    def send(
+        self,
+        chat_id: str,
+        text: str = "",
+        *,
+        files: list[dict[str, Any]] | None = None,
+        location: dict[str, float] | None = None,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> BotMessage:
+        mode = self._require_mode()
+        if mode == "e2ee" and self.encryption_key is None:
+            raise BotAPIError("bot is in e2ee mode; an encryption key is required")
+        file_ids: list[str] = []
+        file_keys: dict[str, FileKey] = {}
+        file_meta: dict[str, Any] = {}
+        for file in files or []:
+            data = bytes(file["data"])
+            name = str(file["name"])
+            mime_type = str(file.get("mime_type", "application/octet-stream"))
+            if mode == "e2ee":
+                key = generate_file_key()
+                file_hash = hashlib.sha256(data).hexdigest()
+                uploaded = self.upload_file(
+                    encrypt_file_bytes(data, key), name, mime_type,
+                    encrypted=True, plaintext_hash=file_hash,
+                )
+                file_keys[file_hash] = key
+                file_meta[file_hash] = {
+                    "mimeType": mime_type, "name": name, "size": len(data),
+                }
+            else:
+                uploaded = self.upload_file(data, name, mime_type)
+            file_ids.append(uploaded.id)
+        return self.send_message(
+            chat_id,
+            text,
+            reply_markup=reply_markup,
+            files=file_ids or None,
+            location=location,
+            file_keys=file_keys or None,
+            file_meta=file_meta or None,
+        )
+
     def send_message(
         self,
         chat_id: str,
@@ -133,7 +176,10 @@ class BotClient:
         file_keys: dict[str, FileKey] | None = None,
         file_meta: dict[str, Any] | None = None,
     ) -> BotMessage:
-        if self.encryption_key is not None:
+        e2ee = self._require_mode() == "e2ee"
+        if e2ee:
+            if self.encryption_key is None:
+                raise BotAPIError("bot is in e2ee mode; an encryption key is required")
             user_id = self._chat_users.get(chat_id)
             if user_id is None:
                 raise BotAPIError("unknown chat user for e2ee reply")
@@ -188,32 +234,12 @@ class BotClient:
         mime_type: str = "application/octet-stream",
         caption: str = "",
     ) -> BotMessage:
-        if self._require_mode() != "e2ee" or self.encryption_key is None:
+        if self._require_mode() != "e2ee":
             raise BotAPIError("send_encrypted_file requires an e2ee bot")
-        if len(data) > 50 * 1024 * 1024:
-            raise BotAPIError("file is too large")
-        key = generate_file_key()
-        ciphertext = encrypt_file_bytes(data, key)
-        file_hash = hashlib.sha256(data).hexdigest()
-        uploaded = self.upload_file(
-            ciphertext,
-            filename,
-            mime_type,
-            encrypted=True,
-            plaintext_hash=file_hash,
-        )
-        return self.send_message(
+        return self.send(
             chat_id,
             caption,
-            files=[uploaded.id],
-            file_keys={file_hash: key},
-            file_meta={
-                file_hash: {
-                    "mimeType": mime_type,
-                    "name": filename,
-                    "size": len(data),
-                }
-            },
+            files=[{"data": data, "name": filename, "mime_type": mime_type}],
         )
 
     def edit_message_text(
@@ -230,7 +256,10 @@ class BotClient:
     ) -> BotMessage:
         if files or location is not None or file_keys or file_meta:
             raise BotAPIError("edit_message_text does not support files or location")
-        if self.encryption_key is not None:
+        e2ee = self._require_mode() == "e2ee"
+        if e2ee:
+            if self.encryption_key is None:
+                raise BotAPIError("bot is in e2ee mode; an encryption key is required")
             user_id = self._chat_users.get(chat_id)
             if user_id is None:
                 raise BotAPIError("unknown chat user for e2ee edit")
@@ -366,12 +395,20 @@ class BotClient:
     def send_file(
         self,
         chat_id: str,
-        file_id: str,
+        file: str | bytes,
         caption: str | None = None,
+        filename: str = "file",
+        mime_type: str = "application/octet-stream",
     ) -> BotMessage:
-        if self.encryption_key is not None or self._require_mode() == "e2ee":
-            raise BotAPIError("encrypted bot files are not supported")
-        body: dict[str, Any] = {"chat_id": chat_id, "file_id": file_id}
+        if isinstance(file, bytes):
+            return self.send(
+                chat_id,
+                caption or "",
+                files=[{"data": file, "name": filename, "mime_type": mime_type}],
+            )
+        if self._require_mode() == "e2ee":
+            raise BotAPIError("send_file requires raw file data in e2ee mode")
+        body: dict[str, Any] = {"chat_id": chat_id, "file_id": file}
         if caption:
             body["caption"] = caption
         return _message(self._request("POST", "/api/bot-api/sendFile", body))
@@ -382,14 +419,10 @@ class BotClient:
         latitude: float,
         longitude: float,
     ) -> BotMessage:
-        if self.encryption_key is not None or self._require_mode() == "e2ee":
-            raise BotAPIError("encrypted bot locations are not supported")
-        return _message(
-            self._request(
-                "POST",
-                "/api/bot-api/sendLocation",
-                {"chat_id": chat_id, "latitude": latitude, "longitude": longitude},
-            )
+        return self.send(
+            chat_id,
+            "",
+            location={"lat": latitude, "lng": longitude},
         )
 
     def download_file(

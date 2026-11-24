@@ -1,4 +1,5 @@
 import { type IDBPDatabase, openDB } from "idb";
+import { closeBackgroundSessionDB } from "../sync/backgroundSession.ts";
 import { notify } from "./notify.ts";
 import { DB_NAME, DB_VERSION, type FCSchema } from "./schema.ts";
 
@@ -78,6 +79,15 @@ function openDatabase(name: string): Promise<IDBPDatabase<FCSchema>> {
 					fc.createIndex("cachedAt", "cachedAt");
 				}
 			}
+
+			if (oldVersion < 4) {
+				if (!db.objectStoreNames.contains("decryptedFiles")) {
+					const df = db.createObjectStore("decryptedFiles", {
+						keyPath: "key",
+					});
+					df.createIndex("cachedAt", "cachedAt");
+				}
+			}
 		},
 	});
 }
@@ -124,6 +134,10 @@ export async function closeAndDeleteAccountDB(userId: string): Promise<void> {
 
 // Close and delete every account's IndexedDB (used by "clear all data").
 export async function resetAllDBs(): Promise<void> {
+	// The background-session database is not an account database, but its
+	// open connection would block the delete below all the same.
+	await closeBackgroundSessionDB();
+
 	const names: string[] = [];
 
 	for (const [name, p] of dbs) {

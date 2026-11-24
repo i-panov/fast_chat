@@ -293,8 +293,8 @@ async function apply(ctx, config) {
         output: {
           schema: {
             type: "object",
-            required: ["ok"],
-            properties: { ok: { type: "boolean" } },
+            properties: { ok: { type: "boolean", required: true } },
+            additionalProperties: false,
           },
           render: () => [{ type: "text", text: "Location sent" }],
         },

@@ -1,3 +1,4 @@
+import { decryptedFilesRepo } from "../db/decryptedFilesRepo.ts";
 import { fileCacheRepo } from "../db/fileCacheRepo.ts";
 import { getActiveAccountKey } from "../db/init.ts";
 
@@ -85,6 +86,45 @@ export function releaseFileBlobUrl(fileUrl: string): void {
 
 export function isFileCached(fileUrl: string): Promise<boolean> {
 	return fileCacheRepo.isCached(fileUrl);
+}
+
+// Decrypted attachments are cached under a key of their own: the ciphertext
+// entry stays keyed by the URL (that is what isFileCached and downloads
+// check), while the plaintext is only reachable with the file key. The key
+// material is part of the cache key, so a rotated file key never serves
+// content decrypted with the old one. The database is per-account and is
+// deleted with the account on logout.
+const DECRYPTED_PREFIX = "decrypted:";
+
+export function decryptedCacheKey(
+	fileUrl: string,
+	fileKey: { key: string },
+	fileID: string,
+): string {
+	return `${DECRYPTED_PREFIX}${fileUrl}:${fileID}:${fileKey.key}`;
+}
+
+export async function getCachedDecryptedFile(
+	cacheKey: string,
+): Promise<Blob | undefined> {
+	const cached = await decryptedFilesRepo.get(cacheKey);
+	if (cached === undefined) return;
+
+	return new Blob([cached.bytes], { type: cached.mimeType });
+}
+
+export async function cacheDecryptedFile(
+	cacheKey: string,
+	blob: Blob,
+	accountKey: string | null = getActiveAccountKey(),
+): Promise<void> {
+	// The repository applies the size and quota limits; a full disk must not
+	// break the display of a file that is already decrypted in memory. The
+	// account key is passed explicitly so the write is bound to the account
+	// that started the request, not the one that happens to be active after
+	// the decrypt.
+	const bytes = await blob.arrayBuffer();
+	await decryptedFilesRepo.put(cacheKey, bytes, blob.type, accountKey);
 }
 
 // saveFileOffline downloads the file even when it is above the automatic

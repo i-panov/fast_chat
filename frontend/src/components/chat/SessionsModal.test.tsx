@@ -10,9 +10,12 @@ vi.mock("../../api.ts", () => ({
 	revokeUserDeviceKey: vi.fn(),
 }));
 
-const { getSessions, revokeDeviceSession } = await import("../../api.ts");
+const { getSessions, getUserDeviceKeys, revokeDeviceSession } = await import(
+	"../../api.ts"
+);
 
 const REVOKE_RE = /sessions\.revoke|Revoke/;
+const RESTORE_RE = /sessions\.restoreKey|Restore key/;
 const LOGOUT_ALL_RE = /sessions\.logoutAll|Sign out everywhere/;
 
 const current = {
@@ -69,6 +72,42 @@ describe("SessionsModal", () => {
 			expect(screen.queryByText("Phone")).toBeNull();
 		});
 		expect(onLogoutAll).not.toHaveBeenCalled();
+	});
+
+	it("renders one restore action per device even when it has a backup", async () => {
+		vi.mocked(getSessions).mockResolvedValue({
+			currentSessionId: "s1",
+			sessions: [current],
+		});
+		vi.mocked(getUserDeviceKeys).mockResolvedValue({
+			devices: [
+				{
+					id: "s1",
+					publicKey: "pk",
+					createdAt: "2026-01-01T00:00:00Z",
+					lastSeenAt: "2026-01-01T00:00:00Z",
+					hasBackup: true,
+				},
+			],
+		});
+
+		render(
+			<MantineProvider>
+				<SessionsModal
+					open
+					onClose={() => {}}
+					token="tok"
+					userId="a:test"
+					onLogoutAll={vi.fn()}
+				/>
+			</MantineProvider>,
+		);
+
+		expect(await screen.findByText("Chrome on Linux")).toBeTruthy();
+		expect(
+			await screen.findAllByRole("button", { name: RESTORE_RE }),
+		).toHaveLength(1);
+		expect(screen.getByText("sessions.keyBackup")).toBeTruthy();
 	});
 
 	it("asks the caller to sign out everywhere", async () => {

@@ -85,6 +85,49 @@ describe("processOutbox edits and deletes", () => {
 		expect(await outboxRepo.list()).toHaveLength(0);
 	});
 
+	it("drops an edit of a message deleted on another device", async () => {
+		await messagesRepo.upsert(
+			{
+				id: "m1",
+				chatId: "chat-1",
+				fromId: "alice:test",
+				fromNick: "alice",
+				text: "edited offline",
+				createdAt: "2026-08-30T09:00:00.000Z",
+			},
+			"sent",
+		);
+		await pendingBlobsRepo.put({
+			id: "blob-1",
+			blob: new Blob(["x"]),
+			name: "a.txt",
+			mimeType: "text/plain",
+			size: 1,
+		});
+		await outboxRepo.enqueue({
+			kind: "edit",
+			opId: "edit-op-1",
+			chatId: "chat-1",
+			messageId: "m1",
+			text: "new",
+			pendingFileClientIds: ["blob-1"],
+			keptFileIds: [],
+			filesToRemove: [],
+			clientEditedAt: "2026-08-30T10:00:00.000Z",
+			createdAt: "2026-08-30T09:30:00.000Z",
+			attempts: 0,
+		});
+		editMessageMock.mockRejectedValue(new Error("http 404: message not found"));
+
+		await processOutbox("tok");
+
+		// The tombstone wins: neither the operation nor the local row or the
+		// staged blob survive a message that no longer exists.
+		expect(await outboxRepo.list()).toHaveLength(0);
+		expect(await messagesRepo.getById("chat-1", "m1")).toBeUndefined();
+		expect(await pendingBlobsRepo.get("blob-1")).toBeUndefined();
+	});
+
 	it("continues to the next op after a definitive failure", async () => {
 		const op1: OutboxOp = sendOp({ opId: "send-1", msgId: "m1" });
 		const op2: OutboxOp = {
@@ -125,7 +168,7 @@ describe("processOutbox edits and deletes", () => {
 		]);
 	});
 
-	it("fails the op on unauthorized", async () => {
+	it("stops on unauthorized without failing the op", async () => {
 		await messagesRepo.upsert(
 			{
 				id: "m1",
@@ -140,9 +183,11 @@ describe("processOutbox edits and deletes", () => {
 		await outboxRepo.enqueue(sendOp());
 		sendMessageMock.mockRejectedValue(new Error("unauthorized"));
 
-		await processOutbox("tok");
+		await expect(processOutbox("tok")).rejects.toThrow("unauthorized");
 
-		expect((await outboxRepo.list())[0].status).toBe("failed");
+		// The queue survives the logout: after signing in again the message
+		// is still there to be sent instead of being marked failed forever.
+		expect((await outboxRepo.list())[0].status).toBeUndefined();
 	});
 
 	it("keeps the op on non-Error throws", async () => {

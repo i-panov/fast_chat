@@ -412,7 +412,14 @@ export const MessageBubble = memo(function MessageBubble({
 				isOwn={isOwn}
 				fromNick={fromNick}
 			/>
-			<div style={{ position: "relative", maxWidth: "100%", display: "flex" }}>
+			<div
+				style={{
+					position: "relative",
+					display: "flex",
+					maxWidth: "min(70%, 640px)",
+					minWidth: 0,
+				}}
+			>
 				<Paper
 					className={isOwn ? "bubble-own" : "bubble-other"}
 					data-message-id={msgId}
@@ -420,7 +427,7 @@ export const MessageBubble = memo(function MessageBubble({
 						e.preventDefault();
 						openMenuAt(e.clientX, e.clientY);
 					}}
-					style={{ overflow: "hidden", flex: 1 }}
+					style={{ overflow: "hidden", maxWidth: "100%", minWidth: 0 }}
 				>
 					<BubbleContent
 						replyTo={replyTo}

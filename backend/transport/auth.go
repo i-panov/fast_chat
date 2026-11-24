@@ -288,6 +288,9 @@ func registerSSEAuth(api huma.API, svc *service.Service, st *store.Store, hub *s
 		if !ok {
 			return nil, errUnauthorized
 		}
+		if user.Banned {
+			return nil, errAccountBanned
+		}
 
 		// BindSession is atomic and reports whether this call created the
 		// binding. The frontend retries sse-auth on the same connection, and
@@ -347,6 +350,7 @@ type authUser struct {
 	ID        string
 	Nick      string
 	SessionID string
+	IsAdmin   bool
 }
 
 // userFromContext retrieves the authenticated user from the request context.
@@ -355,6 +359,18 @@ type authUser struct {
 func userFromContext(ctx context.Context) (*authUser, bool) {
 	u, ok := ctx.Value(authContextKey{}).(*authUser)
 	return u, ok
+}
+
+// adminFromContext reports the authenticated administrator. The role is
+// re-read by the service for every moderation call; this helper only gives a
+// fast, uniform rejection at the transport edge.
+func adminFromContext(ctx context.Context) (*authUser, bool) {
+	u, ok := userFromContext(ctx)
+	if !ok || !u.IsAdmin {
+		return nil, false
+	}
+
+	return u, true
 }
 
 // sessionFromContext retrieves the authenticated device session. It reports
@@ -387,7 +403,10 @@ func userAgentFromContext(ctx context.Context) string {
 	return ""
 }
 
-var errUnauthorized = &statusError{ErrorMessage: "unauthorized", code: http.StatusUnauthorized}
+var (
+	errUnauthorized  = &statusError{ErrorMessage: "unauthorized", code: http.StatusUnauthorized}
+	errAccountBanned = &statusError{ErrorMessage: "account banned", code: http.StatusForbidden}
+)
 
 // mapSessionError answers a revoked or unknown session as an authentication
 // failure: logout and refresh race a concurrent revoke, which is not a server
@@ -411,6 +430,8 @@ const (
 	msgUnauthorized      = "unauthorized"
 	msgTooManyFiles      = "too many files"
 	msgTooManyMessageIDs = "too many message IDs"
+	msgUserNotFound      = "user not found"
+	msgMessageNotFound   = "message not found"
 )
 
 // AuthMiddleware validates the Bearer token and, on success, stores the user
@@ -466,12 +487,23 @@ func AuthMiddleware(st *store.Store) func(ctx huma.Context, next func(huma.Conte
 			return
 		}
 
+		// A ban revokes the sessions, but a request racing the revoke can
+		// still carry a live one: check the flag, not only the token.
+		if user.Banned {
+			ctx.SetHeader("Content-Type", "application/json")
+			ctx.SetStatus(http.StatusForbidden)
+			ctx.BodyWriter().Write([]byte(`{"error":"account banned"}`)) //nolint:errcheck,gosec // best-effort: auth rejection
+
+			return
+		}
+
 		touchSession(ctx.Context(), st, session.ID)
 
 		next(huma.WithValue(ctx, authContextKey{}, &authUser{
 			ID:        user.ID,
 			Nick:      user.Username,
 			SessionID: session.ID,
+			IsAdmin:   user.IsAdmin,
 		}))
 	}
 }

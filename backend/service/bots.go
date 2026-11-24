@@ -593,7 +593,7 @@ func (s *Service) SetBotEnabled(ctx context.Context, ownerID, username string, e
 	if !ok || bot.OwnerID != ownerID {
 		return ErrBotNotActive
 	}
-	return s.store.SetBotActive(ctx, bot.UserID, enabled)
+	return s.store.SetBotActive(ctx, bot.UserID, enabled, nil)
 }
 
 //nolint:gocyclo,cyclop // mode, markup, reply markup and federation share one edit path.

@@ -3,9 +3,11 @@ import { setActiveAccountKey } from "../db/init.ts";
 import { generateKeyPair } from "./crypto.ts";
 import {
 	confirmNewKey,
+	createNewKey,
 	discardRecoveryAndGenerate,
 	ensureAccountKeys,
 	getMyKeyPair,
+	KeyBackupCheckFailedError,
 	NewKeyConfirmationRequiredError,
 	RecoveryRequiredError,
 	restoreKeyPairFromBackup,
@@ -81,6 +83,16 @@ describe("key server backup integration", () => {
 		expect(kp.privateKey).toBeTruthy();
 	});
 
+	it("creates a key after confirmation even if a rejected flight is still around", async () => {
+		await expect(ensureAccountKeys("token")).rejects.toBeInstanceOf(
+			NewKeyConfirmationRequiredError,
+		);
+		const kp = await createNewKey("token");
+		expect(kp.privateKey).toBeTruthy();
+		expect(await getMyKeyPair()).not.toBeNull();
+		expect(uploadCount).toBe(1);
+	});
+
 	it("generates a fresh pair when the server has no backup", async () => {
 		confirmNewKey();
 		const kp = await ensureAccountKeys("token");
@@ -143,7 +155,7 @@ describe("key server backup integration", () => {
 		};
 		window.addEventListener("e2ee:recovery-needed", handler);
 
-		await expect(ensureAccountKeys("token")).rejects.toThrow(
+		await expect(ensureAccountKeys("token")).rejects.toBeInstanceOf(
 			RecoveryRequiredError,
 		);
 		expect(await getMyKeyPair()).toBeNull();
@@ -158,8 +170,8 @@ describe("key server backup integration", () => {
 		backupOnServer = "opaque-blob";
 		failGetKeyBackupWith = new Error("network down");
 
-		await expect(ensureAccountKeys("token")).rejects.toThrow(
-			RecoveryRequiredError,
+		await expect(ensureAccountKeys("token")).rejects.toBeInstanceOf(
+			KeyBackupCheckFailedError,
 		);
 		expect(await getMyKeyPair()).toBeNull();
 	});

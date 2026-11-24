@@ -261,37 +261,10 @@ func (s *Store) RevokeAllSessions(ctx context.Context, userID string) (int64, er
 
 	var revoked int64
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var sessions []model.Session
-		if err := tx.Select("id").
-			Where("user_id = ? AND revoked_at IS NULL", userID).
-			Find(&sessions).Error; err != nil {
-			return err
-		}
+		var err error
+		revoked, err = revokeAllSessionsTx(tx, userID, now)
 
-		revoked = 0
-		for idx := range sessions {
-			res := tx.Model(&model.Session{}).
-				Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessions[idx].ID, userID).
-				Updates(map[string]any{
-					fieldRevokedAt: now,
-					fieldExpiresAt: now,
-					fieldTokenHash: hashToken(GenerateID()),
-				})
-			if res.Error != nil {
-				return res.Error
-			}
-			revoked += res.RowsAffected
-		}
-
-		// Every subscription of the user is dead, including legacy rows with
-		// an empty session id; logout-all must not leave a notification path.
-		if err := tx.Where("user_id = ?", userID).Delete(&model.PushSubscription{}).Error; err != nil {
-			return err
-		}
-
-		return tx.Model(&model.UserDevice{}).
-			Where("user_id = ? AND revoked_at IS NULL", userID).
-			Update("revoked_at", now).Error
+		return err
 	})
 	if err != nil {
 		// The transaction rolled back, so report no revocations rather than a
@@ -300,6 +273,44 @@ func (s *Store) RevokeAllSessions(ctx context.Context, userID string) (int64, er
 	}
 
 	return revoked, nil
+}
+
+// revokeAllSessionsTx is the logout-all cleanup shared by the user and the
+// administrator paths: sessions are revoked one by one (each gets a fresh
+// token hash), push subscriptions are deleted and the device keys are
+// invalidated, all inside the caller's transaction.
+func revokeAllSessionsTx(tx *gorm.DB, userID string, now time.Time) (int64, error) {
+	var sessions []model.Session
+	if err := tx.Select("id").
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Find(&sessions).Error; err != nil {
+		return 0, err
+	}
+
+	var revoked int64
+	for idx := range sessions {
+		res := tx.Model(&model.Session{}).
+			Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessions[idx].ID, userID).
+			Updates(map[string]any{
+				fieldRevokedAt: now,
+				fieldExpiresAt: now,
+				fieldTokenHash: hashToken(GenerateID()),
+			})
+		if res.Error != nil {
+			return 0, res.Error
+		}
+		revoked += res.RowsAffected
+	}
+
+	// Every subscription of the user is dead, including legacy rows with
+	// an empty session id; logout-all must not leave a notification path.
+	if err := tx.Where("user_id = ?", userID).Delete(&model.PushSubscription{}).Error; err != nil {
+		return 0, err
+	}
+
+	return revoked, tx.Model(&model.UserDevice{}).
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Update("revoked_at", now).Error
 }
 
 // ListSessions returns active sessions, newest activity first.

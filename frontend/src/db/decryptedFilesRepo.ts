@@ -1,0 +1,97 @@
+import { getActiveAccountKey, getDB } from "./init.ts";
+import type { DecryptedFile } from "./schema.ts";
+
+// A separate limit from the ciphertext cache: the plaintext is what makes a
+// second view instant, but it must not push the ciphertext of the same file
+// out and force a re-download after every restart.
+const MAX_DECRYPTED_FILES = 100;
+const MAX_DECRYPTED_BYTES = 100 * 1024 * 1024;
+
+async function byteLimit(): Promise<number> {
+	try {
+		const estimate = await navigator.storage?.estimate?.();
+		if (estimate?.quota !== undefined && estimate.quota > 0) {
+			return Math.min(
+				MAX_DECRYPTED_BYTES,
+				Math.max(20 * 1024 * 1024, Math.floor(estimate.quota * 0.05)),
+			);
+		}
+	} catch {
+		// Private mode or a browser without storage.estimate.
+	}
+
+	return MAX_DECRYPTED_BYTES;
+}
+
+export const decryptedFilesRepo = {
+	async get(key: string): Promise<DecryptedFile | undefined> {
+		const db = await getDB();
+		const entry = await db.get("decryptedFiles", key);
+		if (entry === undefined) return;
+		// Touch for LRU eviction; the copy given to the caller stays as read.
+		await db.put("decryptedFiles", { ...entry, lastAccessedAt: Date.now() });
+		return entry;
+	},
+
+	async put(
+		key: string,
+		bytes: ArrayBuffer,
+		mimeType: string,
+		accountKey: string | null,
+	): Promise<void> {
+		if (bytes.byteLength > MAX_DECRYPTED_BYTES) return;
+		// The caller captured the account before the async decrypt. Check it
+		// again after every await: a switch in between must not write one
+		// account's plaintext into another account's database.
+		if (getActiveAccountKey() !== accountKey) return;
+		const db = await getDB();
+		const now = Date.now();
+		const entry: DecryptedFile = {
+			key,
+			bytes,
+			mimeType,
+			cachedAt: now,
+			lastAccessedAt: now,
+			size: bytes.byteLength,
+		};
+		await db.put("decryptedFiles", entry);
+		await this.evictIfNeeded();
+	},
+
+	async remove(key: string): Promise<void> {
+		const db = await getDB();
+		await db.delete("decryptedFiles", key);
+	},
+
+	async isCached(key: string): Promise<boolean> {
+		const db = await getDB();
+		return (await db.get("decryptedFiles", key)) !== undefined;
+	},
+
+	async evictIfNeeded(): Promise<void> {
+		const db = await getDB();
+		const all = await db.getAll("decryptedFiles");
+		if (all.length === 0) return;
+
+		const maxBytes = await byteLimit();
+		let total = all.reduce((sum, entry) => sum + entry.size, 0);
+		all.sort(
+			(a, b) =>
+				(a.lastAccessedAt ?? a.cachedAt) - (b.lastAccessedAt ?? b.cachedAt),
+		);
+
+		const toDelete: DecryptedFile[] = [];
+		let count = all.length;
+		for (const entry of all) {
+			if (count <= MAX_DECRYPTED_FILES && total <= maxBytes) break;
+			toDelete.push(entry);
+			count--;
+			total -= entry.size;
+		}
+		if (toDelete.length === 0) return;
+
+		const tx = db.transaction("decryptedFiles", "readwrite");
+		await Promise.all(toDelete.map((f) => tx.store.delete(f.key)));
+		await tx.done;
+	},
+};

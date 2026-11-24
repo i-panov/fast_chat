@@ -280,6 +280,19 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 				>
 					{t("bots.open")}
 				</Button>
+				{activeAccount?.user.isAdmin === true && (
+					<Button
+						variant="filled"
+						color="blue"
+						style={{ width: "100%", marginBottom: "8px" }}
+						onClick={() => {
+							onClose();
+							void navigate({ to: "/admin" });
+						}}
+					>
+						{t("admin.open")}
+					</Button>
+				)}
 				<Button
 					variant="outline"
 					style={{ width: "100%", marginBottom: "8px" }}

@@ -431,7 +431,7 @@ func registerUserAvatar(api huma.API, st *store.Store) {
 
 		updated, err := st.UpdateUserAvatar(ctx, user.ID, fileID)
 		if err != nil {
-			return nil, &statusError{ErrorMessage: "user not found", code: http.StatusNotFound}
+			return nil, &statusError{ErrorMessage: msgUserNotFound, code: http.StatusNotFound}
 		}
 
 		var out userAvatarOutput

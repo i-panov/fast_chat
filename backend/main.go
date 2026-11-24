@@ -93,12 +93,19 @@ func addVaryOrigin(w http.ResponseWriter) {
 // The WebAssembly of the crypto library needs its own source: without
 // 'wasm-unsafe-eval' the browser refuses to compile the module and the
 // client cannot generate the keys of the account.
+//
+// The tile origin is listed in both img-src and connect-src. The map draws
+// the tiles as images, but a request handled by the Service Worker is a
+// fetch and is checked against the policy of the worker: with connect-src
+// limited to 'self' the tiles were refused and the maps stayed empty.
+const mapTileOrigin = "https://*.tile.openstreetmap.org"
+
 const contentSecurityPolicy = "default-src 'self'; " +
 	"script-src 'self' 'wasm-unsafe-eval'; " +
 	"style-src 'self' 'unsafe-inline'; " +
-	"img-src 'self' data: blob: https://*.tile.openstreetmap.org; " +
+	"img-src 'self' data: blob: " + mapTileOrigin + "; " +
 	"font-src 'self' data:; " +
-	"connect-src 'self'; " +
+	"connect-src 'self' " + mapTileOrigin + "; " +
 	"worker-src 'self' blob:; " +
 	"manifest-src 'self'; " +
 	"object-src 'none'; " +
@@ -115,7 +122,7 @@ func contentSecurityPolicyForOrigin(origin string) string {
 		return contentSecurityPolicy
 	}
 
-	return strings.Replace(contentSecurityPolicy, "connect-src 'self';", "connect-src 'self' "+origin+";", 1)
+	return strings.Replace(contentSecurityPolicy, "connect-src 'self'", "connect-src 'self' "+origin, 1)
 }
 
 func securityHeadersMiddleware(ipExtractor *ratelimit.ClientIPExtractor, origins ...string) func(http.Handler) http.Handler {
@@ -484,6 +491,10 @@ func main() {
 
 	hub := sse.NewHub(service.TypingThrottleInterval * 5)
 	svc := service.New(st, cfg, hub, pushService)
+	if err := svc.SyncConfiguredAdmins(context.Background()); err != nil {
+		slog.Error("failed to apply the configured administrators", "err", err)
+		os.Exit(1)
+	}
 	if _, _, err := svc.EnsureMasterBot(context.Background()); err != nil {
 		slog.Error("failed to initialize master bot", "err", err)
 		os.Exit(1)

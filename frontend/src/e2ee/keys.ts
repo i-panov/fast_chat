@@ -48,6 +48,12 @@ export class RecoveryRequiredError extends Error {
 
 // Raised for the first key on a single-device account. Generating it makes
 // old history unreadable, so the UI must ask before doing it.
+export class KeyBackupCheckFailedError extends Error {
+	constructor() {
+		super("could not check the server key backup");
+	}
+}
+
 export class NewKeyConfirmationRequiredError extends Error {
 	constructor() {
 		super("creating a new key pair needs an explicit confirmation");
@@ -117,7 +123,19 @@ async function ensureDeviceKey(
 // account's key pair into another's requests. IndexedDB is already
 // per-account; these mirrors keep repeated reads off the DB.
 const keyCacheByAccount = new Map<string, KeyPair>();
+const ACCOUNT_CHANGED = "account changed while creating the key";
+
+type KeyLockManager = {
+	request<T>(name: string, callback: () => Promise<T>): Promise<T>;
+};
+
+function withKeyLock<T>(scope: string, callback: () => Promise<T>): Promise<T> {
+	const locks = (navigator as Navigator & { locks?: KeyLockManager }).locks;
+	if (locks === undefined) return callback();
+	return locks.request(`e2ee-key:${scope}`, callback);
+}
 const inFlightByAccount = new Map<string, Promise<KeyPair>>();
+const inFlightIdByAccount = new Map<string, object>();
 
 function accountScope(): string {
 	return getActiveAccountKey() ?? "";
@@ -194,6 +212,23 @@ export function onNewKeyConfirmationNeeded(
 // The next ensureAccountKeys call may generate the pair.
 export function confirmNewKey() {
 	confirmedNewKey.add(accountScope());
+}
+
+// createNewKey performs the explicit "create a new key" action as one
+// operation instead of confirm-then-retry racing with an old in-flight call.
+export async function createNewKey(token: string): Promise<KeyPair> {
+	const scope = accountScope();
+	confirmNewKey();
+	const pending = inFlightByAccount.get(scope);
+	if (pending !== undefined) {
+		// Let the already-running flight observe the confirmation. Do not
+		// drop it: a second flight could generate a divergent key pair.
+		await pending.catch(() => undefined);
+	}
+	if (accountScope() !== scope) {
+		throw new Error(ACCOUNT_CHANGED);
+	}
+	return ensureAccountKeys(token);
 }
 
 // uploadKeyBackup encrypts the given key pair under the password and
@@ -308,6 +343,7 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 		return inFlight;
 	}
 
+	const flightId = {};
 	const run = (async () => {
 		try {
 			const existing = await getMyKeyPair();
@@ -331,10 +367,11 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 			// does, ask the user to recover instead of silently creating
 			// divergent keys.
 			const backupState = await serverBackupState(token);
-			if (backupState !== "none") {
-				if (backupState === "backup") {
-					emitRecoveryNeeded(token);
-				}
+			if (backupState === "unknown") {
+				throw new KeyBackupCheckFailedError();
+			}
+			if (backupState === "backup") {
+				emitRecoveryNeeded(token);
 				throw new RecoveryRequiredError();
 			}
 
@@ -345,23 +382,45 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 				emitNewKeyConfirmation(token);
 				throw new NewKeyConfirmationRequiredError();
 			}
+			confirmedNewKey.delete(scope);
+			if (accountScope() !== scope) {
+				throw new Error(ACCOUNT_CHANGED);
+			}
 
-			const kp = await generateKeyPair();
-			// Save locally first so decryption works even if the server
-			// is unreachable; the upload is retried on later calls.
-			await metaRepo.setNoNotify(PUBLIC_KEY_META, kp.publicKey);
-			await metaRepo.setNoNotify(PRIVATE_KEY_META, kp.privateKey);
-			await metaRepo.setNoNotify(PUBLIC_KEY_UPLOADED_META, false);
-			keyCacheByAccount.set(scope, kp);
-			await uploadPublicKeyIfNeeded(token, kp.publicKey);
-			await ensureDeviceKey(token, kp.publicKey);
+			const kp = await withKeyLock(scope, async () => {
+				// Another tab may have generated the key while this flight
+				// was waiting for the lock. Re-read without the stale cache.
+				keyCacheByAccount.delete(scope);
+				const raced = await getMyKeyPair();
+				if (raced !== null) return raced;
+				if (accountScope() !== scope) {
+					throw new Error(ACCOUNT_CHANGED);
+				}
+				const generated = await generateKeyPair();
+				if (accountScope() !== scope) {
+					throw new Error(ACCOUNT_CHANGED);
+				}
+				// Save locally first so decryption works even if the server
+				// is unreachable; the upload is retried on later calls.
+				await metaRepo.setNoNotify(PUBLIC_KEY_META, generated.publicKey);
+				await metaRepo.setNoNotify(PRIVATE_KEY_META, generated.privateKey);
+				await metaRepo.setNoNotify(PUBLIC_KEY_UPLOADED_META, false);
+				keyCacheByAccount.set(scope, generated);
+				await uploadPublicKeyIfNeeded(token, generated.publicKey);
+				await ensureDeviceKey(token, generated.publicKey);
+				return generated;
+			});
 			return kp;
 		} finally {
-			inFlightByAccount.delete(scope);
+			if (inFlightIdByAccount.get(scope) === flightId) {
+				inFlightByAccount.delete(scope);
+				inFlightIdByAccount.delete(scope);
+			}
 		}
 	})();
 
 	inFlightByAccount.set(scope, run);
+	inFlightIdByAccount.set(scope, flightId);
 	return run;
 }
 
@@ -395,6 +454,7 @@ export async function clearLocalKeys(): Promise<void> {
 	const scope = accountScope();
 	keyCacheByAccount.delete(scope);
 	inFlightByAccount.delete(scope);
+	inFlightIdByAccount.delete(scope);
 	confirmedNewKey.delete(scope);
 	const db = await getDB();
 	await Promise.all([

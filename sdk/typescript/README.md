@@ -47,3 +47,19 @@ E2EE mode.
 ## Encrypted files
 
 `sendEncryptedFile` uploads ciphertext with the plaintext hash and sends hash-keyed `fileKeys`/`fileMeta`. `downloadFile` returns ciphertext; decrypt it with `decryptFileBytes` and the matching key. Locations travel in encrypted `sendMessage` content.
+
+## Unified sending
+
+`send()` chooses plaintext or E2EE from the bot mode. Pass raw file bytes and
+optional location; the SDK uploads/encrypts and builds the content.
+
+```ts
+await bot.send(chatId, {
+  text: "caption",
+  files: [{ data, name: "photo.jpg", mimeType: "image/jpeg" }],
+  location: { lat: 55.75, lng: 37.61 },
+});
+```
+
+`sendEncryptedFile` is a compatibility wrapper. `sendFile`/`sendLocation`
+delegate to the same mode-aware path.

@@ -13,14 +13,22 @@ import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
-import type { OutboxOp, OutboxOpEdit, OutboxOpSend } from "../db/schema.ts";
+import type {
+	OutboxOp,
+	OutboxOpEdit,
+	OutboxOpPin,
+	OutboxOpSend,
+} from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 
 const RETRY_AFTER_REGEX = /retry-after:(.+)/;
 
 const HTTP_STATUS_RE = /^http (\d{3})\b/;
 
-export async function processOutbox(token: string): Promise<void> {
+// Returns false when a transient failure paused the queue: the open window
+// retries on its own schedule, the background runner must ask the browser for
+// another sync event instead.
+export async function processOutbox(token: string): Promise<boolean> {
 	const ops = await outboxRepo.list();
 
 	for (const op of ops) {
@@ -29,6 +37,10 @@ export async function processOutbox(token: string): Promise<void> {
 		try {
 			await runOp(op, token);
 		} catch (err) {
+			// An expired session is not a property of the queued operation:
+			// fail it only if the server rejected the operation itself. The
+			// caller re-authenticates and the queue survives.
+			if (isUnauthorized(err)) throw err;
 			if (isTransient(err)) {
 				// Respect Retry-After headers (e.g. 429 rate limiting) by
 				// backing off before the next sync tick. Default fallback
@@ -37,11 +49,13 @@ export async function processOutbox(token: string): Promise<void> {
 				if (retryAfterMs !== null) {
 					await delay(retryAfterMs);
 				}
-				return;
+				return false;
 			}
 			await failOp(op, err);
 		}
 	}
+
+	return true;
 }
 
 export function extractRetryAfterMs(err: unknown): number | null {
@@ -149,6 +163,30 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 }
 
 async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
+	try {
+		await pushEdit(op, token);
+	} catch (err) {
+		if (!isNotFound(err)) throw err;
+		await dropEditOfDeletedMessage(op);
+	}
+}
+
+// The message was deleted on another device while this edit waited in the
+// queue. The edit can never be applied, and a retry would only create a
+// "failed" ghost of a message that no longer exists.
+async function dropEditOfDeletedMessage(op: OutboxOpEdit): Promise<void> {
+	if (op.pendingFileClientIds.length > 0) {
+		await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
+	}
+	if (op.threadId !== undefined) {
+		await threadMessagesRepo.remove(op.threadId, op.messageId);
+	} else {
+		await messagesRepo.remove(op.chatId, op.messageId);
+	}
+	await outboxRepo.remove(op.opId);
+}
+
+async function pushEdit(op: OutboxOpEdit, token: string): Promise<void> {
 	const uploaded = await uploadPendingFiles(op.pendingFileClientIds, token, op);
 
 	let fileIDs: string[] | undefined;
@@ -222,17 +260,24 @@ async function runDelete(
 	await outboxRepo.remove(op.opId);
 }
 
+// revertPin restores the optimistic pinned list of a chat. It is shared with
+// the delta applier: a tombstone that drops a queued pin must undo the same
+// optimistic entry.
+export async function revertPin(op: OutboxOpPin): Promise<void> {
+	const chat = await chatsRepo.getById(op.chatId);
+	if (chat === undefined) return;
+
+	const current = chat.pinnedMessageIds ?? [];
+	const pinned =
+		op.previousPinned === true
+			? [op.messageId, ...current.filter((id) => id !== op.messageId)]
+			: current.filter((id) => id !== op.messageId);
+	await chatsRepo.upsert({ ...chat, pinnedMessageIds: pinned });
+}
+
 async function failOp(op: OutboxOp, _err: unknown): Promise<void> {
 	if (op.kind === "pin") {
-		const chat = await chatsRepo.getById(op.chatId);
-		if (chat !== undefined) {
-			const current = chat.pinnedMessageIds ?? [];
-			const pinned =
-				op.previousPinned === true
-					? [op.messageId, ...current.filter((id) => id !== op.messageId)]
-					: current.filter((id) => id !== op.messageId);
-			await chatsRepo.upsert({ ...chat, pinnedMessageIds: pinned });
-		}
+		await revertPin(op);
 	}
 	if (op.kind === "reaction") {
 		if (op.threadId !== undefined) {
@@ -314,6 +359,10 @@ async function uploadPendingFiles(
 	}
 
 	return out;
+}
+
+function isUnauthorized(err: unknown): boolean {
+	return err instanceof Error && err.message.toLowerCase() === "unauthorized";
 }
 
 function isTransient(err: unknown): boolean {

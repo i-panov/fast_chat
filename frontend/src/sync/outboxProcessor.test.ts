@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { chatsRepo } from "../db/chatsRepo.ts";
 import { setActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
@@ -406,6 +407,84 @@ describe("offline UI action outbox", () => {
 			"m1",
 			"👍",
 		);
+		expect(await outboxRepo.list()).toHaveLength(0);
+	});
+
+	it("reverts an optimistic reaction when the server rejects it", async () => {
+		await messagesRepo.upsert(
+			{
+				id: "m1",
+				chatId: "c1",
+				fromId: "alice:test",
+				fromNick: "alice",
+				text: "hello",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				reactions: [{ emoji: "👍", count: 1, me: true }],
+			},
+			"sent",
+		);
+		addMessageReactionMock.mockRejectedValue(new Error("http 400: bad"));
+		await outboxRepo.enqueue({
+			kind: "reaction",
+			opId: "r1",
+			chatId: "c1",
+			messageId: "m1",
+			emoji: "👍",
+			action: "add",
+			previousReactions: [],
+			createdAt: "2026-01-01T00:00:00.000Z",
+			attempts: 0,
+		});
+
+		await processOutbox("tok");
+
+		// The optimistic badge disappears with the rejected operation.
+		expect((await messagesRepo.getById("c1", "m1"))?.reactions).toEqual([]);
+		expect(await outboxRepo.list()).toHaveLength(0);
+	});
+
+	it("reverts an optimistic pin when the server rejects it", async () => {
+		await chatsRepo.upsert({
+			id: "c1",
+			type: "group",
+			name: "Group",
+			ownerId: "alice:test",
+			members: [],
+			createdAt: "2026-01-01T00:00:00.000Z",
+			pinnedMessageIds: ["m1"],
+		});
+		pinMessageMock.mockRejectedValue(new Error("http 403: forbidden"));
+		await outboxRepo.enqueue({
+			kind: "pin",
+			opId: "p1",
+			chatId: "c1",
+			messageId: "m1",
+			pinned: true,
+			previousPinned: false,
+			createdAt: "2026-01-01T00:00:01.000Z",
+			attempts: 0,
+		});
+
+		await processOutbox("tok");
+
+		expect((await chatsRepo.getById("c1"))?.pinnedMessageIds).toEqual([]);
+		expect(await outboxRepo.list()).toHaveLength(0);
+	});
+
+	it("drops a rejected read batch instead of retrying forever", async () => {
+		markMessagesReadMock.mockRejectedValue(new Error("http 400: bad"));
+		await outboxRepo.enqueue({
+			kind: "read",
+			opId: "rd1",
+			chatId: "c1",
+			messageIds: ["m1"],
+			createdAt: "2026-01-01T00:00:02.000Z",
+			attempts: 0,
+		});
+
+		await processOutbox("tok");
+
+		expect(markMessagesReadMock).toHaveBeenCalledTimes(1);
 		expect(await outboxRepo.list()).toHaveLength(0);
 	});
 

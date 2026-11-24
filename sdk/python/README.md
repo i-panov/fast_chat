@@ -62,3 +62,20 @@ protocol. Pass a saved `EncryptionKeyPair` to `BotClient` after the first
 ## Encrypted files
 
 `send_encrypted_file` uploads ciphertext with the plaintext hash and sends hash-keyed `file_keys`/`file_meta`. `download_file` returns ciphertext; use `decrypt_file_bytes` with the matching key. Locations travel in encrypted `send_message` content.
+
+## Unified sending
+
+`send()` chooses plaintext or E2EE from the bot mode and accepts raw files and
+location.
+
+```python
+bot.send(
+    chat_id,
+    "caption",
+    files=[{"data": data, "name": "photo.jpg", "mime_type": "image/jpeg"}],
+    location={"lat": 55.75, "lng": 37.61},
+)
+```
+
+`send_encrypted_file` is a compatibility wrapper. `send_file`/`send_location`
+delegate to the same mode-aware path.

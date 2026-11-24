@@ -29,6 +29,7 @@ func newFedTestService(t *testing.T) *Service {
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{}, &model.FederationOp{}, &model.FederationCursor{},
 		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{},
+		&model.AdminAuditLog{},
 	); err != nil {
 		t.Fatal(err)
 	}

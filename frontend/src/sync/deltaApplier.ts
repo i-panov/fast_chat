@@ -4,7 +4,7 @@ import { messagesRepo } from "../db/messagesRepo.ts";
 import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
-import type { OutboxOp } from "../db/schema.ts";
+import type { OutboxOp, OutboxOpPin } from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import type { Message, SyncResponse } from "../types/api.ts";
 
@@ -198,6 +198,11 @@ async function applyDeletions(
 			await outboxRepo.remove(deleteOp.opId);
 		}
 
+		// An edit, reaction or pin of a deleted message can never succeed:
+		// replaying it would only fail with 404 and resurrect the row as
+		// "failed". The tombstone wins, so the queued intent is dropped.
+		await dropOpsForDeletedMessage(outbox, d.messageId);
+
 		await messagesRepo.applyDelete(d.chatId, d.messageId);
 
 		// The same tombstone covers the messages of the threads: they live in
@@ -206,6 +211,47 @@ async function applyDeletions(
 		const threadMessage = await threadMessagesRepo.getByIdAny(d.messageId);
 		if (threadMessage !== undefined) {
 			await threadMessagesRepo.applyDelete(threadMessage.threadId, d.messageId);
+		}
+	}
+}
+
+async function forgetPinnedMessage(op: OutboxOpPin): Promise<void> {
+	const chat = await chatsRepo.getById(op.chatId);
+	if (chat === undefined) return;
+
+	const pinned = (chat.pinnedMessageIds ?? []).filter(
+		(id) => id !== op.messageId,
+	);
+	await chatsRepo.upsert({ ...chat, pinnedMessageIds: pinned });
+}
+
+// dropOpsForDeletedMessage removes the queued operations whose target was
+// deleted elsewhere. Staged blobs of a dropped edit are released too: keeping
+// them would leak storage with no operation left to upload them.
+async function dropOpsForDeletedMessage(
+	outbox: OutboxOp[],
+	messageId: string,
+): Promise<void> {
+	for (const op of outbox) {
+		if (op.kind === "edit" && op.messageId === messageId) {
+			if (op.pendingFileClientIds.length > 0) {
+				await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
+			}
+			await outboxRepo.remove(op.opId);
+			continue;
+		}
+
+		if (op.kind === "pin" && op.messageId === messageId) {
+			// The tombstone removes the pin server-side, so the local list
+			// must lose the id in both directions. Reverting previousPinned
+			// would re-pin a deleted message when the queued op was an unpin.
+			await forgetPinnedMessage(op);
+			await outboxRepo.remove(op.opId);
+			continue;
+		}
+
+		if (op.kind === "reaction" && op.messageId === messageId) {
+			await outboxRepo.remove(op.opId);
 		}
 	}
 }

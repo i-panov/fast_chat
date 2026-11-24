@@ -62,6 +62,11 @@ backend\:test:
 frontend\:test:
 	cd frontend && npx vitest run
 
+# Проверяются только боевые зависимости: уязвимости сборки и тестов не
+# попадают в артефакт, а их исправление часто требует мажорного обновления.
+frontend\:audit:
+	cd frontend && npm audit --omit=dev --audit-level=moderate
+
 # Звонки проверяются двумя настоящими браузерами: Playwright сам поднимает
 # бэкенд и dev-сервер на отдельных портах (см. frontend/playwright.config.ts).
 frontend\:e2e:

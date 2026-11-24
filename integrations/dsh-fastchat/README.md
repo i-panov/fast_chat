@@ -43,7 +43,7 @@ work in.
     bots:
       - name: fastchat
         token: fcb_project_a_token
-        cwd: /home/ilya/projects/project-a
+        cwd: ~/projects/project-a
         baseUrl: https://chat.example.com
         preset: standard
         allowedChatIds: []   # empty = allow every chat of this bot
@@ -51,7 +51,7 @@ work in.
 
       - name: billing
         token: fcb_project_b_token
-        cwd: /home/ilya/projects/project-b
+        cwd: ~/projects/project-b
         baseUrl: https://chat.example.com
         preset: standard
         allowedChatIds: []   # empty = allow every chat of this bot

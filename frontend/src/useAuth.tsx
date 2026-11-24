@@ -13,7 +13,12 @@ import {
 	revokeSession,
 } from "./api.ts";
 import { setActiveAccountKey } from "./db/init.ts";
+import { clearLocalKeys } from "./e2ee/keys.ts";
 import { getRouter } from "./router.tsx";
+import {
+	clearBackgroundSession,
+	setBackgroundSession,
+} from "./sync/backgroundSession.ts";
 import {
 	broadcastTokenRotation,
 	onTokenRotation,
@@ -32,6 +37,10 @@ interface StoredUser {
 	id: string;
 	nick: string;
 	avatarUrl?: string;
+	// Mirrors the public profile of the account. Older stored accounts
+	// predate the field, so it is optional and read as false.
+	isAdmin?: boolean;
+	isBot?: boolean;
 }
 
 interface StoredAccount {
@@ -470,7 +479,7 @@ function useAuthState() {
 		removeAccount(token ?? "");
 		clearAccountSwitchState();
 		if (leaving !== null) {
-			void deleteAccountDB(leaving.user.id);
+			void clearLocalKeys().finally(() => deleteAccountDB(leaving.user.id));
 		}
 
 		// The token is revoked on the server as well: a token that only
@@ -486,7 +495,7 @@ function useAuthState() {
 		removeAccount(token ?? "");
 		clearAccountSwitchState();
 		if (leaving !== null) {
-			void deleteAccountDB(leaving.user.id);
+			void clearLocalKeys().finally(() => deleteAccountDB(leaving.user.id));
 		}
 		if (token !== null) {
 			void logoutAllSessions(token).catch(() => {
@@ -502,7 +511,21 @@ function useAuthState() {
 			: null;
 
 	useEffect(() => {
-		setActiveAccountKey(activeAccount?.user.id ?? null);
+		const accountKey = activeAccount?.user.id ?? null;
+		setActiveAccountKey(accountKey);
+
+		// The Service Worker cannot read the session storage: mirror the
+		// active credentials so Background Sync can flush the outbox after
+		// the last window is closed. Logout removes them.
+		if (activeAccount === null) {
+			void clearBackgroundSession();
+			return;
+		}
+
+		void setBackgroundSession({
+			token: activeAccount.token,
+			accountKey: activeAccount.user.id,
+		});
 	}, [activeAccount]);
 
 	useSessionHydration(activeAccount, setAccounts);

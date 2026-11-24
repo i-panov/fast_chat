@@ -9,6 +9,12 @@ type User struct {
 	Username    string `gorm:"column:username;uniqueIndex;not null" json:"username"`
 	DisplayName string `gorm:"not null;default:''"                  json:"displayName,omitempty"`
 	IsBot       bool   `gorm:"not null;default:false"               json:"isBot,omitempty"`
+	// IsAdmin grants the moderation endpoints. It is set from the server
+	// administrator list, never by the user itself.
+	IsAdmin bool `gorm:"not null;default:false" json:"isAdmin,omitempty"`
+	// Banned blocks authentication. Banning revokes every session of the
+	// account, so a stolen token dies with the ban.
+	Banned bool `gorm:"not null;default:false" json:"banned,omitempty"`
 	// Token is the plaintext token returned once by CreateUserWithSession.
 	// It is deliberately not persisted: sessions hold only the hash.
 	Token        string    `gorm:"-"                   json:"-"`
@@ -25,6 +31,7 @@ type PublicUser struct {
 	Nick        string `json:"nick"`
 	DisplayName string `json:"displayName,omitempty"`
 	IsBot       bool   `json:"isBot,omitempty"`
+	IsAdmin     bool   `json:"isAdmin,omitempty"`
 	Online      bool   `json:"online"`
 	AvatarURL   string `json:"avatarUrl,omitempty"`
 }
@@ -36,7 +43,7 @@ func (u *User) Public() PublicUser {
 	}
 	out := PublicUser{
 		ID: u.ID, Username: u.Username, Nick: display, DisplayName: display,
-		IsBot: u.IsBot, Online: u.Online,
+		IsBot: u.IsBot, IsAdmin: u.IsAdmin, Online: u.Online,
 	}
 	if u.AvatarFileID != "" {
 		out.AvatarURL = "/api/files/" + u.AvatarFileID

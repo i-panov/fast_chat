@@ -1,8 +1,12 @@
 /// <reference lib="webworker" />
 
+import type { RouteMatchCallbackOptions } from "workbox-core";
 import { cacheNames, setCacheNameDetails } from "workbox-core";
 import { registerRoute } from "workbox-routing";
-import { NetworkOnly } from "workbox-strategies";
+import { CacheFirst, NetworkOnly } from "workbox-strategies";
+import { handleNavigation } from "./sw/navigation";
+import { classifyRequest, type RouteKind } from "./sw/routing";
+import { runBackgroundOutbox } from "./sync/backgroundOutbox";
 
 declare let self: ServiceWorkerGlobalScope & {
 	__WB_MANIFEST: Array<{ url: string; revision?: string }>;
@@ -58,13 +62,41 @@ self.addEventListener("activate", (event: ExtendableEvent) => {
 	void self.clients.claim();
 });
 
+// Every installed asset is cached on install, but the worker must also serve
+// it: without a route the cache is only a copy nobody reads, and the app
+// cannot start offline.
+const matchesKind = (kind: RouteKind) => (options: RouteMatchCallbackOptions) =>
+	classifyRequest(
+		{
+			url: options.url.href,
+			method: options.request.method,
+			mode: options.request.mode,
+			sameOrigin: options.sameOrigin,
+		},
+		manifestURLs,
+	) === kind;
+
 // Authenticated API and file responses are never cached: the cache key
 // is the URL without Authorization, so one account would otherwise read
 // another account's bytes after logout/switch. File blobs stay in the
 // per-account IndexedDB fileCache instead.
-registerRoute(({ url }) => url.pathname.startsWith("/api/"), new NetworkOnly());
+registerRoute(matchesKind("api"), new NetworkOnly());
 
-registerRoute(() => true, new NetworkOnly());
+registerRoute(
+	matchesKind("precache"),
+	new CacheFirst({ cacheName: runtimeCacheName }),
+);
+
+// A navigation goes to the network first so a new deployment is picked up,
+// and falls back to the cached shell offline. The shell is one document for
+// every client-side route, so /chat works even when it was never visited.
+const shellURL = new URL("index.html", self.registration.scope).href;
+
+registerRoute(matchesKind("navigation"), async ({ request }) => {
+	const cache = await caches.open(runtimeCacheName);
+
+	return handleNavigation({ request, shellURL, cache });
+});
 
 // Explicit cache purge for logout/account-switch. CacheStorage is shared
 // with the window context (clearAllData already deletes it), this handles
@@ -154,20 +186,37 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
 	);
 });
 
-// Ask an open window to flush the outbox; the same code path is used by the
-// normal online transition. Full background processing without a window is
-// intentionally left to the app because the outbox lives in IndexedDB and
-// uses the authenticated API client.
+// Flushes the outbox. With an open window the application is asked to do it:
+// it owns the live queries and shows the result immediately. With no window
+// (the browser woke the worker after the application was closed) the worker
+// runs the queue itself from IndexedDB and the mirrored credentials.
+async function flushOutbox(): Promise<void> {
+	const windows = await self.clients.matchAll({
+		type: "window",
+		includeUncontrolled: true,
+	});
+
+	if (windows.length > 0) {
+		for (const client of windows) {
+			client.postMessage({ type: "FASTCHAT_SYNC" });
+		}
+
+		return;
+	}
+
+	await runBackgroundOutbox();
+}
+
 self.addEventListener("sync", (event: Event) => {
 	const syncEvent = event as ExtendableEvent & { tag?: string };
 	if (syncEvent.tag !== "fastchat-outbox") return;
-	syncEvent.waitUntil(
-		self.clients
-			.matchAll({ type: "window", includeUncontrolled: true })
-			.then((clients) => {
-				for (const client of clients) {
-					client.postMessage({ type: "FASTCHAT_SYNC" });
-				}
-			}),
-	);
+	syncEvent.waitUntil(flushOutbox());
+});
+
+// Installed applications also get periodic wake-ups on browsers that support
+// them; the event carries no data, it only runs the same flush.
+self.addEventListener("periodicsync", (event: Event) => {
+	const periodicEvent = event as ExtendableEvent & { tag?: string };
+	if (periodicEvent.tag !== "fastchat-outbox") return;
+	periodicEvent.waitUntil(flushOutbox());
 });

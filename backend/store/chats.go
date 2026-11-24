@@ -471,6 +471,24 @@ func (s *Store) DeleteChat(ctx context.Context, chatID string) error {
 		return ErrDeleteNonGroup
 	}
 
+	return s.deleteChatTx(ctx, chat, nil)
+}
+
+// DeleteChatAsAdmin removes a chat of any type. Moderation must be able to
+// take down a private or self chat too; the store-level DeleteChat stays
+// group-only for the owner-facing endpoint.
+func (s *Store) DeleteChatAsAdmin(ctx context.Context, chatID string, audit *model.AdminAuditLog) error {
+	chat, ok := s.GetChat(ctx, chatID)
+	if !ok {
+		return ErrChatNotFound
+	}
+
+	return s.deleteChatTx(ctx, chat, audit)
+}
+
+func (s *Store) deleteChatTx(ctx context.Context, chat *model.Chat, audit *model.AdminAuditLog) error {
+	chatID := chat.ID
+
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 
@@ -490,7 +508,11 @@ func (s *Store) DeleteChat(ctx context.Context, chatID string) error {
 			return err
 		}
 
-		return tx.Where("id = ?", chatID).Delete(&model.Chat{}).Error
+		if err := tx.Where("id = ?", chatID).Delete(&model.Chat{}).Error; err != nil {
+			return err
+		}
+
+		return insertAuditTx(tx, audit)
 	})
 }
 

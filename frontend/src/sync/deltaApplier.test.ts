@@ -277,6 +277,113 @@ describe("applyDelta", () => {
 		expect(await outboxRepo.list()).toHaveLength(1);
 	});
 
+	it("drops a queued edit and its staged blob when the message is deleted", async () => {
+		await messagesRepo.upsert({ ...msg("m1", "hello") }, "sent");
+		await pendingBlobsRepo.put({
+			id: "blob-1",
+			blob: new Blob(["x"]),
+			name: "a.txt",
+			mimeType: "text/plain",
+			size: 1,
+		});
+		await outboxRepo.enqueue(editOp({ pendingFileClientIds: ["blob-1"] }));
+
+		await applyDelta(
+			delta({
+				deletedMessages: [
+					{
+						chatId: "chat-1",
+						messageId: "m1",
+						deletedAt: "2026-08-30T10:00:00Z",
+					},
+				],
+			}),
+		);
+
+		expect(await outboxRepo.list()).toHaveLength(0);
+		expect(await pendingBlobsRepo.get("blob-1")).toBeUndefined();
+		expect((await messagesRepo.getById("chat-1", "m1"))?.status).toBe(
+			"deleted",
+		);
+	});
+
+	it("drops a queued reaction and pin of a deleted message", async () => {
+		await messagesRepo.upsert({ ...msg("m1", "hello") }, "sent");
+		await chatsRepo.upsert({
+			...chat("chat-1", "Group"),
+			pinnedMessageIds: ["m1"],
+		});
+		await outboxRepo.enqueue({
+			kind: "reaction",
+			opId: "reaction-op",
+			chatId: "chat-1",
+			messageId: "m1",
+			emoji: "👍",
+			action: "add",
+			previousReactions: [],
+			createdAt: "2026-08-30T09:30:00.000Z",
+			attempts: 0,
+		});
+		await outboxRepo.enqueue({
+			kind: "pin",
+			opId: "pin-op",
+			chatId: "chat-1",
+			messageId: "m1",
+			pinned: true,
+			previousPinned: false,
+			createdAt: "2026-08-30T09:31:00.000Z",
+			attempts: 0,
+		});
+
+		await applyDelta(
+			delta({
+				deletedMessages: [
+					{
+						chatId: "chat-1",
+						messageId: "m1",
+						deletedAt: "2026-08-30T10:00:00Z",
+					},
+				],
+			}),
+		);
+
+		expect(await outboxRepo.list()).toHaveLength(0);
+		expect((await chatsRepo.getById("chat-1"))?.pinnedMessageIds).toEqual([]);
+	});
+
+	it("does not re-pin a deleted message when the queued op was an unpin", async () => {
+		await chatsRepo.upsert({
+			...chat("chat-1", "Group"),
+			pinnedMessageIds: ["m1"],
+		});
+		await messagesRepo.upsert({ ...msg("m1", "hello") }, "sent");
+		await outboxRepo.enqueue({
+			kind: "pin",
+			opId: "pin-op",
+			chatId: "chat-1",
+			messageId: "m1",
+			pinned: false,
+			previousPinned: true,
+			createdAt: "2026-08-30T09:31:00.000Z",
+			attempts: 0,
+		});
+
+		await applyDelta(
+			delta({
+				deletedMessages: [
+					{
+						chatId: "chat-1",
+						messageId: "m1",
+						deletedAt: "2026-08-30T10:00:00Z",
+					},
+				],
+			}),
+		);
+
+		expect(await outboxRepo.list()).toHaveLength(0);
+		expect((await chatsRepo.getById("chat-1"))?.pinnedMessageIds).toEqual([]);
+	});
+
 	it("removes a redundant queued delete op when the server already deleted the message", async () => {
 		await messagesRepo.upsert({ ...msg("m1", "hello") }, "sent");
 		await outboxRepo.enqueue({

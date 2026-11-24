@@ -3,7 +3,9 @@ import { fileCacheRepo } from "../db/fileCacheRepo.ts";
 import { setActiveAccountKey } from "../db/init.ts";
 import {
 	acquireFileBlobUrl,
+	cacheDecryptedFile,
 	clearFileCache,
+	getCachedDecryptedFile,
 	releaseFileBlobUrl,
 } from "./fileCache.ts";
 
@@ -122,6 +124,28 @@ describe("fileCache", () => {
 		setActiveAccountKey("alice");
 		releaseFileBlobUrl("https://srv/f/acct");
 		setActiveAccountKey(null);
+	});
+
+	it("does not write a decrypted file into another account", async () => {
+		const key = "decrypted:https://srv/f/7:h1:file-key";
+		setActiveAccountKey("bob");
+		await cacheDecryptedFile(
+			key,
+			new Blob(["secret"], { type: "text/plain" }),
+			"alice",
+		);
+
+		expect(await getCachedDecryptedFile(key)).toBeUndefined();
+	});
+
+	it("persists and restores decrypted plaintext bytes", async () => {
+		const key = "decrypted:https://srv/f/6:h1:file-key";
+		await cacheDecryptedFile(key, new Blob(["secret"], { type: "text/plain" }));
+
+		const cached = await getCachedDecryptedFile(key);
+		expect(cached).toBeInstanceOf(Blob);
+		expect(cached?.type).toBe("text/plain");
+		expect(await cached?.text()).toBe("secret");
 	});
 
 	it("a failed load poisons the entry until release, then retries", async () => {
