@@ -465,6 +465,10 @@ func botFromContext(ctx context.Context, svc *service.Service) (*model.Bot, *mod
 	if !ok {
 		return nil, nil, &statusError{ErrorMessage: "invalid bot token", code: http.StatusUnauthorized}
 	}
+	// Every Bot API call proves the bot process is alive. getUpdates touches
+	// this at the start of the long poll, so the wait is not inactivity.
+	svc.TouchBotActivity(ctx, bot)
+
 	return bot, user, nil
 }
 
@@ -474,6 +478,8 @@ func botError(err error) error {
 		return &statusError{ErrorMessage: "invalid bot username", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrBotUsernameTaken):
 		return &statusError{ErrorMessage: "bot username taken", code: http.StatusConflict}
+	case errors.Is(err, service.ErrBotUsernameReserved):
+		return &statusError{ErrorMessage: "bot username reserved", code: http.StatusConflict}
 	case errors.Is(err, service.ErrBotNotActive):
 		return &statusError{ErrorMessage: "bot is not active", code: http.StatusForbidden}
 	case errors.Is(err, service.ErrChatNotFound), errors.Is(err, service.ErrUserNotFound):

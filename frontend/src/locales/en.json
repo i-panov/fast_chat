@@ -69,7 +69,6 @@
 	"login.alreadyLoggedIn": "Already logged in as @{{nick}}",
 	"login.backToChat": "Back to chat",
 	"message.copy": "Copy",
-	"message.menuActions": "Message actions",
 	"message.edit": "Edit",
 	"message.reply": "Reply",
 	"message.delete": "Delete",
@@ -147,7 +146,7 @@
 	"sessions.empty": "No other active devices.",
 	"sessions.thisDevice": "this device",
 	"sessions.lastSeen": "Last seen: {{when}}",
-	"sessions.revoke": "Revoke",
+	"sessions.revoke": "End session",
 	"sessions.logoutAll": "Sign out everywhere",
 	"sessions.close": "Close",
 	"sessions.errorTitle": "Failed to load devices",
@@ -307,5 +306,15 @@
 	"input.attachVideo": "Video",
 	"input.attachAudio": "Audio",
 	"input.recording": "Recording",
-	"input.cancel": "Cancel"
+	"input.cancel": "Cancel",
+	"input.menuFile": "File",
+	"input.menuLocation": "Location",
+	"message.deleteTitle": "Delete message?",
+	"message.deleteConfirm": "The message will be deleted for everyone.",
+	"message.select": "Select",
+	"message.cancelSelection": "Cancel selection",
+	"message.selectedCount": "{{count}} selected",
+	"message.deleteSelected": "Delete",
+	"message.deleteSelectedTitle": "Delete selected messages?",
+	"message.deleteSelectedConfirm": "Delete {{count}} selected messages for everyone?"
 }

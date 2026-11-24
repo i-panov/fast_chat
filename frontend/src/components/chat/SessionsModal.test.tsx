@@ -14,9 +14,10 @@ const { getSessions, getUserDeviceKeys, revokeDeviceSession } = await import(
 	"../../api.ts"
 );
 
-const REVOKE_RE = /sessions\.revoke|Revoke/;
+const REVOKE_RE = /^(sessions\.revoke|Revoke|End session|Завершить сеанс)$/;
 const RESTORE_RE = /sessions\.restoreKey|Restore key/;
 const LOGOUT_ALL_RE = /sessions\.logoutAll|Sign out everywhere/;
+const REVOKE_KEY_RE = /sessions\.revokeKey|Revoke key/;
 
 const current = {
 	id: "s1",
@@ -108,6 +109,62 @@ describe("SessionsModal", () => {
 			await screen.findAllByRole("button", { name: RESTORE_RE }),
 		).toHaveLength(1);
 		expect(screen.getByText("sessions.keyBackup")).toBeTruthy();
+	});
+
+	it("does not offer to end the session of the current device", async () => {
+		vi.mocked(getSessions).mockResolvedValue({
+			currentSessionId: "s1",
+			sessions: [current],
+		});
+		vi.mocked(getUserDeviceKeys).mockResolvedValue({
+			devices: [
+				{
+					id: "s1",
+					publicKey: "pk",
+					createdAt: "2026-01-01T00:00:00Z",
+					lastSeenAt: "2026-01-01T00:00:00Z",
+					hasBackup: false,
+				},
+			],
+		});
+
+		render(
+			<MantineProvider>
+				<SessionsModal
+					open
+					onClose={() => {}}
+					token="tok"
+					userId="a:test"
+					onLogoutAll={vi.fn()}
+				/>
+			</MantineProvider>,
+		);
+
+		expect(await screen.findByText("Chrome on Linux")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: REVOKE_RE })).toBeNull();
+		expect(screen.getByRole("button", { name: REVOKE_KEY_RE })).toBeTruthy();
+	});
+
+	it("treats the id reported by the server as the current session", async () => {
+		vi.mocked(getSessions).mockResolvedValue({
+			currentSessionId: "s1",
+			sessions: [{ ...current, current: false }],
+		});
+
+		render(
+			<MantineProvider>
+				<SessionsModal
+					open
+					onClose={() => {}}
+					token="tok"
+					userId="a:test"
+					onLogoutAll={vi.fn()}
+				/>
+			</MantineProvider>,
+		);
+
+		expect(await screen.findByText("Chrome on Linux")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: REVOKE_RE })).toBeNull();
 	});
 
 	it("asks the caller to sign out everywhere", async () => {

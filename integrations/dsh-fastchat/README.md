@@ -58,7 +58,7 @@ work in.
         allowedUserIds: []   # empty = allow every user
 ```
 
-Create one bot per project through `@fastchat_bot`:
+Create one bot per project through `@root_bot`:
 
 ```text
 /newbot

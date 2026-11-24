@@ -515,6 +515,9 @@ func main() {
 
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	workers := startWorkers(workerCtx, fedClient, svc, callManager)
+	workers.Go(func() {
+		svc.RunBotPresence(workerCtx, time.Minute)
+	})
 
 	ipExtractor := ratelimit.NewClientIPExtractor(cfg.Server.TrustedProxies)
 

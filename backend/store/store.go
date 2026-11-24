@@ -147,6 +147,27 @@ func (s *Store) IsSessionOnline(sessionID string) bool {
 	return s.sessionConns[sessionID] > 0
 }
 
+// SetPresence marks a bot online or offline. Bots have no SSE connection of
+// their own, so the connection counters cannot drive their status. It
+// reports whether the state changed, so the caller only broadcasts a
+// transition.
+func (s *Store) SetPresence(userID string, online bool) bool {
+	s.onlineMu.Lock()
+	defer s.onlineMu.Unlock()
+
+	_, exists := s.online[userID]
+	if exists == online {
+		return false
+	}
+	if online {
+		s.online[userID] = struct{}{}
+	} else {
+		delete(s.online, userID)
+	}
+
+	return true
+}
+
 func (s *Store) IsOnline(userID string) bool {
 	s.onlineMu.RLock()
 	defer s.onlineMu.RUnlock()

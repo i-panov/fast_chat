@@ -35,7 +35,7 @@ Or install it as a pip-distributed plugin with the entry point from
 
 ## Create a bot
 
-In Fast Chat, open `@fastchat_bot` and send `/newbot`, or use
+In Fast Chat, open `@root_bot` and send `/newbot`, or use
 **Account → Bots**. Copy the `fcb_...` token.
 
 ## Configure

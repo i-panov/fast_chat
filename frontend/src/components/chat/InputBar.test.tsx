@@ -8,6 +8,8 @@ import { InputBar } from "./InputBar.tsx";
 const media = vi.hoisted(() => ({ mobile: false }));
 const RECORD_LABEL_RE = /input\.recordVoice|Voice message/;
 const ATTACH_LABEL_RE = /input\.attachFile|Attach file/;
+const SEND_LABEL_RE = /input\.send|Send/;
+const SAVE_LABEL_RE = /input\.save|Save/;
 const ATTACH_PHOTO_RE = /input\.attachPhoto|Photo/;
 const ATTACH_VIDEO_RE = /input\.attachVideo|Video/;
 const ATTACH_AUDIO_RE = /input\.attachAudio|Audio/;
@@ -211,6 +213,17 @@ describe("input bar", () => {
 			</MantineProvider>,
 		);
 		expect(submitButton().disabled).toBe(false);
+	});
+
+	it("renders send and save as icons", () => {
+		const send = renderBar(props({ text: "hello" }));
+		expect(submitButton().getAttribute("aria-label")).toMatch(SEND_LABEL_RE);
+		expect(submitButton().querySelector("svg")).toBeTruthy();
+		send.unmount();
+
+		renderBar(props({ text: "hello", editing: true }));
+		expect(submitButton().getAttribute("aria-label")).toMatch(SAVE_LABEL_RE);
+		expect(submitButton().querySelector("svg")).toBeTruthy();
 	});
 
 	it("enables send with only attachments", () => {

@@ -70,7 +70,6 @@
 	"login.alreadyLoggedIn": "Вы уже вошли как @{{nick}}",
 	"login.backToChat": "Вернуться в чат",
 	"message.copy": "Копировать",
-	"message.menuActions": "Действия с сообщением",
 	"message.edit": "Редактировать",
 	"message.reply": "Ответить",
 	"message.delete": "Удалить",
@@ -149,7 +148,7 @@
 	"sessions.empty": "Других активных устройств нет.",
 	"sessions.thisDevice": "это устройство",
 	"sessions.lastSeen": "Последняя активность: {{when}}",
-	"sessions.revoke": "Отозвать",
+	"sessions.revoke": "Завершить сеанс",
 	"sessions.logoutAll": "Выйти на всех устройствах",
 	"sessions.close": "Закрыть",
 	"sessions.errorTitle": "Не удалось загрузить устройства",
@@ -309,5 +308,15 @@
 	"input.attachVideo": "Видео",
 	"input.attachAudio": "Аудио",
 	"input.recording": "Идёт запись",
-	"input.cancel": "Отмена"
+	"input.cancel": "Отмена",
+	"input.menuFile": "Файл",
+	"input.menuLocation": "Местоположение",
+	"message.deleteTitle": "Удалить сообщение?",
+	"message.deleteConfirm": "Сообщение будет удалено для всех участников.",
+	"message.select": "Выбрать",
+	"message.cancelSelection": "Отменить выделение",
+	"message.selectedCount": "Выбрано: {{count}}",
+	"message.deleteSelected": "Удалить",
+	"message.deleteSelectedTitle": "Удалить выбранные сообщения?",
+	"message.deleteSelectedConfirm": "Удалить выбранные сообщения ({{count}}) для всех участников?"
 }

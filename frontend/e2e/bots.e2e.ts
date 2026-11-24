@@ -218,3 +218,64 @@ test("E2EE bot sends encrypted file and location", async ({ request }) => {
 	).decryptFileBytes(new Uint8Array(await download.body()), fileKey);
 	expect(new TextDecoder().decode(decrypted)).toBe("encrypted attachment");
 });
+
+test("root bot answers with buttons and handles its callback", async ({
+	request,
+}) => {
+	const user = await account(request);
+	const auth = { Authorization: `Bearer ${user.token}` };
+
+	const opened = await request.post("/api/bot-chats", {
+		headers: auth,
+		data: { username: "root_bot" },
+	});
+	expect(opened.ok()).toBeTruthy();
+	const chat = (await opened.json()) as { chat: { id: string } };
+
+	const sent = await request.post(`/api/chats/${chat.chat.id}/messages`, {
+		headers: auth,
+		data: { text: "/start" },
+	});
+	expect(sent.ok()).toBeTruthy();
+
+	const page = await request.get(`/api/chats/${chat.chat.id}/messages`, {
+		headers: auth,
+	});
+	const { messages } = (await page.json()) as {
+		messages: Array<{
+			id: string;
+			text: string;
+			replyMarkup?: { inline_keyboard: Array<Array<{ text: string }>> };
+		}>;
+	};
+	const greeting = [...messages]
+		.reverse()
+		.find((message) => message.replyMarkup !== undefined);
+	if (greeting === undefined) throw new Error("root bot menu missing");
+	expect(greeting.text).toContain("Root Bot");
+	expect(greeting.text).not.toContain("Привет");
+	expect(
+		greeting.replyMarkup?.inline_keyboard.flat().map((button) => button.text),
+	).toEqual(["Create a bot", "My bots", "Help"]);
+
+	const pressed = await request.post(
+		`/api/bot-chats/${chat.chat.id}/callbacks`,
+		{
+			headers: auth,
+			data: { messageId: greeting.id, data: "root:newbot" },
+		},
+	);
+	expect(pressed.ok()).toBeTruthy();
+
+	const after = await request.get(`/api/chats/${chat.chat.id}/messages`, {
+		headers: auth,
+	});
+	const { messages: updated } = (await after.json()) as {
+		messages: Array<{ text: string }>;
+	};
+	expect(
+		updated.some((message) =>
+			message.text.includes("What should the bot be called"),
+		),
+	).toBe(true);
+});

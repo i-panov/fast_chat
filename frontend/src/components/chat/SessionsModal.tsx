@@ -52,6 +52,7 @@ export function SessionsModal({
 	// a phone the dialog takes the whole screen instead of squeezing them.
 	const fullScreen = useMediaQuery("(max-width: 48em)") === true;
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
+	const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 	const [deviceKeys, setDeviceKeys] = useState<Map<string, boolean>>(new Map());
 	const [restoreTarget, setRestoreTarget] = useState<SessionInfo | null>(null);
 	const [restorePassword, setRestorePassword] = useState("");
@@ -71,6 +72,7 @@ export function SessionsModal({
 			.then(([result, keys]) => {
 				if (!cancelled) {
 					setSessions(result.sessions);
+					setCurrentSessionId(result.currentSessionId);
 					setDeviceKeys(
 						new Map(
 							keys.devices.map((device) => [
@@ -156,6 +158,12 @@ export function SessionsModal({
 							{sessions.map((session) => {
 								const hasKey = deviceKeys.has(session.id);
 								const hasBackup = deviceKeys.get(session.id) === true;
+								// Trust both signals: the per-row flag and the id the
+								// server reported for this request. A stale or
+								// missing flag must not expose "end session" for
+								// the device the user is currently on.
+								const isCurrent =
+									session.current || session.id === currentSessionId;
 
 								return (
 									<Paper key={session.id} withBorder p="sm" radius="sm">
@@ -177,7 +185,7 @@ export function SessionsModal({
 													</Text>
 												</Box>
 												<Group gap={6} wrap="wrap">
-													{session.current && (
+													{isCurrent && (
 														<Badge size="xs" variant="light">
 															{t("sessions.thisDevice")}
 														</Badge>
@@ -194,7 +202,7 @@ export function SessionsModal({
 													)}
 												</Group>
 											</Group>
-											{(hasKey || !session.current) && (
+											{(hasKey || !isCurrent) && (
 												<Group gap="xs" justify="flex-end" wrap="wrap">
 													{hasBackup && (
 														<Button
@@ -223,7 +231,7 @@ export function SessionsModal({
 															{t("sessions.revokeKey")}
 														</Button>
 													)}
-													{!session.current && (
+													{!isCurrent && (
 														<Button
 															size="xs"
 															color="red"

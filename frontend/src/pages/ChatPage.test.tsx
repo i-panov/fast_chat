@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- the page test covers layout, presence, calls and routing. */
 import { MantineProvider } from "@mantine/core";
 import {
 	act,
@@ -132,6 +133,8 @@ function sseHandler(): SseHandler {
 
 const SELECT_PROMPT = /selectPrompt|Select/;
 const BACK_BUTTON_RE = /chat\.back|Back|Назад/;
+const ROOT_BOT_RE = /Root Bot/;
+const CALL_BUTTON_RE = /call\.start|Call/;
 const FIND_OPTIONS = { timeout: 5000 };
 const MEMBER_COUNT = /chat\.membersCount|member/;
 const SETTINGS_LABEL = /Settings|chat\.settings/;
@@ -198,6 +201,28 @@ function privateChat(): Chat {
 			{ id: "bob:test", nick: "bob", online: true },
 		],
 		createdAt: "2026-01-01T00:00:00Z",
+	};
+}
+
+function botChat(): Chat {
+	return {
+		id: "cb1",
+		type: "private",
+		name: "",
+		ownerId: "alice:test",
+		members: [
+			{ id: "alice:test", nick: "alice", online: true },
+			{
+				id: "root_bot:test",
+				nick: "Root Bot",
+				username: "root_bot",
+				isBot: true,
+				online: true,
+			},
+		],
+		createdAt: "2026-01-01T00:00:00Z",
+		isBotChat: true,
+		botEncryptionMode: "server",
 	};
 }
 
@@ -335,6 +360,64 @@ describe("chat page", () => {
 			expect(await screen.findByText("Team")).toBeTruthy();
 		} finally {
 			media.mobile = false;
+		}
+	});
+
+	it("shows the bot username and no call button", async () => {
+		seedAccount();
+		await chatsRepo.upsert(botChat());
+		renderPage();
+
+		fireEvent.click(await screen.findByText(ROOT_BOT_RE));
+
+		expect(await screen.findByText("@root_bot")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: CALL_BUTTON_RE })).toBeNull();
+	});
+
+	it("falls back to the display name for a bot without a username", async () => {
+		seedAccount();
+		// Both wire shapes reach the client: a federated member without the
+		// field at all, and the backend's empty string for remote users.
+		await chatsRepo.upsert({
+			...botChat(),
+			id: "cb2",
+			members: [
+				{ id: "alice:test", nick: "alice", online: true },
+				{
+					id: "remote_bot:peer.test",
+					nick: "Remote Bot",
+					isBot: true,
+				},
+			],
+		});
+		await chatsRepo.upsert({
+			...botChat(),
+			id: "cb4",
+			members: [
+				{ id: "alice:test", nick: "alice", online: true },
+				{
+					id: "empty_bot:peer.test",
+					nick: "Empty Bot",
+					username: "",
+					isBot: true,
+				},
+			],
+		});
+		renderPage();
+
+		// Assert on the active chat header specifically: the sidebar row
+		// would render the display name even while the header is broken.
+		for (const [row, handle] of [
+			["@Remote Bot", "@Remote Bot"],
+			["@Empty Bot", "@Empty Bot"],
+		] as const) {
+			fireEvent.click(await screen.findByText(row));
+			const header = document.querySelector("main header");
+			if (header === null) throw new Error("chat header missing");
+			await waitFor(() => {
+				expect(header.textContent).toContain(handle);
+			});
+			expect(header.textContent).not.toContain("@undefined");
 		}
 	});
 

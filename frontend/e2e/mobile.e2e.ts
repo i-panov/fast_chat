@@ -105,6 +105,11 @@ const VIDEO_ITEM_RE = /Video|Видео/;
 const AUDIO_ITEM_RE = /Audio|Аудио/;
 const LOCATION_ITEM_RE = /location/i;
 const CANCEL_RE = /^(Cancel|Отмена)$/;
+const SELECT_RE = /^Select$/;
+const DELETE_RE = /^Delete$/;
+const DELETE_SELECTED_TITLE_RE = /Delete selected messages/;
+const ZERO_SELECTED_RE = /0 selected/;
+const TWO_SELECTED_RE = /2 selected/;
 const COMPOSER_PLACEHOLDER_RE = /Type a message|Напишите/;
 const SEND_BUTTON_RE = /^(Send|Отправить)$/;
 
@@ -203,6 +208,90 @@ test("a phone shows the list and the chat one at a time", async ({
 		await back.click();
 		await expect(search).toBeVisible({ timeout: 10_000 });
 		await expect(back).toHaveCount(0);
+	} finally {
+		await close();
+	}
+});
+
+test("selects several messages and deletes them together", async ({
+	browser,
+	request,
+}) => {
+	const suffix = Date.now().toString(36);
+	const alice = await register(
+		request,
+		`bulk-a-${suffix}@e2e.local`,
+		`ba${suffix}`.slice(0, 20),
+	);
+	const bob = await register(
+		request,
+		`bulk-b-${suffix}@e2e.local`,
+		`bb${suffix}`.slice(0, 20),
+	);
+
+	const chatResponse = await request.post("/api/chats", {
+		headers: { Authorization: `Bearer ${alice.token}` },
+		data: { type: "private", withUserId: bob.user.id },
+	});
+	expect(chatResponse.ok()).toBeTruthy();
+	const { chat } = (await chatResponse.json()) as { chat: { id: string } };
+
+	for (const [index, text] of ["Bulk one", "Bulk two"].entries()) {
+		const sent = await request.post(`/api/chats/${chat.id}/messages`, {
+			headers: { Authorization: `Bearer ${alice.token}` },
+			data: { id: `bulk-${suffix}-${index}`, text },
+		});
+		expect(sent.ok()).toBeTruthy();
+	}
+
+	const { page, close } = await openAs(browser, alice);
+
+	try {
+		const createKey = page.getByRole("button", { name: "Create new key" });
+		await expect(createKey).toBeVisible({ timeout: 15_000 });
+		await createKey.click();
+		await expect(page.getByRole("dialog")).toHaveCount(0, {
+			timeout: 20_000,
+		});
+
+		const row = page.getByText(`@${bob.user.nick}`, { exact: false }).first();
+		await row.click();
+		await expect(page.getByText("Bulk one")).toBeVisible({ timeout: 15_000 });
+
+		await page.getByRole("button", { name: SELECT_RE }).click();
+		await expect(page.getByText(ZERO_SELECTED_RE)).toBeVisible();
+
+		await page.getByText("Bulk one").click();
+		await page.getByText("Bulk two").click();
+		await expect(page.getByText(TWO_SELECTED_RE)).toBeVisible();
+
+		await page.getByRole("button", { name: DELETE_RE }).click();
+		const dialog = page.getByRole("dialog");
+		await expect(dialog.getByText(DELETE_SELECTED_TITLE_RE)).toBeVisible();
+		await dialog.getByRole("button", { name: DELETE_RE }).click();
+
+		await expect(page.getByText("No messages yet")).toBeVisible({
+			timeout: 15_000,
+		});
+		await expect(page.getByRole("button", { name: SELECT_RE })).toBeVisible();
+
+		// The local list is optimistic: prove the outbox actually removed the
+		// messages on the server as well.
+		await expect
+			.poll(
+				async () => {
+					const response = await request.get(`/api/chats/${chat.id}/messages`, {
+						headers: { Authorization: `Bearer ${alice.token}` },
+					});
+					const body = (await response.json()) as {
+						messages: unknown[];
+					};
+
+					return body.messages.length;
+				},
+				{ timeout: 15_000 },
+			)
+			.toBe(0);
 	} finally {
 		await close();
 	}

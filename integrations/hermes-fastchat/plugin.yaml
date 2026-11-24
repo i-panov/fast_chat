@@ -6,7 +6,7 @@ author: Fast Chat
 license: MIT
 requires_env:
   - name: FASTCHAT_BOT_TOKEN
-    description: "Bot token from Fast Chat (@fastchat_bot: /newbot)"
+    description: "Bot token from Fast Chat (@root_bot: /newbot)"
     secret: true
 optional_env:
   - name: FASTCHAT_BOT_BASE_URL

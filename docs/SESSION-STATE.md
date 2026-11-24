@@ -5,7 +5,7 @@
 
 - Обновлено: 2026-11-24 по сессии `session-8fb56747-ca57-4c4b-9ac4-811811d0d838`
   (2026-11-07 → 2026-11-24, 195 ходов, 16 МБ лога).
-- База: `master` @ `6b0e8cd` (влит remote-коммит про `public_domain` и bind address).
+- База: `master` @ `0e58fc8` (последний коммит; bot-правки ниже ещё не закоммичены).
 - Правила работы — `AGENTS.md`. Проверки — `make lint`, `make test`, `make frontend:e2e`.
 - Обновлять при изменении состава остатка, а не после каждого шага.
 
@@ -82,7 +82,26 @@
     unpin→delete, привязку записи кэша к аккаунту, порядок load-more,
     `response.type === "basic"`, тесты удаления чатов и каскад ботов; третий
     контрольный проход — all clear.
-16. `[manual]` Commit и push — только по явной команде пользователя.
+16. UI-полировка: меню вложений (Файл/Фото/Видео/Аудио/Местоположение),
+    подтверждение удаления, режим выделения с групповым удалением, иконка
+    отправки/сохранения, сессии (скрытие завершения текущего сеанса,
+    «Завершить сеанс»), удаление кнопки «⋯» с keyboard-доступом.
+17. Root-бот: `root_bot` / «Root Bot», транзакционная миграция
+    `fastchat_bot:domain` (users, bots, chat_members, messages, files, pins,
+    reactions, devices, push, blocks, deleted chats, read statuses,
+    bot_father_states, bot_chats, bot_updates, bot_callback_queries, chats).
+    Коллизии имени отклоняются, имена `root_bot`/`fastchat_bot`
+    зарезервированы, миграция выполняется один раз.
+18. Root-бот: английские ответы, inline-кнопки Create a bot / My bots / Help,
+    локальная обработка callbacks без очереди, контекстный Cancel.
+19. Presence: внешние боты онлайн 5 минут после любого Bot API запроса,
+    `getUpdates` ограничен 2 минутами, root всегда онлайн, offline-переход
+    рассылается через SSE.
+20. Бот-чаты: в шапке `@username`, кнопка звонка скрыта; fallback на display
+    name при пустом username.
+21. Проверки на текущем дереве: `make lint` — 0 ошибок; `make test` — backend
+    `-race`, 750 frontend, оба SDK; `make frontend:e2e` — 10 passed.
+22. `[manual]` Commit и push — только по явной команде пользователя.
 
 Перед финальными проверками влит `origin/master` (`6b0e8cd`,
 `server.public_domain` + bind address): конфликты в `.gitignore` и
@@ -90,7 +109,8 @@
 После слияния `make lint`, `make test` (741 frontend, backend `-race`, оба SDK)
 и `make frontend:e2e` (7 passed) снова зелёные.
 
-Осталось: только commit/push по команде пользователя. Деплой делает
+Идёт read-only ревью bot-правок; после исправления findings нужно повторить
+проверки. Commit/push — только по команде пользователя, деплой делает
 пользователь.
 
 ## Грабли, на которые уже наступали

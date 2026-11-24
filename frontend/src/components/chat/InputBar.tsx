@@ -2,7 +2,6 @@
 /* eslint-disable max-lines */
 import {
 	ActionIcon,
-	Button,
 	Menu,
 	Paper,
 	Text,
@@ -11,6 +10,7 @@ import {
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
+	Check,
 	FileText,
 	Image,
 	MapPin,
@@ -33,6 +33,8 @@ import { ReplyFilePreviewInline } from "./input/ReplyFilePreviewInline.tsx";
 import { VoiceRecorderButton } from "./input/VoiceRecorderButton.tsx";
 
 const ATTACH_FILE_KEY = "input.attachFile";
+const MENU_FILE_KEY = "input.menuFile";
+const MENU_LOCATION_KEY = "input.menuLocation";
 
 const bannerStyle = {
 	padding: "8px 12px",
@@ -286,7 +288,7 @@ function AttachToolbar({
 						leftSection={<FileText size={16} />}
 						onClick={() => pickFiles()}
 					>
-						{t(ATTACH_FILE_KEY)}
+						{t(MENU_FILE_KEY)}
 					</Menu.Item>
 					<Menu.Item
 						leftSection={<Image size={16} />}
@@ -311,7 +313,7 @@ function AttachToolbar({
 							leftSection={<MapPin size={16} />}
 							onClick={onOpenLocationPicker}
 						>
-							{t("input.attachLocation")}
+							{t(MENU_LOCATION_KEY)}
 						</Menu.Item>
 					)}
 				</Menu.Dropdown>
@@ -343,7 +345,6 @@ function SendButton({
 	existingFiles,
 	pendingLocation,
 	hasExistingLocation,
-	compact,
 }: {
 	editing: boolean;
 	text: string;
@@ -351,7 +352,6 @@ function SendButton({
 	existingFiles: FileInfo[] | undefined;
 	pendingLocation: Location | null | undefined;
 	hasExistingLocation: boolean;
-	compact: boolean;
 }) {
 	const { t } = useTranslation();
 	const label = editing ? t("input.save") : t("input.send");
@@ -363,8 +363,8 @@ function SendButton({
 		hasExistingLocation,
 	);
 
-	if (compact) {
-		return (
+	return (
+		<Tooltip label={label}>
 			<ActionIcon
 				type="submit"
 				size="lg"
@@ -372,15 +372,9 @@ function SendButton({
 				disabled={disabled}
 				aria-label={label}
 			>
-				<Send size={18} />
+				{editing ? <Check size={18} /> : <Send size={18} />}
 			</ActionIcon>
-		);
-	}
-
-	return (
-		<Button type="submit" disabled={disabled} size="sm">
-			{label}
-		</Button>
+		</Tooltip>
 	);
 }
 
@@ -496,7 +490,6 @@ function MessageForm({
 					existingFiles={existingFiles}
 					pendingLocation={pendingLocation}
 					hasExistingLocation={hasExistingLocation}
-					compact={isMobile}
 				/>
 			)}
 			<VoiceRecorderButton

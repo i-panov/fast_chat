@@ -1,12 +1,22 @@
 // The page composes every chat surface; the file is intentionally a single
 // layout module.
 /* eslint-disable max-lines */
-import { ActionIcon, Center, Group, Paper, Stack, Text } from "@mantine/core";
+import {
+	ActionIcon,
+	Alert,
+	Button,
+	Center,
+	Group,
+	Modal,
+	Paper,
+	Stack,
+	Text,
+} from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { ArrowLeft, Pin, Settings } from "lucide-react";
+import { ArrowLeft, CheckSquare, Pin, Settings, Trash2, X } from "lucide-react";
 import type * as React from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
 import {
@@ -37,6 +47,10 @@ import { ThreadView } from "../components/chat/ThreadView.tsx";
 import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
 import { OnlineDot } from "../components/shared/OnlineDot.tsx";
 import ChatContext from "../context/ChatContext.tsx";
+import {
+	type MessageSelection,
+	MessageSelectionProvider,
+} from "../context/MessageSelectionContext.tsx";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { useChatPage } from "../hooks/useChatInteraction.ts";
@@ -83,6 +97,7 @@ function ChatHeader({
 	callButton,
 	onOpenSettings,
 	onBack,
+	selectionButton,
 }: {
 	title: string;
 	subtitle?: string;
@@ -93,6 +108,7 @@ function ChatHeader({
 	callButton?: React.ReactNode;
 	onOpenSettings?: () => void;
 	onBack?: () => void;
+	selectionButton?: React.ReactNode;
 }) {
 	const { t } = useTranslation();
 
@@ -142,6 +158,7 @@ function ChatHeader({
 					)}
 				</div>
 				<Group gap={4} wrap="nowrap">
+					{selectionButton}
 					{pinnedButton}
 					{callButton}
 					{onOpenSettings !== undefined && (
@@ -166,11 +183,13 @@ function ChatHeaderSlot({
 	userId,
 	pinnedButton,
 	onBack,
+	onStartSelection,
 }: {
 	s: ChatPageState;
 	userId: string;
 	pinnedButton?: React.ReactNode;
 	onBack?: () => void;
+	onStartSelection?: () => void;
 }): React.ReactElement | null {
 	const { t } = useTranslation();
 
@@ -194,11 +213,23 @@ function ChatHeaderSlot({
 
 	const isGroup = s.activeChat.type === "group";
 	const isSelf = s.activeChat.type === "self";
+	const otherMember =
+		isGroup || isSelf
+			? undefined
+			: s.activeChat.members.find((m) => m.id !== userId);
+	// A bot's display name may contain spaces; the username is the stable
+	// nickname shown in the chat header, exactly like a human @nick. A
+	// missing username (remote bots have no local row) falls back to the
+	// display name rather than rendering "@undefined".
+	const botHandle =
+		s.activeChat.isBotChat === true ? otherMember?.username : undefined;
 	const title = isSelf
 		? chatTitle(s.activeChat, userId)
 		: isGroup
 			? s.activeChat.name || t("chat.groupFallback")
-			: `@${chatTitle(s.activeChat, userId)}`;
+			: botHandle
+				? `@${botHandle}`
+				: `@${chatTitle(s.activeChat, userId)}`;
 	const subtitle = isGroup
 		? t("chat.membersCount", { count: s.activeChat.members.length })
 		: s.activeChat.isBotChat === true
@@ -206,10 +237,6 @@ function ChatHeaderSlot({
 				? t("chat.botE2EE")
 				: t("chat.botPlaintext")
 			: undefined;
-	const otherMember =
-		isGroup || isSelf
-			? undefined
-			: s.activeChat.members.find((m) => m.id !== userId);
 	// A call that is going on keeps the button out of reach: the manager
 	// refuses a second call anyway.
 	const callBusy = s.call.phase !== "idle" && s.call.phase !== "ended";
@@ -221,18 +248,33 @@ function ChatHeaderSlot({
 			pinnedButton={pinnedButton}
 			typingNick={typingNick}
 			onBack={onBack}
+			selectionButton={
+				onStartSelection !== undefined ? (
+					<ActionIcon
+						variant="subtle"
+						color="gray"
+						size="lg"
+						onClick={onStartSelection}
+						aria-label={t("message.select")}
+					>
+						<CheckSquare size={18} />
+					</ActionIcon>
+				) : undefined
+			}
 			online={isGroup || isSelf ? undefined : (otherMember?.online ?? false)}
 			callButton={
-				<CallButton
-					peer={otherMember}
-					localUserId={userId}
-					disabled={callBusy}
-					onCall={() => {
-						if (s.activeChatId !== null) {
-							void s.startCall(s.activeChatId);
-						}
-					}}
-				/>
+				s.activeChat.isBotChat === true ? undefined : (
+					<CallButton
+						peer={otherMember}
+						localUserId={userId}
+						disabled={callBusy}
+						onCall={() => {
+							if (s.activeChatId !== null) {
+								void s.startCall(s.activeChatId);
+							}
+						}}
+					/>
+				)
 			}
 			onOpenSettings={
 				isGroup
@@ -368,6 +410,7 @@ function PendingChatView({
 	);
 }
 
+// eslint-disable-next-line max-lines-per-function -- the chat view composes header, messages, selection and pin/forward dialogs.
 function ActiveChatView({
 	s,
 	userId,
@@ -383,11 +426,23 @@ function ActiveChatView({
 	const [pins, setPins] = useState<Message[]>([]);
 	const [pinsLoading, setPinsLoading] = useState(false);
 	const [forwarding, setForwarding] = useState<Message | null>(null);
+	const [selectionMode, setSelectionMode] = useState(false);
+	const [selected, setSelected] = useState<Set<string>>(new Set());
+	const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+	const [bulkDeleting, setBulkDeleting] = useState(false);
+	const [bulkError, setBulkError] = useState<string | null>(null);
 	const chat = s.activeChat;
 	const token = s.activeAccount?.token;
 	const pinnedIds = new Set(chat?.pinnedMessageIds ?? []);
 	const canPin =
 		chat !== undefined && (chat.type !== "group" || chat.ownerId === userId);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: chat?.id is the reset trigger, not a value read in the effect.
+	useEffect(() => {
+		setSelectionMode(false);
+		setSelected(new Set());
+		setConfirmBulkDelete(false);
+	}, [chat?.id]);
 
 	const loadPins = useCallback(async () => {
 		if (chat === undefined || token === undefined) return;
@@ -436,78 +491,204 @@ function ActiveChatView({
 		[chat, token, pinsOpen, loadPins],
 	);
 
+	const toggleSelected = useCallback((messageId: string) => {
+		setSelected((prev) => {
+			const next = new Set(prev);
+			if (next.has(messageId)) next.delete(messageId);
+			else next.add(messageId);
+
+			return next;
+		});
+	}, []);
+
+	const startSelection = useCallback((messageId: string) => {
+		setSelectionMode(true);
+		setSelected(new Set([messageId]));
+	}, []);
+
+	const clearSelection = useCallback(() => {
+		setSelectionMode(false);
+		setSelected(new Set());
+		setBulkError(null);
+	}, []);
+
+	const selection = useMemo<MessageSelection>(
+		() => ({
+			mode: selectionMode,
+			selected,
+			toggle: toggleSelected,
+			start: startSelection,
+			clear: clearSelection,
+		}),
+		[selectionMode, selected, toggleSelected, startSelection, clearSelection],
+	);
+
+	async function deleteSelected() {
+		if (chat === undefined || selected.size === 0) return;
+		setBulkDeleting(true);
+		setBulkError(null);
+		try {
+			for (const messageId of selected) {
+				await s.handleDeleteMessage(chat.id, messageId);
+			}
+			setConfirmBulkDelete(false);
+			clearSelection();
+		} catch (err) {
+			setBulkError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setBulkDeleting(false);
+		}
+	}
+
 	return (
 		<>
-			<ChatHeaderSlot
-				s={s}
-				userId={userId}
-				onBack={onBack}
-				pinnedButton={
-					canPin ? (
-						<ActionIcon
-							variant="subtle"
-							color="gray"
-							size="lg"
-							onClick={openPins}
-							aria-label={t("pins.open")}
+			{selectionMode ? (
+				<Paper
+					component="header"
+					style={{
+						borderRadius: 0,
+						background: PANEL_BACKGROUND,
+						borderBottom: PANEL_BORDER,
+					}}
+				>
+					<Group justify="space-between" px="md" py="xs" wrap="nowrap">
+						<Group gap="xs" wrap="nowrap">
+							<ActionIcon
+								variant="subtle"
+								color="gray"
+								size="lg"
+								onClick={clearSelection}
+								aria-label={t("message.cancelSelection")}
+							>
+								<X size={18} />
+							</ActionIcon>
+							<Text fw={600} truncate>
+								{t("message.selectedCount", { count: selected.size })}
+							</Text>
+						</Group>
+						<Button
+							color="red"
+							size="xs"
+							leftSection={<Trash2 size={14} />}
+							disabled={selected.size === 0}
+							onClick={() => {
+								setBulkError(null);
+								setConfirmBulkDelete(true);
+							}}
 						>
-							<Pin size={18} />
-							{pinnedIds.size > 0 && (
-								<Text size="xs" style={{ marginLeft: 2 }}>
-									{pinnedIds.size}
-								</Text>
-							)}
-						</ActionIcon>
-					) : undefined
-				}
-			/>
-			<MessageList
-				messages={s.activeMessages}
-				userId={userId}
-				chatId={s.activeChatId}
-				token={s.activeAccount?.token}
-				onDelete={s.handleDeleteMessage}
-				onStartEdit={s.handleStartEdit}
-				onReply={s.handleReply}
-				editTTL={s.config?.messageEditTTL ?? 0}
-				deleteTTL={s.config?.messageDeleteTTL ?? 0}
-				hasMore={s.hasMore}
-				isLoadingMore={s.isLoadingMore}
-				onLoadMore={
-					s.activeChatId !== null
-						? () => {
-								void s.loadMoreMessages(s.activeChatId);
-							}
-						: undefined
-				}
-				onCreateThread={(chatId, messageId) => {
-					void s.handleCreateThread(chatId, messageId);
+							{t("message.deleteSelected")}
+						</Button>
+					</Group>
+				</Paper>
+			) : (
+				<ChatHeaderSlot
+					s={s}
+					userId={userId}
+					onBack={onBack}
+					onStartSelection={() => setSelectionMode(true)}
+					pinnedButton={
+						canPin ? (
+							<ActionIcon
+								variant="subtle"
+								color="gray"
+								size="lg"
+								onClick={openPins}
+								aria-label={t("pins.open")}
+							>
+								<Pin size={18} />
+								{pinnedIds.size > 0 && (
+									<Text size="xs" style={{ marginLeft: 2 }}>
+										{pinnedIds.size}
+									</Text>
+								)}
+							</ActionIcon>
+						) : undefined
+					}
+				/>
+			)}
+			<MessageSelectionProvider value={selection}>
+				<MessageList
+					messages={s.activeMessages}
+					userId={userId}
+					chatId={s.activeChatId}
+					token={s.activeAccount?.token}
+					onDelete={s.handleDeleteMessage}
+					onStartEdit={s.handleStartEdit}
+					onReply={s.handleReply}
+					editTTL={s.config?.messageEditTTL ?? 0}
+					deleteTTL={s.config?.messageDeleteTTL ?? 0}
+					hasMore={s.hasMore}
+					isLoadingMore={s.isLoadingMore}
+					onLoadMore={
+						s.activeChatId !== null
+							? () => {
+									void s.loadMoreMessages(s.activeChatId);
+								}
+							: undefined
+					}
+					onCreateThread={(chatId, messageId) => {
+						void s.handleCreateThread(chatId, messageId);
+					}}
+					onOpenThread={(threadId) => {
+						void s.handleOpenThread(threadId);
+					}}
+					messageToThread={s.messageToThread}
+					threads={s.threads}
+					onRetry={(chatId, messageId) => {
+						void s.handleRetryMessage(chatId, messageId);
+					}}
+					onCancelSend={(chatId, messageId) => {
+						void s.handleCancelSendMessage(chatId, messageId);
+					}}
+					onPin={(chatId, messageId) => {
+						void togglePin(chatId, messageId);
+					}}
+					onBlock={(fromId) => {
+						if (token !== undefined) void blockUser(token, fromId);
+					}}
+					onForward={(_, messageId) => {
+						const message = s.activeMessages.find((m) => m.id === messageId);
+						if (message !== undefined) setForwarding(message);
+					}}
+					pinnedIds={pinnedIds}
+					showAuthorForGroup={showAuthorForGroup}
+					isOffline={!s.isOnline}
+				/>
+			</MessageSelectionProvider>
+			<Modal
+				opened={confirmBulkDelete}
+				onClose={() => {
+					if (!bulkDeleting) setConfirmBulkDelete(false);
 				}}
-				onOpenThread={(threadId) => {
-					void s.handleOpenThread(threadId);
-				}}
-				messageToThread={s.messageToThread}
-				threads={s.threads}
-				onRetry={(chatId, messageId) => {
-					void s.handleRetryMessage(chatId, messageId);
-				}}
-				onCancelSend={(chatId, messageId) => {
-					void s.handleCancelSendMessage(chatId, messageId);
-				}}
-				onPin={(chatId, messageId) => {
-					void togglePin(chatId, messageId);
-				}}
-				onBlock={(fromId) => {
-					if (token !== undefined) void blockUser(token, fromId);
-				}}
-				onForward={(_, messageId) => {
-					const message = s.activeMessages.find((m) => m.id === messageId);
-					if (message !== undefined) setForwarding(message);
-				}}
-				pinnedIds={pinnedIds}
-				showAuthorForGroup={showAuthorForGroup}
-				isOffline={!s.isOnline}
-			/>
+				title={t("message.deleteSelectedTitle")}
+				centered
+				size="sm"
+			>
+				<Stack gap="md">
+					<Text size="sm">
+						{t("message.deleteSelectedConfirm", { count: selected.size })}
+					</Text>
+					{bulkError !== null && <Alert color="red">{bulkError}</Alert>}
+					<Group justify="flex-end">
+						<Button
+							variant="default"
+							disabled={bulkDeleting}
+							onClick={() => setConfirmBulkDelete(false)}
+						>
+							{t("input.cancel")}
+						</Button>
+						<Button
+							color="red"
+							loading={bulkDeleting}
+							onClick={() => {
+								void deleteSelected();
+							}}
+						>
+							{t("message.deleteSelected")}
+						</Button>
+					</Group>
+				</Stack>
+			</Modal>
 			<ForwardModal
 				open={forwarding !== null}
 				onClose={() => setForwarding(null)}

@@ -23,20 +23,23 @@ func (s *Service) HandleRootBotManagement(ctx context.Context, bot *model.Bot, c
 	case lower == "/mybots":
 		bots, err := s.store.ListBotsByOwner(ctx, userID)
 		if err != nil {
-			s.rootReply(ctx, bot.UserID, chat.ID, "Не удалось получить список.")
+			s.rootReply(ctx, bot.UserID, chat.ID, "Could not load the list.")
 			return true
 		}
 		if len(bots) == 0 {
-			s.rootReply(ctx, bot.UserID, chat.ID, "У тебя пока нет ботов. /newbot")
+			s.rootReply(ctx, bot.UserID, chat.ID, "You have no bots yet. Use Create a bot.")
 			return true
 		}
 		var builder strings.Builder
-		builder.WriteString("Твои боты:\n")
-		for i := range bots {
-			user, _ := s.store.GetUserByID(ctx, bots[i].UserID)
-			status := "активен"
-			if !bots[i].IsActive {
-				status = "отключён"
+		builder.WriteString("Your bots:\n")
+		for idx := range bots {
+			user, ok := s.store.GetUserByID(ctx, bots[idx].UserID)
+			if !ok {
+				continue
+			}
+			status := botStatusActive
+			if !bots[idx].IsActive {
+				status = botStatusDisabled
 			}
 			builder.WriteString("@")
 			builder.WriteString(user.Username)
@@ -50,26 +53,26 @@ func (s *Service) HandleRootBotManagement(ctx context.Context, bot *model.Bot, c
 		username := botCommandArg(text)
 		token, err := s.RotateBotToken(ctx, userID, username)
 		if err != nil {
-			s.rootReply(ctx, bot.UserID, chat.ID, "Не удалось выпустить токен: "+err.Error())
+			s.rootReply(ctx, bot.UserID, chat.ID, "Could not issue a token: "+err.Error())
 			return true
 		}
-		s.rootReply(ctx, bot.UserID, chat.ID, "Новый токен для @"+username+" (показывается один раз):\n"+token)
+		s.rootReply(ctx, bot.UserID, chat.ID, "New token for @"+username+" (shown once):\n"+token)
 		return true
 	case strings.HasPrefix(lower, "/revoke "), strings.HasPrefix(lower, "/disable "):
 		username := botCommandArg(text)
 		if err := s.SetBotEnabled(ctx, userID, username, false); err != nil {
-			s.rootReply(ctx, bot.UserID, chat.ID, "Не удалось отключить: "+err.Error())
+			s.rootReply(ctx, bot.UserID, chat.ID, "Could not disable: "+err.Error())
 			return true
 		}
-		s.rootReply(ctx, bot.UserID, chat.ID, "@"+username+" отключён.")
+		s.rootReply(ctx, bot.UserID, chat.ID, "@"+username+" is disabled.")
 		return true
 	case strings.HasPrefix(lower, "/enable "):
 		username := botCommandArg(text)
 		if err := s.SetBotEnabled(ctx, userID, username, true); err != nil {
-			s.rootReply(ctx, bot.UserID, chat.ID, "Не удалось включить: "+err.Error())
+			s.rootReply(ctx, bot.UserID, chat.ID, "Could not enable: "+err.Error())
 			return true
 		}
-		s.rootReply(ctx, bot.UserID, chat.ID, "@"+username+" включён.")
+		s.rootReply(ctx, bot.UserID, chat.ID, "@"+username+" is enabled.")
 		return true
 	}
 	return false

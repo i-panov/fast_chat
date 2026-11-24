@@ -1,4 +1,7 @@
+// The bubble composes content, menu, selection, reactions and lightboxes.
+/* eslint-disable max-lines */
 import { Paper } from "@mantine/core";
+import { CheckCircle2, Circle } from "lucide-react";
 import {
 	memo,
 	useCallback,
@@ -7,6 +10,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { useMessageSelection } from "../../context/MessageSelectionContext.tsx";
 import type { FileKey } from "../../e2ee/file-crypto.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { getCurrentLocale } from "../../i18n.ts";
@@ -23,10 +27,7 @@ import { InlineKeyboard } from "./bubble/InlineKeyboard.tsx";
 import { MessageAttachments } from "./bubble/MessageAttachments.tsx";
 import { MessageAuthor } from "./bubble/MessageAuthor.tsx";
 import { MessageBody } from "./bubble/MessageBody.tsx";
-import {
-	BubbleContextMenu,
-	MessageMenuButton,
-} from "./bubble/MessageBubbleMenu.tsx";
+import { BubbleContextMenu } from "./bubble/MessageBubbleMenu.tsx";
 import { MessageLocation } from "./bubble/MessageLocation.tsx";
 import { MessageReplyPreview } from "./bubble/MessageReplyPreview.tsx";
 import { MessageThreadLink } from "./bubble/MessageThreadLink.tsx";
@@ -323,6 +324,7 @@ export const MessageBubble = memo(function MessageBubble({
 	const firstMenuItemRef = useRef<HTMLButtonElement>(null);
 	const locale = getCurrentLocale();
 	const { activeAccount } = useAuth();
+	const selection = useMessageSelection();
 
 	const replyPhotoFile = replyTo?.files?.[0];
 	const replyPhotoUrl =
@@ -365,6 +367,17 @@ export const MessageBubble = memo(function MessageBubble({
 		!isInThread &&
 		status !== "queued" &&
 		status !== "failed";
+	const selectable = selection?.mode === true && canDelete;
+	const selected = selection?.selected.has(msgId) === true;
+	const hasMenuActions =
+		canEdit ||
+		canDelete ||
+		canCancelSend ||
+		canReply ||
+		canCreateThread ||
+		canPin ||
+		canBlock ||
+		canForward;
 
 	const photoFiles = (files ?? []).filter((f) => f.fileType === "photo");
 
@@ -423,11 +436,45 @@ export const MessageBubble = memo(function MessageBubble({
 				<Paper
 					className={isOwn ? "bubble-own" : "bubble-other"}
 					data-message-id={msgId}
+					onClickCapture={(e) => {
+						if (!selection?.mode) return;
+						e.preventDefault();
+						e.stopPropagation();
+						if (canDelete) selection.toggle(msgId);
+					}}
 					onContextMenu={(e) => {
 						e.preventDefault();
+						if (selection?.mode) return;
 						openMenuAt(e.clientX, e.clientY);
 					}}
-					style={{ overflow: "hidden", maxWidth: "100%", minWidth: 0 }}
+					tabIndex={hasMenuActions || selectable ? 0 : undefined}
+					onKeyDown={(e) => {
+						if (selection?.mode) {
+							if (e.key === "Enter" || e.key === " ") {
+								e.preventDefault();
+								if (canDelete) selection.toggle(msgId);
+							}
+
+							return;
+						}
+						// The three-dot trigger is gone: keyboard users get the
+						// same menu with the context-menu key or Shift+F10.
+						if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) {
+							return;
+						}
+						e.preventDefault();
+						const rect = e.currentTarget.getBoundingClientRect();
+						openMenuAt(rect.left, rect.bottom);
+					}}
+					style={{
+						overflow: "hidden",
+						maxWidth: "100%",
+						minWidth: 0,
+						outline: selected
+							? "2px solid var(--mantine-color-blue-5)"
+							: undefined,
+						outlineOffset: selected ? -2 : undefined,
+					}}
 				>
 					<BubbleContent
 						replyTo={replyTo}
@@ -459,7 +506,36 @@ export const MessageBubble = memo(function MessageBubble({
 						/>
 					)}
 				</Paper>
-				<MessageMenuButton onOpen={openMenuAt} />
+				{selection?.mode === true && canDelete && (
+					<div
+						style={{
+							position: "absolute",
+							top: 6,
+							right: 6,
+							zIndex: 2,
+							borderRadius: "50%",
+							background: "var(--mantine-color-dark-8)",
+							display: "flex",
+							// The visible check must not swallow the tap: the
+							// Paper's capture handler owns the toggle.
+							pointerEvents: "none",
+						}}
+					>
+						{selected ? (
+							<CheckCircle2
+								size={18}
+								color="var(--mantine-color-blue-5)"
+								aria-hidden="true"
+							/>
+						) : (
+							<Circle
+								size={18}
+								color="var(--mantine-color-gray-5)"
+								aria-hidden="true"
+							/>
+						)}
+					</div>
+				)}
 			</div>
 			<ReactionBar
 				chatId={chatId}
@@ -478,6 +554,7 @@ export const MessageBubble = memo(function MessageBubble({
 				menuPos={menuPos}
 				canEdit={canEdit}
 				canDelete={canDelete}
+				canSelect={selection !== null && canDelete}
 				canCancelSend={canCancelSend}
 				canReply={canReply}
 				canCreateThread={canCreateThread}
@@ -501,6 +578,7 @@ export const MessageBubble = memo(function MessageBubble({
 				onBlock={onBlock}
 				onForward={onForward}
 				onDelete={onDelete}
+				onSelect={() => selection?.start(msgId)}
 				onClose={closeMenu}
 				menuRef={menuRef}
 				firstMenuItemRef={firstMenuItemRef}

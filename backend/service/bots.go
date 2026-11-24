@@ -35,6 +35,7 @@ const (
 var (
 	ErrBotUsernameInvalid     = errors.New("bot username must match the username rules and end with _bot")
 	ErrBotUsernameTaken       = errors.New("bot username taken")
+	ErrBotUsernameReserved    = errors.New("bot username reserved")
 	ErrBotOwnerRequired       = errors.New("bot owner is required")
 	ErrBotNotActive           = errors.New("bot is not active")
 	ErrBotSelfChat            = errors.New("cannot open a bot chat with a bot")
@@ -92,6 +93,9 @@ func (s *Service) CreateBot(ctx context.Context, ownerID, username, displayName 
 	username, ok := ParseBotUsername(username)
 	if !ok {
 		return nil, ErrBotUsernameInvalid
+	}
+	if username == MasterBotUsername || username == legacyMasterBotUsername {
+		return nil, ErrBotUsernameReserved
 	}
 	if _, ok := s.store.GetUserByID(ctx, ownerID); !ok {
 		return nil, ErrUserNotFound
@@ -188,6 +192,9 @@ func (s *Service) PollBotUpdates(ctx context.Context, botID string, offset uint6
 	s.pruneBotDataOnce(ctx)
 	if limit <= 0 || limit > 100 {
 		limit = 100
+	}
+	if timeout > MaxBotPollTimeout {
+		timeout = MaxBotPollTimeout
 	}
 	deadline := time.Now().Add(timeout)
 	for {
@@ -503,11 +510,27 @@ func (s *Service) CreateBotCallback(ctx context.Context, userID, chatID, message
 			return nil, ErrBotMarkupInvalid
 		}
 	}
-	user, _ := s.store.GetUserByID(ctx, userID)
 	query := &model.BotCallbackQuery{
 		ID: ids.Generate(), BotID: bc.BotID, ChatID: chatID,
 		MessageID: messageID, UserID: userID, Data: data, CreatedAt: time.Now().UTC(),
 	}
+	// The root bot has no external polling client, so its buttons are
+	// handled in-process; queueing the update would leave it unanswered
+	// forever.
+	if s.isMasterBot(ctx, bc.BotID) {
+		// Persist the query so the returned id is truthful for clients that
+		// later answer it; it is not queued in bot_updates because the root
+		// bot has no poller.
+		if err := s.store.CreateBotCallbackQuery(ctx, query); err != nil {
+			return nil, err
+		}
+		if err := s.HandleRootBotCallback(ctx, chatID, userID, data); err != nil {
+			return nil, err
+		}
+
+		return query, nil
+	}
+	user, _ := s.store.GetUserByID(ctx, userID)
 	if err := s.store.CreateBotCallbackQuery(ctx, query); err != nil {
 		return nil, err
 	}

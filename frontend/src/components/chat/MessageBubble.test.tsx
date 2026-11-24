@@ -1,6 +1,10 @@
 import { MantineProvider } from "@mantine/core";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	type MessageSelection,
+	MessageSelectionProvider,
+} from "../../context/MessageSelectionContext.tsx";
 import { AuthProvider } from "../../useAuth.tsx";
 import { MessageBubble } from "./MessageBubble.tsx";
 
@@ -39,6 +43,8 @@ const COPY_TEXT = "message.copy";
 const EDIT_TEXT = "message.edit";
 const REPLY_TEXT = "message.reply";
 const DELETE_TEXT = "message.delete";
+const DELETE_TITLE_RE = /message\.deleteTitle|Удалить сообщение|Delete message/;
+const CANCEL_LABEL_RE = /input\.cancel|Cancel|Отмена/;
 const RETRY_TEXT = "message.retry";
 const CANCEL_SEND_TEXT = "message.cancelSend";
 const CREATE_THREAD_TEXT = "message.createThread";
@@ -68,6 +74,21 @@ function renderBubble(props: React.ComponentProps<typeof MessageBubble>) {
 		<MantineProvider>
 			<AuthProvider>
 				<MessageBubble {...props} />
+			</AuthProvider>
+		</MantineProvider>,
+	);
+}
+
+function renderSelectedBubble(
+	props: React.ComponentProps<typeof MessageBubble>,
+	selection: MessageSelection,
+) {
+	return render(
+		<MantineProvider>
+			<AuthProvider>
+				<MessageSelectionProvider value={selection}>
+					<MessageBubble {...props} />
+				</MessageSelectionProvider>
 			</AuthProvider>
 		</MantineProvider>,
 	);
@@ -119,14 +140,72 @@ describe("message bubble", () => {
 		);
 	});
 
-	it("deletes from the context menu", async () => {
+	it("asks before deleting from the context menu", async () => {
 		const onDelete = vi.fn();
 		renderBubble(bubbleProps({ onDelete }));
 
 		await openMenu();
 		fireEvent.click(screen.getByText(DELETE_TEXT));
 
-		expect(onDelete).toHaveBeenCalledWith("c1", "m1");
+		expect(onDelete).not.toHaveBeenCalled();
+		expect(await screen.findByText(DELETE_TITLE_RE)).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: DELETE_TEXT }));
+
+		await waitFor(() => {
+			expect(onDelete).toHaveBeenCalledWith("c1", "m1");
+		});
+		await waitFor(() => {
+			expect(screen.queryByRole("dialog")).toBeNull();
+		});
+	});
+
+	it("keeps the message when the delete confirmation is cancelled", async () => {
+		const onDelete = vi.fn();
+		renderBubble(bubbleProps({ onDelete }));
+
+		await openMenu();
+		fireEvent.click(screen.getByText(DELETE_TEXT));
+		fireEvent.click(
+			await screen.findByRole("button", {
+				name: CANCEL_LABEL_RE,
+			}),
+		);
+
+		expect(onDelete).not.toHaveBeenCalled();
+	});
+
+	it("toggles a message in selection mode", () => {
+		const toggle = vi.fn();
+		const selection: MessageSelection = {
+			mode: true,
+			selected: new Set(["m1"]),
+			toggle,
+			start: vi.fn(),
+			clear: vi.fn(),
+		};
+		renderSelectedBubble(bubbleProps(), selection);
+
+		fireEvent.click(screen.getByText("hello"));
+
+		expect(toggle).toHaveBeenCalledWith("m1");
+	});
+
+	it("enters selection from the context menu", async () => {
+		const start = vi.fn();
+		const selection: MessageSelection = {
+			mode: false,
+			selected: new Set(),
+			toggle: vi.fn(),
+			start,
+			clear: vi.fn(),
+		};
+		renderSelectedBubble(bubbleProps(), selection);
+
+		await openMenu();
+		fireEvent.click(screen.getByText("message.select"));
+
+		expect(start).toHaveBeenCalledWith("m1");
 	});
 
 	it("replies and creates threads from the menu", async () => {

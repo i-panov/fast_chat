@@ -59,6 +59,15 @@ type Service struct {
 	authMu       sync.Mutex
 	botPruneMu   sync.Mutex
 	lastBotPrune time.Time
+	// botLastSeen tracks the Bot API activity of external bots. Bots have no
+	// SSE connection, so their presence is driven by polling requests and a
+	// five-minute expiry sweep.
+	botPresenceMu sync.Mutex
+	botLastSeen   map[string]time.Time
+	// masterBotOnce makes the legacy identity migration a startup concern
+	// instead of an immediate write transaction on every root bot message.
+	masterBotOnce sync.Once
+	masterBotErr  error
 }
 
 // ServerDomain returns the local federation domain.
@@ -89,10 +98,11 @@ func (s *Service) sendEvent(userID string, event sse.Event) {
 // have to reason about SMTP vs debug mode.
 func New(s *store.Store, cfg *config.Config, hub *sse.Hub, ps *push.Service) *Service {
 	svc := &Service{
-		store: s,
-		hub:   hub,
-		cfg:   cfg,
-		email: newEmailSender(cfg),
+		store:       s,
+		hub:         hub,
+		cfg:         cfg,
+		email:       newEmailSender(cfg),
+		botLastSeen: make(map[string]time.Time),
 	}
 	// Guard against a nil *sse.Hub being wrapped in a non-nil eventSender
 	// interface, which would defeat the `s.events == nil` check in sendEvent
