@@ -152,6 +152,22 @@ describe("routes", () => {
 		expect(router.state.location.pathname).toBe("/chat");
 	});
 
+	it("serves a direct chat path", async () => {
+		seedAccount();
+		const router = renderAt("/chat/@bob");
+
+		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
+		expect(router.state.location.pathname).toBe("/chat/@bob");
+	});
+
+	it("serves the favorites path", async () => {
+		seedAccount();
+		const router = renderAt("/favorite");
+
+		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
+		expect(router.state.location.pathname).toBe("/favorite");
+	});
+
 	it("logs in and lands on chat", async () => {
 		const { sendCode, verifyCode } = await import("../api.ts");
 		vi.mocked(sendCode).mockResolvedValue({ status: "ok" });

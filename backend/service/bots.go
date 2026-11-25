@@ -163,6 +163,9 @@ func (s *Service) OpenBotChat(ctx context.Context, userID, username string) (Cha
 	if bc, ok := s.store.GetBotChat(ctx, botUser.ID, userID); ok {
 		chat, ok := s.store.GetChat(ctx, bc.ChatID)
 		if ok {
+			if err := s.store.ClearChatDeletes(ctx, chat.ID, userID); err != nil {
+				return ChatView{}, err
+			}
 			return s.EnrichChat(ctx, chat), nil
 		}
 	}

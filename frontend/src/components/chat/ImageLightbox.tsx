@@ -2,24 +2,34 @@ import { ActionIcon, Modal } from "@mantine/core";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import type { FileKey } from "../../e2ee/file-crypto.ts";
+import { useDecryptedFileUrl } from "../../hooks/useDecryptedFileUrl.ts";
 import type { FileInfo } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 
 interface Props {
 	images: FileInfo[];
 	startIndex: number;
+	// Keys travel with the message: an encrypted photo is ciphertext on the
+	// server, so the lightbox has to decrypt it exactly like the bubble.
+	fileKeys?: Record<string, FileKey>;
 	onClose: () => void;
 }
 
-export function ImageLightbox({ images, startIndex, onClose }: Props) {
+export function ImageLightbox({
+	images,
+	startIndex,
+	fileKeys,
+	onClose,
+}: Props) {
 	const [index, setIndex] = useState(startIndex);
 	const { t } = useTranslation();
 	const { activeAccount } = useAuth();
 
 	const current = images[index];
-	const { blobUrl, loading, error } = useFileUrl(
-		current?.url,
+	const { blobUrl, loading, error } = useDecryptedFileUrl(
+		current,
+		fileKeys,
 		activeAccount?.token,
 	);
 

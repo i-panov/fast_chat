@@ -1,8 +1,12 @@
 import type { Chat } from "../types/api.ts";
 import { compareByCreatedAt } from "../utils/ordering.ts";
 import { getDB } from "./init.ts";
+import { messagesRepo } from "./messagesRepo.ts";
 import { notify } from "./notify.ts";
+import { outboxRepo } from "./outboxRepo.ts";
 import type { StoredChat } from "./schema.ts";
+import { threadMessagesRepo } from "./threadMessagesRepo.ts";
+import { threadsRepo } from "./threadsRepo.ts";
 
 function stamp(chat: Chat): StoredChat {
 	return { ...chat, _updatedAt: new Date().toISOString() };
@@ -42,9 +46,7 @@ export const chatsRepo = {
 	},
 
 	async remove(id: string): Promise<void> {
-		const db = await getDB();
-		await db.delete("chats", id);
-		notify();
+		await this.removeMany([id]);
 	},
 
 	async removeMany(ids: string[]): Promise<void> {
@@ -53,6 +55,15 @@ export const chatsRepo = {
 		const tx = db.transaction("chats", "readwrite");
 		await Promise.all(ids.map((id) => tx.store.delete(id)));
 		await tx.done;
+		// Messages and threads of a removed chat are unreachable from the UI;
+		// keeping them would leak local preview URLs and stale history when a
+		// private chat is reopened later.
+		for (const id of ids) {
+			await messagesRepo.removeByChat(id);
+			await threadMessagesRepo.removeByChat(id);
+			await threadsRepo.removeByChat(id);
+			await outboxRepo.removeByChat(id);
+		}
 		notify();
 	},
 

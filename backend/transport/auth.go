@@ -427,6 +427,7 @@ var errInternal = &statusError{ErrorMessage: "internal error", code: http.Status
 const (
 	msgChatNotFound      = "chat not found"
 	msgNotMember         = "not a member"
+	msgOnlyOwner         = "only owner can perform this action"
 	msgUnauthorized      = "unauthorized"
 	msgTooManyFiles      = "too many files"
 	msgTooManyMessageIDs = "too many message IDs"

@@ -1,13 +1,14 @@
 import type { FileKey } from "../e2ee/file-crypto.ts";
 import { decryptFileStream } from "../e2ee/file-crypto.ts";
 
-export async function downloadFile(
+// fetchFileBlob downloads an attachment and decrypts it when a key is given.
+// Shared by the download link and the clipboard copy.
+export async function fetchFileBlob(
 	fileUrl: string,
-	filename: string,
 	token?: string,
 	fileKey?: FileKey,
 	mimeType?: string,
-): Promise<void> {
+): Promise<Blob> {
 	const headers: Record<string, string> = {};
 	if (token) {
 		headers.Authorization = `Bearer ${token}`;
@@ -20,13 +21,23 @@ export async function downloadFile(
 
 	const blob = await resp.blob();
 
-	// Decrypt if a key is provided (encrypted file).
-	const finalBlob = fileKey
-		? await decryptBlob(blob, fileKey, mimeType ?? blob.type)
-		: mimeType && blob.type !== mimeType
-			? new Blob([blob], { type: mimeType })
-			: blob;
+	if (fileKey) {
+		return decryptBlob(blob, fileKey, mimeType ?? blob.type);
+	}
 
+	return mimeType && blob.type !== mimeType
+		? new Blob([blob], { type: mimeType })
+		: blob;
+}
+
+export async function downloadFile(
+	fileUrl: string,
+	filename: string,
+	token?: string,
+	fileKey?: FileKey,
+	mimeType?: string,
+): Promise<void> {
+	const finalBlob = await fetchFileBlob(fileUrl, token, fileKey, mimeType);
 	const blobUrl = URL.createObjectURL(finalBlob);
 
 	try {

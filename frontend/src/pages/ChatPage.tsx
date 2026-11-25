@@ -13,14 +13,15 @@ import {
 	Text,
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { ArrowLeft, CheckSquare, Pin, Settings, Trash2, X } from "lucide-react";
 import type * as React from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AccountSwitcher } from "../AccountSwitcher.tsx";
 import {
 	blockUser,
+	deleteChat,
 	getPinnedMessages,
 	pinMessage,
 	unpinMessage,
@@ -56,8 +57,9 @@ import { outboxRepo } from "../db/outboxRepo.ts";
 import { useChatPage } from "../hooks/useChatInteraction.ts";
 import { usePushNotifications } from "../hooks/usePushNotifications.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
-import type { Message } from "../types/api.ts";
-import { chatTitle } from "../utils/chat.ts";
+import type { Chat, Message } from "../types/api.ts";
+import { chatFromPath, chatTitle, privateChatRef } from "../utils/chat.ts";
+import { emitNotification } from "../utils/notify.ts";
 
 type ChatPageState = ReturnType<typeof useChatPage>;
 
@@ -293,10 +295,14 @@ function ChatSidebar({
 	s,
 	userId,
 	fullWidth = false,
+	onDeleteChat,
+	onSelectChat,
 }: {
 	s: ChatPageState;
 	userId: string;
 	fullWidth?: boolean;
+	onDeleteChat?: (chat: Chat) => void;
+	onSelectChat: (chatId: string) => void;
 }) {
 	return (
 		<Paper
@@ -323,7 +329,8 @@ function ChatSidebar({
 					chats={s.chats}
 					activeChatId={s.activeChatId}
 					userId={userId}
-					onSelectChat={s.selectChat}
+					onSelectChat={onSelectChat}
+					onDeleteChat={onDeleteChat}
 				/>
 			</Stack>
 		</Paper>
@@ -724,8 +731,42 @@ export function ChatPage() {
 	const { t } = useTranslation();
 	const isMobile = useMediaQuery("(max-width: 48em)") === true;
 	const [messageSearchOpen, setMessageSearchOpen] = useState(false);
+	const [chatToDelete, setChatToDelete] = useState<Chat | null>(null);
+	const [deletingChat, setDeletingChat] = useState(false);
 
 	usePushNotifications(s.activeAccount?.token ?? "");
+
+	const navigate = useNavigate();
+	const deleteToken = s.activeAccount?.token;
+	const currentChatId = s.activeChatId;
+	const selectChatState = s.selectChat;
+	const activeThread = s.activeThread;
+	const closeThread = s.handleCloseThread;
+	const cancelPendingChat = s.cancelPendingChat;
+
+	const confirmDeleteChat = useCallback(async () => {
+		if (chatToDelete === null || deleteToken === undefined) return;
+		setDeletingChat(true);
+		try {
+			await deleteChat(deleteToken, chatToDelete.id);
+			// The SSE event does the same, but removing locally makes the row
+			// disappear even when the event is delayed.
+			await chatsRepo.remove(chatToDelete.id);
+			if (currentChatId === chatToDelete.id) {
+				selectChatState(null);
+				void navigate({
+					to: "/chat",
+					search: { chatId: undefined, threadId: undefined },
+					replace: true,
+				});
+			}
+			setChatToDelete(null);
+		} catch {
+			emitNotification(t("chat.deleteChatFailed"));
+		} finally {
+			setDeletingChat(false);
+		}
+	}, [chatToDelete, deleteToken, currentChatId, selectChatState, t, navigate]);
 
 	const mobileChatOpen =
 		isMobile &&
@@ -734,16 +775,62 @@ export function ChatPage() {
 			s.activeThread !== null);
 
 	const closeMobileChat = useCallback(() => {
-		if (s.activeThread !== null) {
-			s.handleCloseThread();
+		if (activeThread !== null) {
+			closeThread();
 			return;
 		}
-		s.cancelPendingChat();
-		s.selectChat(null);
-	}, [s.activeThread, s.handleCloseThread, s.cancelPendingChat, s.selectChat]);
+		cancelPendingChat();
+		selectChatState(null);
+		void navigate({
+			to: "/chat",
+			search: { chatId: undefined, threadId: undefined },
+			replace: true,
+		});
+	}, [activeThread, closeThread, cancelPendingChat, selectChatState, navigate]);
 
-	const routeSearch = useSearch({ from: "/chat", shouldThrow: false });
-	const navigate = useNavigate();
+	const pathname = useRouterState({
+		select: (state) => state.location.pathname,
+	});
+
+	// A selection may come from a hook that does not know the router
+	// (creating a group, starting a chat from search). The effect below writes
+	// its canonical path once; openChat marks the chat it is already opening,
+	// so a click does not produce a second history entry.
+	const lastOpenedChatRef = useRef<string | null>(null);
+
+	const navigateToChat = useCallback(
+		(chat: Chat, replace = false) => {
+			lastOpenedChatRef.current = chat.id;
+			if (chat.type === "self") {
+				void navigate({ to: "/favorite", replace });
+			} else if (chat.type === "group") {
+				void navigate({
+					to: "/group/$groupId",
+					params: { groupId: chat.id },
+					replace,
+				});
+			} else {
+				void navigate({
+					to: "/chat/$chatRef",
+					params: { chatRef: privateChatRef(chat, s.user?.id ?? "") },
+					search: { chatId: undefined, threadId: undefined },
+					replace,
+				});
+			}
+		},
+		[navigate, s.user?.id],
+	);
+
+	const openChat = useCallback(
+		(chatId: string) => {
+			selectChat(chatId);
+			const chat = s.chats.find((c) => c.id === chatId);
+			if (chat !== undefined) {
+				navigateToChat(chat);
+			}
+		},
+		[selectChat, s.chats, navigateToChat],
+	);
 
 	useEffect(() => {
 		if (!("serviceWorker" in navigator)) return;
@@ -756,7 +843,7 @@ export function ChatPage() {
 			if (data.type !== "NAVIGATE_TO_CHAT") return;
 			if (typeof data.chatId !== "string") return;
 
-			selectChat(data.chatId);
+			openChat(data.chatId);
 
 			if (typeof data.threadId === "string") {
 				handleOpenThread(data.threadId);
@@ -769,39 +856,78 @@ export function ChatPage() {
 		return () => {
 			sw.removeEventListener("message", handleMessage);
 		};
-	}, [selectChat, handleOpenThread]);
+	}, [openChat, handleOpenThread]);
 
+	// The address is the source of truth: /chat/<user>, /group/<id> and
+	// /favorite select a chat, /chat shows the list. Waiting for the sync is
+	// intentional: an unknown reference must not clear a valid selection.
+	// Going back to /chat clears the selection; the first render of /chat does
+	// not, because a selection can be set before its path is written.
+	const previousPathRef = useRef(pathname);
 	useEffect(() => {
-		const chatId =
-			routeSearch?.chatId ??
-			new URLSearchParams(window.location.search).get("chatId");
-		if (!chatId) return;
-		const threadId =
-			routeSearch?.threadId ??
-			new URLSearchParams(window.location.search).get("threadId");
-
-		void navigate({
-			to: "/chat",
-			search: { chatId: undefined, threadId: undefined },
-			replace: true,
-		});
-
-		// Keep the URL clean even when the router is mocked or the app
-		// runs under a basepath: drop only the consumed params.
-		const params = new URLSearchParams(window.location.search);
-		if (params.has("chatId") || params.has("threadId")) {
-			params.delete("chatId");
-			params.delete("threadId");
-			const clean = params.toString();
-			const base = window.location.pathname;
-			window.history.replaceState({}, "", clean ? `${base}?${clean}` : base);
+		const chat = chatFromPath(pathname, s.chats, s.user?.id ?? "");
+		if (chat !== undefined) {
+			if (chat.id !== s.activeChatId) selectChat(chat.id);
+		} else if (pathname === "/chat" && previousPathRef.current !== "/chat") {
+			selectChat(null);
 		}
+		previousPathRef.current = pathname;
+	}, [pathname, s.chats, s.user?.id, s.activeChatId, selectChat]);
 
-		selectChat(chatId);
+	// Selection made outside openChat (a new group, a chat started from the
+	// search) still has to appear in the address bar.
+	useEffect(() => {
+		if (pathname !== "/chat" || s.activeChatId === null) return;
+		if (lastOpenedChatRef.current === s.activeChatId) return;
+		const chat = s.chats.find((c) => c.id === s.activeChatId);
+		if (chat !== undefined) navigateToChat(chat, true);
+	}, [pathname, s.activeChatId, s.chats, navigateToChat]);
+
+	// Leaving or deleting a group clears the selection while the address still
+	// names the group; go back to the list instead of keeping a dead link.
+	const previousActiveChatRef = useRef<string | null>(null);
+	useEffect(() => {
+		if (
+			previousActiveChatRef.current !== null &&
+			s.activeChatId === null &&
+			pathname !== "/chat"
+		) {
+			void navigate({
+				to: "/chat",
+				search: { chatId: undefined, threadId: undefined },
+				replace: true,
+			});
+		}
+		previousActiveChatRef.current = s.activeChatId;
+	}, [s.activeChatId, pathname, navigate]);
+
+	// Legacy links used ?chatId=; consume them once and move to the canonical
+	// path so the address stays shareable.
+	const legacyChatId = new URLSearchParams(window.location.search).get(
+		"chatId",
+	);
+	useEffect(() => {
+		if (legacyChatId === null) return;
+		const chat = s.chats.find((c) => c.id === legacyChatId);
+		if (chat === undefined) return;
+
+		const threadId = new URLSearchParams(window.location.search).get(
+			"threadId",
+		);
+		selectChat(chat.id);
+		navigateToChat(chat, true);
+
+		const params = new URLSearchParams(window.location.search);
+		params.delete("chatId");
+		params.delete("threadId");
+		const clean = params.toString();
+		const base = window.location.pathname;
+		window.history.replaceState({}, "", clean ? `${base}?${clean}` : base);
+
 		if (threadId) {
 			handleOpenThread(threadId);
 		}
-	}, [selectChat, handleOpenThread, routeSearch, navigate]);
+	}, [legacyChatId, s.chats, selectChat, navigateToChat, handleOpenThread]);
 
 	if (s.activeAccount === null || s.user === null) {
 		return null;
@@ -815,7 +941,7 @@ export function ChatPage() {
 					open={messageSearchOpen}
 					onClose={() => setMessageSearchOpen(false)}
 					userId={s.user.id}
-					onSelect={(chatId) => selectChat(chatId)}
+					onSelect={openChat}
 				/>
 				<AccountSwitcher
 					open={s.switcherOpen}
@@ -831,7 +957,13 @@ export function ChatPage() {
 				<div style={{ display: "flex", flex: 1, minHeight: 0 }}>
 					{(!isMobile || !mobileChatOpen) && (
 						<ErrorBoundary>
-							<ChatSidebar s={s} userId={s.user.id} fullWidth={isMobile} />
+							<ChatSidebar
+								s={s}
+								userId={s.user.id}
+								fullWidth={isMobile}
+								onDeleteChat={setChatToDelete}
+								onSelectChat={openChat}
+							/>
 						</ErrorBoundary>
 					)}
 					{(!isMobile || mobileChatOpen) && (
@@ -923,6 +1055,42 @@ export function ChatPage() {
 						/>
 					</div>
 				)}
+				<Modal
+					opened={chatToDelete !== null}
+					onClose={() => {
+						if (!deletingChat) setChatToDelete(null);
+					}}
+					title={t("chat.deleteChatTitle")}
+				>
+					<Stack gap="md">
+						<Text size="sm">
+							{t("chat.deleteChatConfirm", {
+								title:
+									chatToDelete === null
+										? ""
+										: chatTitle(chatToDelete, s.user.id),
+							})}
+						</Text>
+						<Group justify="flex-end" gap="xs">
+							<Button
+								variant="default"
+								disabled={deletingChat}
+								onClick={() => setChatToDelete(null)}
+							>
+								{t("accounts.cancel")}
+							</Button>
+							<Button
+								color="red"
+								loading={deletingChat}
+								onClick={() => {
+									void confirmDeleteChat();
+								}}
+							>
+								{t("chat.deleteChat")}
+							</Button>
+						</Group>
+					</Stack>
+				</Modal>
 				<CreateGroupModal
 					open={s.createGroupOpen}
 					onClose={() => s.setCreateGroupOpen(false)}

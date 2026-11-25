@@ -177,14 +177,23 @@ func registerChatUpdateDelete(api huma.API, svc *service.Service) {
 			return nil, errUnauthorized
 		}
 
-		chat, err := requireGroupOwner(ctx, svc, input.ID, user.ID)
+		chat, err := requireChatMember(ctx, svc, input.ID, user.ID)
 		if err != nil {
 			return nil, err
 		}
 
-		if err := svc.DeleteChat(ctx, chat); err != nil {
-			slog.Error("failed to delete chat", "err", err)
-			return nil, errInternal
+		if chat.Type == chatTypeGroup {
+			if !service.IsOwner(chat, user.ID) {
+				return nil, &statusError{ErrorMessage: msgOnlyOwner, code: http.StatusForbidden}
+			}
+			if err := svc.DeleteChat(ctx, chat); err != nil {
+				slog.Error("failed to delete chat", "err", err)
+				return nil, errInternal
+			}
+		} else if chat.Type == "self" {
+			return nil, &statusError{ErrorMessage: "the favorites chat cannot be deleted", code: http.StatusBadRequest}
+		} else if err := svc.DeleteChatForUser(ctx, input.ID, user.ID); err != nil {
+			return nil, chatOrInternalError(err)
 		}
 
 		return deletedStatus(), nil
@@ -356,7 +365,7 @@ func requireGroupOwner(ctx context.Context, svc *service.Service, chatID, userID
 	}
 
 	if !service.IsOwner(chat, userID) {
-		return nil, &statusError{ErrorMessage: "only owner can perform this action", code: http.StatusForbidden}
+		return nil, &statusError{ErrorMessage: msgOnlyOwner, code: http.StatusForbidden}
 	}
 
 	return chat, nil

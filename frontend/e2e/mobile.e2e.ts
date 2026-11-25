@@ -149,7 +149,7 @@ test("a phone shows the list and the chat one at a time", async ({
 
 		// The list is the only pane; the 300px sidebar does not sit next to
 		// an empty chat pane.
-		const row = page.getByText(`@${bob.user.nick}`, { exact: false }).first();
+		const row = page.getByText(`${bob.user.nick}`, { exact: false }).first();
 		await expect(row).toBeVisible({ timeout: 15_000 });
 		const search = page.getByPlaceholder(SEARCH_PLACEHOLDER_RE);
 		await expect(search).toBeVisible();
@@ -254,7 +254,7 @@ test("selects several messages and deletes them together", async ({
 			timeout: 20_000,
 		});
 
-		const row = page.getByText(`@${bob.user.nick}`, { exact: false }).first();
+		const row = page.getByText(`${bob.user.nick}`, { exact: false }).first();
 		await row.click();
 		await expect(page.getByText("Bulk one")).toBeVisible({ timeout: 15_000 });
 

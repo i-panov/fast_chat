@@ -193,7 +193,7 @@ async function open(
 
 	await page.goto(`${frontend}/chat`);
 	await stream;
-	await page.getByRole("button", { name: `@${peer.user.nick}` }).click();
+	await page.getByRole("button", { name: `${peer.user.nick}` }).click();
 
 	return { account, context, page };
 }
@@ -378,7 +378,7 @@ test("reload of the federated callee does not ring it again", async ({
 		await callee.page.reload();
 
 		await callee.page
-			.getByRole("button", { name: `@${alice.user.nick}` })
+			.getByRole("button", { name: `${alice.user.nick}` })
 			.click();
 		await expect(
 			callee.page.getByRole("button", { name: "Call", exact: true }),

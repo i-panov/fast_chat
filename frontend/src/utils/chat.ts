@@ -15,6 +15,71 @@ export function chatTitle(chat: Chat, myId: string): string {
 	return otherNick(chat.members, myId);
 }
 
+// privateChatRef is the part of the URL that identifies a direct chat: the
+// username when it is known, the user id otherwise. A leading @ is accepted
+// on input and dropped when resolving.
+export function privateChatRef(chat: Chat, myId: string): string {
+	const other = chat.members.find((m) => m.id !== myId);
+	if (other?.username) return `@${other.username}`;
+	return other?.id ?? chat.id;
+}
+
+// chatPath is the canonical address of a chat: /favorite for the self chat,
+// /group/<id> for a group and /chat/<user> for a direct one.
+export function chatPath(chat: Chat, myId: string): string {
+	if (chat.type === "self") return "/favorite";
+	if (chat.type === "group") {
+		return `/group/${encodeURIComponent(chat.id)}`;
+	}
+	return `/chat/${encodeURIComponent(privateChatRef(chat, myId)).replace(
+		/%40/g,
+		"@",
+	)}`;
+}
+
+const GROUP_PATH_RE = /^\/group\/([^/]+)\/?$/;
+const DIRECT_PATH_RE = /^\/chat\/([^/]+)\/?$/;
+const LEADING_AT_RE = /^@/;
+
+function decodeSegment(value: string): string {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
+	}
+}
+
+// chatFromPath maps the current pathname back to a chat. It returns undefined
+// for /chat and for a chat that has not been synced yet; the caller keeps the
+// current selection in that case.
+export function chatFromPath(
+	pathname: string,
+	chats: Chat[],
+	myId: string,
+): Chat | undefined {
+	if (pathname === "/favorite") {
+		return chats.find((chat) => chat.type === "self");
+	}
+
+	const group = GROUP_PATH_RE.exec(pathname);
+	if (group) {
+		const id = decodeSegment(group[1]);
+		return chats.find((chat) => chat.type === "group" && chat.id === id);
+	}
+
+	const direct = DIRECT_PATH_RE.exec(pathname);
+	if (!direct) return;
+
+	const ref = decodeSegment(direct[1]).replace(LEADING_AT_RE, "");
+	if (ref === "") return;
+
+	return chats.find((chat) => {
+		if (chat.type !== "private") return false;
+		const other = chat.members.find((m) => m.id !== myId);
+		return other !== undefined && (other.id === ref || other.username === ref);
+	});
+}
+
 export function formatDateLabel(isoStr: string, locale?: string): string {
 	const d = new Date(isoStr);
 	const today = new Date();

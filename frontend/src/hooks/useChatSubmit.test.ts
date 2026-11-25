@@ -52,6 +52,41 @@ beforeEach(() => {
 });
 
 describe("useChatSubmit", () => {
+	it("ignores a second submit while the first is in flight", async () => {
+		// Two submits would reuse the same pending files: one preview URL for
+		// two rows and one staged blob consumed twice.
+		const pending: Array<(ok: boolean) => void> = [];
+		const sendMessage = vi.fn(
+			(_o: unknown) =>
+				new Promise<boolean | undefined>((resolve) => {
+					pending.push(resolve);
+				}),
+		);
+		const d = deps({ sendMessage });
+		const { result } = renderHook(() => useChatSubmit(d));
+
+		const first = result.current(event());
+		await vi.waitFor(() => {
+			expect(sendMessage).toHaveBeenCalledTimes(1);
+		});
+
+		// Not awaited: without the guard this submit would block on the same
+		// in-flight send, so the assertion below must fail fast instead.
+		void result.current(event());
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(sendMessage).toHaveBeenCalledTimes(1);
+
+		pending[0]?.(true);
+		await first;
+
+		const third = result.current(event());
+		await vi.waitFor(() => {
+			expect(sendMessage).toHaveBeenCalledTimes(2);
+		});
+		pending[1]?.(true);
+		await third;
+	});
+
 	it("sends to the active chat and resets the form", async () => {
 		const d = deps({
 			replyToMessage: {

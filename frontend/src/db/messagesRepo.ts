@@ -5,6 +5,10 @@ import type {
 } from "../types/api.ts";
 import { compareByCreatedAt } from "../utils/ordering.ts";
 import { getDB } from "./init.ts";
+import {
+	dropReplacedLocalFileUrls,
+	releaseLocalFileUrls,
+} from "./localFileUrls.ts";
 import { notify } from "./notify.ts";
 import type { StoredMessage } from "./schema.ts";
 
@@ -74,6 +78,10 @@ export const messagesRepo = {
 			deliveryStatus,
 			readBy,
 		});
+		// The server copy replaces the optimistic row: revoke its local preview
+		// URLs only after the write committed, so a failed put cannot leave the
+		// stored row pointing at a revoked URL.
+		dropReplacedLocalFileUrls(existing?.files, message.files);
 		notify();
 	},
 
@@ -100,6 +108,10 @@ export const messagesRepo = {
 		if (messages.length === 0) return;
 		const db = await getDB();
 		const tx = db.transaction("messages", "readwrite");
+		const replaced: Array<{
+			previous: Message["files"];
+			next: Message["files"];
+		}> = [];
 		for (const m of messages) {
 			const existing = await tx.store.get(m.id);
 			const createdAt = existing?.createdAt ?? m.createdAt;
@@ -122,9 +134,13 @@ export const messagesRepo = {
 				deliveryStatus,
 				readBy,
 			};
+			replaced.push({ previous: existing?.files, next: m.files });
 			await tx.store.put(stored);
 		}
 		await tx.done;
+		for (const row of replaced) {
+			dropReplacedLocalFileUrls(row.previous, row.next);
+		}
 		notify();
 	},
 
@@ -141,8 +157,15 @@ export const messagesRepo = {
 		}
 		// Preserve the row but mark it as locally deleted so the
 		// server-side edit/delete delta can still override it. The
-		// UI filters on status === "deleted" to hide these.
-		await db.put("messages", { ...existing, status: "deleted" });
+		// UI filters on status === "deleted" to hide these. The local
+		// previews are hidden with it, so release them after the write: a
+		// failed put must not leave the row pointing at a revoked URL.
+		await db.put("messages", {
+			...existing,
+			status: "deleted",
+			files: undefined,
+		});
+		releaseLocalFileUrls(existing.files);
 		notify();
 	},
 
@@ -151,6 +174,7 @@ export const messagesRepo = {
 		const existing = await db.get("messages", messageId);
 		if (existing !== undefined && existing.chatId === chatId) {
 			await db.delete("messages", messageId);
+			releaseLocalFileUrls(existing.files);
 			notify();
 		}
 	},
@@ -164,6 +188,19 @@ export const messagesRepo = {
 		const existing = await db.get("messages", messageId);
 		if (existing === undefined || existing.chatId !== chatId) return;
 		await db.put("messages", { ...existing, status });
+		notify();
+	},
+
+	async removeByChat(chatId: string): Promise<void> {
+		const db = await getDB();
+		const tx = db.transaction("messages", "readwrite");
+		let cursor = await tx.store.index("chatId").openCursor(chatId);
+		while (cursor !== null) {
+			releaseLocalFileUrls(cursor.value.files);
+			await cursor.delete();
+			cursor = await cursor.continue();
+		}
+		await tx.done;
 		notify();
 	},
 

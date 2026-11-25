@@ -1,5 +1,13 @@
-import { Avatar, Button, Group, Loader, ScrollArea, Text } from "@mantine/core";
-import { Star, Users } from "lucide-react";
+import {
+	Avatar,
+	Button,
+	Group,
+	Loader,
+	Menu,
+	ScrollArea,
+	Text,
+} from "@mantine/core";
+import { Star, Trash2, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import type { Chat } from "../../types/api.ts";
@@ -61,9 +69,16 @@ interface Props {
 	activeChatId: string | null;
 	userId: string;
 	onSelectChat: (chatId: string) => void;
+	onDeleteChat?: (chat: Chat) => void;
 }
 
-export function ChatList({ chats, activeChatId, userId, onSelectChat }: Props) {
+export function ChatList({
+	chats,
+	activeChatId,
+	userId,
+	onSelectChat,
+	onDeleteChat,
+}: Props) {
 	const { t } = useTranslation();
 
 	return (
@@ -82,9 +97,16 @@ export function ChatList({ chats, activeChatId, userId, onSelectChat }: Props) {
 						? undefined
 						: chat.members.find((m) => m.id !== userId);
 				const isOnline = otherMember?.online ?? false;
-				return (
+				// A group is removed for everyone, so only its owner may do it.
+				// Favorites are not deletable; a private chat is removed for
+				// the current user only.
+				const canDelete =
+					onDeleteChat !== undefined &&
+					!isSelf &&
+					(!isGroup || chat.ownerId === userId);
+
+				const row = (
 					<Button
-						key={chat.id}
 						variant="subtle"
 						color="gray"
 						fullWidth
@@ -114,7 +136,7 @@ export function ChatList({ chats, activeChatId, userId, onSelectChat }: Props) {
 							<div style={{ minWidth: 0, flex: 1 }}>
 								<Group gap={4} wrap="nowrap">
 									<Text size="sm" truncate>
-										{isSelf || isGroup ? title : `@${title}`}
+										{title}
 									</Text>
 									{!isGroup && !isSelf && <OnlineDot online={isOnline} />}
 								</Group>
@@ -129,6 +151,25 @@ export function ChatList({ chats, activeChatId, userId, onSelectChat }: Props) {
 							</div>
 						</Group>
 					</Button>
+				);
+
+				if (!canDelete) {
+					return <div key={chat.id}>{row}</div>;
+				}
+
+				return (
+					<Menu key={chat.id} shadow="md" withinPortal>
+						<Menu.ContextMenu>{row}</Menu.ContextMenu>
+						<Menu.Dropdown>
+							<Menu.Item
+								color="red"
+								leftSection={<Trash2 size={14} />}
+								onClick={() => onDeleteChat(chat)}
+							>
+								{t("chat.deleteChat")}
+							</Menu.Item>
+						</Menu.Dropdown>
+					</Menu>
 				);
 			})}
 		</ScrollArea>

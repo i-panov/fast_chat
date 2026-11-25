@@ -79,6 +79,15 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 		log().Error("failed to ensure self-chat", "err", err)
 	}
 
+	// Tombstones are read before the chat list: if a chat is hidden between
+	// the two queries, this delta must not contain the chat at all. The other
+	// order would return the chat together with its tombstone, and the client
+	// would recreate an empty chat whose history is no longer synced.
+	deletedChats, chatsPage, err := s.buildDeletedChats(ctx, userID, since, sinceID, limit)
+	if err != nil {
+		return SyncResponse{}, err
+	}
+
 	chats := s.store.GetUserChats(ctx, userID)
 
 	chatIDs, memberIDs := collectChatAndMemberIDs(chats)
@@ -110,11 +119,6 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 	s.attachReactions(ctx, threadMessages, userID)
 
 	deletedMessages, deletedPage, err := s.buildDeletedMessages(ctx, chatIDs, since, sinceID, limit)
-	if err != nil {
-		return SyncResponse{}, err
-	}
-
-	deletedChats, chatsPage, err := s.buildDeletedChats(ctx, userID, since, sinceID, limit)
 	if err != nil {
 		return SyncResponse{}, err
 	}

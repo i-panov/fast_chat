@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Chat } from "../types/api.ts";
 
 vi.mock("../i18n.ts", () => ({
 	default: {
@@ -18,6 +19,9 @@ const {
 	otherNick,
 	extractCodeText,
 	chatTitle,
+	chatPath,
+	chatFromPath,
+	privateChatRef,
 	formatCoords,
 	openStreetMapURL,
 } = await import("./chat.ts");
@@ -157,5 +161,57 @@ describe("chatTitle", () => {
 			createdAt: "",
 		};
 		expect(chatTitle(chat, "alice")).toBe("Group");
+	});
+});
+
+const privateChat: Chat = {
+	id: "c1",
+	type: "private",
+	name: "",
+	ownerId: "",
+	members: [
+		{ id: "alice", nick: "alice" },
+		{ id: "root_bot", nick: "Root Bot", username: "root_bot" },
+	],
+	createdAt: "",
+};
+
+describe("chat paths", () => {
+	it("builds a shareable path from the other member's username", () => {
+		expect(privateChatRef(privateChat, "alice")).toBe("@root_bot");
+		expect(chatPath(privateChat, "alice")).toBe("/chat/@root_bot");
+	});
+
+	it("uses the id when the other member has no username", () => {
+		const chat = {
+			...privateChat,
+			members: [
+				{ id: "alice", nick: "alice" },
+				{ id: "bob:test", nick: "bob" },
+			],
+		};
+		expect(chatPath(chat, "alice")).toBe("/chat/bob%3Atest");
+	});
+
+	it("uses dedicated paths for groups and favorites", () => {
+		const group = { ...privateChat, id: "g:1", type: "group" as const };
+		const self = { ...privateChat, id: "s:1", type: "self" as const };
+		expect(chatPath(group, "alice")).toBe("/group/g%3A1");
+		expect(chatPath(self, "alice")).toBe("/favorite");
+	});
+
+	it("resolves a path back to the chat", () => {
+		const chats = [privateChat];
+		expect(chatFromPath("/chat/@root_bot", chats, "alice")).toBe(privateChat);
+		expect(chatFromPath("/chat/root_bot", chats, "alice")).toBe(privateChat);
+		expect(chatFromPath("/chat/unknown", chats, "alice")).toBeUndefined();
+		expect(chatFromPath("/chat", chats, "alice")).toBeUndefined();
+	});
+
+	it("resolves groups and favorites", () => {
+		const group: Chat = { ...privateChat, id: "g:1", type: "group" };
+		const self: Chat = { ...privateChat, id: "s:1", type: "self" };
+		expect(chatFromPath("/group/g%3A1", [group], "alice")).toBe(group);
+		expect(chatFromPath("/favorite", [self], "alice")).toBe(self);
 	});
 });

@@ -561,6 +561,13 @@ func (s *Service) SendMessage(
 // so marking everyone would lie about offline delivery and emit N-1
 // duplicates to the sender.
 func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *model.Message, threadID, senderID string) {
+	// A new message brings a chat back to a member who deleted it for
+	// themselves: otherwise the push arrives, but the chat stays hidden and
+	// its history is never synced again.
+	if err := s.store.ClearChatDeletes(ctx, chat.ID, chat.Members...); err != nil {
+		log().Warn("failed to unhide chat after a new message", "chat", chat.ID, "err", err)
+	}
+
 	eventName := eventNewMessage
 	eventData := map[string]any{keyMessage: msg}
 	if threadID != "" {

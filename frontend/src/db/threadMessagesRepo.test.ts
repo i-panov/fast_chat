@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../types/api.ts";
 import { setActiveAccountKey } from "./init.ts";
 import { threadMessagesRepo } from "./threadMessagesRepo.ts";
@@ -14,8 +14,12 @@ function msg(id: string, createdAt = "2026-01-01T00:00:00Z"): Message {
 	};
 }
 
+let mockRevokeObjectURL = vi.fn((_url: string) => undefined);
+
 beforeEach(() => {
 	setActiveAccountKey("alice:test");
+	mockRevokeObjectURL = vi.fn((_url: string) => undefined);
+	URL.revokeObjectURL = mockRevokeObjectURL;
 });
 
 describe("threadMessagesRepo", () => {
@@ -80,6 +84,56 @@ describe("threadMessagesRepo", () => {
 
 		await threadMessagesRepo.remove("th1", "m1");
 		expect(await threadMessagesRepo.getById("th1", "m1")).toBeUndefined();
+	});
+
+	it("releases local previews when it replaces or removes a row", async () => {
+		const withPreview = (
+			id: string,
+			url: string,
+			serverURL?: string,
+		): Message => ({
+			...msg(id),
+			encrypted: true,
+			files: [
+				{
+					id: "f1",
+					mimeType: "image/bmp",
+					size: 3,
+					originalName: "cat.bmp",
+					fileType: "photo",
+					url: serverURL ?? url,
+					hash: "h1",
+				},
+			],
+		});
+
+		// Delta/sync path (upsertMany) replaces the optimistic thread row.
+		await threadMessagesRepo.upsertMany(
+			[withPreview("t-many", "blob:many")],
+			"th1",
+			"queued",
+		);
+		await threadMessagesRepo.upsertMany(
+			[withPreview("t-many", "blob:many", "/api/files/1")],
+			"th1",
+		);
+		expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:many");
+
+		await threadMessagesRepo.upsert(
+			withPreview("t-del", "blob:del"),
+			"th1",
+			"failed",
+		);
+		await threadMessagesRepo.remove("th1", "t-del");
+		expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:del");
+
+		await threadMessagesRepo.upsert(
+			withPreview("t-tomb", "blob:tomb"),
+			"th1",
+			"failed",
+		);
+		await threadMessagesRepo.applyDelete("th1", "t-tomb");
+		expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:tomb");
 	});
 
 	it("marks statuses within the thread", async () => {

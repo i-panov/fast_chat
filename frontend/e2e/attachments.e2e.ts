@@ -4,6 +4,7 @@ import {
 	type APIRequestContext,
 	type Browser,
 	expect,
+	type Locator,
 	type Page,
 	test,
 } from "@playwright/test";
@@ -47,6 +48,7 @@ function photoBytes(): Buffer {
 
 const CREATE_KEY_RE = /Create new key|Создать новый ключ/;
 const SEND_RE = /^(Send|Отправить)$/;
+const LOAD_FAILED_RE = /Failed to load image|Не удалось загрузить изображение/;
 
 interface Account {
 	token: string;
@@ -187,7 +189,7 @@ test("a sent photo survives the sync back from the server", async ({
 	try {
 		await createAccountKey(page);
 
-		await page.getByText(`@${bob.user.nick}`, { exact: false }).first().click();
+		await page.getByText(`${bob.user.nick}`, { exact: false }).first().click();
 
 		const picker = page.locator('input[type="file"]');
 		await picker.setInputFiles({
@@ -196,14 +198,45 @@ test("a sent photo survives the sync back from the server", async ({
 			buffer: photoBytes(),
 		});
 
+		// Hold the upload until the optimistic row has been asserted: the row
+		// exists before the upload starts (prepareFiles only stages the blob
+		// locally), so this proves the bubble rendered the picked file itself
+		// and did not wait for the server copy.
+		let releaseUpload = () => {};
+		let uploadStarted = () => {};
+		const started = new Promise<void>((resolve) => {
+			uploadStarted = resolve;
+		});
+		const held = new Promise<void>((resolve) => {
+			releaseUpload = resolve;
+		});
+		await page.route("**/api/files/upload", async (route) => {
+			uploadStarted();
+			await held;
+			await route.continue();
+		});
+
 		await expect(page.getByRole("button", { name: SEND_RE })).toBeVisible({
 			timeout: 10_000,
 		});
 		await page.getByRole("button", { name: SEND_RE }).click();
 
-		// The optimistic bubble already renders the local blob.
-		const photo = page.locator(`img[alt="${PHOTO_NAME}"]`).first();
-		await expect(photo).toBeVisible({ timeout: 20_000 });
+		// The bubble must show a decoded image and no error text. Both halves
+		// matter: a failure renders the red text instead of the image.
+		const decodedImage = async (locator: Locator) => {
+			await expect(locator).toBeVisible({ timeout: 20_000 });
+			await expect(page.getByText(LOAD_FAILED_RE)).toHaveCount(0);
+			expect(
+				await locator.evaluate((img) => (img as HTMLImageElement).naturalWidth),
+			).toBeGreaterThan(0);
+		};
+		await decodedImage(page.locator(`img[alt="${PHOTO_NAME}"]`).first());
+
+		// The optimistic bubble already renders the local blob while the upload
+		// is still held.
+		await started;
+		await decodedImage(page.locator(`img[alt="${PHOTO_NAME}"]`).first());
+		releaseUpload();
 
 		// The server row must belong to an encrypted message and carry the
 		// client's plaintext hash. Only then does the restored photo prove the
@@ -240,10 +273,24 @@ test("a sent photo survives the sync back from the server", async ({
 		// again. Without the metadata inside the encrypted content the photo
 		// disappears here and the bubble renders empty.
 		await page.reload();
-		await page.getByText(`@${bob.user.nick}`, { exact: false }).first().click();
-		await expect(page.locator(`img[alt="${PHOTO_NAME}"]`).first()).toBeVisible({
-			timeout: 20_000,
-		});
+		await page.getByText(`${bob.user.nick}`, { exact: false }).first().click();
+		const afterReload = page.locator(`img[alt="${PHOTO_NAME}"]`).first();
+		await expect(afterReload).toBeVisible({ timeout: 20_000 });
+		expect(
+			await afterReload.evaluate(
+				(img) => (img as HTMLImageElement).naturalWidth,
+			),
+		).toBeGreaterThan(0);
+
+		// The full-screen viewer fetches the same ciphertext and has to decrypt
+		// it too; before the fix it showed a broken image instead.
+		await afterReload.click();
+		const lightbox = page.locator(`img[alt="${PHOTO_NAME}"]`).last();
+		await expect(lightbox).toBeVisible({ timeout: 10_000 });
+		expect(
+			await lightbox.evaluate((img) => (img as HTMLImageElement).naturalWidth),
+		).toBeGreaterThan(0);
+		await expect(page.getByText(LOAD_FAILED_RE)).toHaveCount(0);
 	} finally {
 		await close();
 	}

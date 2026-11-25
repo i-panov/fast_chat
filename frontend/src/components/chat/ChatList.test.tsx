@@ -1,5 +1,5 @@
 import { MantineProvider } from "@mantine/core";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { type ReactElement, useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatsRepo } from "../../db/chatsRepo.ts";
@@ -128,10 +128,10 @@ describe("ChatList: exactly one Favorites chat", () => {
 
 		const aliceFavorites = await screen.findAllByText("Избранное");
 		expect(aliceFavorites).toHaveLength(1);
-		expect(await screen.findByText("@bob")).toBeInTheDocument();
+		expect(await screen.findByText("bob")).toBeInTheDocument();
 
 		// Bob's self chat must not leak into alice's list.
-		expect(screen.queryByText("@alice")).toBeNull();
+		expect(screen.queryByText("alice")).toBeNull();
 	});
 
 	it("shows the empty state when the active account has no chats", async () => {
@@ -141,5 +141,47 @@ describe("ChatList: exactly one Favorites chat", () => {
 
 		expect(await screen.findByText("Нет чатов")).toBeInTheDocument();
 		expect(screen.queryByText("Избранное")).toBeNull();
+	});
+});
+
+describe("ChatList: deleting a chat", () => {
+	it("opens the menu on right click and deletes the chat", async () => {
+		const chat = privateChat(
+			"alice-bob",
+			{ id: "alice:test", nick: "alice" },
+			{ id: "bob:test", nick: "bob" },
+		);
+		const onDeleteChat = vi.fn();
+		renderChatList(
+			<ChatList
+				chats={[chat]}
+				activeChatId={null}
+				userId="alice:test"
+				onSelectChat={() => {}}
+				onDeleteChat={onDeleteChat}
+			/>,
+		);
+
+		fireEvent.contextMenu(screen.getByText("bob"));
+		fireEvent.click(await screen.findByText("chat.deleteChat"));
+
+		expect(onDeleteChat).toHaveBeenCalledWith(chat);
+	});
+
+	it("does not offer deletion for the favorites chat", () => {
+		const onDeleteChat = vi.fn();
+		renderChatList(
+			<ChatList
+				chats={[selfChat("alice:test", "alice")]}
+				activeChatId={null}
+				userId="alice:test"
+				onSelectChat={() => {}}
+				onDeleteChat={onDeleteChat}
+			/>,
+		);
+
+		fireEvent.contextMenu(screen.getByText("Избранное"));
+
+		expect(screen.queryByText("chat.deleteChat")).toBeNull();
 	});
 });

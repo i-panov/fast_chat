@@ -82,6 +82,31 @@ describe("useDecryptedFileUrl", () => {
 		vi.unstubAllGlobals();
 	});
 
+	it("returns a local pending blob without decrypting it", async () => {
+		// The optimistic row of a message that is still uploading points at
+		// the local plaintext blob while the message itself is encrypted, so
+		// a key for the file exists. Decrypting those bytes fails and the
+		// bubble shows "could not load image" for the whole upload.
+		const fileKey = await generateFileKey();
+		const fetchMock = vi.fn(() => Promise.reject(new Error("no fetch")));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { result } = renderHook(() =>
+			useDecryptedFileUrl(
+				file({ id: "pending-1", url: "blob:pending-1", hash: "h1" }),
+				{ h1: fileKey },
+				"tok",
+			),
+		);
+
+		await waitFor(() => {
+			expect(result.current.blobUrl).toBe("blob:pending-1");
+		});
+		expect(result.current.error).toBeNull();
+		expect(createObjectURL).not.toHaveBeenCalled();
+		vi.unstubAllGlobals();
+	});
+
 	it("serves the persisted plaintext after a restart without the network", async () => {
 		const fileKey = await generateFileKey();
 		const ciphertext = await encryptFileStream(new Blob(["secret"]), fileKey);

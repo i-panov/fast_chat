@@ -207,7 +207,7 @@ async function open(
 	await dismissKeyPrompt(page);
 
 	const peerButton = page.getByRole("button", {
-		name: `@${peer.user.nick}`,
+		name: `${peer.user.nick}`,
 	});
 	await expect(peerButton).toBeVisible();
 	await peerButton.click();
@@ -349,7 +349,7 @@ test("a second tab of the caller does not end the call", async ({
 		await second.goto("/chat");
 		await dismissKeyPrompt(second);
 		await second
-			.getByRole("button", { name: `@${pair.callee.account.user.nick}` })
+			.getByRole("button", { name: `${pair.callee.account.user.nick}` })
 			.click();
 		await second.close();
 

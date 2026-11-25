@@ -1,7 +1,11 @@
 import "@testing-library/jest-dom/vitest";
 import "fake-indexeddb/auto";
 
-import { beforeEach } from "vitest";
+import { afterAll, beforeEach } from "vitest";
+
+// Captured before any test can replace it: the per-file flush below must not
+// wait on a fake timer another test left enabled.
+const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
 
 import { resetAllDBs, setActiveAccountKey } from "./src/db/init.ts";
 
@@ -78,4 +82,13 @@ if (typeof window.scrollTo !== "function") {
 beforeEach(async () => {
 	setActiveAccountKey(null);
 	await resetAllDBs();
+});
+
+// Mantine's Transition schedules a state update on a timer (dialog enter and
+// exit). When the last test of a file ends while a transition is still
+// running, that timer fires after the environment is torn down and React
+// crashes on the missing `window`. One short flush per file lets those timers
+// run while jsdom is still alive.
+afterAll(async () => {
+	await new Promise((resolve) => nativeSetTimeout(resolve, 400));
 });

@@ -23,6 +23,7 @@ import type {
 	ReplyToInfo,
 } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
+import { copyImageToClipboard } from "../../utils/clipboardImage.ts";
 import { InlineKeyboard } from "./bubble/InlineKeyboard.tsx";
 import { MessageAttachments } from "./bubble/MessageAttachments.tsx";
 import { MessageAuthor } from "./bubble/MessageAuthor.tsx";
@@ -246,6 +247,7 @@ function BubbleLightboxes({
 	location,
 	locationLightboxOpen,
 	setLocationLightboxOpen,
+	fileKeys,
 }: {
 	photoFiles: FileInfo[];
 	lightboxIdx: number | null;
@@ -253,6 +255,7 @@ function BubbleLightboxes({
 	location?: Location;
 	locationLightboxOpen: boolean;
 	setLocationLightboxOpen: (open: boolean) => void;
+	fileKeys?: Record<string, FileKey>;
 }) {
 	return (
 		<>
@@ -260,6 +263,7 @@ function BubbleLightboxes({
 				<ImageLightbox
 					images={photoFiles}
 					startIndex={lightboxIdx}
+					fileKeys={fileKeys}
 					onClose={() => setLightboxIdx(null)}
 				/>
 			)}
@@ -349,12 +353,27 @@ export const MessageBubble = memo(function MessageBubble({
 		onReply !== undefined && status !== "queued" && status !== "failed";
 	const canPin =
 		onPin !== undefined && status !== "queued" && status !== "failed";
+
+	const photoFiles = (files ?? []).filter((f) => f.fileType === "photo");
+	const firstPhoto = photoFiles[0];
+	const copyPhoto = async () => {
+		if (firstPhoto === undefined) return;
+		// A local blob is the plaintext itself: a key for the hash exists on
+		// an encrypted message, but decrypting those bytes would fail.
+		const key = firstPhoto.url.startsWith("blob:")
+			? undefined
+			: ((firstPhoto.hash !== undefined
+					? fileKeys?.[firstPhoto.hash]
+					: undefined) ?? fileKeys?.[firstPhoto.id]);
+		await copyImageToClipboard(firstPhoto, key, activeAccount?.token);
+	};
+
 	const canForward =
 		onForward !== undefined &&
 		status !== "queued" &&
 		status !== "failed" &&
 		undecryptable !== true &&
-		text.trim() !== "";
+		(text.trim() !== "" || (files ?? []).length > 0);
 	const canBlock =
 		!isOwn &&
 		fromId !== "" &&
@@ -378,8 +397,6 @@ export const MessageBubble = memo(function MessageBubble({
 		canPin ||
 		canBlock ||
 		canForward;
-
-	const photoFiles = (files ?? []).filter((f) => f.fileType === "photo");
 
 	useLayoutEffect(() => {
 		if (!menuPos || !menuRef.current) return;
@@ -564,6 +581,8 @@ export const MessageBubble = memo(function MessageBubble({
 				canForward={canForward}
 				status={status}
 				text={text}
+				hasImage={photoFiles.length > 0}
+				onCopyImage={copyPhoto}
 				chatId={chatId}
 				msgId={msgId}
 				fromId={fromId}
@@ -590,6 +609,7 @@ export const MessageBubble = memo(function MessageBubble({
 				location={location}
 				locationLightboxOpen={locationLightboxOpen}
 				setLocationLightboxOpen={setLocationLightboxOpen}
+				fileKeys={fileKeys}
 			/>
 		</>
 	);

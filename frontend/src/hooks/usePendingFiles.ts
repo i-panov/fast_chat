@@ -8,7 +8,7 @@ interface UsePendingFilesReturn {
 	setPendingFiles: React.Dispatch<React.SetStateAction<PendingFile[]>>;
 	handleAttachFiles: (files: File[]) => Promise<void>;
 	handleRemoveFile: (fileId: string) => void;
-	clearAllPendingFiles: () => void;
+	clearAllPendingFiles: (keepObjectUrls?: boolean) => void;
 }
 
 // onLargeFile is invoked when a file exceeds LargeFileThreshold. The callback
@@ -104,9 +104,21 @@ export function usePendingFiles(
 		setPendingFilesState((prev) => prev.filter((f) => f.id !== fileId));
 	}, []);
 
-	const clearAllPendingFiles = useCallback(() => {
+	// clearAllPendingFiles drops the staged attachments. After a successful
+	// send the object URLs must stay alive: the optimistic message row
+	// renders the photo from them until the server copy replaces the row,
+	// which is also where they are released.
+	const clearAllPendingFiles = useCallback((keepObjectUrls = false) => {
 		for (const f of filesRef.current) {
-			revokeIfTracked(cleanupRef, f.blobUrl);
+			if (keepObjectUrls) {
+				// Ownership moves to the message row that now references the
+				// URL; the repos release it when they replace or delete the
+				// row. Keeping it in cleanupRef would make an unmount revoke a
+				// URL that a queued bubble still renders.
+				cleanupRef.current.delete(f.blobUrl);
+			} else {
+				revokeIfTracked(cleanupRef, f.blobUrl);
+			}
 		}
 		setPendingFilesState([]);
 	}, []);

@@ -43,7 +43,13 @@ export function useDecryptedFileUrl(
 		const key =
 			(file.hash !== undefined ? fileKeys?.[file.hash] : undefined) ??
 			fileKeys?.[file.id];
-		if (key === undefined) {
+		// A local blob URL is the plaintext of an attachment that is still
+		// being sent (or failed to). It already is the file, and it belongs to
+		// an encrypted message, so a key for its hash exists: decrypting the
+		// local bytes fails and the bubble shows "could not load image" until
+		// the server copy replaces the row.
+		const localPlaintext = file.url.startsWith("blob:");
+		if (key === undefined || localPlaintext) {
 			// No key: file is plaintext.
 			setDecryptedUrl(encryptedUrl ?? null);
 			return;

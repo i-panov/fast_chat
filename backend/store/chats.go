@@ -32,6 +32,8 @@ var (
 	ErrRemoveLastMember   = errors.New("cannot remove the last member")
 	ErrNotGroupChat       = errors.New("not a group chat")
 	ErrDeleteNonGroup     = errors.New("cannot delete non-group chat")
+	ErrDeleteGroupForUser = errors.New("group chats are deleted for everyone")
+	ErrDeleteSelfChat     = errors.New("the favorites chat cannot be deleted")
 	ErrSelfPrivateChat    = errors.New("private chat with self must use EnsureSelfChat")
 )
 
@@ -213,8 +215,16 @@ func (s *Store) EnsureSelfChat(ctx context.Context, userID string) (*model.Chat,
 			return err
 		}
 
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).
-			Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&ChatMember{ChatID: chatID, UserID: userID}).Error; err != nil {
+			return err
+		}
+
+		// Favorites have a deterministic id: after an admin delete the chat
+		// is recreated under the same id, and the stale tombstone would hide
+		// it forever.
+		return tx.Where("chat_id = ? AND user_id = ?", chatID, userID).
+			Delete(&model.DeletedChat{}).Error
 	})
 
 	if err != nil {
@@ -264,8 +274,16 @@ func (s *Store) AddChatMember(ctx context.Context, chatID, userID string, maxMem
 			return ErrTooManyMembers
 		}
 
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).
-			Create(&ChatMember{ChatID: chatID, UserID: userID}).Error
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&ChatMember{ChatID: chatID, UserID: userID}).Error; err != nil {
+			return err
+		}
+
+		// A member who left or was removed earlier has a tombstone. Joining
+		// again must unhide the chat, otherwise GetUserChats keeps it out of
+		// the list and stops syncing its messages.
+		return tx.Where("chat_id = ? AND user_id = ?", chatID, userID).
+			Delete(&model.DeletedChat{}).Error
 	})
 }
 
@@ -367,11 +385,20 @@ func (s *Store) ReplaceChatMembers(ctx context.Context, chatID string, members [
 
 		if len(wanted) > 0 {
 			rows := make([]ChatMember, 0, len(wanted))
+			added := make([]string, 0, len(wanted))
 			for memberID := range wanted {
 				rows = append(rows, ChatMember{ChatID: chatID, UserID: memberID})
+				added = append(added, memberID)
 			}
 
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
+				return err
+			}
+
+			// Catch-up can add a member who was removed while this server was
+			// offline; the old tombstone must not hide the chat afterwards.
+			if err := tx.Where("chat_id = ? AND user_id IN ?", chatID, added).
+				Delete(&model.DeletedChat{}).Error; err != nil {
 				return err
 			}
 		}
@@ -472,6 +499,51 @@ func (s *Store) DeleteChat(ctx context.Context, chatID string) error {
 	}
 
 	return s.deleteChatTx(ctx, chat, nil)
+}
+
+// HideChatForUser removes a private chat from one member's list. The chat
+// itself stays for the other side; the tombstone is the same record the sync
+// delta uses to tell clients that the chat is gone. Groups are deleted for
+// everyone and favorites are not deletable.
+func (s *Store) HideChatForUser(ctx context.Context, chatID, userID string) error {
+	chat, ok := s.GetChat(ctx, chatID)
+	if !ok {
+		return ErrChatNotFound
+	}
+
+	if chat.Type == chatTypeGroup {
+		return ErrDeleteGroupForUser
+	}
+
+	if chat.Type == chatTypeSelf {
+		return ErrDeleteSelfChat
+	}
+
+	if !slices.Contains(chat.Members, userID) {
+		return ErrChatNotFound
+	}
+
+	tomb := model.DeletedChat{
+		ChatID:    chatID,
+		UserID:    userID,
+		DeletedAt: time.Now().UTC(),
+	}
+
+	return s.db.WithContext(ctx).
+		Clauses(clause.OnConflict{UpdateAll: true}).
+		Create(&tomb).Error
+}
+
+// ClearChatDeletes removes the tombstones after a chat is reopened: a member
+// who deleted the chat gets it back when the other side starts it again.
+func (s *Store) ClearChatDeletes(ctx context.Context, chatID string, userIDs ...string) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+
+	return s.db.WithContext(ctx).
+		Where("chat_id = ? AND user_id IN ?", chatID, userIDs).
+		Delete(&model.DeletedChat{}).Error
 }
 
 // DeleteChatAsAdmin removes a chat of any type. Moderation must be able to
@@ -606,9 +678,15 @@ func writeMessageDeleteTombs(tx *gorm.DB, chatID string, at time.Time) error {
 }
 
 func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
-	var chatIDs []string
+	// The subquery keeps the statement size independent of how many chats
+	// the user has hidden over time: a plain IN list would hit the driver's
+	// SQLite variable limit and silently empty the whole list.
+	memberQuery := s.db.WithContext(ctx).Model(&ChatMember{}).
+		Where("user_id = ?", userID).
+		Where("chat_id NOT IN (SELECT chat_id FROM deleted_chats WHERE user_id = ?)", userID)
 
-	if err := s.db.WithContext(ctx).Model(&ChatMember{}).Where("user_id = ?", userID).Pluck("chat_id", &chatIDs).Error; err != nil {
+	var chatIDs []string
+	if err := memberQuery.Pluck("chat_id", &chatIDs).Error; err != nil {
 		slog.Warn("GetUserChats: failed to list chat ids", "userID", userID, "err", err)
 		return nil
 	}

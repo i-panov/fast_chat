@@ -1,11 +1,17 @@
 import { MantineProvider } from "@mantine/core";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	encryptFileStream,
+	type FileKey,
+	generateFileKey,
+} from "../../e2ee/file-crypto.ts";
 import type { FileInfo } from "../../types/api.ts";
 import { AuthProvider } from "../../useAuth.tsx";
 import { ImageLightbox } from "./ImageLightbox.tsx";
 
 const LOAD_FAILED = /Failed to load image|media\.loadImageFailed/;
+const createObjectURL = vi.fn((_blob: Blob): string => "blob:mock");
 
 function seedAccount() {
 	localStorage.setItem(
@@ -37,6 +43,7 @@ function renderLightbox(props: {
 	images: FileInfo[];
 	startIndex?: number;
 	onClose?: () => void;
+	fileKeys?: Record<string, FileKey>;
 }) {
 	return render(
 		<MantineProvider>
@@ -44,6 +51,7 @@ function renderLightbox(props: {
 				<ImageLightbox
 					images={props.images}
 					startIndex={props.startIndex ?? 0}
+					fileKeys={props.fileKeys}
 					onClose={props.onClose ?? (() => {})}
 				/>
 			</AuthProvider>
@@ -55,7 +63,8 @@ beforeEach(() => {
 	localStorage.clear();
 	sessionStorage.clear();
 	seedAccount();
-	URL.createObjectURL = vi.fn(() => "blob:mock");
+	URL.createObjectURL = createObjectURL;
+	createObjectURL.mockClear();
 	URL.revokeObjectURL = vi.fn();
 	vi.stubGlobal(
 		"fetch",
@@ -102,6 +111,40 @@ describe("image lightbox", () => {
 		fireEvent.keyDown(document.body, { key: "Escape" });
 		// Both the lightbox handler and Mantine's Modal react to Escape.
 		expect(onClose).toHaveBeenCalled();
+		vi.unstubAllGlobals();
+	});
+
+	it("decrypts an encrypted photo instead of showing ciphertext", async () => {
+		// The server stores ciphertext for an encrypted chat: the lightbox has
+		// to use the key that travelled inside the message, otherwise it
+		// renders a broken image (and an error once the fetch fails).
+		const fileKey = await generateFileKey();
+		const ciphertext = await encryptFileStream(
+			new Blob(["real image"]),
+			fileKey,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() =>
+				Promise.resolve(new Response(ciphertext.buffer as ArrayBuffer)),
+			),
+		);
+
+		renderLightbox({
+			images: [{ ...image("a", "secret.png"), hash: "h1" }],
+			fileKeys: { h1: fileKey },
+		});
+
+		const img = await screen.findByAltText("secret.png");
+		expect(screen.queryByText(LOAD_FAILED)).toBeNull();
+
+		const src = img.getAttribute("src");
+		expect(src).toBe("blob:mock");
+		// The first URL is the fetched ciphertext; the lightbox must hand the
+		// decrypted bytes to the image.
+		const decrypted = createObjectURL.mock.calls.at(-1)?.[0];
+		if (decrypted === undefined) throw new Error("no decrypted blob");
+		expect(await decrypted.text()).toBe("real image");
 		vi.unstubAllGlobals();
 	});
 

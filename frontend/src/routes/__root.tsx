@@ -22,7 +22,9 @@ function RootDocument() {
 
 	return (
 		<MantineProvider defaultColorScheme="dark">
-			<Notifications />
+			{/* Errors must stay visible when the mobile keyboard is open:
+			    the bottom-right default lands below the composer. */}
+			<Notifications position="top-center" />
 			<AudioProvider>
 				<AuthProvider>
 					<ErrorBoundary>

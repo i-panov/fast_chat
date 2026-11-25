@@ -106,6 +106,28 @@ describe("usePendingFiles", () => {
 		expect(revokeObjectURL).toHaveBeenCalledTimes(2);
 	});
 
+	it("keeps the preview URL for a sent message until the row releases it", async () => {
+		// After a successful send the stored row renders the picked file from
+		// this URL; revoking it here would break the bubble for the whole
+		// upload. Ownership moves to the row, including on unmount.
+		const { result, unmount } = renderHook(() => usePendingFiles());
+
+		await act(async () => {
+			await result.current.handleAttachFiles([smallFile()]);
+		});
+		const [entry] = result.current.pendingFiles;
+
+		act(() => {
+			result.current.clearAllPendingFiles(true);
+		});
+
+		expect(result.current.pendingFiles).toEqual([]);
+		expect(revokeObjectURL).not.toHaveBeenCalledWith(entry.blobUrl);
+
+		unmount();
+		expect(revokeObjectURL).not.toHaveBeenCalledWith(entry.blobUrl);
+	});
+
 	it("revokes remaining URLs on unmount", async () => {
 		const { result, unmount } = renderHook(() => usePendingFiles());
 

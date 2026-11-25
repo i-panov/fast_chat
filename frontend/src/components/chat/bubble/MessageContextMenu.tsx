@@ -30,6 +30,7 @@ interface Props {
 	canBlock: boolean;
 	canForward: boolean;
 	hasText: boolean;
+	hasImage: boolean;
 	status?: "sent" | "queued" | "failed";
 	onCopy: () => void;
 	onEdit: () => void;
@@ -61,6 +62,7 @@ export function MessageContextMenu({
 	canBlock,
 	canForward,
 	hasText,
+	hasImage,
 	status,
 	onCopy,
 	onEdit,
@@ -103,7 +105,7 @@ export function MessageContextMenu({
 					/>
 				</Menu.Target>
 				<Menu.Dropdown>
-					{hasText && (
+					{(hasText || hasImage) && (
 						<Menu.Item
 							ref={firstMenuItemRef}
 							leftSection={<Copy size={14} />}

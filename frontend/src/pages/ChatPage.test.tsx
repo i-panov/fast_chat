@@ -6,6 +6,7 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
 import type * as React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,7 +33,12 @@ const startCall = vi.hoisted(() =>
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual =
 		await importOriginal<typeof import("@tanstack/react-router")>();
-	return { ...actual, useNavigate: () => navigate, useSearch: () => undefined };
+	return {
+		...actual,
+		useNavigate: () => navigate,
+		useRouterState: () => "/chat",
+		useSearch: () => undefined,
+	};
 });
 
 // The real module supplies ApiError: the call hook tells the refusals of the
@@ -51,6 +57,7 @@ vi.mock("../api.ts", async (importOriginal) => {
 		getMessages: vi.fn(() => Promise.resolve({ messages: [] })),
 		searchUsers: vi.fn(() => Promise.resolve({ users: [] })),
 		createChat: vi.fn(),
+		deleteChat: vi.fn(() => Promise.resolve({ status: "ok" })),
 		refreshToken: vi.fn(),
 		uploadPublicKey: vi.fn(),
 		getPublicKey: vi.fn(),
@@ -134,6 +141,11 @@ function sseHandler(): SseHandler {
 const SELECT_PROMPT = /selectPrompt|Select/;
 const BACK_BUTTON_RE = /chat\.back|Back|Назад/;
 const ROOT_BOT_RE = /Root Bot/;
+const BOB_BUTTON_RE = /bob/;
+const DELETE_CHAT_RE = /Delete chat|Удалить чат/;
+const DELETE_CONFIRM_RE = /Delete the chat|Удалить чат «/;
+// biome-ignore lint/security/noSecrets: a DOM selector, not a secret
+const DIALOG_SELECTOR = '[role="dialog"]';
 const CALL_BUTTON_RE = /call\.start|Call/;
 const FIND_OPTIONS = { timeout: 5000 };
 const MEMBER_COUNT = /chat\.membersCount|member/;
@@ -408,8 +420,8 @@ describe("chat page", () => {
 		// Assert on the active chat header specifically: the sidebar row
 		// would render the display name even while the header is broken.
 		for (const [row, handle] of [
-			["@Remote Bot", "@Remote Bot"],
-			["@Empty Bot", "@Empty Bot"],
+			["Remote Bot", "@Remote Bot"],
+			["Empty Bot", "@Empty Bot"],
 		] as const) {
 			fireEvent.click(await screen.findByText(row));
 			const header = document.querySelector("main header");
@@ -427,8 +439,7 @@ describe("chat page", () => {
 		await chatsRepo.upsert(privateChat());
 		renderPage();
 
-		await screen.findByText("@bob");
-		fireEvent.click(screen.getByText("@bob"));
+		fireEvent.click(await screen.findByRole("button", { name: BOB_BUTTON_RE }));
 
 		fireEvent.click(await screen.findByRole("button", { name: CALL_LABEL }));
 
@@ -508,6 +519,31 @@ describe("chat page", () => {
 		expect(screen.queryByText("Team")).toBeNull();
 	});
 
+	it("deletes a chat from its context menu", async () => {
+		seedAccount();
+		await chatsRepo.upsert(privateChat());
+		renderPage();
+
+		fireEvent.contextMenu(
+			await screen.findByRole("button", { name: BOB_BUTTON_RE }),
+		);
+		fireEvent.click(await screen.findByText(DELETE_CHAT_RE));
+
+		const confirmText = await screen.findByText(DELETE_CONFIRM_RE);
+		const dialog = confirmText.closest(DIALOG_SELECTOR);
+		if (dialog === null) throw new Error("delete dialog not found");
+		fireEvent.click(
+			within(dialog as HTMLElement).getByRole("button", {
+				name: DELETE_CHAT_RE,
+			}),
+		);
+
+		const { deleteChat } = await import("../api.ts");
+		await waitFor(() => {
+			expect(deleteChat).toHaveBeenCalledWith("tok", "c2");
+		});
+	});
+
 	it("picks a chat from URL params once", async () => {
 		seedAccount();
 		await chatsRepo.upsert(groupChat());
@@ -515,7 +551,7 @@ describe("chat page", () => {
 		try {
 			renderPage();
 
-			await screen.findByText(MEMBER_COUNT);
+			expect(await screen.findAllByText(MEMBER_COUNT)).not.toHaveLength(0);
 			expect(window.location.search).toBe("");
 		} finally {
 			window.history.replaceState({}, "", "/");

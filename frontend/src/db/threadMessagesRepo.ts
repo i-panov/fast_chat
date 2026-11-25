@@ -5,6 +5,10 @@ import type {
 } from "../types/api.ts";
 import { compareByCreatedAt } from "../utils/ordering.ts";
 import { getDB } from "./init.ts";
+import {
+	dropReplacedLocalFileUrls,
+	releaseLocalFileUrls,
+} from "./localFileUrls.ts";
 import { notify } from "./notify.ts";
 import type { StoredThreadMessage } from "./schema.ts";
 
@@ -41,6 +45,19 @@ function stamp(
 }
 
 export const threadMessagesRepo = {
+	async removeByChat(chatId: string): Promise<void> {
+		const db = await getDB();
+		const tx = db.transaction("threadMessages", "readwrite");
+		let cursor = await tx.store.index("chatId").openCursor(chatId);
+		while (cursor !== null) {
+			releaseLocalFileUrls(cursor.value.files);
+			await cursor.delete();
+			cursor = await cursor.continue();
+		}
+		await tx.done;
+		notify();
+	},
+
 	async getByThread(threadId: string): Promise<StoredThreadMessage[]> {
 		const db = await getDB();
 		const all = await db.getAllFromIndex(
@@ -92,12 +109,16 @@ export const threadMessagesRepo = {
 				? "read"
 				: (message.deliveryStatus ?? existing?.deliveryStatus);
 		const readBy = unionReadBy(existing?.readBy, message.readBy);
+
 		await db.put("threadMessages", {
 			...stamp(message, resolvedStatus, threadId),
 			createdAt,
 			deliveryStatus,
 			readBy,
 		});
+		// Revoke after the commit, like messagesRepo: a failed write must not
+		// leave the stored row pointing at a dead preview URL.
+		dropReplacedLocalFileUrls(existing?.files, message.files);
 		notify();
 	},
 
@@ -125,6 +146,10 @@ export const threadMessagesRepo = {
 		if (messages.length === 0) return;
 		const db = await getDB();
 		const tx = db.transaction("threadMessages", "readwrite");
+		const replaced: Array<{
+			previous: Message["files"];
+			next: Message["files"];
+		}> = [];
 		for (const m of messages) {
 			const existing = await tx.store.get(m.id);
 			const createdAt = existing?.createdAt ?? m.createdAt;
@@ -133,6 +158,7 @@ export const threadMessagesRepo = {
 					? "read"
 					: (m.deliveryStatus ?? existing?.deliveryStatus);
 			const readBy = unionReadBy(existing?.readBy, m.readBy);
+			replaced.push({ previous: existing?.files, next: m.files });
 			await tx.store.put({
 				...stamp(m, status, threadId),
 				createdAt,
@@ -141,6 +167,9 @@ export const threadMessagesRepo = {
 			});
 		}
 		await tx.done;
+		for (const row of replaced) {
+			dropReplacedLocalFileUrls(row.previous, row.next);
+		}
 		notify();
 	},
 
@@ -151,7 +180,15 @@ export const threadMessagesRepo = {
 			notify();
 			return;
 		}
-		await db.put("threadMessages", { ...existing, status: "deleted" });
+		// The tombstone is hidden by the UI, so its local previews are dead
+		// references from this point on. Release them after the write, so a
+		// failed put cannot leave the stored row pointing at a revoked URL.
+		await db.put("threadMessages", {
+			...existing,
+			status: "deleted",
+			files: undefined,
+		});
+		releaseLocalFileUrls(existing.files);
 		notify();
 	},
 
@@ -160,6 +197,7 @@ export const threadMessagesRepo = {
 		const existing = await db.get("threadMessages", messageId);
 		if (existing !== undefined && existing.threadId === threadId) {
 			await db.delete("threadMessages", messageId);
+			releaseLocalFileUrls(existing.files);
 			notify();
 		}
 	},

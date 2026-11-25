@@ -47,6 +47,8 @@ var (
 	ErrChatWithSelf     = errors.New("cannot chat with yourself")
 	ErrUserNotFound     = errors.New("user not found")
 	ErrGroupNameInvalid = errors.New("group name must be 1-60 characters")
+	ErrDeleteGroupChat  = errors.New("group chats are deleted for everyone")
+	ErrDeleteSelfChat   = errors.New("the favorites chat cannot be deleted")
 	ErrTooManyMembers   = errors.New("too many members")
 	ErrGroupRemoteMemb  = errors.New("group chat members must be on the same server")
 	ErrUserIDRequired   = errors.New("userId required")
@@ -243,6 +245,13 @@ func (s *Service) CreatePrivateChat(ctx context.Context, userID, withUserID stri
 	if err != nil {
 		return ChatView{}, err
 	}
+
+	// Reopening a chat that either side deleted for themselves must bring it
+	// back into their lists.
+	if err := s.store.ClearChatDeletes(ctx, chat.ID, userID, withUserID); err != nil {
+		return ChatView{}, err
+	}
+
 	if isBot {
 		mode := EncryptionModeServer
 		if remoteServer != "" {
@@ -398,6 +407,36 @@ func (s *Service) DeleteChat(ctx context.Context, chat *model.Chat) error {
 	for _, memberID := range chat.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: chat.ID}})
 	}
+
+	return nil
+}
+
+// DeleteChatForUser hides a private chat for one member and notifies that
+// member. The other side keeps the chat; reopening it or receiving a new
+// message clears the tombstone.
+func (s *Service) DeleteChatForUser(ctx context.Context, chatID, userID string) error {
+	chat, ok := s.store.GetChat(ctx, chatID)
+	if !ok {
+		return ErrChatNotFound
+	}
+
+	if chat.Type == "group" {
+		return ErrDeleteGroupChat
+	}
+
+	if chat.Type == "self" {
+		return ErrDeleteSelfChat
+	}
+
+	if !IsMember(chat, userID) {
+		return ErrChatNotFound
+	}
+
+	if err := s.store.HideChatForUser(ctx, chatID, userID); err != nil {
+		return err
+	}
+
+	s.sendEvent(userID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: chatID}})
 
 	return nil
 }

@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import type { FileInfo } from "../../../types/api.ts";
+import { emitNotification } from "../../../utils/notify.ts";
 import type { MessageBubbleProps } from "../MessageBubble.tsx";
 import { MessageContextMenu } from "./MessageContextMenu.tsx";
 
@@ -16,6 +18,8 @@ interface MenuProps {
 	canForward: boolean;
 	status?: "sent" | "queued" | "failed";
 	text: string;
+	hasImage: boolean;
+	onCopyImage: () => Promise<void>;
 	chatId: string;
 	msgId: string;
 	fromId: string;
@@ -50,6 +54,8 @@ export function BubbleContextMenu({
 	canForward,
 	status,
 	text,
+	hasImage,
+	onCopyImage,
 	chatId,
 	msgId,
 	fromId,
@@ -69,6 +75,8 @@ export function BubbleContextMenu({
 	menuRef,
 	firstMenuItemRef,
 }: MenuProps) {
+	const { t } = useTranslation();
+
 	return (
 		<MessageContextMenu
 			opened={menuPos !== null}
@@ -84,10 +92,21 @@ export function BubbleContextMenu({
 			canBlock={canBlock}
 			canForward={canForward}
 			hasText={text.length > 0}
+			hasImage={hasImage}
 			status={status}
 			onCopy={() => {
-				void navigator.clipboard.writeText(text);
-				onClose();
+				// A photo with a caption still copies the photo: that is what
+				// the menu item is for on an image message.
+				if (!hasImage) {
+					void navigator.clipboard.writeText(text);
+					onClose();
+					return;
+				}
+				void onCopyImage()
+					.catch(() => {
+						emitNotification(t("message.copyImageFailed"));
+					})
+					.finally(onClose);
 			}}
 			onEdit={() => {
 				onStartEdit(chatId, msgId, text, files, threadId);

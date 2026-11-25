@@ -99,7 +99,7 @@ interface ChatActionsDeps {
 	removeFile: (id: string) => void;
 	clearEditing: () => void;
 	setInputText: (text: string) => void;
-	clearAllPendingFiles: () => void;
+	clearAllPendingFiles: (keepObjectUrls?: boolean) => void;
 	clearPendingLocation: () => void;
 	clearReply: () => void;
 	deleteMessage: (
@@ -293,19 +293,25 @@ function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 			}
 			const token = parts.account.activeAccount?.token;
 			let pendingFiles: PendingFile[] = [];
+			let stored = false;
 			try {
 				pendingFiles = await forwardAttachments(message, token);
-				return await parts.sender.sendMessage({
+				stored = await parts.sender.sendMessage({
 					chatId: targetChatId,
 					text: message.text,
 					location: message.location,
 					pendingFiles,
 				});
+				return stored;
 			} catch {
 				return false;
 			} finally {
-				for (const file of pendingFiles) {
-					URL.revokeObjectURL(file.blobUrl);
+				// A stored row renders the forwarded photo from these previews
+				// until the server copy replaces it; the row owns them then.
+				if (!stored) {
+					for (const file of pendingFiles) {
+						URL.revokeObjectURL(file.blobUrl);
+					}
 				}
 			}
 		},

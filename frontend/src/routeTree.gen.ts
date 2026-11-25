@@ -12,7 +12,10 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as ChatRouteImport } from './routes/chat'
+import { Route as FavoriteRouteImport } from './routes/favorite'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as ChatChatRefRouteImport } from './routes/chat.$chatRef'
+import { Route as GroupGroupIdRouteImport } from './routes/group.$groupId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -29,44 +32,92 @@ const ChatRoute = ChatRouteImport.update({
   path: '/chat',
   getParentRoute: () => rootRouteImport,
 } as any)
+const FavoriteRoute = FavoriteRouteImport.update({
+  id: '/favorite',
+  path: '/favorite',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ChatChatRefRoute = ChatChatRefRouteImport.update({
+  id: '/$chatRef',
+  path: '/$chatRef',
+  getParentRoute: () => ChatRoute,
+} as any)
+const GroupGroupIdRoute = GroupGroupIdRouteImport.update({
+  id: '/group/$groupId',
+  path: '/group/$groupId',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
-  '/chat': typeof ChatRoute
+  '/chat': typeof ChatRouteWithChildren
+  '/favorite': typeof FavoriteRoute
   '/login': typeof LoginRoute
+  '/chat/$chatRef': typeof ChatChatRefRoute
+  '/group/$groupId': typeof GroupGroupIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
-  '/chat': typeof ChatRoute
+  '/chat': typeof ChatRouteWithChildren
+  '/favorite': typeof FavoriteRoute
   '/login': typeof LoginRoute
+  '/chat/$chatRef': typeof ChatChatRefRoute
+  '/group/$groupId': typeof GroupGroupIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
-  '/chat': typeof ChatRoute
+  '/chat': typeof ChatRouteWithChildren
+  '/favorite': typeof FavoriteRoute
   '/login': typeof LoginRoute
+  '/chat/$chatRef': typeof ChatChatRefRoute
+  '/group/$groupId': typeof GroupGroupIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/admin' | '/chat' | '/login'
+  fullPaths:
+    | '/'
+    | '/admin'
+    | '/chat'
+    | '/favorite'
+    | '/login'
+    | '/chat/$chatRef'
+    | '/group/$groupId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/admin' | '/chat' | '/login'
-  id: '__root__' | '/' | '/admin' | '/chat' | '/login'
+  to:
+    | '/'
+    | '/admin'
+    | '/chat'
+    | '/favorite'
+    | '/login'
+    | '/chat/$chatRef'
+    | '/group/$groupId'
+  id:
+    | '__root__'
+    | '/'
+    | '/admin'
+    | '/chat'
+    | '/favorite'
+    | '/login'
+    | '/chat/$chatRef'
+    | '/group/$groupId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRoute
-  ChatRoute: typeof ChatRoute
+  ChatRoute: typeof ChatRouteWithChildren
+  FavoriteRoute: typeof FavoriteRoute
   LoginRoute: typeof LoginRoute
+  GroupGroupIdRoute: typeof GroupGroupIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -92,6 +143,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/favorite': {
+      id: '/favorite'
+      path: '/favorite'
+      fullPath: '/favorite'
+      preLoaderRoute: typeof FavoriteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
@@ -99,14 +157,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/chat/$chatRef': {
+      id: '/chat/$chatRef'
+      path: '/$chatRef'
+      fullPath: '/chat/$chatRef'
+      preLoaderRoute: typeof ChatChatRefRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/group/$groupId': {
+      id: '/group/$groupId'
+      path: '/group/$groupId'
+      fullPath: '/group/$groupId'
+      preLoaderRoute: typeof GroupGroupIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
+
+interface ChatRouteChildren {
+  ChatChatRefRoute: typeof ChatChatRefRoute
+}
+
+const ChatRouteChildren: ChatRouteChildren = {
+  ChatChatRefRoute: ChatChatRefRoute,
+}
+
+const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
-  ChatRoute: ChatRoute,
+  ChatRoute: ChatRouteWithChildren,
+  FavoriteRoute: FavoriteRoute,
   LoginRoute: LoginRoute,
+  GroupGroupIdRoute: GroupGroupIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

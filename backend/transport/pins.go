@@ -79,7 +79,7 @@ func pinChat(ctx context.Context, svc *service.Service, chatID string) (*model.C
 		return nil, nil, err
 	}
 	if chat.Type == chatTypeGroup && !service.IsOwner(chat, user.ID) {
-		return nil, nil, &statusError{ErrorMessage: "only owner can perform this action", code: http.StatusForbidden}
+		return nil, nil, &statusError{ErrorMessage: msgOnlyOwner, code: http.StatusForbidden}
 	}
 	return chat, user, nil
 }

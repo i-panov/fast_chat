@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../types/api.ts";
 import { setActiveAccountKey } from "./init.ts";
 import { messagesRepo } from "./messagesRepo.ts";
@@ -14,8 +14,14 @@ function msg(id: string, createdAt: string, text: string): Message {
 	};
 }
 
+let mockRevokeObjectURL = vi.fn((_url: string) => undefined);
+
 beforeEach(() => {
 	setActiveAccountKey("alice:test");
+	// Bind: the assertions below look the mock up through URL, which would
+	// otherwise lose the receiver.
+	mockRevokeObjectURL = vi.fn((_url: string) => undefined);
+	URL.revokeObjectURL = mockRevokeObjectURL;
 });
 
 describe("messagesRepo.getByChat ordering", () => {
@@ -143,5 +149,170 @@ describe("messagesRepo mutations", () => {
 		await messagesRepo.markAsRead([]);
 		await messagesRepo.markAsRead(["m1", "missing"]);
 		expect(await messagesRepo.getReadMessageIds()).toEqual(["m1"]);
+	});
+});
+
+describe("messagesRepo local previews", () => {
+	it("releases the local preview URL when the server copy replaces it", async () => {
+		const optimistic: Message = {
+			...msg("m-photo", "2026-01-01T00:00:00Z", ""),
+			encrypted: true,
+			files: [
+				{
+					id: "local-1",
+					mimeType: "image/bmp",
+					size: 3,
+					originalName: "cat.bmp",
+					fileType: "photo",
+					url: "blob:local-1",
+					hash: "h1",
+				},
+			],
+		};
+		await messagesRepo.upsert(optimistic, "queued");
+
+		const server: Message = {
+			...optimistic,
+			files: [
+				{
+					id: "server-1",
+					mimeType: "image/bmp",
+					size: 3,
+					originalName: "cat.bmp",
+					fileType: "photo",
+					url: "/api/files/server-1",
+					hash: "h1",
+				},
+			],
+		};
+		await messagesRepo.upsert(server);
+
+		// The optimistic row rendered the picked file from this URL; the
+		// server copy does not reference it any more.
+		expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:local-1");
+		expect(
+			(await messagesRepo.getById("chat-1", "m-photo"))?.files?.[0]?.url,
+		).toBe("/api/files/server-1");
+	});
+
+	it("releases previews in upsertMany and after deletions", async () => {
+		const local = (id: string, url: string): Message => ({
+			...msg(id, "2026-01-01T00:00:00Z", ""),
+			encrypted: true,
+			files: [
+				{
+					id: "local-1",
+					mimeType: "image/bmp",
+					size: 3,
+					originalName: "cat.bmp",
+					fileType: "photo",
+					url,
+					hash: "h1",
+				},
+			],
+		});
+		const server = (id: string, url: string): Message => ({
+			...local(id, url),
+			files: [
+				{
+					id: "server-1",
+					mimeType: "image/bmp",
+					size: 3,
+					originalName: "cat.bmp",
+					fileType: "photo",
+					url,
+					hash: "h1",
+				},
+			],
+		});
+
+		// Delta/sync path: upsertMany replaces the optimistic row wholesale.
+		await messagesRepo.upsertMany([local("m-many", "blob:many")], "queued");
+		await messagesRepo.upsertMany([server("m-many", "/api/files/1")]);
+		expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:many");
+
+		// A local row deleted outright (failed send cancelled by the user).
+		await messagesRepo.upsert(local("m-del", "blob:del"), "failed");
+		await messagesRepo.remove("chat-1", "m-del");
+		expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:del");
+
+		// A tombstone hides the attachments, so their previews are dead too.
+		await messagesRepo.upsert(local("m-tomb", "blob:tomb"), "failed");
+		await messagesRepo.applyDelete("chat-1", "m-tomb");
+		expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:tomb");
+		expect(
+			(await messagesRepo.getById("chat-1", "m-tomb"))?.files,
+		).toBeUndefined();
+	});
+
+	it("releases a preview when the row keeps no files at all", async () => {
+		await messagesRepo.upsert(
+			{
+				...msg("m-strip", "2026-01-01T00:00:00Z", ""),
+				files: [
+					{
+						id: "local-1",
+						mimeType: "image/bmp",
+						size: 3,
+						originalName: "cat.bmp",
+						fileType: "photo",
+						url: "blob:strip",
+						hash: "h1",
+					},
+				],
+			},
+			"queued",
+		);
+		await messagesRepo.upsert(msg("m-strip", "2026-01-01T00:00:00Z", "edited"));
+
+		expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:strip");
+	});
+
+	it("removes every message of a chat and releases its previews", async () => {
+		await messagesRepo.upsert({
+			...msg("m-chat-a", "2026-01-01T00:00:00Z", ""),
+			files: [
+				{
+					id: "local-1",
+					mimeType: "image/bmp",
+					size: 3,
+					originalName: "cat.bmp",
+					fileType: "photo",
+					url: "blob:chat-a",
+					hash: "h1",
+				},
+			],
+		});
+		await messagesRepo.upsert({
+			...msg("m-chat-b", "2026-01-01T00:00:00Z", "keep"),
+			chatId: "chat-2",
+		});
+
+		await messagesRepo.removeByChat("chat-1");
+
+		expect(await messagesRepo.getById("chat-1", "m-chat-a")).toBeUndefined();
+		expect(await messagesRepo.getById("chat-2", "m-chat-b")).toBeDefined();
+		expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:chat-a");
+	});
+
+	it("keeps a local preview that the new row still references", async () => {
+		const local: Message = {
+			...msg("m-keep", "2026-01-01T00:00:00Z", "hi"),
+			files: [
+				{
+					id: "local-2",
+					mimeType: "image/bmp",
+					size: 3,
+					originalName: "cat.bmp",
+					fileType: "photo",
+					url: "blob:local-2",
+					hash: "h2",
+				},
+			],
+		};
+		await messagesRepo.upsert(local, "queued");
+		await messagesRepo.upsert({ ...local, text: "edited" });
+
+		expect(mockRevokeObjectURL).not.toHaveBeenCalledWith("blob:local-2");
 	});
 });
