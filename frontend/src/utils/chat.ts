@@ -16,11 +16,13 @@ export function chatTitle(chat: Chat, myId: string): string {
 }
 
 // privateChatRef is the part of the URL that identifies a direct chat: the
-// username when it is known, the user id otherwise. A leading @ is accepted
-// on input and dropped when resolving.
+// username when it is known, the user id otherwise. The username goes without
+// its display "@": the router percent-encodes path params, so keeping the sigil
+// would turn /chat/root_bot into /chat/%40root_bot. Old links with the "@" are
+// still understood by chatFromPath.
 export function privateChatRef(chat: Chat, myId: string): string {
 	const other = chat.members.find((m) => m.id !== myId);
-	if (other?.username) return `@${other.username}`;
+	if (other?.username) return other.username;
 	return other?.id ?? chat.id;
 }
 
@@ -31,10 +33,7 @@ export function chatPath(chat: Chat, myId: string): string {
 	if (chat.type === "group") {
 		return `/group/${encodeURIComponent(chat.id)}`;
 	}
-	return `/chat/${encodeURIComponent(privateChatRef(chat, myId)).replace(
-		/%40/g,
-		"@",
-	)}`;
+	return `/chat/${encodeURIComponent(privateChatRef(chat, myId))}`;
 }
 
 const GROUP_PATH_RE = /^\/group\/([^/]+)\/?$/;

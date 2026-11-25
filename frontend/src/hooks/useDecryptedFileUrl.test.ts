@@ -1,5 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { decryptedFilesRepo } from "../db/decryptedFilesRepo.ts";
 import { fileCacheRepo } from "../db/fileCacheRepo.ts";
 import { encryptFileStream, generateFileKey } from "../e2ee/file-crypto.ts";
 import type { FileInfo } from "../types/api.ts";
@@ -169,6 +170,85 @@ describe("useDecryptedFileUrl", () => {
 			expect(result.current.error).toBeTruthy();
 		});
 		expect(result.current.blobUrl).toBeNull();
+		vi.unstubAllGlobals();
+	});
+
+	it("waits for the plaintext cache before exposing a ciphertext failure", async () => {
+		// The ciphertext request may fail while the decrypted copy is still
+		// being read from IndexedDB. The cached plaintext is enough on its
+		// own, so the failure must not flash before the lookup answers.
+		const fileKey = await generateFileKey();
+		const fetchMock = vi.fn(() => Promise.reject(new Error("offline")));
+		vi.stubGlobal("fetch", fetchMock);
+		vi.spyOn(fileCacheRepo, "get").mockResolvedValue(undefined);
+
+		let releaseLookup = () => {};
+		const lookupGate = new Promise<void>((resolve) => {
+			releaseLookup = resolve;
+		});
+		vi.spyOn(decryptedFilesRepo, "get").mockImplementation(async () => {
+			await lookupGate;
+		});
+
+		const { result } = renderHook(() =>
+			useDecryptedFileUrl(file(), { h1: fileKey }, "tok"),
+		);
+
+		await waitFor(() => {
+			expect(fetchMock).toHaveBeenCalled();
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(result.current.error).toBeNull();
+		expect(result.current.loading).toBe(true);
+
+		releaseLookup();
+		await waitFor(() => {
+			expect(result.current.error).toBeTruthy();
+		});
+		expect(result.current.blobUrl).toBeNull();
+		vi.unstubAllGlobals();
+	});
+
+	it("keeps loading until the plaintext resolves instead of flashing an error", async () => {
+		// The ciphertext request can finish before decryption (or the
+		// plaintext cache lookup) does. That gap used to be rendered as
+		// "could not load" because the hook looked idle: no blob, no error.
+		const fileKey = await generateFileKey();
+		const ciphertext = await encryptFileStream(new Blob(["secret"]), fileKey);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() =>
+				Promise.resolve(new Response(ciphertext.buffer as ArrayBuffer)),
+			),
+		);
+		vi.spyOn(fileCacheRepo, "get").mockResolvedValue(undefined);
+
+		let releaseLookup = () => {};
+		const lookupGate = new Promise<void>((resolve) => {
+			releaseLookup = resolve;
+		});
+		vi.spyOn(decryptedFilesRepo, "get").mockImplementation(async () => {
+			await lookupGate;
+		});
+
+		const { result } = renderHook(() =>
+			useDecryptedFileUrl(file(), { h1: fileKey }, "tok"),
+		);
+
+		// The object URL is created once the ciphertext request settles; the
+		// gate keeps the plaintext lookup (and therefore decryption) pending.
+		await waitFor(() => {
+			expect(createObjectURL).toHaveBeenCalled();
+		});
+		expect(result.current.loading).toBe(true);
+		expect(result.current.error).toBeNull();
+		expect(result.current.blobUrl).toBeNull();
+
+		releaseLookup();
+		await waitFor(() => {
+			expect(result.current.blobUrl).toBe("blob:mock");
+		});
+		expect(result.current.error).toBeNull();
 		vi.unstubAllGlobals();
 	});
 });

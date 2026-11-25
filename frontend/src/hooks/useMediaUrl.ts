@@ -34,9 +34,17 @@ export function useMediaUrl(
 	fileUrl: string | undefined,
 	token: string | undefined,
 ): { mediaUrl: string | null; loading: boolean; error: Error | null } {
-	const [mediaUrl, setMediaUrl] = useState<string | null>(null);
+	// The object URL is stored with the request it belongs to: after a source
+	// switch the old blob has already been revoked by the cleanup, and handing
+	// it to the player would show a dead source instead of the loader.
+	const [media, setMedia] = useState<{ source: string; url: string } | null>(
+		null,
+	);
 	const [loading, setLoading] = useState(false);
-	const [error, setError] = useState<Error | null>(null);
+	const [requestError, setRequestError] = useState<{
+		source: string;
+		error: Error;
+	} | null>(null);
 
 	const cancelledRef = useRef(false);
 	const acRef = useRef<AbortController | null>(null);
@@ -46,21 +54,21 @@ export function useMediaUrl(
 		cancelledRef.current = false;
 
 		if (!fileUrl || !token) {
-			setMediaUrl(null);
-			setError(null);
+			setMedia(null);
+			setRequestError(null);
 			setLoading(false);
 			return;
 		}
 
 		if (fileUrl.startsWith("blob:")) {
-			setMediaUrl(fileUrl);
-			setError(null);
+			setMedia({ source: fileUrl, url: fileUrl });
+			setRequestError(null);
 			setLoading(false);
 			return;
 		}
 
 		setLoading(true);
-		setError(null);
+		setRequestError(null);
 
 		const url = fileUrl;
 
@@ -113,7 +121,7 @@ export function useMediaUrl(
 				revokeRef.current.push(objectUrl);
 
 				if (!cancelledRef.current) {
-					setMediaUrl(objectUrl);
+					setMedia({ source: loadUrl, url: objectUrl });
 					setLoading(false);
 				}
 			} catch (err) {
@@ -123,7 +131,10 @@ export function useMediaUrl(
 				) {
 					return;
 				}
-				setError(err instanceof Error ? err : new Error(String(err)));
+				setRequestError({
+					source: loadUrl,
+					error: err instanceof Error ? err : new Error(String(err)),
+				});
 				setLoading(false);
 			}
 		}
@@ -139,7 +150,7 @@ export function useMediaUrl(
 			revokeRef.current.push(blobUrl);
 
 			if (!cancelledRef.current) {
-				setMediaUrl(blobUrl);
+				setMedia({ source: loadUrl, url: blobUrl });
 			}
 
 			await new Promise<void>((resolve, reject) => {
@@ -234,6 +245,12 @@ export function useMediaUrl(
 		};
 	}, [fileUrl, token]);
 
+	const mediaUrl =
+		media !== null && media.source === fileUrl ? media.url : null;
+	const error =
+		requestError !== null && requestError.source === fileUrl
+			? requestError.error
+			: null;
 	const isIdle = mediaUrl === null && error === null;
 
 	return { mediaUrl, loading: isIdle || loading, error };

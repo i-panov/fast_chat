@@ -1,5 +1,5 @@
 import { screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encryptFileStream, generateFileKey } from "../../e2ee/file-crypto.ts";
 import {
 	photoFile,
@@ -14,6 +14,10 @@ beforeEach(() => {
 	sessionStorage.clear();
 	seedAccount();
 	stubBlobUrls();
+});
+
+afterEach(() => {
+	vi.unstubAllGlobals();
 });
 
 function videoFile(url = "https://srv/v/1", hash?: string) {
@@ -51,7 +55,6 @@ describe("VideoAttachment", () => {
 		await waitFor(() => {
 			expect(container.querySelector("video")).toBeTruthy();
 		});
-		vi.unstubAllGlobals();
 	});
 
 	it("decrypts encrypted video", async () => {
@@ -76,7 +79,6 @@ describe("VideoAttachment", () => {
 		await waitFor(() => {
 			expect(container.querySelector("video")).toBeTruthy();
 		});
-		vi.unstubAllGlobals();
 	});
 
 	it("decrypts id-keyed video without a hash", async () => {
@@ -100,7 +102,58 @@ describe("VideoAttachment", () => {
 		await waitFor(() => {
 			expect(container.querySelector("video")).toBeTruthy();
 		});
-		vi.unstubAllGlobals();
+	});
+
+	it("renders the player while a streamed video is still buffering", async () => {
+		// The MediaSource stays closed until a media element uses its object
+		// URL. When the player was hidden behind the loader, it never opened
+		// and the video stayed on the spinner forever.
+		class PendingMediaSource {
+			static isTypeSupported(): boolean {
+				return true;
+			}
+
+			readyState = "open";
+
+			addEventListener(type: string, callback: () => void): void {
+				if (type === "sourceopen") {
+					setTimeout(callback, 0);
+				}
+			}
+
+			addSourceBuffer() {
+				return {
+					addEventListener: () => {},
+					removeEventListener: () => {},
+					appendBuffer: () => {},
+				};
+			}
+
+			endOfStream(): void {}
+		}
+		vi.stubGlobal("MediaSource", PendingMediaSource);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((_url: string, init?: RequestInit) => {
+				if ((init?.method ?? "GET") === "HEAD") {
+					return Promise.resolve(
+						new Response(null, {
+							headers: { "Content-Length": "100", "Content-Type": "video/mp4" },
+						}),
+					);
+				}
+				return Promise.resolve(new Response(new Uint8Array(100)));
+			}),
+		);
+
+		const { container } = renderWithAccount(
+			<VideoAttachment file={videoFile()} />,
+		);
+
+		await waitFor(() => {
+			expect(container.querySelector("video")).toBeTruthy();
+		});
+		expect(screen.queryByText(LOAD_VIDEO_FAILED)).toBeNull();
 	});
 
 	it("shows an error when loading fails", async () => {
@@ -113,6 +166,5 @@ describe("VideoAttachment", () => {
 		);
 
 		await screen.findByText(LOAD_VIDEO_FAILED);
-		vi.unstubAllGlobals();
 	});
 });

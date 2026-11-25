@@ -756,7 +756,7 @@ func TestStrictTransportSecurityFollowsTheForwardedScheme(t *testing.T) {
 // The map tiles are drawn from the OpenStreetMap servers. They are listed in
 // img-src for the page, and in connect-src because a request routed through
 // the Service Worker is a fetch checked against the worker policy.
-func TestContentSecurityPolicyAllowsMapTiles(t *testing.T) {
+func TestContentSecurityPolicyAllowsMediaAndMapTiles(t *testing.T) {
 	handler := securityHeadersMiddleware(
 		ratelimit.NewClientIPExtractor([]string{"10.0.0.0/8"}),
 		"http://localhost:5173",
@@ -771,7 +771,8 @@ func TestContentSecurityPolicyAllowsMapTiles(t *testing.T) {
 	csp := rec.Header().Get("Content-Security-Policy")
 	for _, directive := range []string{
 		"img-src 'self' data: blob: " + mapTileOrigin,
-		"connect-src 'self' http://localhost:5173 " + mapTileOrigin,
+		"media-src 'self' blob:",
+		"connect-src 'self' http://localhost:5173 blob: " + mapTileOrigin,
 	} {
 		if !strings.Contains(csp, directive) {
 			t.Errorf("Content-Security-Policy = %q, want %q", csp, directive)
@@ -780,7 +781,7 @@ func TestContentSecurityPolicyAllowsMapTiles(t *testing.T) {
 
 	// The development origin is appended, not substituted: the tile origin
 	// must survive the extension.
-	if strings.Contains(csp, "connect-src 'self' http://localhost:5173;") {
+	if strings.Contains(csp, "connect-src 'self' http://localhost:5173 blob:;") {
 		t.Errorf("Content-Security-Policy = %q, tile origin was dropped", csp)
 	}
 }

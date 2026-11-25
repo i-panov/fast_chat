@@ -1,4 +1,4 @@
-import { resetAllDBs } from "../db/init.ts";
+import { closeAndDeleteAccountDB, resetAllDBs } from "../db/init.ts";
 import { clearFileCache } from "./fileCache.ts";
 
 const LANGUAGE_KEY = "i18nextLng";
@@ -67,7 +67,6 @@ async function unregisterServiceWorker(): Promise<void> {
 // in onblocked and the data survives.
 export async function deleteAccountDB(userId: string): Promise<void> {
 	try {
-		const { closeAndDeleteAccountDB } = await import("../db/init.ts");
 		await closeAndDeleteAccountDB(userId);
 	} catch {
 		// best effort

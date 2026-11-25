@@ -39,6 +39,40 @@ export default defineConfig({
 			},
 		}),
 	],
+	build: {
+		// The app is a PWA that precaches the whole bundle, so large vendor
+		// modules are split into named chunks for cache reuse instead of one
+		// 900 kB entry chunk. Compressed budgets are enforced by
+		// `npx size-limit`.
+		rolldownOptions: {
+			output: {
+				codeSplitting: {
+					groups: [
+						{
+							name: "vendor-sodium",
+							test: /node_modules[\\/]libsodium/,
+							priority: 40,
+						},
+						{
+							name: "vendor-mantine",
+							test: /node_modules[\\/]@mantine[\\/]/,
+							priority: 30,
+						},
+						{
+							name: "vendor-react",
+							test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+							priority: 20,
+						},
+						{
+							name: "vendor-leaflet",
+							test: /node_modules[\\/](leaflet|react-leaflet|@react-leaflet)[\\/]/,
+							priority: 10,
+						},
+					],
+				},
+			},
+		},
+	},
 	server: {
 		proxy: {
 			"/api": process.env.VITE_API_PROXY ?? "http://localhost:8080",

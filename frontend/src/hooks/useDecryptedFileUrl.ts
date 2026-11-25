@@ -10,6 +10,19 @@ import {
 } from "../utils/fileCache.ts";
 import { useFileUrl } from "./useFileUrl.ts";
 
+// The key is matched by file hash first, then by file id. Returns undefined
+// for plaintext files.
+function fileKeyFor(
+	file: FileInfo | undefined,
+	fileKeys: Record<string, FileKey> | undefined,
+): FileKey | undefined {
+	if (file === undefined) return;
+	return (
+		(file.hash !== undefined ? fileKeys?.[file.hash] : undefined) ??
+		fileKeys?.[file.id]
+	);
+}
+
 // useDecryptedFileUrl fetches a file and, if a decryption key exists for it,
 // decrypts the blob before returning the object URL. The key is matched by
 // file hash first, then by file id: id-keyed files (e.g. legacy uploads
@@ -32,6 +45,13 @@ export function useDecryptedFileUrl(
 	} = useFileUrl(file?.url, token);
 	const [decryptedUrl, setDecryptedUrl] = useState<string | null>(null);
 	const [decryptError, setDecryptError] = useState<Error | null>(null);
+	// cacheChecked tells whether the plaintext cache lookup has finished. A
+	// failed ciphertext request must not surface before the cache had its
+	// chance: the plaintext may already be stored and the ciphertext evicted.
+	const [cacheChecked, setCacheChecked] = useState(false);
+
+	const key = fileKeyFor(file, fileKeys);
+	const localPlaintext = file?.url.startsWith("blob:") === true;
 
 	useEffect(() => {
 		setDecryptError(null);
@@ -40,21 +60,20 @@ export function useDecryptedFileUrl(
 			return;
 		}
 
-		const key =
-			(file.hash !== undefined ? fileKeys?.[file.hash] : undefined) ??
-			fileKeys?.[file.id];
+		const fileKey = fileKeyFor(file, fileKeys);
 		// A local blob URL is the plaintext of an attachment that is still
 		// being sent (or failed to). It already is the file, and it belongs to
 		// an encrypted message, so a key for its hash exists: decrypting the
 		// local bytes fails and the bubble shows "could not load image" until
 		// the server copy replaces the row.
-		const localPlaintext = file.url.startsWith("blob:");
-		if (key === undefined || localPlaintext) {
+		const localBytes = file.url.startsWith("blob:");
+		if (fileKey === undefined || localBytes) {
 			// No key: file is plaintext.
 			setDecryptedUrl(encryptedUrl ?? null);
 			return;
 		}
 
+		setCacheChecked(false);
 		let cancelled = false;
 		let createdUrl: string | null = null;
 		// The account can change while the request is in flight. The write
@@ -62,12 +81,13 @@ export function useDecryptedFileUrl(
 		// late write would persist one account's plaintext in another's
 		// IndexedDB, where it survives the first account's logout.
 		const accountKey = getActiveAccountKey();
-		const cacheKey = decryptedCacheKey(file.url, key, file.hash ?? file.id);
+		const cacheKey = decryptedCacheKey(file.url, fileKey, file.hash ?? file.id);
 
 		void (async () => {
 			try {
 				const cached = await getCachedDecryptedFile(cacheKey);
 				if (getActiveAccountKey() !== accountKey) return;
+				if (!cancelled) setCacheChecked(true);
 				if (cached !== undefined) {
 					createdUrl = URL.createObjectURL(cached);
 					if (cancelled) {
@@ -86,7 +106,7 @@ export function useDecryptedFileUrl(
 				const resp = await fetch(encryptedUrl);
 				const blob = await resp.blob();
 				const ciphertext = new Uint8Array(await blob.arrayBuffer());
-				const plain = await decryptFileStream(ciphertext, key);
+				const plain = await decryptFileStream(ciphertext, fileKey);
 				const plainBlob = new Blob([plain as unknown as ArrayBuffer], {
 					type: file.mimeType,
 				});
@@ -123,12 +143,27 @@ export function useDecryptedFileUrl(
 	}, [file, fileKeys, encryptedUrl]);
 
 	const resolved = file ? decryptedUrl : null;
+	// A key with no plaintext yet means decryption is still running (or the
+	// ciphertext request or cache lookup has not settled). Report it as
+	// loading: the gap between the ciphertext arriving and the decrypted blob
+	// being created is otherwise rendered as a load error for a frame, and for
+	// large media it can last noticeably long. While the plaintext cache is
+	// still being read, a failed ciphertext request must not win either: the
+	// cache may already hold the file.
+	const awaitingPlaintext =
+		file !== undefined &&
+		key !== undefined &&
+		!localPlaintext &&
+		resolved === null &&
+		decryptError === null &&
+		(!cacheChecked || error === null);
+	const pending = awaitingPlaintext || (loading && resolved === null);
 
 	return {
 		blobUrl: resolved,
-		loading: loading && resolved === null,
+		loading: pending,
 		// A cached plaintext makes a failed ciphertext request irrelevant:
 		// the attachment is displayable, so do not report an error for it.
-		error: resolved !== null ? null : (error ?? decryptError),
+		error: resolved !== null || pending ? null : (error ?? decryptError),
 	};
 }

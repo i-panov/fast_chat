@@ -178,8 +178,8 @@ const privateChat: Chat = {
 
 describe("chat paths", () => {
 	it("builds a shareable path from the other member's username", () => {
-		expect(privateChatRef(privateChat, "alice")).toBe("@root_bot");
-		expect(chatPath(privateChat, "alice")).toBe("/chat/@root_bot");
+		expect(privateChatRef(privateChat, "alice")).toBe("root_bot");
+		expect(chatPath(privateChat, "alice")).toBe("/chat/root_bot");
 	});
 
 	it("uses the id when the other member has no username", () => {
@@ -203,6 +203,7 @@ describe("chat paths", () => {
 	it("resolves a path back to the chat", () => {
 		const chats = [privateChat];
 		expect(chatFromPath("/chat/@root_bot", chats, "alice")).toBe(privateChat);
+		expect(chatFromPath("/chat/%40root_bot", chats, "alice")).toBe(privateChat);
 		expect(chatFromPath("/chat/root_bot", chats, "alice")).toBe(privateChat);
 		expect(chatFromPath("/chat/unknown", chats, "alice")).toBeUndefined();
 		expect(chatFromPath("/chat", chats, "alice")).toBeUndefined();

@@ -54,7 +54,11 @@ export function VideoAttachment({ file, fileKeys }: Props) {
 	const loading = key !== undefined ? decrypted.loading : streamed.loading;
 	const error = key !== undefined ? decrypted.error : streamed.error;
 
-	if (loading) return <Loader size="sm" />;
+	// A MediaSource only opens once a media element is attached to its object
+	// URL. Hiding the player behind the loader therefore deadlocked streaming
+	// videos: the source never opened, the loader never ended. Render the
+	// player as soon as a URL exists and keep the loader for the empty case.
+	if (loading && mediaUrl === null) return <Loader size="sm" />;
 	if (error || !mediaUrl)
 		return (
 			<Text size="xs" c="red">

@@ -90,6 +90,13 @@ func addVaryOrigin(w http.ResponseWriter) {
 // come from the OpenStreetMap servers, and blob:/data: cover the object
 // URLs of the decrypted attachments and the inline images.
 //
+// blob: must stay in connect-src: decryption fetches the ciphertext object
+// URL (a local blob) before decrypting it, and the waveform reader reads the
+// decrypted audio the same way. Without it every encrypted image, video and
+// audio failed with "could not load" while a plaintext file download worked.
+// media-src is needed for the <video>/<audio> elements that play a decrypted
+// blob: without it they fall back to default-src 'self' and stay silent.
+//
 // The WebAssembly of the crypto library needs its own source: without
 // 'wasm-unsafe-eval' the browser refuses to compile the module and the
 // client cannot generate the keys of the account.
@@ -104,8 +111,9 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"script-src 'self' 'wasm-unsafe-eval'; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data: blob: " + mapTileOrigin + "; " +
+	"media-src 'self' blob:; " +
 	"font-src 'self' data:; " +
-	"connect-src 'self' " + mapTileOrigin + "; " +
+	"connect-src 'self' blob: " + mapTileOrigin + "; " +
 	"worker-src 'self' blob:; " +
 	"manifest-src 'self'; " +
 	"object-src 'none'; " +

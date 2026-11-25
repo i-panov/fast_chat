@@ -253,7 +253,9 @@ make frontend:run   # Vite dev-сервер на :5173
 Ответы содержат `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
 `Referrer-Policy: strict-origin-when-cross-origin` и
 `Content-Security-Policy` (скрипты и стили только свои, карты — с
-`*.tile.openstreetmap.org`).
+`*.tile.openstreetmap.org`). `blob:` разрешён в `img-src`, `media-src` и
+`connect-src`: вложения расшифровываются в объектные URL локально, и без него
+зашифрованные картинки, видео и аудио не отображались на боевой сборке.
 
 `Strict-Transport-Security` добавляется, когда соединение защищено: напрямую
 по TLS или через доверенный обратный прокси, который сообщает схему в
