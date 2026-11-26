@@ -86,7 +86,10 @@ hermes gateway
 - outgoing files, images, voice and video are uploaded through the Fast Chat
   Bot API and sent as file messages;
 - `fastchat_send_location` tool lets the agent send latitude/longitude; it
-  uses the adapter's env credentials and never accepts token/base URL from the model;
+  uses the adapter's env credentials and never accepts token/base URL from the model.
+  The tool only targets the chat whose message is currently being processed
+  (or the only known chat); a `chat_id` from another conversation is rejected.
+  The credential registry is process-wide, bounded and entries expire after 24 h;
 - `/help` and slash commands work through the normal Hermes gateway flow.
 
 The adapter uses `asyncio.to_thread` around the Python Bot SDK, so it does not

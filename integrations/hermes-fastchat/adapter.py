@@ -8,6 +8,7 @@ Hermes MessageEvent objects.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import datetime
 import hashlib
 import ipaddress
@@ -17,6 +18,8 @@ import mimetypes
 import os
 import socket
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -50,10 +53,64 @@ class _NoRedirect(HTTPRedirectHandler):
 
 _NO_REDIRECT_OPENER = build_opener(_NoRedirect)
 
-# chat_id -> (bot token, base URL), populated by the connected adapter. The
-# model only chooses a chat; credentials never travel through tool arguments.
-_CHAT_CREDENTIALS: dict[str, tuple[str, str]] = {}
-_LAST_CHAT_ID = ""
+# chat_id -> (bot token, base URL, bot id, last seen). The model only chooses
+# a chat; credentials never travel through tool arguments. The registry is
+# bounded and entries expire so a long-lived process cannot grow it without
+# limit.
+_CHAT_CREDENTIALS: dict[str, tuple[str, str, str, float]] = {}
+_CHAT_CREDENTIALS_LOCK = threading.Lock()
+_CHAT_CREDENTIALS_TTL_SECONDS = 24 * 60 * 60
+_CHAT_CREDENTIALS_MAX = 256
+# The chat whose message is currently being processed. A tool call must not
+# target another chat just because its id appeared in a prompt.
+_CURRENT_CHAT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "fastchat_current_chat", default=""
+)
+
+
+def _remember_chat_credentials(
+    chat_id: str, token: str, base_url: str, bot_id: str
+) -> None:
+    now = time.monotonic()
+    with _CHAT_CREDENTIALS_LOCK:
+        _CHAT_CREDENTIALS[chat_id] = (token, base_url, bot_id, now)
+        if len(_CHAT_CREDENTIALS) > _CHAT_CREDENTIALS_MAX:
+            oldest = sorted(
+                _CHAT_CREDENTIALS.items(), key=lambda item: item[1][3]
+            )[: len(_CHAT_CREDENTIALS) - _CHAT_CREDENTIALS_MAX]
+            for stale_id, _ in oldest:
+                _CHAT_CREDENTIALS.pop(stale_id, None)
+
+
+def _forget_chat_credentials(bot_id: str) -> None:
+    if not bot_id:
+        return
+    with _CHAT_CREDENTIALS_LOCK:
+        stale = [
+            chat_id
+            for chat_id, entry in _CHAT_CREDENTIALS.items()
+            if entry[2] == bot_id
+        ]
+        for chat_id in stale:
+            _CHAT_CREDENTIALS.pop(chat_id, None)
+
+
+def _chat_credentials(chat_id: str) -> Optional[tuple[str, str]]:
+    with _CHAT_CREDENTIALS_LOCK:
+        entry = _CHAT_CREDENTIALS.get(chat_id)
+        if entry is None:
+            return None
+        if time.monotonic() - entry[3] > _CHAT_CREDENTIALS_TTL_SECONDS:
+            _CHAT_CREDENTIALS.pop(chat_id, None)
+            return None
+        return entry[0], entry[1]
+
+
+def _only_known_chat() -> str:
+    with _CHAT_CREDENTIALS_LOCK:
+        if len(_CHAT_CREDENTIALS) == 1:
+            return next(iter(_CHAT_CREDENTIALS))
+    return ""
 
 
 def _env_or_extra(
@@ -124,6 +181,9 @@ class FastChatAdapter(BasePlatformAdapter):
             return False
 
         self._offset = self._load_offset()
+        # Token rotation must not leave credentials of the old bot in the
+        # process-wide tool registry.
+        _forget_chat_credentials(self._bot_id)
 
         # connect() can run again after a reconnect without disconnect():
         # stop the previous poller first, or two loops consume updates in
@@ -150,6 +210,7 @@ class FastChatAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         self._stop.set()
         await self._stop_poll_task()
+        _forget_chat_credentials(self._bot_id)
         self._client = None
         for path in self._temp_files:
             try:
@@ -379,9 +440,10 @@ class FastChatAdapter(BasePlatformAdapter):
                 await asyncio.to_thread(self._save_offset)
 
     async def _dispatch_message(self, message: BotMessage) -> None:
-        global _LAST_CHAT_ID
-        _CHAT_CREDENTIALS[message.chat_id] = (self._token, self._base_url)
-        _LAST_CHAT_ID = message.chat_id
+        _remember_chat_credentials(
+            message.chat_id, self._token, self._base_url, self._bot_id or ""
+        )
+        _CURRENT_CHAT.set(message.chat_id)
         if self._message_handler is None:
             return
         if message.undecryptable or message.encrypted:
@@ -494,13 +556,17 @@ def _env_enablement() -> Optional[dict[str, Any]]:
 
 
 async def _send_location_tool(args: dict[str, Any], **kwargs) -> str:
-    requested = str(args.get("chat_id", ""))
-    chat_id = _LAST_CHAT_ID
-    if requested and requested != chat_id:
-        return json.dumps({"ok": False, "error": "location target is not the active chat"})
+    requested = str(args.get("chat_id", "")).strip()
+    chat_id = _CURRENT_CHAT.get() or _only_known_chat()
     if not chat_id:
-        return json.dumps({"ok": False, "error": "Fast Chat chat is not connected"})
-    credentials = _CHAT_CREDENTIALS.get(chat_id)
+        return json.dumps(
+            {"ok": False, "error": "Fast Chat chat is not connected"}
+        )
+    if requested and requested != chat_id:
+        return json.dumps(
+            {"ok": False, "error": "location target is not the active chat"}
+        )
+    credentials = _chat_credentials(chat_id)
     if credentials is None:
         return json.dumps({"ok": False, "error": "Fast Chat chat is not connected"})
     token, base_url = credentials

@@ -27,6 +27,14 @@ const maxConcurrentRequests = 16
 // maxResponseBody caps how much of a federated response is read into memory.
 const maxResponseBody = 10 << 20
 
+// federatedStreamMaxBytes bounds a streamed file when the caller does not
+// pass a limit. It leaves room for ciphertext above the 50 MiB upload limit.
+const federatedStreamMaxBytes = 64 << 20
+
+// statusErrorBodyLimit bounds how much of a failed peer response is quoted
+// in the error.
+const statusErrorBodyLimit = 8 << 10
+
 // retryCount and the exponential backoff base mirror the pre-migration client.
 const (
 	retryCount     = 3
@@ -37,12 +45,19 @@ const (
 // errFederatedStatus marks unexpected HTTP statuses from remote servers.
 var errFederatedStatus = errors.New("federated request returned unexpected status")
 
+// ErrResponseTooLarge reports a peer response whose declared length exceeds
+// the caller's cap. It is detected before any bytes are relayed.
+var ErrResponseTooLarge = errors.New("federated response is too large")
+
 // StatusError is the answer of a peer that refused the request. It carries
 // the status code, so the caller can tell a permanent rejection from a
 // failure that is worth retrying.
 type StatusError struct {
 	Status int
 	Body   string
+	// Header carries the peer's response headers for statuses where they
+	// are part of the answer (416 needs Content-Range, 304 validators).
+	Header http.Header
 }
 
 func (e *StatusError) Error() string {
@@ -154,9 +169,8 @@ func (c *Client) Request(ctx context.Context, method, urlStr string, body any) (
 	return c.RequestWithLimit(ctx, method, urlStr, body, maxResponseBody)
 }
 
-// RequestWithLimit is Request with a caller-chosen response cap. The file
-// proxy uses it because the JSON-oriented 10 MiB limit is below the 50 MiB
-// upload limit and made large federated attachments permanently unreadable.
+// RequestWithLimit is Request with a caller-chosen response cap, for the few
+// callers that still buffer a response larger than the JSON-oriented default.
 func (c *Client) RequestWithLimit(ctx context.Context, method, urlStr string, body any, limit int64) ([]byte, error) {
 	var bodyBytes []byte
 
@@ -267,6 +281,130 @@ func (c *Client) RequestWithLimit(ctx context.Context, method, urlStr string, bo
 	return nil, fmt.Errorf("federated request failed after retries: %w", lastErr)
 }
 
+// OpenStream performs a signed request and returns the response without
+// buffering its body.
+//
+// until the response headers arrive: a body that fails mid-copy cannot be
+// replayed safely. The body is bounded by limit and responds to ctx
+// cancellation while it is copied.
+//
+//nolint:gocognit // mirrors RequestWithLimit with a streaming body The caller must close resp.Body. Retries happen only
+func (c *Client) OpenStream(
+	ctx context.Context,
+	method, urlStr string,
+	body any,
+	limit int64,
+	header http.Header,
+) (*http.Response, error) {
+
+	var bodyBytes []byte
+
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+
+		bodyBytes = data
+	}
+
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid federated URL: %w", err)
+	}
+
+	if limit <= 0 {
+		limit = federatedStreamMaxBytes
+	}
+
+	var lastErr error
+
+	for attempt := range retryCount {
+		var bodyReader io.Reader
+		if bodyBytes != nil {
+			bodyReader = bytes.NewReader(bodyBytes)
+		}
+
+		req, reqErr := http.NewRequestWithContext(ctx, method, urlStr, bodyReader)
+		if reqErr != nil {
+			return nil, reqErr
+		}
+
+		for key, values := range header {
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
+		}
+
+		timestamp := time.Now().Unix()
+		nonce, nonceErr := randomNonce()
+		if nonceErr != nil {
+			return nil, fmt.Errorf("federation nonce: %w", nonceErr)
+		}
+		signature, signErr := c.manager.Sign(parsedURL.Host, method, parsedURL.RequestURI(), bodyBytes, timestamp, nonce)
+		if signErr != nil {
+			return nil, fmt.Errorf("federation sign: %w", signErr)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Federation-Server", c.domain)
+		req.Header.Set("X-Federation-Signature", signature)
+		req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
+		req.Header.Set(NonceHeader, nonce)
+
+		version, versionErr := c.manager.ProtocolVersion(ctx, parsedURL.Host)
+		if versionErr != nil {
+			return nil, versionErr
+		}
+		req.Header.Set(ProtocolHeader, strconv.Itoa(version))
+
+		if id := httputil.GetRequestID(ctx); id != "" {
+			req.Header.Set(httputil.RequestIDHeader, id)
+		}
+
+		resp, doErr := c.streamHTTPClient().Do(req)
+		if doErr != nil {
+			lastErr = doErr
+
+			if attempt < retryCount-1 {
+				backoff := time.Duration(1<<attempt) * time.Second
+
+				select {
+				case <-ctx.Done():
+					return nil, fmt.Errorf("federated stream cancelled while backing off: %w", ctx.Err())
+				case <-time.After(backoff):
+				}
+			}
+
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			statusErr := &StatusError{Status: resp.StatusCode, Header: resp.Header.Clone()}
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, statusErrorBodyLimit))
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				slog.Warn("failed to close stream error body", "err", closeErr)
+			}
+			if readErr == nil {
+				statusErr.Body = strings.TrimSpace(string(body))
+			}
+			return nil, statusErr
+		}
+
+		if resp.ContentLength > limit {
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				slog.Warn("failed to close oversized stream", "err", closeErr)
+			}
+			return nil, fmt.Errorf("%w: %d > %d", ErrResponseTooLarge, resp.ContentLength, limit)
+		}
+
+		resp.Body = http.MaxBytesReader(nil, resp.Body, limit)
+		return resp, nil
+	}
+
+	return nil, fmt.Errorf("federated stream failed after retries: %w", lastErr)
+}
+
 // SetHTTPClient replaces the HTTP client used for signed requests. Same
 // rationale as Manager.SetHTTPClient: tests that run federation peers on
 // loopback httptest servers must bypass the SSRF-safe dialer. The swap is
@@ -322,6 +460,20 @@ func (c *Client) CloseWaitContext(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// streamHTTPClient clones the configured client with the total request
+// timeout disabled: http.Client.Timeout covers reading the body, which would
+// cut a long file transfer at the JSON timeout. The stream context bounds the
+// transfer instead.
+func (c *Client) streamHTTPClient() *http.Client {
+	base := c.httpClient()
+	if base == nil {
+		return &http.Client{}
+	}
+	clone := *base
+	clone.Timeout = 0
+	return &clone
 }
 
 // httpClient returns the HTTP client used for signed requests under a read

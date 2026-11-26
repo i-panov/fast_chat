@@ -1,14 +1,18 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -27,9 +31,34 @@ const (
 	// limit and bound how many copies may be in memory at once.
 	federatedFileMaxBytes = 64 << 20
 	federatedFileWorkers  = 4
+	// A client that stops reading must not pin a proxy slot forever.
+	federatedFileWriteTimeout = 5 * time.Minute
+	// The peer body is cancelled when the stream runs longer than this.
+	federatedFileStreamTimeout = 15 * time.Minute
+	// Waiting for a free proxy slot is bounded, so a burst cannot pile up
+	// goroutines behind a stalled transfer.
+	federatedFileSlotTimeout = 10 * time.Second
 )
 
+// ErrFederatedFileBusy reports that all proxy slots stayed busy past the
+// wait budget.
+var ErrFederatedFileBusy = errors.New("federated file proxy is busy")
+
 var federatedFileSlots = make(chan struct{}, federatedFileWorkers)
+
+// releaseReadCloser releases the concurrency slot exactly once, when the
+// streamed response body is closed.
+type releaseReadCloser struct {
+	io.ReadCloser
+	once    sync.Once
+	release func()
+}
+
+func (r *releaseReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	r.once.Do(r.release)
+	return err
+}
 
 // RegisterFiles adds the file upload, download, and existence-check
 // operations.
@@ -58,81 +87,7 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, fed *fed
 		return uploadFile(ctx, st, svc, cfg, user.ID, rawWriter, rawRequest)
 	})
 
-	huma.Register(api, huma.Operation{
-		OperationID: "serve-file",
-		Method:      http.MethodGet,
-		Path:        "/api/files/{fileId}",
-		Summary:     "Download a file",
-		Security:    []map[string][]string{{bearerScheme: {}}},
-	}, func(ctx context.Context, input *serveFileInput) (*huma.StreamResponse, error) {
-		user, ok := userFromContext(ctx)
-		if !ok {
-			return nil, errUnauthorized
-		}
-
-		fileRecord, err := st.GetFile(ctx, input.FileID)
-		if err != nil {
-			return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
-		}
-
-		if !svc.UserCanAccessFile(ctx, user.ID, input.FileID) {
-			return nil, &statusError{ErrorMessage: "not a member", code: http.StatusForbidden}
-		}
-
-		mimeType := fileRecord.MimeType
-		originalName := fileRecord.OriginalName
-
-		var remoteBody []byte
-		if fileRecord.RemoteServer != "" {
-			if fed == nil {
-				return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
-			}
-			// The generic federation client caps JSON responses at 10 MiB,
-			// below the 50 MiB upload limit. Fetch file bytes with their own
-			// cap and bound the number of concurrent in-memory copies.
-			select {
-			case federatedFileSlots <- struct{}{}:
-				defer func() { <-federatedFileSlots }()
-			case <-ctx.Done():
-				return nil, &statusError{ErrorMessage: "request cancelled", code: http.StatusServiceUnavailable}
-			}
-
-			remoteURL := fed.URL(fileRecord.RemoteServer, "/api/federated/files/"+input.FileID)
-			body, err := fed.RequestWithLimit(ctx, http.MethodGet, remoteURL, nil, federatedFileMaxBytes)
-			if err != nil {
-				return nil, &statusError{ErrorMessage: "failed to fetch federated file", code: http.StatusBadGateway}
-			}
-			remoteBody = body
-		}
-
-		fullPath := filepath.Join(cfg.Uploads.Dir, fileRecord.StoragePath)
-
-		return &huma.StreamResponse{
-			Body: func(hctx huma.Context) {
-				r, w := humachi.Unwrap(hctx)
-
-				// Defense in depth: never MIME-sniff or execute inline scripts,
-				// and force download for anything that could be HTML/JS/SVG.
-				w.Header().Set("X-Content-Type-Options", "nosniff")
-				w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
-				w.Header().Set("Content-Type", mimeType)
-
-				disposition := "attachment"
-				if filestage.IsInlinableMIME(mimeType) {
-					disposition = "inline"
-				}
-
-				w.Header().Set("Content-Disposition", filestage.ContentDisposition(disposition, originalName))
-				w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(mimeCacheMaxAge))
-
-				if fileRecord.RemoteServer != "" {
-					http.ServeContent(w, r, originalName, fileRecord.CreatedAt, bytes.NewReader(remoteBody))
-					return
-				}
-				http.ServeFile(w, r, fullPath)
-			},
-		}, nil
-	})
+	registerServeFile(api, st, svc, fed, cfg)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "file-exists",
@@ -158,6 +113,211 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, fed *fed
 		out.Body.Exists = st.FileExistsByHash(ctx, input.Hash, user.ID)
 
 		return &out, nil
+	})
+}
+
+// openFederatedFile acquires a proxy slot and opens the peer's file stream.
+// The returned release function must be called exactly once, when the body is
+// closed.
+func openFederatedFile(
+	ctx context.Context,
+	fed *federation.Client,
+	remoteServer, fileID string,
+) (*http.Response, func(), error) {
+
+	timer := time.NewTimer(federatedFileSlotTimeout)
+	defer timer.Stop()
+
+	select {
+	case federatedFileSlots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case <-timer.C:
+		return nil, nil, ErrFederatedFileBusy
+	}
+
+	streamCtx, cancel := context.WithTimeout(ctx, federatedFileStreamTimeout)
+	release := func() {
+		cancel()
+		<-federatedFileSlots
+	}
+
+	headers := http.Header{}
+	if rawRequest, ok := requestFromContext(ctx); ok {
+		for _, name := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since"} {
+			if value := rawRequest.Header.Get(name); value != "" {
+				headers.Set(name, value)
+			}
+		}
+	}
+
+	remoteURL := fed.URL(remoteServer, "/api/federated/files/"+url.PathEscape(fileID))
+	resp, err := fed.OpenStream(streamCtx, http.MethodGet, remoteURL, nil, federatedFileMaxBytes, headers)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	return resp, release, nil
+}
+
+// federatedFileStreamError maps a peer refusal to the same status locally.
+// A 416 keeps its Content-Range and is rendered as a stream response: Huma's
+// error type cannot carry response headers.
+func federatedFileStreamError(err error) (*huma.StreamResponse, error) {
+	if errors.Is(err, ErrFederatedFileBusy) {
+		return nil, &statusError{ErrorMessage: "file proxy is busy", code: http.StatusServiceUnavailable}
+	}
+	if errors.Is(err, federation.ErrResponseTooLarge) {
+		return nil, &statusError{ErrorMessage: "federated file is too large", code: http.StatusBadGateway}
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, &statusError{ErrorMessage: "request cancelled", code: http.StatusServiceUnavailable}
+	}
+
+	var statusErr *federation.StatusError
+	if !errors.As(err, &statusErr) {
+		return nil, &statusError{ErrorMessage: "failed to fetch federated file", code: http.StatusBadGateway}
+	}
+
+	switch statusErr.Status {
+	case http.StatusRequestedRangeNotSatisfiable:
+		contentRange := statusErr.Header.Get("Content-Range")
+		return &huma.StreamResponse{Body: func(hctx huma.Context) {
+			_, w := humachi.Unwrap(hctx)
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			if contentRange != "" {
+				w.Header().Set("Content-Range", contentRange)
+			}
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		}}, nil
+	case http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests:
+		return nil, &statusError{ErrorMessage: "federated file is unavailable", code: statusErr.Status}
+	default:
+		return nil, &statusError{ErrorMessage: "failed to fetch federated file", code: http.StatusBadGateway}
+	}
+}
+
+// writeFederatedFile relays a peer's response, including its range status,
+// without buffering the whole file.
+func writeFederatedFile(w http.ResponseWriter, resp *http.Response, release func(), fileID string) {
+	body := &releaseReadCloser{ReadCloser: resp.Body, release: release}
+	defer body.Close() //nolint:errcheck // best-effort close
+
+	// A client that stops reading must not hold the slot until the peer
+	// times out: the write deadline aborts the copy.
+	controller := http.NewResponseController(w)
+	if deadlineErr := controller.SetWriteDeadline(time.Now().Add(federatedFileWriteTimeout)); deadlineErr != nil {
+		slog.Warn("cannot set federated file write deadline", "fileID", fileID, "err", deadlineErr)
+	}
+
+	w.Header().Set("Accept-Ranges", "bytes")
+	if lastModified := resp.Header.Get("Last-Modified"); lastModified != "" {
+		w.Header().Set("Last-Modified", lastModified)
+	}
+	if etag := resp.Header.Get("ETag"); etag != "" {
+		w.Header().Set("ETag", etag)
+	}
+	if resp.StatusCode == http.StatusNotModified {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	if contentType := resp.Header.Get("Content-Type"); strings.HasPrefix(contentType, "multipart/byteranges") {
+		w.Header().Set("Content-Type", contentType)
+	}
+	if resp.ContentLength >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+	}
+	if contentRange := resp.Header.Get("Content-Range"); contentRange != "" {
+		w.Header().Set("Content-Range", contentRange)
+	}
+
+	w.WriteHeader(resp.StatusCode)
+	if _, err := io.Copy(w, body); err != nil {
+		slog.Warn("federated file stream interrupted", "fileID", fileID, "err", err)
+		// The response is already committed; a clean return would make a
+		// truncated body look complete on chunked responses.
+		panic(http.ErrAbortHandler)
+	}
+}
+
+// registerServeFile streams local and federated attachments. Split out of
+// RegisterFiles so the registration function stays within the complexity
+// budget.
+func registerServeFile(api huma.API, st *store.Store, svc *service.Service, fed *federation.Client, cfg *config.Config) {
+	huma.Register(api, huma.Operation{
+		OperationID: "serve-file",
+		Method:      http.MethodGet,
+		Path:        "/api/files/{fileId}",
+		Summary:     "Download a file",
+		Security:    []map[string][]string{{bearerScheme: {}}},
+	}, func(ctx context.Context, input *serveFileInput) (*huma.StreamResponse, error) {
+		user, ok := userFromContext(ctx)
+		if !ok {
+			return nil, errUnauthorized
+		}
+
+		fileRecord, err := st.GetFile(ctx, input.FileID)
+		if err != nil {
+			return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+		}
+
+		if !svc.UserCanAccessFile(ctx, user.ID, input.FileID) {
+			return nil, &statusError{ErrorMessage: "not a member", code: http.StatusForbidden}
+		}
+
+		mimeType := fileRecord.MimeType
+		originalName := fileRecord.OriginalName
+
+		var remoteResp *http.Response
+		var releaseSlot func()
+		if fileRecord.RemoteServer != "" {
+			if fed == nil {
+				return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+			}
+			// The generic federation client caps JSON responses at 10 MiB,
+			// below the 50 MiB upload limit. Stream the bytes with their own
+			// cap so a large attachment never sits in memory whole; the slot
+			// is held until the response body is closed.
+			//nolint:bodyclose // writeFederatedFile closes the response
+			resp, release, streamErr := openFederatedFile(
+				ctx, fed, fileRecord.RemoteServer, input.FileID,
+			)
+			if streamErr != nil {
+				slog.Warn("federated file stream failed", "fileID", input.FileID, "err", streamErr)
+				return federatedFileStreamError(streamErr)
+			}
+			remoteResp = resp
+			releaseSlot = release
+		}
+
+		fullPath := filepath.Join(cfg.Uploads.Dir, fileRecord.StoragePath)
+
+		return &huma.StreamResponse{
+			Body: func(hctx huma.Context) {
+				r, w := humachi.Unwrap(hctx)
+
+				// Defense in depth: never MIME-sniff or execute inline scripts,
+				// and force download for anything that could be HTML/JS/SVG.
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+				w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+				w.Header().Set("Content-Type", mimeType)
+
+				disposition := "attachment"
+				if filestage.IsInlinableMIME(mimeType) {
+					disposition = "inline"
+				}
+
+				w.Header().Set("Content-Disposition", filestage.ContentDisposition(disposition, originalName))
+				w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(mimeCacheMaxAge))
+
+				if remoteResp != nil {
+					writeFederatedFile(w, remoteResp, releaseSlot, input.FileID)
+					return
+				}
+				http.ServeFile(w, r, fullPath)
+			},
+		}, nil
 	})
 }
 

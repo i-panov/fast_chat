@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -506,5 +507,43 @@ func TestSafeDialerDialsSafeLiteral(t *testing.T) {
 
 	if errors.Is(err, ErrUnsafeAddress) || errors.Is(err, ErrNoSafeAddress) {
 		t.Errorf("safe literal rejected as unsafe: %v", err)
+	}
+}
+
+func TestOpenStreamReturnsBodyWithoutBuffering(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	payload := bytes.Repeat([]byte("x"), 4096)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Range"); got != "bytes=0-4095" {
+			t.Errorf("Range = %q, want forwarded header", got)
+		}
+		w.Header().Set("Content-Range", "bytes 0-4095/8192")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(m, "local.test", "http", 5, false)
+	c.SetHTTPClient(srv.Client())
+
+	resp, err := c.OpenStream(
+		context.Background(), http.MethodGet, srv.URL+"/file", nil, 1<<20,
+		http.Header{"Range": []string{"bytes=0-4095"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("status = %d, want 206", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, payload) {
+		t.Fatalf("body length = %d, want %d", len(body), len(payload))
 	}
 }

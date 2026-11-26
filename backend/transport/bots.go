@@ -1,10 +1,10 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -14,6 +14,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 
 	"fast_chat/config"
+	"fast_chat/federation"
 	"fast_chat/internal/filestage"
 	"fast_chat/model"
 	"fast_chat/service"
@@ -21,7 +22,7 @@ import (
 )
 
 //nolint:funlen,gocognit,gocyclo,cyclop,dupl,maintidx // one function registers the small Bot API surface.
-func registerBots(api huma.API, st *store.Store, svc *service.Service, cfg *config.Config) {
+func registerBots(api huma.API, st *store.Store, svc *service.Service, fed *federation.Client, cfg *config.Config) {
 	huma.Register(api, huma.Operation{
 		OperationID: "create-bot",
 		Method:      http.MethodPost,
@@ -156,26 +157,36 @@ func registerBots(api huma.API, st *store.Store, svc *service.Service, cfg *conf
 		if err != nil {
 			return nil, err
 		}
-		if _, err := st.GetFile(ctx, input.FileID); err != nil {
+		file, err := st.GetFile(ctx, input.FileID)
+		if err != nil {
 			return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
 		}
 		if !svc.UserCanAccessFile(ctx, bot.UserID, input.FileID) {
 			return nil, &statusError{ErrorMessage: "not a member", code: http.StatusForbidden}
 		}
-		remoteBody, file, err := svc.FetchFederatedFile(ctx, input.FileID)
-		if err != nil {
-			if errors.Is(err, service.ErrFileNotFound) {
-				return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+
+		var remoteResp *http.Response
+		var releaseSlot func()
+		if file.RemoteServer != "" {
+			//nolint:bodyclose // writeFederatedFile closes the response
+			resp, release, streamErr := openFederatedFile(
+				ctx, fed, file.RemoteServer, input.FileID,
+			)
+			if streamErr != nil {
+				slog.Warn("bot federated file stream failed", "fileID", input.FileID, "err", streamErr)
+				return federatedFileStreamError(streamErr)
 			}
-			return nil, &statusError{ErrorMessage: "failed to fetch federated file", code: http.StatusBadGateway}
+			remoteResp = resp
+			releaseSlot = release
 		}
+
 		fullPath := filepath.Join(cfg.Uploads.Dir, file.StoragePath)
 		return &huma.StreamResponse{Body: func(hctx huma.Context) {
 			r, w := humachi.Unwrap(hctx)
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("Content-Type", file.MimeType)
-			if file.RemoteServer != "" {
-				http.ServeContent(w, r, file.OriginalName, file.CreatedAt, bytes.NewReader(remoteBody))
+			if remoteResp != nil {
+				writeFederatedFile(w, remoteResp, releaseSlot, file.ID)
 				return
 			}
 			http.ServeFile(w, r, fullPath)
