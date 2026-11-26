@@ -231,3 +231,25 @@ func TestValidateEncryptedPayloadAcceptsURLSafeBase64(t *testing.T) {
 		t.Fatalf("URL-safe payload rejected: %v", err)
 	}
 }
+
+func TestValidateEncryptedPayloadV2RequiresIdentity(t *testing.T) {
+	nonce := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 24))
+	easyBox := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 48))
+	senderKey := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32))
+	identityKey := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32))
+	identitySig := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{5}, 64))
+	envelopes := `[{"keyId":"u1","box":"` + easyBox + `","nonce":"` + nonce + `"}]`
+
+	valid := `{"v":2,"nonce":"` + nonce + `","senderKey":"` + senderKey +
+		`","identityKey":"` + identityKey + `","identitySig":"` + identitySig +
+		`","envelopes":` + envelopes + `}`
+	if err := ValidateEncryptedPayload(true, valid); err != nil {
+		t.Fatalf("valid v2 payload rejected: %v", err)
+	}
+
+	withoutIdentity := `{"v":2,"nonce":"` + nonce + `","senderKey":"` + senderKey +
+		`","envelopes":` + envelopes + `}`
+	if err := ValidateEncryptedPayload(true, withoutIdentity); err == nil {
+		t.Fatal("v2 payload without identity was accepted")
+	}
+}

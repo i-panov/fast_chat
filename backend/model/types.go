@@ -43,7 +43,7 @@ func (u *User) Public() PublicUser {
 	}
 	out := PublicUser{
 		ID: u.ID, Username: u.Username, Nick: display, DisplayName: display,
-		IsBot: u.IsBot, IsAdmin: u.IsAdmin, Online: u.Online,
+		IsBot: u.IsBot, Online: u.Online,
 	}
 	if u.AvatarFileID != "" {
 		out.AvatarURL = "/api/files/" + u.AvatarFileID
@@ -73,6 +73,14 @@ type Chat struct {
 	BotID string `gorm:"default:'';index" json:"botId,omitempty"`
 	// BotEncryptionMode is cached for remote bots; local bots resolve it live.
 	BotEncryptionMode string `gorm:"default:''" json:"botEncryptionMode,omitempty"`
+	// FederatedPeer is the authenticated peer of the current inbound action.
+	// It is not persisted; the transport sets it so service code can tell a
+	// direct peer action from a relayed one.
+	FederatedPeer string `gorm:"-" json:"-"`
+	// LocalChat marks the copy of a locally owned chat used for a peer action.
+	// RemoteServer is temporarily set to the peer for legacy author checks, so
+	// without this flag relay guards cannot tell it from a replica.
+	LocalChat bool `gorm:"-" json:"-"`
 }
 
 type ReplyToInfo struct {
@@ -211,6 +219,17 @@ type MessageReaction struct {
 	CreatedAt time.Time `gorm:"not null"   json:"createdAt"`
 }
 
+// ReactionDeletion records that a user removed a reaction. The row is a
+// tombstone for federation catch-up: without it a peer that was offline when
+// the removal happened would keep showing the reaction forever. It is deleted
+// again when the same user adds that emoji back.
+type ReactionDeletion struct {
+	MessageID string    `gorm:"primaryKey" json:"messageId"`
+	UserID    string    `gorm:"primaryKey" json:"userId"`
+	Emoji     string    `gorm:"primaryKey" json:"emoji"`
+	RemovedAt time.Time `gorm:"not null"   json:"removedAt"`
+}
+
 // UserDevice is one E2EE device key. Phase B keys messages to the device,
 // not to the account: id is the stable device/session identifier.
 type UserDevice struct {
@@ -222,6 +241,9 @@ type UserDevice struct {
 	CreatedAt   time.Time  `gorm:"not null"            json:"createdAt"`
 	LastSeenAt  time.Time  `gorm:"not null"            json:"lastSeenAt"`
 	RevokedAt   *time.Time `gorm:"index"               json:"revokedAt,omitempty"`
+	// ProtocolVersion is the highest E2EE payload version this device
+	// announced. Encryption uses v2 only when every recipient is >= 2.
+	ProtocolVersion int `gorm:"not null;default:0" json:"protocolVersion"`
 }
 
 // UserBlock is a local block: blocker does not want content or calls from
@@ -308,15 +330,18 @@ type FederationCursor struct {
 // Bot is the server-side profile of a bot user. The bot's username and
 // display name live in users; this row only holds ownership and credentials.
 type Bot struct {
-	UserID         string    `gorm:"primaryKey"                json:"id"` //nolint:tagliatelle // bot identity is exposed as id
-	OwnerID        string    `gorm:"index;not null"            json:"ownerId"`
-	TokenHash      string    `gorm:"uniqueIndex;not null"      json:"-"`
-	TokenPrefix    string    `gorm:"index;not null"            json:"-"`
-	EncryptionMode string    `gorm:"not null;default:'server'" json:"encryptionMode"`
-	IsActive       bool      `gorm:"not null;default:true"     json:"isActive"`
-	IsMaster       bool      `gorm:"not null;default:false"    json:"isMaster"`
-	CreatedAt      time.Time `gorm:"not null"                  json:"createdAt"`
-	UpdatedAt      time.Time `gorm:"not null"                  json:"updatedAt"`
+	UserID         string `gorm:"primaryKey"                json:"id"` //nolint:tagliatelle // bot identity is exposed as id
+	OwnerID        string `gorm:"index;not null"            json:"ownerId"`
+	TokenHash      string `gorm:"uniqueIndex;not null"      json:"-"`
+	TokenPrefix    string `gorm:"index;not null"            json:"-"`
+	EncryptionMode string `gorm:"not null;default:'server'" json:"encryptionMode"`
+	IsActive       bool   `gorm:"not null;default:true"     json:"isActive"`
+	IsMaster       bool   `gorm:"not null;default:false"    json:"isMaster"`
+	// DisabledByBan marks a bot that was active until its owner was banned,
+	// so unban can restore exactly those bots.
+	DisabledByBan bool      `gorm:"not null;default:false" json:"-"`
+	CreatedAt     time.Time `gorm:"not null"               json:"createdAt"`
+	UpdatedAt     time.Time `gorm:"not null"               json:"updatedAt"`
 }
 
 type BotChat struct {

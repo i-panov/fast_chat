@@ -3,6 +3,7 @@ import { getActiveAccountKey } from "../db/init.ts";
 import type { FileKey } from "../e2ee/file-crypto.ts";
 import { decryptFileStream } from "../e2ee/file-crypto.ts";
 import type { FileInfo } from "../types/api.ts";
+import { registerBlobUrl, releaseBlobUrl } from "../utils/blobUrlRefs.ts";
 import {
 	cacheDecryptedFile,
 	decryptedCacheKey,
@@ -90,8 +91,9 @@ export function useDecryptedFileUrl(
 				if (!cancelled) setCacheChecked(true);
 				if (cached !== undefined) {
 					createdUrl = URL.createObjectURL(cached);
+					registerBlobUrl(createdUrl);
 					if (cancelled) {
-						URL.revokeObjectURL(createdUrl);
+						releaseBlobUrl(createdUrl);
 						createdUrl = null;
 						return;
 					}
@@ -119,10 +121,11 @@ export function useDecryptedFileUrl(
 				}
 
 				createdUrl = URL.createObjectURL(plainBlob);
+				registerBlobUrl(createdUrl);
 				if (cancelled) {
-					// The cleanup already ran with createdUrl === null: revoke
-					// here so the late URL does not leak.
-					URL.revokeObjectURL(createdUrl);
+					// The cleanup already ran with createdUrl === null:
+					// release here so the late URL does not leak.
+					releaseBlobUrl(createdUrl);
 					createdUrl = null;
 				} else {
 					setDecryptedUrl(createdUrl);
@@ -138,7 +141,10 @@ export function useDecryptedFileUrl(
 
 		return () => {
 			cancelled = true;
-			if (createdUrl) URL.revokeObjectURL(createdUrl);
+			if (createdUrl) {
+				releaseBlobUrl(createdUrl);
+				createdUrl = null;
+			}
 		};
 	}, [file, fileKeys, encryptedUrl]);
 

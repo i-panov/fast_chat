@@ -151,6 +151,13 @@ func (c *Client) URL(remoteServer, path string) string {
 // so a retry that reuses the signature of the first attempt would be refused
 // as a replay even though the request itself is legitimate.
 func (c *Client) Request(ctx context.Context, method, urlStr string, body any) ([]byte, error) {
+	return c.RequestWithLimit(ctx, method, urlStr, body, maxResponseBody)
+}
+
+// RequestWithLimit is Request with a caller-chosen response cap. The file
+// proxy uses it because the JSON-oriented 10 MiB limit is below the 50 MiB
+// upload limit and made large federated attachments permanently unreadable.
+func (c *Client) RequestWithLimit(ctx context.Context, method, urlStr string, body any, limit int64) ([]byte, error) {
 	var bodyBytes []byte
 
 	if body != nil {
@@ -230,7 +237,7 @@ func (c *Client) Request(ctx context.Context, method, urlStr string, body any) (
 			continue
 		}
 
-		resp.Body = http.MaxBytesReader(nil, resp.Body, maxResponseBody)
+		resp.Body = http.MaxBytesReader(nil, resp.Body, limit)
 		body, readErr := io.ReadAll(resp.Body)
 
 		if closeErr := resp.Body.Close(); closeErr != nil {

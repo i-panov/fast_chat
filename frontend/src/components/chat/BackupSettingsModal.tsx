@@ -146,6 +146,7 @@ export function BackupSettingsModal({
 									loading={saving}
 									disabled={!hasLocalKey}
 									onClick={() => {
+										if (!window.confirm(t("backup.deleteConfirm"))) return;
 										void handleDelete();
 									}}
 								>

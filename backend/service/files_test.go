@@ -21,7 +21,7 @@ func newTestService(t *testing.T) *Service {
 		t.Fatal(err)
 	}
 
-	if err := db.AutoMigrate(&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{}, &model.Message{}, &model.MessageReaction{}, &model.ChatPin{}, &model.UserBlock{}, &model.UserDevice{}, &model.Thread{}, &model.File{}, &model.MessageFile{}, &model.DeletedMessage{}, &model.DeletedChat{}, &model.PushSubscription{},
+	if err := db.AutoMigrate(&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{}, &model.Message{}, &model.MessageReaction{}, &model.ReactionDeletion{}, &model.ChatPin{}, &model.UserBlock{}, &model.UserDevice{}, &model.Thread{}, &model.File{}, &model.MessageFile{}, &model.DeletedMessage{}, &model.DeletedChat{}, &model.PushSubscription{},
 		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{}, &model.Bot{}, &model.BotChat{}, &model.BotUpdate{}, &model.BotCallbackQuery{}, &model.BotFatherState{}, &model.AdminAuditLog{}); err != nil {
 		t.Fatal(err)
 	}

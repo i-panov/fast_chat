@@ -25,6 +25,14 @@ function isClosed(source: EventSource): boolean {
 	}
 }
 
+function isTooManyConnections(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		"status" in error &&
+		(error as { status?: number }).status === 429
+	);
+}
+
 function isConnecting(source: EventSource): boolean {
 	try {
 		return source.readyState === EventSource.CONNECTING;
@@ -65,12 +73,26 @@ export function useSse(token: string, onEvent: EventHandler) {
 		let reconnectAttempt = 0;
 		let closed = false;
 		let currentSource: EventSource | null = null;
+		let lastActivity = Date.now();
+		let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+		// The server sends a real "ping" event every HeartbeatInterval
+		// (30s). A half-open connection delivers nothing and raises no
+		// error; without this watchdog the tab would sit silently forever.
+		const WATCHDOG_TIMEOUT_MS = 90_000;
+		function noteActivity() {
+			lastActivity = Date.now();
+		}
 
 		function teardown() {
 			closed = true;
 			if (reconnectTimer !== null) {
 				clearTimeout(reconnectTimer);
 				reconnectTimer = null;
+			}
+			if (watchdogTimer !== null) {
+				clearInterval(watchdogTimer);
+				watchdogTimer = null;
 			}
 			currentSource?.close();
 			currentSource = null;
@@ -94,6 +116,12 @@ export function useSse(token: string, onEvent: EventHandler) {
 			currentSource?.close();
 			const source = new EventSource(url);
 			currentSource = source;
+			noteActivity();
+
+			source.addEventListener("ping", () => {
+				if (source !== currentSource) return;
+				noteActivity();
+			});
 
 			function addJSONListener(
 				event: string,
@@ -119,9 +147,12 @@ export function useSse(token: string, onEvent: EventHandler) {
 				"message_deleted",
 				"message_delivered",
 				"message_read",
+				"message_reactions_updated",
+				"chat_pinned",
 				"user_status_changed",
 				"thread_created",
 				"thread_message_new",
+				"thread_message_updated",
 				"typing",
 				"typing_stop",
 				"bot_callback_answer",
@@ -154,6 +185,7 @@ export function useSse(token: string, onEvent: EventHandler) {
 				// closed by a manual reconnect while a queued event was still
 				// being delivered).
 				if (source !== currentSource) return;
+				noteActivity();
 				// The server sends "connected" as soon as the stream is
 				// registered, before the authentication request is answered.
 				// The backoff is reset anyway: the stream itself is up.
@@ -163,6 +195,7 @@ export function useSse(token: string, onEvent: EventHandler) {
 
 			source.onopen = () => {
 				if (source !== currentSource) return;
+				noteActivity();
 				void authenticate(source);
 			};
 
@@ -188,6 +221,13 @@ export function useSse(token: string, onEvent: EventHandler) {
 							// The session is gone: the app logs out through the
 							// unauthorized event, retrying would not help.
 							break;
+						}
+						if (isTooManyConnections(err)) {
+							// Per-account stream cap: reconnecting would only
+							// hammer the same limit. Stop this tab until reload.
+							teardown();
+							void onEventRef.current("sse_limit", null);
+							return;
 						}
 					}
 				}
@@ -221,6 +261,17 @@ export function useSse(token: string, onEvent: EventHandler) {
 				void onEventRef.current("error", null);
 			};
 		}
+
+		watchdogTimer = setInterval(() => {
+			if (closed || currentSource === null) return;
+			if (Date.now() - lastActivity <= WATCHDOG_TIMEOUT_MS) return;
+			// The stream is half-open: close it and reconnect from scratch.
+			const source = currentSource;
+			currentSource = null;
+			source.close();
+			void onEventRef.current("sse_closed", null);
+			scheduleReconnect();
+		}, 30_000);
 
 		open();
 

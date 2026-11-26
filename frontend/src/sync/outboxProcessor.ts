@@ -25,10 +25,15 @@ const RETRY_AFTER_REGEX = /retry-after:(.+)/;
 
 const HTTP_STATUS_RE = /^http (\d{3})\b/;
 
-// Returns false when a transient failure paused the queue: the open window
-// retries on its own schedule, the background runner must ask the browser for
-// another sync event instead.
-export async function processOutbox(token: string): Promise<boolean> {
+// OutboxResult tells the caller whether the queue drained. A transient
+// failure pauses it and carries the server's Retry-After. The caller owns the
+// retry timer: sleeping inside the sync Web Lock would block every tab.
+export interface OutboxResult {
+	completed: boolean;
+	retryAfterMs: number | null;
+}
+
+export async function processOutbox(token: string): Promise<OutboxResult> {
 	const ops = await outboxRepo.list();
 
 	for (const op of ops) {
@@ -42,20 +47,16 @@ export async function processOutbox(token: string): Promise<boolean> {
 			// caller re-authenticates and the queue survives.
 			if (isUnauthorized(err)) throw err;
 			if (isTransient(err)) {
-				// Respect Retry-After headers (e.g. 429 rate limiting) by
-				// backing off before the next sync tick. Default fallback
-				// is handled by syncEngine's own debounce.
-				const retryAfterMs = extractRetryAfterMs(err);
-				if (retryAfterMs !== null) {
-					await delay(retryAfterMs);
-				}
-				return false;
+				return {
+					completed: false,
+					retryAfterMs: extractRetryAfterMs(err),
+				};
 			}
 			await failOp(op, err);
 		}
 	}
 
-	return true;
+	return { completed: true, retryAfterMs: null };
 }
 
 export function extractRetryAfterMs(err: unknown): number | null {
@@ -81,10 +82,6 @@ export function extractRetryAfterMs(err: unknown): number | null {
 	}
 
 	return null;
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function runOp(op: OutboxOp, token: string): Promise<void> {

@@ -386,13 +386,27 @@ func searchFederated(
 	}
 	result.Users = filterBlockedUsers(ctx, st, callerID, result.Users)
 
-	// Strip trailing ":domain" from ID for display purposes.
+	// The peer is untrusted: keep only fields that are safe to render. An id
+	// from another server would let a peer inject a local-looking account,
+	// isAdmin would draw an admin badge, and a foreign avatarUrl would make
+	// the browser fetch from an arbitrary host.
+	validated := result.Users[:0]
 	for idx := range result.Users {
-		nick := result.Users[idx].ID
-		if before, _, has := strings.Cut(nick, ":"); has {
-			result.Users[idx].Nick = before
+		user := result.Users[idx]
+		if service.RemoteServerFromIDFor(user.ID, allowPrivate) != remoteDomain {
+			continue
 		}
+		user.IsAdmin = false
+		user.AvatarURL = ""
+		user.Online = false
+		if user.Nick == "" {
+			if before, _, has := strings.Cut(user.ID, ":"); has {
+				user.Nick = before
+			}
+		}
+		validated = append(validated, user)
 	}
+	result.Users = validated
 
 	return &searchUsersOutput{Body: struct {
 		Users []model.PublicUser `json:"users"`

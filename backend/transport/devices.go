@@ -39,7 +39,7 @@ func registerUserDevices(api huma.API, st *store.Store, fed *federation.Client, 
 			return nil, &statusError{ErrorMessage: msgSessionRequired, code: http.StatusBadRequest}
 		}
 		normalized := encodePublicKey(rawKey)
-		if err := st.UpsertUserDevice(ctx, user.ID, user.SessionID, normalized); err != nil {
+		if err := st.UpsertUserDevice(ctx, user.ID, user.SessionID, normalized, input.Body.ProtocolVersion); err != nil {
 			slog.Error("failed to store device key", "err", err)
 			return nil, errInternal
 		}
@@ -227,7 +227,8 @@ func encodePublicKey(raw []byte) string {
 
 type deviceKeyInput struct {
 	Body struct {
-		PublicKey string `json:"publicKey"`
+		PublicKey       string `json:"publicKey"`
+		ProtocolVersion int    `json:"protocolVersion,omitempty"`
 	}
 }
 

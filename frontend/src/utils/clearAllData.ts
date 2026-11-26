@@ -1,4 +1,10 @@
-import { closeAndDeleteAccountDB, resetAllDBs } from "../db/init.ts";
+import {
+	closeAndDeleteAccountDB,
+	listKnownDatabases,
+	resetAllDBs,
+	setActiveAccountKey,
+} from "../db/init.ts";
+import { setTokenProvider } from "../sync/syncEngine.ts";
 import { clearFileCache } from "./fileCache.ts";
 
 const LANGUAGE_KEY = "i18nextLng";
@@ -82,7 +88,16 @@ export function clearAccountSwitchState(): void {
 }
 
 export async function clearAllData(): Promise<void> {
+	// Capture the registry before localStorage is wiped: it is the only way
+	// to find account databases that were opened in an earlier session on a
+	// browser without indexedDB.databases().
+	const knownDBs = listKnownDatabases();
 	const lang = localStorage.getItem(LANGUAGE_KEY);
+
+	// Stop any in-flight sync before deleting: a tick that starts after the
+	// reset would recreate the database and refill it with downloaded history.
+	setTokenProvider(() => null);
+	setActiveAccountKey(null);
 	clearFileCache();
 	notifyServiceWorkerCaches();
 	localStorage.clear();
@@ -94,7 +109,7 @@ export async function clearAllData(): Promise<void> {
 	await Promise.race([
 		Promise.allSettled([
 			browserUnsubscribePush(),
-			resetAllDBs(),
+			resetAllDBs(knownDBs),
 			clearAllCaches(),
 			unregisterServiceWorker(),
 		]),

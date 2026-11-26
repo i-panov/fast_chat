@@ -126,6 +126,11 @@ func (s *Service) createMasterBotRow(ctx context.Context, userID string) (*model
 
 // HandleRootBotCommand processes a message sent to the master bot.
 func (s *Service) HandleRootBotCommand(ctx context.Context, chat *model.Chat, msg *model.Message) {
+	// The in-process root bot does not go through the Bot API token check;
+	// an admin disable must stop it as well.
+	if bot, ok := s.store.GetBot(ctx, chat.BotID); !ok || !bot.IsActive {
+		return
+	}
 	bot, _, err := s.EnsureMasterBot(ctx)
 	if err != nil || chat.BotID != bot.UserID {
 		return

@@ -146,44 +146,43 @@ function buildDatedMessages(
 	return result;
 }
 
-function scrollToReplyMessage(
+function scrollToMessage(
 	prevScrollToRef: { current: string | null },
+	datedMessages: DatedEntry[],
+	virtuosoRef: { current: VirtuosoHandle | null },
 	messageId: string,
 ) {
+	if (messageId === prevScrollToRef.current) return;
+	const idx = datedMessages.findIndex(
+		(e) => e.type === "message" && e.msg.id === messageId,
+	);
+	// The row may not be in the loaded page yet: leave the target unmarked
+	// so a later rangeChanged can retry after a history page arrives.
+	if (idx === -1) return;
 	prevScrollToRef.current = messageId;
-	const el = queryMessageElement(messageId);
-	if (el !== null) {
-		el.scrollIntoView({ behavior: "smooth", block: "center" });
-		flashElement(el);
-	}
+	virtuosoRef.current?.scrollToIndex({ index: idx, align: "center" });
+	// Virtuoso mounts the row asynchronously; flash it after the jump.
+	requestAnimationFrame(() => {
+		const el = queryMessageElement(messageId);
+		if (el !== null) flashElement(el);
+	});
 }
 
 function scrollToMessageInRange(args: {
-	range: { startIndex: number; endIndex: number };
 	datedMessages: DatedEntry[];
 	scrollToMessageId?: string | null;
 	prevScrollToRef: { current: string | null };
 	virtuosoRef: { current: VirtuosoHandle | null };
 }) {
-	const {
-		range,
-		datedMessages,
-		scrollToMessageId,
-		prevScrollToRef,
-		virtuosoRef,
-	} = args;
+	const { datedMessages, scrollToMessageId, prevScrollToRef, virtuosoRef } =
+		args;
 	if (scrollToMessageId === undefined || scrollToMessageId === null) return;
-	if (scrollToMessageId === prevScrollToRef.current) return;
-	const idx = datedMessages.findIndex(
-		(e) => e.type === "message" && e.msg.id === scrollToMessageId,
+	scrollToMessage(
+		prevScrollToRef,
+		datedMessages,
+		virtuosoRef,
+		scrollToMessageId,
 	);
-	if (idx === -1) return;
-	if (idx >= range.startIndex && idx <= range.endIndex) {
-		prevScrollToRef.current = scrollToMessageId;
-		virtuosoRef.current?.scrollToIndex({ index: idx, align: "center" });
-		const el = queryMessageElement(scrollToMessageId);
-		if (el !== null) flashElement(el);
-	}
 }
 
 function EmptyState({ isOffline }: { isOffline?: boolean }) {
@@ -351,7 +350,7 @@ export function MessageList({
 	const [visibleRange, setVisibleRange] = useState<{
 		startIndex: number;
 		endIndex: number;
-	}>({ startIndex: 0, endIndex: 0 });
+	}>({ startIndex: -1, endIndex: -1 });
 
 	const { markVisibleAsRead } = useMessageReadStatuses({
 		token,
@@ -359,21 +358,23 @@ export function MessageList({
 		isInThread,
 	});
 
-	const handleReplyClick = useCallback(
-		(messageId: string) => scrollToReplyMessage(prevScrollToRef, messageId),
-		[],
-	);
-
 	const datedMessages = useMemo(
 		() => buildDatedMessages(messages, locale, showAuthorForGroup),
 		[messages, locale, showAuthorForGroup],
+	);
+
+	const handleReplyClick = useCallback(
+		(messageId: string) => {
+			scrollToMessage(prevScrollToRef, datedMessages, virtuosoRef, messageId);
+		},
+		[datedMessages],
 	);
 
 	// Track visible messages and mark them as read. Already-read
 	// messages are skipped so the POST → local markAsRead → re-render
 	// cycle cannot loop.
 	useEffect(() => {
-		if (visibleRange.startIndex === 0 && visibleRange.endIndex === 0) return;
+		if (visibleRange.startIndex < 0 || visibleRange.endIndex < 0) return;
 
 		const visibleIds = collectVisibleUnreadIds(
 			datedMessages,
@@ -461,7 +462,6 @@ export function MessageList({
 					endIndex: range.endIndex,
 				});
 				scrollToMessageInRange({
-					range,
 					datedMessages,
 					scrollToMessageId,
 					prevScrollToRef,

@@ -4,7 +4,11 @@ import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { applyDelta, maxSyncRounds, pullDelta } from "./deltaApplier.ts";
-import { extractRetryAfterMs, processOutbox } from "./outboxProcessor.ts";
+import {
+	extractRetryAfterMs,
+	type OutboxResult,
+	processOutbox,
+} from "./outboxProcessor.ts";
 
 export type SyncState = "idle" | "syncing" | "error";
 
@@ -143,6 +147,18 @@ export function scheduleSync(): void {
 	}, debounceMs);
 }
 
+function scheduleTransientRetry(retryAfterMs: number | null): void {
+	const accountKey = getActiveAccountKey();
+	clearRetryTimer();
+	retryTimer = setTimeout(() => {
+		retryTimer = null;
+		// The account may have changed while waiting: do not sync a
+		// foreign database with a stale tick.
+		if (getActiveAccountKey() !== accountKey) return;
+		void runSync();
+	}, retryDelayMs(retryAfterMs));
+}
+
 export async function runSync(): Promise<void> {
 	if (running) {
 		scheduled = true;
@@ -152,7 +168,16 @@ export async function runSync(): Promise<void> {
 	running = true;
 	setState("syncing");
 	try {
-		await processOutboxAndPull();
+		const outbox = await processOutboxAndPull();
+		if (!outbox.completed) {
+			// The queue paused on a transient failure. That is not a
+			// successful tick: keep the retry timer armed instead of
+			// clearing the backoff and leaving the op queued forever.
+			lastError = null;
+			setState("idle");
+			scheduleTransientRetry(outbox.retryAfterMs);
+			return;
+		}
 		lastError = null;
 		retryAttempt = 0;
 		clearRetryTimer();
@@ -165,16 +190,7 @@ export async function runSync(): Promise<void> {
 			// successful tick clears the state.
 			lastError = null;
 			setState("idle");
-			const accountKey = getActiveAccountKey();
-			const retryAfterMs = extractRetryAfterMs(err);
-			clearRetryTimer();
-			retryTimer = setTimeout(() => {
-				retryTimer = null;
-				// The account may have changed while waiting: do not sync
-				// a foreign database with a stale tick.
-				if (getActiveAccountKey() !== accountKey) return;
-				void runSync();
-			}, retryDelayMs(retryAfterMs));
+			scheduleTransientRetry(extractRetryAfterMs(err));
 		} else {
 			lastError = err;
 			setState("error");
@@ -208,25 +224,24 @@ function isTransientSyncError(err: unknown): boolean {
 type LockManagerLike = {
 	request(
 		name: string,
-		callback: (lock: unknown) => Promise<void>,
-	): Promise<void>;
+		callback: (lock: unknown) => Promise<OutboxResult>,
+	): Promise<OutboxResult>;
 };
 
-async function processOutboxAndPull(): Promise<void> {
+function processOutboxAndPull(): Promise<OutboxResult> {
 	const locks = (navigator as Navigator & { locks?: LockManagerLike }).locks;
 	if (locks !== undefined) {
 		const accountKey = getActiveAccountKey();
-		await locks.request(`fastchat-sync:${accountKey}`, async () => {
-			await processOutboxAndPullUnlocked();
-		});
-		return;
+		return locks.request(`fastchat-sync:${accountKey}`, () =>
+			processOutboxAndPullUnlocked(),
+		);
 	}
-	await processOutboxAndPullUnlocked();
+	return processOutboxAndPullUnlocked();
 }
 
-async function processOutboxAndPullUnlocked(): Promise<void> {
+async function processOutboxAndPullUnlocked(): Promise<OutboxResult> {
 	const token = currentToken();
-	if (token === null) return;
+	if (token === null) return { completed: true, retryAfterMs: null };
 	// Capture the account up front: getDB() resolves the database lazily,
 	// so an in-flight sync must not apply a foreign delta after a switch.
 	const accountKey = getActiveAccountKey();
@@ -247,22 +262,25 @@ async function processOutboxAndPullUnlocked(): Promise<void> {
 				{ once: true },
 			);
 		}
-		return;
+		return { completed: true, retryAfterMs: null };
 	}
 
-	await processOutbox(token);
-	if (getActiveAccountKey() !== accountKey) return;
+	const outbox = await processOutbox(token);
+	if (getActiveAccountKey() !== accountKey) {
+		return { completed: true, retryAfterMs: null };
+	}
 
 	const since = await metaRepo.getLastSyncedAt();
-	if (getActiveAccountKey() !== accountKey) return;
+	if (getActiveAccountKey() !== accountKey) {
+		return { completed: true, retryAfterMs: null };
+	}
 
 	// Page through the delta: one response is bounded server-side, and
 	// NextSince points at the continuation. Pages apply as they arrive
 	// (bounded memory); every application is idempotent, so the overlap
-	// at the cursor is harmless. applyDelta advances the stored cursor to
-	// each page's serverNow; if the round budget runs out with more
-	// pending, the cursor is parked back at the continuation so nothing
-	// is skipped.
+	// at the cursor is harmless. The persistent cursor advances only when
+	// the delta is completely drained; a failure or a closed tab mid-loop
+	// must restart from the old cursor, not jump over the continuation.
 	const controller = new AbortController();
 	inFlightController = controller;
 	let cursor: string | null = since;
@@ -276,16 +294,24 @@ async function processOutboxAndPullUnlocked(): Promise<void> {
 				undefined,
 				cursorID,
 			);
-			if (getActiveAccountKey() !== accountKey) return;
-			await applyDelta(delta);
-			if (getActiveAccountKey() !== accountKey) return;
+			if (getActiveAccountKey() !== accountKey) {
+				return { completed: true, retryAfterMs: null };
+			}
+			await applyDelta(delta, accountKey);
+			if (getActiveAccountKey() !== accountKey) {
+				return { completed: true, retryAfterMs: null };
+			}
 			const next = delta.nextSince ?? null;
-			if (next === null || round + 1 >= maxSyncRounds) {
-				if (next !== null) {
-					// Park at the continuation (time-only across ticks;
-					// the boundary tail redelivers idempotently).
-					await metaRepo.setLastSyncedAt(next);
-				}
+			if (next === null) {
+				// A complete drain may advance to serverNow. Page-level
+				// serverNow would skip the unapplied continuation.
+				await metaRepo.setLastSyncedAt(delta.serverNow);
+				break;
+			}
+			if (round + 1 >= maxSyncRounds) {
+				// Park at the continuation (time-only across ticks;
+				// the boundary tail redelivers idempotently).
+				await metaRepo.setLastSyncedAt(next);
 				break;
 			}
 			cursor = next;
@@ -294,6 +320,10 @@ async function processOutboxAndPullUnlocked(): Promise<void> {
 	} finally {
 		if (inFlightController === controller) inFlightController = null;
 	}
+
+	// The delta is pulled even when the outbox paused on a transient error:
+	// receiving history and reactions must not wait for a rate-limit window.
+	return { completed: outbox.completed, retryAfterMs: outbox.retryAfterMs };
 }
 
 let tokenProvider: (() => string | null) | null = null;

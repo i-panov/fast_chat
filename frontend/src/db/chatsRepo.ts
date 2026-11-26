@@ -1,15 +1,16 @@
 import type { Chat } from "../types/api.ts";
 import { compareByCreatedAt } from "../utils/ordering.ts";
 import { getDB } from "./init.ts";
-import { messagesRepo } from "./messagesRepo.ts";
+import { releaseLocalFileUrls } from "./localFileUrls.ts";
 import { notify } from "./notify.ts";
-import { outboxRepo } from "./outboxRepo.ts";
-import type { StoredChat } from "./schema.ts";
-import { threadMessagesRepo } from "./threadMessagesRepo.ts";
-import { threadsRepo } from "./threadsRepo.ts";
+import type { OutboxOp, StoredChat } from "./schema.ts";
 
 function stamp(chat: Chat): StoredChat {
 	return { ...chat, _updatedAt: new Date().toISOString() };
+}
+
+function pendingFileIds(op: OutboxOp): string[] {
+	return "pendingFileClientIds" in op ? op.pendingFileClientIds : [];
 }
 
 export const chatsRepo = {
@@ -52,18 +53,78 @@ export const chatsRepo = {
 	async removeMany(ids: string[]): Promise<void> {
 		if (ids.length === 0) return;
 		const db = await getDB();
-		const tx = db.transaction("chats", "readwrite");
-		await Promise.all(ids.map((id) => tx.store.delete(id)));
-		await tx.done;
-		// Messages and threads of a removed chat are unreachable from the UI;
-		// keeping them would leak local preview URLs and stale history when a
-		// private chat is reopened later.
+		// One transaction keeps the invariant "no chat row means no rows of
+		// that chat": a crash between five separate transactions could leave
+		// messages, threads and queued sends behind a deleted chat.
+		const tx = db.transaction(
+			[
+				"chats",
+				"messages",
+				"threads",
+				"threadMessages",
+				"outbox",
+				"pendingBlobs",
+			],
+			"readwrite",
+		);
+		const chatIDs = new Set(ids);
+
 		for (const id of ids) {
-			await messagesRepo.removeByChat(id);
-			await threadMessagesRepo.removeByChat(id);
-			await threadsRepo.removeByChat(id);
-			await outboxRepo.removeByChat(id);
+			await tx.objectStore("chats").delete(id);
+
+			// Messages and thread messages of a removed chat are unreachable
+			// from the UI; keeping them would leak local preview URLs and
+			// stale history when a private chat is reopened later.
+			const msgCursor = await tx
+				.objectStore("messages")
+				.index("chatId")
+				.openCursor(id);
+			for (
+				let cursor = msgCursor;
+				cursor !== null;
+				cursor = await cursor.continue()
+			) {
+				releaseLocalFileUrls(cursor.value.files);
+				await cursor.delete();
+			}
+
+			const threadMsgCursor = await tx
+				.objectStore("threadMessages")
+				.index("chatId")
+				.openCursor(id);
+			for (
+				let cursor = threadMsgCursor;
+				cursor !== null;
+				cursor = await cursor.continue()
+			) {
+				releaseLocalFileUrls(cursor.value.files);
+				await cursor.delete();
+			}
+
+			const threadCursor = await tx
+				.objectStore("threads")
+				.index("chatId")
+				.openCursor(id);
+			for (
+				let cursor = threadCursor;
+				cursor !== null;
+				cursor = await cursor.continue()
+			) {
+				await cursor.delete();
+			}
 		}
+
+		const outbox = await tx.objectStore("outbox").getAll();
+		for (const op of outbox) {
+			if (!chatIDs.has(op.chatId)) continue;
+			await tx.objectStore("outbox").delete(op.opId);
+			const pending = pendingFileIds(op);
+			for (const id of pending) {
+				await tx.objectStore("pendingBlobs").delete(id);
+			}
+		}
+
+		await tx.done;
 		notify();
 	},
 

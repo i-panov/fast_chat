@@ -1,8 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { decryptBackup, E2EBackupError, encryptBackup } from "./backup.ts";
-import { generateKeyPair } from "./crypto.ts";
+import {
+	decryptBackup,
+	decryptBackupData,
+	E2EBackupError,
+	encryptBackup,
+	encryptBackupData,
+} from "./backup.ts";
+import { generateIdentityKeyPair, generateKeyPair } from "./crypto.ts";
 
 describe("key backup roundtrip", () => {
+	it("recovers the account identity together with the device key", async () => {
+		const keyPair = await generateKeyPair();
+		const identityKeyPair = await generateIdentityKeyPair();
+		const blob = await encryptBackupData("pw", { keyPair, identityKeyPair });
+
+		const recovered = await decryptBackupData("pw", blob);
+		expect(recovered.keyPair).toEqual(keyPair);
+		expect(recovered.identityKeyPair).toEqual(identityKeyPair);
+	});
+
 	it("recovers the key pair with the correct password", async () => {
 		const kp = await generateKeyPair();
 		const blob = await encryptBackup("correct horse battery staple", kp);

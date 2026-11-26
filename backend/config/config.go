@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -35,6 +36,7 @@ var (
 	ErrInvalidVAPIDSubject  = errors.New("push.vapid_subject must be a mailto: or http(s):// URL")
 	ErrInvalidTURNConfig    = errors.New("ice.turn entry must list at least one non-empty url")
 	ErrInvalidCORSOrigin    = errors.New("cors.origin must be an http(s)://host[:port] origin or empty")
+	ErrUnsafeDebugEmail     = errors.New("email.debug_mode must be off when server.public_domain is set")
 	ErrSecretNotRegular     = errors.New("secret file must be a regular file")
 	ErrSecretFilePermissive = errors.New("secret file permissions must be 0600")
 )
@@ -467,7 +469,12 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	// A typo in a security-sensitive key (trusted_proxies, cors.origin,
+	// federation.allow_private_addresses) must fail the start, not silently
+	// fall back to a default.
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
@@ -687,12 +694,24 @@ func validateConfig(cfg *Config) error {
 		return err
 	}
 
+	// Debug mode returns verification codes in the HTTP response, so it must
+	// never be reachable through a public domain.
+	if cfg.Email.DebugMode {
+		if cfg.Server.PublicDomain != "" {
+			return fmt.Errorf("%w: got %q", ErrUnsafeDebugEmail, cfg.Server.PublicDomain)
+		}
+		slog.Warn("email.debug_mode is enabled: verification codes are returned in HTTP responses")
+	}
+
 	if err := validateTURN(cfg.ICE.TURN); err != nil {
 		return err
 	}
 
 	if cfg.CORS.Origin != "" && cfg.CORS.Origin != "*" && !isValidCORSOrigin(cfg.CORS.Origin) {
 		return fmt.Errorf("%w: got %q", ErrInvalidCORSOrigin, cfg.CORS.Origin)
+	}
+	if cfg.CORS.Origin == "*" {
+		slog.Warn("cors.origin is '*': any site can read public endpoints; set the exact frontend origin")
 	}
 
 	return nil

@@ -76,6 +76,9 @@ interface AuthContextValue {
 	updateAccountUser: (user: StoredUser) => void;
 	logout: () => void;
 	logoutAll: () => void;
+	// sessionExpired drops the dead token without erasing the account's local
+	// database or E2EE key; the user can log back in and resume.
+	sessionExpired: () => void;
 	refreshAccountToken: (
 		userId: string,
 		oldToken: string,
@@ -223,19 +226,16 @@ function useUnauthorizedSync(
 ) {
 	useEffect(() => {
 		return onUnauthorized((token) => {
-			const leaving = readAccounts().find((a) => a.token === token) ?? null;
 			const updated = readAccounts().filter((a) => a.token !== token);
 			writeAccounts(updated);
 			setAccounts(updated);
 			if (readLastActiveToken() === token) {
 				removeLastActiveToken();
 			}
-			if (
-				leaving !== null &&
-				!updated.some((a) => a.user.id === leaving.user.id)
-			) {
-				void deleteAccountDB(leaving.user.id);
-			}
+			// An expired or rejected session is not a decision to erase local
+			// data: keeping the account database (and its E2EE key) lets the
+			// same account resume after a fresh login. explicit logout and
+			// "clear data" still delete it.
 			clearAccountSwitchState();
 			if (activeToken === token) {
 				const next = updated[0]?.token ?? null;
@@ -438,7 +438,9 @@ function useAuthState() {
 
 	const updateAccountUser = useCallback((user: StoredUser) => {
 		const updated = readAccounts().map((a) =>
-			a.user.id === user.id ? { ...a, user } : a,
+			// Merge: profile updates carry only the fields they changed, and
+			// replacing the whole object would drop isAdmin/isBot.
+			a.user.id === user.id ? { ...a, user: { ...a.user, ...user } } : a,
 		);
 		writeAccounts(updated);
 		setAccounts(updated);
@@ -507,6 +509,13 @@ function useAuthState() {
 		}
 	}, [activeToken, accounts, removeAccount]);
 
+	const sessionExpired = useCallback(() => {
+		const token = activeToken;
+		if (token === null) return;
+		removeAccount(token);
+		clearAccountSwitchState();
+	}, [activeToken, removeAccount]);
+
 	const activeAccount =
 		activeToken !== null
 			? (accounts.find((a) => a.token === activeToken) ?? null)
@@ -551,6 +560,7 @@ function useAuthState() {
 		updateAccountUser,
 		logout,
 		logoutAll,
+		sessionExpired,
 		refreshAccountToken,
 	};
 }

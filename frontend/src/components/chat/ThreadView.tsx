@@ -11,6 +11,7 @@ export function ThreadView() {
 	const {
 		activeThread,
 		activeThreadMessages,
+		activeChat,
 		user,
 		activeAccount,
 		handleCloseThread,
@@ -127,6 +128,7 @@ export function ThreadView() {
 					void loadMoreThreadMessages();
 				}}
 				isInThread
+				showAuthorForGroup={activeChat?.type === "group"}
 				onRetry={handleRetry}
 				onCancelSend={handleCancel}
 			/>

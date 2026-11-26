@@ -187,7 +187,7 @@ func rateLimitMiddleware(rl *ratelimit.RateLimiter, ipExtractor *ratelimit.Clien
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := ipExtractor.ClientIP(r)
 			if !rl.Allow(ip) {
-				http.Error(w, "too many requests", http.StatusTooManyRequests)
+				httputil.WriteRateLimited(w, rl.Window())
 
 				return
 			}
@@ -435,6 +435,10 @@ func main() {
 	}
 
 	warnAboutICE(cfg)
+	if len(cfg.Server.TrustedProxies) == 0 && cfg.Server.PublicDomain != "" {
+		slog.Warn("server.trusted_proxies is empty while a public domain is configured: " +
+			"X-Forwarded-For is ignored, so every client behind the proxy shares one rate-limit bucket")
+	}
 
 	// The database holds session tokens (hashed) and message history: only
 	// the owner may list the directory.
@@ -442,6 +446,12 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o700); err != nil {
 		slog.Error("failed to create data directory", "err", err)
 		os.Exit(1)
+	}
+	// MkdirAll keeps the mode of an existing directory. Tighten it: the
+	// database holds message history and hashed session tokens.
+	//nolint:gosec // a directory needs the execute bit; 0700 is restrictive
+	if err := os.Chmod(filepath.Dir(cfg.Database.Path), 0o700); err != nil {
+		slog.Warn("failed to tighten data directory permissions", "err", err)
 	}
 
 	// Directory mode is deliberate least privilege: 0700/0750 gives the owner
@@ -451,6 +461,10 @@ func main() {
 	if err := os.MkdirAll(cfg.Uploads.Dir, 0o750); err != nil {
 		slog.Error("failed to create upload directory", "err", err)
 		os.Exit(1)
+	}
+	//nolint:gosec // a directory needs the execute bit; 0750 is restrictive
+	if err := os.Chmod(cfg.Uploads.Dir, 0o750); err != nil {
+		slog.Warn("failed to tighten upload directory permissions", "err", err)
 	}
 
 	// Abandoned stage files (.upload-*.tmp) are left by crashed uploads;
@@ -464,6 +478,22 @@ func main() {
 	if err := os.MkdirAll(cfg.Push.KeyPath, 0o700); err != nil {
 		slog.Error("failed to create push keys directory", "err", err)
 		os.Exit(1)
+	}
+
+	// Create the SQLite file with owner-only mode before the driver does:
+	// the default 0666&~umask is world-readable on a permissive system.
+	if cfg.Database.Path != "" && cfg.Database.Path != ":memory:" {
+		dbFile, fileErr := os.OpenFile(cfg.Database.Path, os.O_CREATE|os.O_RDWR, 0o600)
+		if fileErr != nil {
+			slog.Error("failed to create database file", "err", fileErr)
+			os.Exit(1)
+		}
+		if closeErr := dbFile.Close(); closeErr != nil {
+			slog.Warn("failed to close database file handle", "err", closeErr)
+		}
+		if chmodErr := os.Chmod(cfg.Database.Path, 0o600); chmodErr != nil {
+			slog.Warn("failed to tighten database file permissions", "err", chmodErr)
+		}
 	}
 
 	db, err := store.InitDB(cfg.Database.Path)
@@ -596,9 +626,12 @@ func newHTTPServer(
 			),
 		),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      0,
-		IdleTimeout:       120 * time.Second,
+		// The upload limit is 50 MiB, so a 30-second body deadline rejected
+		// valid files on slow mobile links. A body deadline still matters
+		// (slowloris), hence a generous finite value rather than zero.
+		ReadTimeout:  5 * time.Minute,
+		WriteTimeout: 0,
+		IdleTimeout:  120 * time.Second,
 	}
 }
 
@@ -643,6 +676,10 @@ func startWorkers(
 
 	workers.Go(func() {
 		svc.RunSessionCleanup(ctx, time.Hour)
+	})
+
+	workers.Go(func() {
+		svc.RunFileGC(ctx, 24*time.Hour)
 	})
 
 	return &workers
@@ -852,7 +889,14 @@ func shutdown(deps *shutdownDeps, ctx context.Context) {
 	}
 
 	if deps.store != nil {
-		deps.store.Close()
+		if workersErr != nil {
+			// Closing sql.DB under a still-running worker produces a burst of
+			// "database is closed" errors and can interrupt a transaction.
+			// The process exits immediately after this; let the OS reclaim it.
+			slog.Error("skipping store close while background workers are still running", "err", workersErr)
+		} else {
+			deps.store.Close()
+		}
 	}
 
 	if drainErr != nil {
@@ -921,6 +965,8 @@ func spaFallbackMiddleware(staticDir string) func(http.Handler) http.Handler {
 				strings.HasPrefix(path, "/.well-known/") ||
 				path == "/docs" || strings.HasPrefix(path, "/docs/") ||
 				path == "/openapi" || strings.HasPrefix(path, "/openapi/") ||
+				path == "/openapi.json" || path == "/openapi.yaml" ||
+				path == "/openapi-3.0.json" || path == "/openapi-3.0.yaml" ||
 				path == "/healthz" ||
 				path == "/readyz"
 

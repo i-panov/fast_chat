@@ -261,16 +261,22 @@ func (s *Store) GetUsersByIDs(ctx context.Context, userIDs []string) map[string]
 	return out
 }
 
+const maxLocalSearchResults = 50
+
 // SearchUsers returns users whose username or display name contains the query (case-insensitive),
 // excluding excludeID. NOTE: LIKE '%...%' prevents index usage in SQLite.
 // Acceptable for the expected user base (<10K users). If performance becomes
 // an issue, add a FTS5 virtual table and migrate SearchUsers to MATCH.
 func (s *Store) SearchUsers(ctx context.Context, query, excludeID string) []model.PublicUser {
-	q := escapeLike(strings.ToLower(query))
+	pattern := escapeLike(strings.ToLower(query))
 
 	var users []model.User
+	// A bounded result set: the search box has no pagination, and an
+	// unbounded LIKE scan over every account is both a privacy leak and a
+	// cheap way to load the server.
 	if err := s.db.WithContext(ctx).
-		Where(`(LOWER(username) LIKE ? ESCAPE '\' OR LOWER(display_name) LIKE ? ESCAPE '\') AND id != ?`, "%"+q+"%", "%"+q+"%", excludeID).
+		Where(`(LOWER(username) LIKE ? ESCAPE '\' OR LOWER(display_name) LIKE ? ESCAPE '\') AND id != ?`, "%"+pattern+"%", "%"+pattern+"%", excludeID).
+		Limit(maxLocalSearchResults).
 		Find(&users).Error; err != nil {
 		slog.Warn("SearchUsers failed", "err", err)
 		return []model.PublicUser{}

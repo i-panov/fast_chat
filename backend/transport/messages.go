@@ -14,6 +14,37 @@ import (
 	"fast_chat/store"
 )
 
+// federatedMutationTargets lists the peers that must receive an edit, delete
+// or typing event. A private chat has one remote owner; a locally owned group
+// fans out to every member domain (a replica only talks to its owner).
+func federatedMutationTargets(chat *model.Chat, cfg *config.Config) []string {
+	if chat == nil || cfg == nil {
+		return nil
+	}
+	if chat.RemoteServer != "" {
+		return []string{chat.RemoteServer}
+	}
+	if chat.Type != chatTypeGroup {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(chat.Members))
+	out := make([]string, 0, len(chat.Members))
+	for _, memberID := range chat.Members {
+		domain := service.RemoteServerFromIDFor(memberID, cfg.Federation.AllowPrivateAddresses)
+		if domain == "" || domain == cfg.Server.Domain {
+			continue
+		}
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		out = append(out, domain)
+	}
+
+	return out
+}
+
 // RegisterMessages adds the message, thread, read-status, and typing
 // operations.
 func RegisterMessages(api huma.API, svc *service.Service, st *store.Store, fed *federation.Client, cfg *config.Config) {
@@ -21,7 +52,7 @@ func RegisterMessages(api huma.API, svc *service.Service, st *store.Store, fed *
 	registerMessageMutations(api, svc, st, fed, cfg)
 	registerMessageReactions(api, svc)
 	registerThreads(api, svc, st, fed, cfg)
-	registerTyping(api, svc, fed)
+	registerTyping(api, svc, fed, cfg)
 }
 
 // registerMessagePages registers a subset of the message-domain operations.
@@ -110,12 +141,12 @@ func registerMessageMutations(api huma.API, svc *service.Service, st *store.Stor
 			return nil, errUnauthorized
 		}
 
-		chat, threadID, err := resolveMessageTarget(ctx, svc, st, input.ID, "", user.ID)
+		chat, threadID, threadParentID, err := resolveMessageTarget(ctx, svc, st, input.ID, "", user.ID)
 		if err != nil {
 			return nil, err
 		}
 
-		out, err := sendMessage(ctx, svc, fed, cfg.Federation.AllowPrivateAddresses, chat, threadID, user, &service.SendMessageInput{
+		out, err := sendMessage(ctx, svc, fed, cfg.Federation.AllowPrivateAddresses, chat, threadID, threadParentID, user, &service.SendMessageInput{
 			ID:               input.Body.ID,
 			Text:             input.Body.Text,
 			ReplyToID:        input.Body.ReplyToID,
@@ -168,7 +199,9 @@ func registerMessageMutations(api huma.API, svc *service.Service, st *store.Stor
 			return nil, messageOrInternalError(err)
 		}
 
-		fedDelete(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages/"+input.MessageID)
+		for _, domain := range federatedMutationTargets(chat, cfg) {
+			fedDelete(ctx, fed, domain, "/api/federated/chats/"+chat.ID+"/messages/"+input.MessageID)
+		}
 
 		return deletedStatus(), nil
 	})
@@ -317,12 +350,12 @@ func registerThreadMessages(api huma.API, svc *service.Service, st *store.Store,
 			return nil, errUnauthorized
 		}
 
-		chat, threadID, err := resolveMessageTarget(ctx, svc, st, input.ID, input.ThreadID, user.ID)
+		chat, threadID, threadParentID, err := resolveMessageTarget(ctx, svc, st, input.ID, input.ThreadID, user.ID)
 		if err != nil {
 			return nil, err
 		}
 
-		out, err := sendMessage(ctx, svc, fed, cfg.Federation.AllowPrivateAddresses, chat, threadID, user, &service.SendMessageInput{
+		out, err := sendMessage(ctx, svc, fed, cfg.Federation.AllowPrivateAddresses, chat, threadID, threadParentID, user, &service.SendMessageInput{
 			ID:               input.Body.ID,
 			Text:             input.Body.Text,
 			ReplyToID:        input.Body.ReplyToID,
@@ -356,7 +389,7 @@ func registerThreadMessages(api huma.API, svc *service.Service, st *store.Store,
 }
 
 // registerTyping registers a subset of the message-domain operations.
-func registerTyping(api huma.API, svc *service.Service, fed *federation.Client) {
+func registerTyping(api huma.API, svc *service.Service, fed *federation.Client, cfg *config.Config) {
 	huma.Register(api, huma.Operation{
 		OperationID: "typing",
 		Method:      http.MethodPost,
@@ -381,11 +414,14 @@ func registerTyping(api huma.API, svc *service.Service, fed *federation.Client) 
 			}{Status: "throttled"}}, nil
 		}
 
-		fedPost(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+input.ID+"/typing", map[string]any{
+		typingBody := map[string]any{
 			"userId": user.ID,
 			"active": input.Body.Active,
 			"nick":   user.Nick,
-		})
+		}
+		for _, domain := range federatedMutationTargets(chat, cfg) {
+			fedPost(ctx, fed, domain, "/api/federated/chats/"+input.ID+"/typing", typingBody)
+		}
 
 		return &typingOutput{Body: struct {
 			Status string `example:"ok" json:"status"`
@@ -420,31 +456,37 @@ func messageLimit(limit int) int {
 // chat comes from the thread, and the thread must belong to the chat in the
 // path: a thread reached through a foreign chat id is a 404, not a write
 // under a chat the caller was never authorised for.
-func resolveMessageTarget(ctx context.Context, svc *service.Service, st *store.Store, chatID, threadID, userID string) (*model.Chat, string, error) {
+func resolveMessageTarget(
+	ctx context.Context,
+	svc *service.Service,
+	st *store.Store,
+	chatID, threadID, userID string,
+) (*model.Chat, string, string, error) {
+
 	if threadID != "" {
 		thread, threadErr := requireThread(ctx, st, threadID)
 		if threadErr != nil {
-			return nil, "", threadErr
+			return nil, "", "", threadErr
 		}
 
 		if thread.ChatID != chatID {
-			return nil, "", errThreadNotFound
+			return nil, "", "", errThreadNotFound
 		}
 
 		chat, chatErr := requireChatMember(ctx, svc, thread.ChatID, userID)
 		if chatErr != nil {
-			return nil, "", chatErr
+			return nil, "", "", chatErr
 		}
 
-		return chat, threadID, nil
+		return chat, threadID, thread.ParentMessageID, nil
 	}
 
 	chat, chatErr := requireChatMember(ctx, svc, chatID, userID)
 	if chatErr != nil {
-		return nil, "", chatErr
+		return nil, "", "", chatErr
 	}
 
-	return chat, "", nil
+	return chat, "", "", nil
 }
 
 // requireThread loads a thread or maps to the pre-migration 404.
@@ -465,7 +507,7 @@ func sendMessage(
 	fed *federation.Client,
 	allowPrivate bool,
 	chat *model.Chat,
-	threadID string,
+	threadID, threadParentID string,
 	user *authUser,
 	input *service.SendMessageInput,
 ) (*model.Message, error) {
@@ -476,44 +518,58 @@ func sendMessage(
 		return nil, &statusError{ErrorMessage: msgTooManyFiles, code: http.StatusBadRequest}
 	}
 
-	msg, err := svc.SendMessage(ctx, chat, threadID, user.ID, user.Nick, input)
+	msg, created, err := svc.SendMessageWithResult(ctx, chat, threadID, user.ID, user.Nick, input)
 	if err != nil {
 		return nil, messageOrInternalError(err)
 	}
 
-	if threadID == "" {
-		// The attachments are not federated: the peer does not have the
-		// file, and there is no endpoint that would hand it over. A message
-		// with an attachment therefore reaches the peer without it. Sending
-		// the file is a separate feature: it needs an endpoint, a size
-		// policy and a transfer of the encrypted content.
-		payload := map[string]any{
-			"id":               msg.ID,
-			"fromId":           msg.FromID,
-			"fromNick":         msg.FromNick,
-			"text":             msg.Text,
-			"replyToId":        input.ReplyToID,
-			"location":         input.Location,
-			"encrypted":        msg.Encrypted,
-			"encryptedPayload": msg.EncryptedPayload,
-			"files":            msg.Files,
-		}
-		if chat.Type == chatTypeGroup && chat.RemoteServer == "" {
-			seen := make(map[string]struct{})
-			for _, memberID := range chat.Members {
-				domain := service.RemoteServerFromIDFor(memberID, allowPrivate)
-				if domain == "" || domain == svc.ServerDomain() {
-					continue
-				}
-				if _, ok := seen[domain]; ok {
-					continue
-				}
-				seen[domain] = struct{}{}
-				fedPost(ctx, fed, domain, "/api/federated/chats/"+chat.ID+"/messages", payload)
+	// A retry of an already stored id must not federate or push again: the
+	// members saw the first fan-out and the peer already inserted the row.
+	if !created {
+		return msg, nil
+	}
+
+	// The attachments are not federated: the peer does not have the file, and
+	// there is no endpoint that would hand it over. A message with an
+	// attachment therefore reaches the peer without it. Sending the file is a
+	// separate feature: it needs an endpoint, a size policy and a transfer of
+	// the encrypted content.
+	payload := map[string]any{
+		"id":               msg.ID,
+		"fromId":           msg.FromID,
+		"fromNick":         msg.FromNick,
+		"text":             msg.Text,
+		"replyToId":        input.ReplyToID,
+		"location":         input.Location,
+		"encrypted":        msg.Encrypted,
+		"encryptedPayload": msg.EncryptedPayload,
+		"files":            msg.Files,
+	}
+	path := "/api/federated/chats/" + chat.ID + "/messages"
+	if threadID != "" {
+		// Thread messages used to reach a peer only through the catch-up
+		// worker; the live relay makes the thread respond immediately.
+		payload["threadId"] = threadID
+		// For old randomly identified threads the parent is not the thread
+		// id; a replica needs the real parent to display the preview.
+		payload["threadParentId"] = threadParentID
+		path = "/api/federated/chats/" + chat.ID + "/threads/" + threadID + "/messages"
+	}
+	if chat.Type == chatTypeGroup && chat.RemoteServer == "" {
+		seen := make(map[string]struct{})
+		for _, memberID := range chat.Members {
+			domain := service.RemoteServerFromIDFor(memberID, allowPrivate)
+			if domain == "" || domain == svc.ServerDomain() {
+				continue
 			}
-		} else {
-			fedPost(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages", payload)
+			if _, ok := seen[domain]; ok {
+				continue
+			}
+			seen[domain] = struct{}{}
+			fedPost(ctx, fed, domain, path, payload)
 		}
+	} else {
+		fedPost(ctx, fed, chat.RemoteServer, path, payload)
 	}
 
 	for _, memberID := range chat.Members {
@@ -580,10 +636,12 @@ func editMessage(
 		"encryptedPayload": edit.EncryptedPayload,
 	}
 
+	path := "/api/federated/chats/" + chat.ID + "/messages/" + messageID
 	if threadID != "" {
-		fedPatch(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/threads/"+threadID+"/messages/"+messageID, payload)
-	} else {
-		fedPatch(ctx, fed, chat.RemoteServer, "/api/federated/chats/"+chat.ID+"/messages/"+messageID, payload)
+		path = "/api/federated/chats/" + chat.ID + "/threads/" + threadID + "/messages/" + messageID
+	}
+	for _, domain := range federatedMutationTargets(chat, cfg) {
+		fedPatch(ctx, fed, domain, path, payload)
 	}
 
 	svc.BroadcastMessageUpdated(ctx, chat, threadID, &updated)

@@ -144,6 +144,9 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 		} else {
 			out.Body.IsNew = false
 			pub := res.User.Public()
+			// IsAdmin is only for the authenticated user's own account: public
+			// user DTOs (search, blocks, federation) must not reveal it.
+			pub.IsAdmin = res.User.IsAdmin
 			out.Body.User = &pub
 			out.Body.Token = res.Token
 
@@ -179,6 +182,7 @@ func RegisterAuth(api huma.API, svc *service.Service, st *store.Store, hub *sse.
 		}
 
 		pub := res.User.Public()
+		pub.IsAdmin = res.User.IsAdmin
 
 		out := &completeRegistrationOutput{}
 		out.Body.User = &pub
@@ -299,6 +303,13 @@ func registerSSEAuth(api huma.API, svc *service.Service, st *store.Store, hub *s
 		if err != nil {
 			if errors.Is(err, sse.ErrConnectionInUse) {
 				return nil, errConnectionInUse
+			}
+			if errors.Is(err, sse.ErrTooManyConnections) {
+				return nil, &statusError{
+					ErrorMessage: "too many open connections",
+					ErrorCode:    "sse_limit",
+					code:         http.StatusTooManyRequests,
+				}
 			}
 
 			return nil, errConnectionNotFound

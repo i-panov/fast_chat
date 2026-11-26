@@ -242,6 +242,13 @@ export function useCall(
 		return createCallManager(api);
 	}, [userId]);
 
+	useEffect(() => {
+		// The manager owns the media and the connection of the call. An
+		// account switch replaces it; the old one must release both instead
+		// of keeping the camera busy in the background.
+		return () => manager?.end();
+	}, [manager]);
+
 	const store = useMemo(
 		() => (manager === null ? null : createCallStore(manager)),
 		[manager],

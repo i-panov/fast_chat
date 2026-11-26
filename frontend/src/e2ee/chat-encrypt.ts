@@ -9,12 +9,15 @@ import {
 	encryptContent,
 	ensureSodium,
 	type FileMeta,
+	samePublicKey,
 	sealMessageKey,
+	signSenderBinding,
 } from "./crypto.ts";
 import type { FileKey } from "./file-crypto.ts";
 import { encryptBytes, generateFileKey, hashBytes } from "./file-crypto.ts";
 import {
 	ensureAccountKeys,
+	ensureIdentityKeys,
 	getRecipientDeviceKeys,
 	RecoveryRequiredError,
 } from "./keys.ts";
@@ -22,7 +25,30 @@ import {
 export interface EncryptResult {
 	ciphertext: string;
 	nonce: string;
-	envelopes: Array<{ keyId: string; box: string }>;
+	envelopes: Array<{ keyId: string; box: string; nonce?: string }>;
+	// v2: authenticated envelopes, sender key and identity signature.
+	version: 1 | 2;
+	senderKey?: string;
+	identityKey?: string;
+	identitySig?: string;
+}
+
+// Message binding authenticated as AEAD associated data. The server may
+// reorder or move ciphertext; any change to these fields makes decryption
+// fail instead of producing a valid message in the wrong place. The timestamp
+// is deliberately not bound: it is assigned by the server after encryption.
+export function messageAAD(parts: {
+	chatId: string;
+	messageId: string;
+	fromId: string;
+	threadId?: string;
+}): string {
+	return [
+		parts.chatId,
+		parts.messageId,
+		parts.fromId,
+		parts.threadId ?? "",
+	].join("|");
 }
 
 // encryptForChat encrypts the full message content (text, location, file keys)
@@ -38,6 +64,11 @@ export async function encryptForChat(
 	content: { text: string; location?: Location },
 	fileKeys: Record<string, FileKey>,
 	fileMeta?: Record<string, FileMeta>,
+	binding?: {
+		messageId: string;
+		fromId: string;
+		threadId?: string;
+	},
 ): Promise<EncryptResult | null> {
 	try {
 		const chat = await chatsRepo.getById(chatId);
@@ -47,10 +78,14 @@ export async function encryptForChat(
 		if (memberIds.length === 0) {
 			throw new Error("chat has no members");
 		}
-		await ensureAccountKeys(token);
+		const myKeys = await ensureAccountKeys(token);
 
 		const deviceKeys = await getRecipientDeviceKeys(token, memberIds);
-		const recipients: Array<{ keyId: string; publicKey: string }> = [];
+		const recipients: Array<{
+			keyId: string;
+			publicKey: string;
+			protocolVersion: number;
+		}> = [];
 		const missing: string[] = [];
 
 		for (const id of memberIds) {
@@ -68,6 +103,17 @@ export async function encryptForChat(
 
 		if (recipients.length === 0) {
 			throw new Error("no recipient keys available");
+		}
+
+		// Without our own envelope the sender cannot read the message back.
+		// This happens when this device's key was revoked or the server lost
+		// it; fail closed instead of producing an unreadable message.
+		if (
+			!recipients.some((device) =>
+				samePublicKey(device.publicKey, myKeys.publicKey),
+			)
+		) {
+			throw new Error("own device key is missing from recipients");
 		}
 
 		if (missing.length > 0) {
@@ -93,13 +139,45 @@ export async function encryptForChat(
 			fileKeys,
 			fileMeta,
 		};
-		const encrypted = await encryptContent(contentBlob, msgKey);
-		const envelopes = await sealMessageKey(msgKey, recipients);
+		// v2 is readable only by clients that announced it. A mixed chat
+		// falls back to v1 so an old tab does not see every new message as
+		// undecryptable.
+		const useV2 =
+			binding !== undefined &&
+			recipients.every((recipient) => recipient.protocolVersion >= 2);
+		const aad = useV2
+			? messageAAD({
+					chatId,
+					messageId: binding.messageId,
+					fromId: binding.fromId,
+					threadId: binding.threadId,
+				})
+			: undefined;
+		const identity = useV2 ? await ensureIdentityKeys() : undefined;
+		const encrypted = await encryptContent(contentBlob, msgKey, aad);
+		// A binding turns the anonymous sealed envelope into an authenticated
+		// one: the recipient verifies it with the sender's public key.
+		const envelopes = await sealMessageKey(
+			msgKey,
+			recipients,
+			useV2 ? myKeys : undefined,
+		);
 
 		return {
 			ciphertext: encrypted.ciphertext,
 			nonce: encrypted.nonce,
-			envelopes: envelopes.map((e) => ({ keyId: e.keyId, box: e.box })),
+			envelopes: envelopes.map((e) => ({
+				keyId: e.keyId,
+				box: e.box,
+				...(e.nonce !== undefined ? { nonce: e.nonce } : {}),
+			})),
+			version: useV2 ? 2 : 1,
+			senderKey: useV2 ? myKeys.publicKey : undefined,
+			identityKey: identity?.publicKey,
+			identitySig:
+				aad === undefined || identity === undefined
+					? undefined
+					: await signSenderBinding(identity, aad, myKeys.publicKey),
 		};
 	} catch (err) {
 		// Recovery must surface to the UI, not hide behind a generic notice.
@@ -206,7 +284,10 @@ export async function prepareFiles(
 			await pendingBlobsRepo.put({
 				id: clientId,
 				blob: new Blob([ciphertext as unknown as ArrayBuffer]),
-				name: pf.originalName,
+				// The server stores the multipart filename. For an encrypted
+				// upload it must not learn the real name: the sender restores
+				// it from fileMeta after decryption.
+				name: "encrypted",
 				mimeType: pf.mimeType,
 				size: pf.size,
 				plaintextHash,

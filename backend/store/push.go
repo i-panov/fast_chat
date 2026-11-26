@@ -30,7 +30,7 @@ func (s *Store) AddPushSubscriptionForSession(
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "endpoint"}},
 		DoUpdates: clause.Assignments(map[string]any{
-			"user_id":    userID,
+			colUserID:    userID,
 			"session_id": sessionID,
 			"p256_dh":    p256dh,
 			"auth":       auth,

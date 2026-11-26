@@ -55,7 +55,10 @@ func (s *Store) CreateThread(ctx context.Context, chatID, parentMessageID, paren
 		return nil, ErrThreadExists
 	}
 
-	id := GenerateID()
+	// The thread id is derived from the parent message: every server that
+	// receives a thread message can recreate the missing thread row without a
+	// separate mapping. Message ids are globally unique, so this is too.
+	id := parentMessageID
 	thread := &model.Thread{
 		ID:                id,
 		ChatID:            chatID,
@@ -89,6 +92,23 @@ func (s *Store) CreateThread(ctx context.Context, chatID, parentMessageID, paren
 	}
 
 	return thread, nil
+}
+
+// UpsertRemoteThread creates a thread row reported by a peer. It never
+// overwrites a local row; the boolean reports whether the row was created so
+// the caller can fan out the "thread created" event exactly once.
+func (s *Store) UpsertRemoteThread(ctx context.Context, thread *model.Thread) (bool, error) {
+	if thread == nil || thread.ID == "" || thread.ChatID == "" {
+		return false, ErrThreadNotFound
+	}
+	if thread.CreatedAt.IsZero() {
+		thread.CreatedAt = time.Now().UTC()
+	}
+	result := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(thread)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func (s *Store) GetThread(ctx context.Context, threadID string) (model.Thread, bool) {

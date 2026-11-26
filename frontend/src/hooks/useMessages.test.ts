@@ -84,7 +84,6 @@ describe("useMessages", () => {
 		expect(mockGetMessages()).toHaveBeenCalledWith("tok", "c1", {
 			limit: 30,
 			before: undefined,
-			missingIDs: [],
 		});
 
 		await act(async () => {
@@ -97,7 +96,6 @@ describe("useMessages", () => {
 		expect(mockGetMessages()).toHaveBeenLastCalledWith("tok", "c1", {
 			limit: 30,
 			before: "cur1",
-			missingIDs: ["m1"],
 		});
 		await waitFor(() => {
 			expect(result.current.messages.map((m) => m.id)).toEqual(["m1", "m2"]);

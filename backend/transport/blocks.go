@@ -97,11 +97,13 @@ func filterBlockedUsers(ctx context.Context, st *store.Store, viewerID string, u
 	}
 	blocked, err := st.BlockedIDs(ctx, viewerID)
 	if err != nil {
-		return users
+		// Fail closed: showing blocked users because the database is busy is
+		// worse than hiding the whole result for one request.
+		return []model.PublicUser{}
 	}
 	blockedBy, err := st.BlockedByIDs(ctx, viewerID)
 	if err != nil {
-		return users
+		return []model.PublicUser{}
 	}
 	hidden := make(map[string]struct{}, len(blocked)+len(blockedBy))
 	for _, id := range blocked {

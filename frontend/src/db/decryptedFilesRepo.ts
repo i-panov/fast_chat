@@ -29,7 +29,10 @@ export const decryptedFilesRepo = {
 		const entry = await db.get("decryptedFiles", key);
 		if (entry === undefined) return;
 		// Touch for LRU eviction; the copy given to the caller stays as read.
-		await db.put("decryptedFiles", { ...entry, lastAccessedAt: Date.now() });
+		// A failed touch must not break an already successful read.
+		await db
+			.put("decryptedFiles", { ...entry, lastAccessedAt: Date.now() })
+			.catch(() => {});
 		return entry;
 	},
 
@@ -44,6 +47,8 @@ export const decryptedFilesRepo = {
 		// again after every await: a switch in between must not write one
 		// account's plaintext into another account's database.
 		if (getActiveAccountKey() !== accountKey) return;
+		if (bytes.byteLength > (await byteLimit())) return;
+		if (getActiveAccountKey() !== accountKey) return;
 		const db = await getDB();
 		const now = Date.now();
 		const entry: DecryptedFile = {
@@ -55,7 +60,7 @@ export const decryptedFilesRepo = {
 			size: bytes.byteLength,
 		};
 		await db.put("decryptedFiles", entry);
-		await this.evictIfNeeded();
+		await this.evictIfNeeded(key);
 	},
 
 	async remove(key: string): Promise<void> {
@@ -68,7 +73,7 @@ export const decryptedFilesRepo = {
 		return (await db.get("decryptedFiles", key)) !== undefined;
 	},
 
-	async evictIfNeeded(): Promise<void> {
+	async evictIfNeeded(keepKey?: string): Promise<void> {
 		const db = await getDB();
 		const all = await db.getAll("decryptedFiles");
 		if (all.length === 0) return;
@@ -84,6 +89,7 @@ export const decryptedFilesRepo = {
 		let count = all.length;
 		for (const entry of all) {
 			if (count <= MAX_DECRYPTED_FILES && total <= maxBytes) break;
+			if (entry.key === keepKey) continue;
 			toDelete.push(entry);
 			count--;
 			total -= entry.size;

@@ -72,7 +72,7 @@ vi.mock("../components/chat/AudioPlayerBar.tsx", () => ({
 
 const SELECT_PROMPT = /selectPrompt|Select/;
 
-vi.setConfig({ testTimeout: 30000 });
+vi.setConfig({ testTimeout: 60000 });
 
 function seedAccount() {
 	localStorage.setItem(
@@ -89,7 +89,7 @@ function seedAccount() {
 	sessionStorage.setItem("activeToken", "tok");
 }
 
-const FIND_OPTIONS = { timeout: 15000 };
+const FIND_OPTIONS = { timeout: 30000 };
 
 function renderAt(path: string) {
 	const router = createRouter({

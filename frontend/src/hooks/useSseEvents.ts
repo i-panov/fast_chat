@@ -219,6 +219,14 @@ export function useSseEvents({
 				await messagesRepo.upsert(msg);
 				return;
 			}
+			if (event === "thread_message_updated") {
+				const { threadId, message } = data as {
+					threadId: string;
+					message: Message;
+				};
+				await threadMessagesRepo.upsert(message, threadId);
+				return;
+			}
 			if (event === "message_reactions_updated") {
 				await applyReactionsEvent(
 					data as { messageId: string; reactions: ReactionSummary[] },

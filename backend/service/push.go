@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -205,7 +206,12 @@ func (s *Service) SendPushForMessage(
 	sendPushBounded(s.push, raw, subs)
 }
 
+var botTokenPattern = regexp.MustCompile(`fcb_[A-Za-z0-9_-]{8,}`)
+
 func previewBotText(text string) string {
+	// A root-bot reply may contain a freshly created token. The message itself
+	// must keep it for copying, but a lock-screen notification must not.
+	text = botTokenPattern.ReplaceAllString(text, "fcb_…")
 	runes := []rune(strings.TrimSpace(text))
 	if len(runes) > 120 {
 		runes = runes[:120]

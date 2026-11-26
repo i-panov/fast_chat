@@ -190,14 +190,25 @@ func (s *Service) sendOne(payload []byte, endpoint, p256dh, auth string) error {
 	return nil
 }
 
+var errVAPIDKeysUnreadable = errors.New("VAPID key file is unreadable; restore it instead of rotating")
+
 func loadOrGenerateVAPIDKeys(keysDir string) (VAPIDKeys, error) {
 	keysPath := filepath.Clean(filepath.Join(keysDir, "vapid_keys.json"))
 
-	if data, err := os.ReadFile(keysPath); err == nil {
+	data, readErr := os.ReadFile(keysPath)
+	if readErr == nil {
 		var keys VAPIDKeys
 		if err := json.Unmarshal(data, &keys); err == nil && keys.PublicKey != "" && keys.PrivateKey != "" {
 			return keys, nil
 		}
+
+		// Rotating the key silently invalidates every push subscription
+		// (push services answer 401/403 forever). Refuse to start instead:
+		// the operator can restore the file or remove it deliberately.
+		return VAPIDKeys{}, fmt.Errorf("%w: %s", errVAPIDKeysUnreadable, keysPath)
+	}
+	if !errors.Is(readErr, os.ErrNotExist) {
+		return VAPIDKeys{}, fmt.Errorf("read VAPID keys: %w", readErr)
 	}
 
 	slog.Info("generating new VAPID keys")
@@ -220,12 +231,18 @@ func loadOrGenerateVAPIDKeys(keysDir string) (VAPIDKeys, error) {
 		return VAPIDKeys{}, err
 	}
 
-	data, err := json.MarshalIndent(keys, "", "  ") //nolint:gosec // VAPID key export must match the web-push JSON format
+	data, err = json.MarshalIndent(keys, "", "  ") //nolint:gosec // VAPID key export must match the web-push JSON format
 	if err != nil {
 		return VAPIDKeys{}, err
 	}
 
-	if err := os.WriteFile(keysPath, data, 0o600); err != nil {
+	// Write atomically: a crash mid-write must not leave a truncated file
+	// that the next start would treat as unreadable and rotate.
+	tmpPath := keysPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		return VAPIDKeys{}, err
+	}
+	if err := os.Rename(tmpPath, keysPath); err != nil {
 		return VAPIDKeys{}, err
 	}
 

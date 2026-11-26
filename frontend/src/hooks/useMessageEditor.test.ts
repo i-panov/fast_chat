@@ -38,6 +38,7 @@ describe("useMessageEditor", () => {
 			messageId: "m1",
 			text: "new text",
 			files: undefined,
+			filesToRemove: [],
 			threadId: undefined,
 			location: { lat: 1, lng: 2 },
 		});
@@ -82,6 +83,7 @@ describe("useMessageEditor", () => {
 		expect(result.current.editingMessage?.files?.map((f) => f.id)).toEqual([
 			"f2",
 		]);
+		expect(result.current.editingMessage?.filesToRemove).toEqual(["f1"]);
 
 		act(() => {
 			result.current.handleRemoveExistingLocation();

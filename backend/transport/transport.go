@@ -23,6 +23,7 @@ import (
 
 	"fast_chat/config"
 	"fast_chat/federation"
+	"fast_chat/internal/httputil"
 	"fast_chat/ratelimit"
 	"fast_chat/service"
 	"fast_chat/sse"
@@ -139,7 +140,7 @@ func rateLimitMiddleware(rl *RateLimiters) func(http.Handler) http.Handler {
 				if token != "" {
 					sum := sha256.Sum256([]byte(token))
 					if !rl.BotAPI.Allow(hex.EncodeToString(sum[:])) {
-						http.Error(w, "too many requests", http.StatusTooManyRequests)
+						httputil.WriteRateLimited(w, rl.BotAPI.Window())
 						return
 					}
 				}
@@ -161,7 +162,7 @@ func rateLimitMiddleware(rl *RateLimiters) func(http.Handler) http.Handler {
 			if limiter != nil {
 				ip := rl.Extractor.ClientIP(r)
 				if !limiter.Allow(ip) {
-					http.Error(w, "too many requests", http.StatusTooManyRequests)
+					httputil.WriteRateLimited(w, limiter.Window())
 					return
 				}
 			}
@@ -533,7 +534,10 @@ func runSSE(ctx context.Context, hctx huma.Context, hub *sse.Hub, st *store.Stor
 				})
 			}
 
-			writeComment(writer, flusher, "heartbeat")
+			// A real event, not an SSE comment: comments are invisible to
+			// EventSource, so the browser cannot use them as a liveness
+			// signal for a half-open stream.
+			writeEvent(writer, flusher, "ping", map[string]any{})
 
 		case evt, ok := <-conn.Channel:
 			if !pumpSSEEvent(conn, writer, flusher, evt, ok) {
@@ -618,11 +622,6 @@ func writeEvent(w io.Writer, flusher http.Flusher, event string, data any) {
 	}
 
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData) //nolint:errcheck // best-effort: SSE writer
-	flusher.Flush()
-}
-
-func writeComment(w io.Writer, flusher http.Flusher, comment string) {
-	fmt.Fprintf(w, ": %s\n\n", comment) //nolint:errcheck // best-effort: SSE writer
 	flusher.Flush()
 }
 

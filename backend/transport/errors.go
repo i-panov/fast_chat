@@ -171,6 +171,10 @@ var errThreadNotFound = &statusError{ErrorMessage: "thread not found", code: htt
 
 var sentinelErrors = []sentinelErrPair{
 	{
+		sentinel: service.ErrBotGroupMember,
+		target:   &statusError{ErrorMessage: "bots can only be used in 1-1 chats", code: http.StatusBadRequest},
+	},
+	{
 		sentinel: service.ErrBotEncryptionRequired,
 		target:   &statusError{ErrorMessage: service.ErrBotEncryptionRequired.Error(), code: http.StatusBadRequest},
 	},
@@ -450,5 +454,17 @@ var sentinelErrors = []sentinelErrPair{
 	{
 		sentinel: calls.ErrExpired,
 		target:   &statusError{ErrorMessage: "call was not answered in time", code: http.StatusConflict},
+	},
+	{
+		sentinel: calls.ErrOfferTooLarge,
+		target:   &statusError{ErrorMessage: "call offer is too large", code: http.StatusRequestEntityTooLarge},
+	},
+	{
+		sentinel: calls.ErrAnswerTooLarge,
+		target:   &statusError{ErrorMessage: "call answer is too large", code: http.StatusRequestEntityTooLarge},
+	},
+	{
+		sentinel: calls.ErrICECandidateTooLarge,
+		target:   &statusError{ErrorMessage: "ICE candidate is too large", code: http.StatusRequestEntityTooLarge},
 	},
 }

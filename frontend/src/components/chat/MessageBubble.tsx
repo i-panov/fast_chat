@@ -322,6 +322,8 @@ export const MessageBubble = memo(function MessageBubble({
 	replyMarkup,
 }: MessageBubbleProps) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+	const bubbleRef = useRef<HTMLDivElement>(null);
+	const menuOpenedByKeyboardRef = useRef(false);
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
 	const [locationLightboxOpen, setLocationLightboxOpen] = useState(false);
 	const menuRef = useRef<HTMLDivElement>(null);
@@ -417,6 +419,12 @@ export const MessageBubble = memo(function MessageBubble({
 
 	const closeMenu = useCallback(() => {
 		setMenuPos(null);
+		if (menuOpenedByKeyboardRef.current) {
+			menuOpenedByKeyboardRef.current = false;
+			// The trigger is the bubble itself: the opened menu took focus,
+			// and closing it must hand focus back for continued keyboard use.
+			requestAnimationFrame(() => bubbleRef.current?.focus());
+		}
 	}, []);
 
 	useEffect(() => {
@@ -451,6 +459,7 @@ export const MessageBubble = memo(function MessageBubble({
 				}}
 			>
 				<Paper
+					ref={bubbleRef}
 					className={isOwn ? "bubble-own" : "bubble-other"}
 					data-message-id={msgId}
 					onClickCapture={(e) => {
@@ -462,6 +471,7 @@ export const MessageBubble = memo(function MessageBubble({
 					onContextMenu={(e) => {
 						e.preventDefault();
 						if (selection?.mode) return;
+						menuOpenedByKeyboardRef.current = false;
 						openMenuAt(e.clientX, e.clientY);
 					}}
 					tabIndex={hasMenuActions || selectable ? 0 : undefined}
@@ -480,6 +490,7 @@ export const MessageBubble = memo(function MessageBubble({
 							return;
 						}
 						e.preventDefault();
+						menuOpenedByKeyboardRef.current = true;
 						const rect = e.currentTarget.getBoundingClientRect();
 						openMenuAt(rect.left, rect.bottom);
 					}}

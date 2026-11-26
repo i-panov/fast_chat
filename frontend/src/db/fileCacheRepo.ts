@@ -30,18 +30,24 @@ export const fileCacheRepo = {
 		const entry = await db.get("fileCache", url);
 		if (entry === undefined) return;
 		// Touch the entry so eviction can use true LRU rather than
-		// insertion order.
-		await db.put("fileCache", { ...entry, lastAccessedAt: Date.now() });
+		// insertion order. A failed touch must not break a successful read.
+		await db
+			.put("fileCache", { ...entry, lastAccessedAt: Date.now() })
+			.catch(() => {});
 		return entry;
 	},
 
+	// put reports whether the file was actually stored. An explicit offline
+	// save must not claim success when the file does not fit the cache.
 	async put(
 		url: string,
 		blob: Blob,
 		mimeType: string,
 		force = false,
-	): Promise<void> {
-		if (!force && blob.size > MAX_AUTO_CACHE_BYTES) return;
+	): Promise<boolean> {
+		if (!force && blob.size > MAX_AUTO_CACHE_BYTES) return false;
+		const maxBytes = await cacheByteLimit();
+		if (blob.size > maxBytes) return false;
 		const db = await getDB();
 		const now = Date.now();
 		const entry: CachedFile = {
@@ -53,7 +59,8 @@ export const fileCacheRepo = {
 			size: blob.size,
 		};
 		await db.put("fileCache", entry);
-		await this.evictIfNeeded();
+		await this.evictIfNeeded(url);
+		return true;
 	},
 
 	async remove(url: string): Promise<void> {
@@ -61,7 +68,7 @@ export const fileCacheRepo = {
 		await db.delete("fileCache", url);
 	},
 
-	async evictIfNeeded(): Promise<void> {
+	async evictIfNeeded(keepUrl?: string): Promise<void> {
 		const db = await getDB();
 		const all = await db.getAll("fileCache");
 		if (all.length === 0) return;
@@ -79,6 +86,9 @@ export const fileCacheRepo = {
 		let count = all.length;
 		for (const entry of all) {
 			if (count <= MAX_CACHED_FILES && total <= maxBytes) break;
+			// Never evict the entry that was just written for an explicit
+			// save: the caller would report success for a file that vanished.
+			if (entry.url === keepUrl) continue;
 			toDelete.push(entry);
 			count--;
 			total -= entry.size;

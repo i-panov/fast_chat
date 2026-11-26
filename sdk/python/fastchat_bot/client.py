@@ -501,6 +501,11 @@ class BotClient:
                             message.encrypted_payload,
                             self._bot_id or self.get_me().id,
                             self.encryption_key,
+                            {
+                                "chatId": message.chat_id,
+                                "messageId": message.message_id,
+                                "fromId": message.from_user.id,
+                            },
                         )
                         message.text = str(content.get("text", ""))
                         markup = content.get("replyMarkup")

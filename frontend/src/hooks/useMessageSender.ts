@@ -105,6 +105,11 @@ interface SenderDeps {
 		content: { text: string; location?: Location },
 		fileKeys: Record<string, FileKey>,
 		fileMeta?: Record<string, FileMeta>,
+		binding?: {
+			messageId: string;
+			fromId: string;
+			threadId?: string;
+		},
 	) => Promise<EncryptResult | null>;
 	token: string | undefined;
 }
@@ -132,25 +137,31 @@ async function removeSendOrEditOp(
 
 // encryptContentOrCleanup encrypts via deps and, when encryption throws,
 // drops the staged blobs before rethrowing so failures leave no orphans.
-async function encryptContentOrCleanup(
-	deps: SenderDeps,
-	prepared: PreparedFile[],
-	token: string | undefined,
-	chatId: string,
-	content: { text: string; location?: Location },
-	fileKeys: Record<string, FileKey>,
-	fileMeta?: Record<string, FileMeta>,
-): Promise<EncryptResult | null> {
+async function encryptContentOrCleanup(request: {
+	deps: SenderDeps;
+	prepared: PreparedFile[];
+	token: string | undefined;
+	chatId: string;
+	content: { text: string; location?: Location };
+	fileKeys: Record<string, FileKey>;
+	fileMeta?: Record<string, FileMeta>;
+	binding?: {
+		messageId: string;
+		fromId: string;
+		threadId?: string;
+	};
+}): Promise<EncryptResult | null> {
 	try {
-		return await deps.encryptForChat(
-			token,
-			chatId,
-			content,
-			fileKeys,
-			fileMeta,
+		return await request.deps.encryptForChat(
+			request.token,
+			request.chatId,
+			request.content,
+			request.fileKeys,
+			request.fileMeta,
+			request.binding,
 		);
 	} catch (err) {
-		await dropPreparedBlobs(prepared);
+		await dropPreparedBlobs(request.prepared);
 		throw err;
 	}
 }
@@ -241,15 +252,20 @@ async function doSendMessage(
 	const { fileKeys, fileMeta, fileHashes, uploadClientIds } =
 		buildFileMaps(prepared);
 
-	const encrypted = await encryptContentOrCleanup(
+	const encrypted = await encryptContentOrCleanup({
 		deps,
 		prepared,
 		token,
 		chatId,
-		{ text, location },
+		content: { text, location },
 		fileKeys,
 		fileMeta,
-	);
+		binding: {
+			messageId: msgId,
+			fromId: user.id,
+			threadId: inThreadId,
+		},
+	});
 	if (encrypted === null) {
 		// Encryption did not run (e.g. missing keys): drop the staged blobs
 		// so they do not linger as orphans in IDB.
@@ -258,8 +274,11 @@ async function doSendMessage(
 	}
 
 	const payload = JSON.stringify({
-		v: 1,
+		v: encrypted.version,
 		nonce: encrypted.nonce,
+		senderKey: encrypted.senderKey,
+		identityKey: encrypted.identityKey,
+		identitySig: encrypted.identitySig,
 		envelopes: encrypted.envelopes,
 	});
 
@@ -422,23 +441,31 @@ async function doEditMessage(
 		return true;
 	}
 
-	const encrypted = await encryptContentOrCleanup(
+	const encrypted = await encryptContentOrCleanup({
 		deps,
-		blobIds,
+		prepared: blobIds,
 		token,
 		chatId,
-		{ text, location: nextLocation },
+		content: { text, location: nextLocation },
 		fileKeys,
 		fileMeta,
-	);
+		binding: {
+			messageId,
+			fromId: current.fromId,
+			threadId: inThreadId,
+		},
+	});
 	if (encrypted === null) {
 		await dropPreparedBlobs(blobIds);
 		return false;
 	}
 
 	const payload = JSON.stringify({
-		v: 1,
+		v: encrypted.version,
 		nonce: encrypted.nonce,
+		senderKey: encrypted.senderKey,
+		identityKey: encrypted.identityKey,
+		identitySig: encrypted.identitySig,
 		envelopes: encrypted.envelopes,
 	});
 
@@ -490,7 +517,10 @@ async function doDeleteMessage(
 		? await threadMessagesRepo.getById(threadId, messageId)
 		: await messagesRepo.getById(chatId, messageId);
 
-	if (current?.status === "failed") {
+	// A queued send has not left the device yet: deleting it must cancel the
+	// operation (and its staged blobs), not enqueue a delete that runs after
+	// the message has already reached every recipient.
+	if (current?.status === "queued" || current?.status === "failed") {
 		await removeSendOrEditOp(chatId, messageId);
 		if (threadId !== undefined) {
 			await threadMessagesRepo.remove(threadId, messageId);

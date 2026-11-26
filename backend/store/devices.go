@@ -11,17 +11,22 @@ import (
 
 // UpsertUserDevice registers or refreshes the public key of one device. It is
 // idempotent: the same device may upload a key again after recovery.
-func (s *Store) UpsertUserDevice(ctx context.Context, userID, deviceID, publicKey string) error {
+//
+// revoked_at is deliberately not updated here: a revoked key must stay revoked
+// even when the device re-registers on the next page load. Un-revoking is an
+// explicit recovery action, not a side effect of an upsert.
+func (s *Store) UpsertUserDevice(ctx context.Context, userID, deviceID, publicKey string, protocolVersion int) error {
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"user_id", "public_key", fieldLastSeenAt, "revoked_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{colUserID, "public_key", "protocol_version", fieldLastSeenAt}),
 	}).Create(&model.UserDevice{
-		ID:         deviceID,
-		UserID:     userID,
-		PublicKey:  publicKey,
-		CreatedAt:  now,
-		LastSeenAt: now,
+		ID:              deviceID,
+		UserID:          userID,
+		PublicKey:       publicKey,
+		ProtocolVersion: protocolVersion,
+		CreatedAt:       now,
+		LastSeenAt:      now,
 	}).Error
 }
 

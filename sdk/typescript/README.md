@@ -44,6 +44,16 @@ new bot chats to encrypted text, encrypted inline keyboards and encrypted
 callback data. Files and locations are plaintext and are not available in
 E2EE mode.
 
+Incoming E2EE messages may use payload v2 (`crypto_box_easy`, authenticated
+sender envelope, Ed25519 identity signature, AAD `chatId|messageId|fromId|threadId`);
+the SDK verifies the signature and binding before decrypting. Replies are sent
+as v1 and remain readable by every client, including old web tabs.
+
+An E2EE bot can only send proactively to a chat after it has received a
+message from that chat: the device keys of the recipient are unknown before
+that. `sendMessage` rejects such an attempt with `BotApiError` instead of
+sending plaintext.
+
 ## Encrypted files
 
 `sendEncryptedFile` uploads ciphertext with the plaintext hash and sends hash-keyed `fileKeys`/`fileMeta`. `downloadFile` returns ciphertext; decrypt it with `decryptFileBytes` and the matching key. Locations travel in encrypted `sendMessage` content.

@@ -9,6 +9,7 @@ import type { FileInfo } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { BORDER_RADIUS_SM } from "../../utils/constants.ts";
 import { isFileCached, saveFileOffline } from "../../utils/fileCache.ts";
+import { emitNotification } from "../../utils/notify.ts";
 
 const FILE_ATTACHMENT_MAX_SIZE = 300;
 
@@ -87,6 +88,7 @@ export function VideoAttachment({ file, fileKeys }: Props) {
 					setSaving(true);
 					void saveFileOffline(file.url, activeAccount?.token)
 						.then(() => setCached(true))
+						.catch(() => emitNotification(t("media.saveOfflineFailed")))
 						.finally(() => setSaving(false));
 				}}
 			>

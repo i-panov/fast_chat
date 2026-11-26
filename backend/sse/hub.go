@@ -17,6 +17,11 @@ const (
 	// must not grow it without bound. Authenticated connections always get
 	// a slot; under pressure the oldest unauthenticated one is evicted.
 	maxHubConnections = 10000
+	// maxConnectionsPerUser stops one account from exhausting the transport's
+	// SSE backstop (1024 streams) and silencing realtime for everyone. The
+	// oldest stream of the same user is evicted instead of rejecting the new
+	// one: a crashed browser must not lock the account out until token expiry.
+	maxConnectionsPerUser = 8
 	// hubAuthTimeout is how long an unauthenticated connection may hold its
 	// slot: Register happens before the auth request, and a client that
 	// never authenticates must not keep the channel forever.
@@ -29,6 +34,9 @@ var (
 	// connection to another user or session. Rebinding would leak the
 	// presence bookkeeping of the first binding.
 	ErrConnectionInUse = errors.New("connection already authorized to another session")
+	// ErrTooManyConnections reports the per-user stream cap. Evicting a live
+	// stream made every client reconnect and evict the next one.
+	ErrTooManyConnections = errors.New("too many connections for this user")
 )
 
 type Event struct {
@@ -258,6 +266,9 @@ func (h *Hub) BindSession(connectionID, userID, sessionID string, expiresAt time
 	// Avoid duplicate entries if sseAuth is replayed for the same
 	// connection (e.g. a retried auth request).
 	if !slices.Contains(h.userConns[userID], connectionID) {
+		if len(h.userConns[userID]) >= maxConnectionsPerUser {
+			return false, ErrTooManyConnections
+		}
 		h.userConns[userID] = append(h.userConns[userID], connectionID)
 	}
 	if sessionID != "" {

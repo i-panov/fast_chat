@@ -9,7 +9,52 @@ import { DB_NAME, DB_VERSION, type FCSchema } from "./schema.ts";
 // (login page / logged-out state).
 const dbs = new Map<string, Promise<IDBPDatabase<FCSchema>>>();
 
+// The registry survives a reload where the account database was not opened
+// yet; without it, clear-all cannot find other accounts' databases on
+// browsers that do not implement indexedDB.databases().
+const DB_REGISTRY_KEY = "fast_chat_db_names";
+
 let activeAccountKey: string | null = null;
+
+function rememberDBName(name: string): void {
+	if (!name.startsWith(DB_NAME)) return;
+	try {
+		const raw = localStorage.getItem(DB_REGISTRY_KEY);
+		const parsed: unknown = raw === null ? [] : JSON.parse(raw);
+		const names = new Set<string>(
+			Array.isArray(parsed)
+				? parsed.filter((item): item is string => typeof item === "string")
+				: [],
+		);
+		names.add(name);
+		localStorage.setItem(DB_REGISTRY_KEY, JSON.stringify([...names]));
+	} catch {
+		// Storage may be blocked; the in-session map still covers this tab.
+	}
+}
+
+export function listKnownDatabases(): string[] {
+	try {
+		const raw = localStorage.getItem(DB_REGISTRY_KEY);
+		const parsed: unknown = raw === null ? [] : JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter(
+			(item): item is string =>
+				typeof item === "string" &&
+				(item === DB_NAME || item.startsWith(`${DB_NAME}_`)),
+		);
+	} catch {
+		return [];
+	}
+}
+
+function clearDBRegistry(): void {
+	try {
+		localStorage.removeItem(DB_REGISTRY_KEY);
+	} catch {
+		// best effort
+	}
+}
 
 export function getActiveAccountKey(): string | null {
 	return activeAccountKey;
@@ -37,7 +82,13 @@ function dbNameFor(key: string | null): string {
 }
 
 function openDatabase(name: string): Promise<IDBPDatabase<FCSchema>> {
-	return openDB<FCSchema>(name, DB_VERSION, {
+	rememberDBName(name);
+	let open: IDBPDatabase<FCSchema> | null = null;
+	let rejectBlocked: ((error: Error) => void) | null = null;
+	const blocked = new Promise<never>((_, reject) => {
+		rejectBlocked = reject;
+	});
+	const opened = openDB<FCSchema>(name, DB_VERSION, {
 		upgrade(db, oldVersion) {
 			if (!db.objectStoreNames.contains("chats")) {
 				const chats = db.createObjectStore("chats", { keyPath: "id" });
@@ -97,7 +148,43 @@ function openDatabase(name: string): Promise<IDBPDatabase<FCSchema>> {
 				}
 			}
 		},
+		// Another tab has an older schema and blocks this upgrade: the open
+		// request stays pending until it closes. Surface it instead of
+		// silently showing an empty app forever.
+		blocked() {
+			// Another tab holds an older schema open. The open request stays
+			// pending forever, which used to freeze getDB() with no error.
+			console.warn(`IndexedDB "${name}" is blocked by another tab`);
+			rejectBlocked?.(
+				new Error(`IndexedDB "${name}" is blocked by another tab`),
+			);
+		},
+		// This tab holds a connection that blocks another tab's upgrade.
+		// Close it so the new version can open; the next getDB reopens.
+		blocking() {
+			open?.close();
+			open = null;
+			dbs.delete(name);
+		},
+		// The browser closed the connection (e.g. storage pressure). Drop the
+		// cached handle so the next request opens a fresh one.
+		terminated() {
+			open = null;
+			dbs.delete(name);
+		},
 	});
+
+	return Promise.race([opened, blocked])
+		.then((db) => {
+			open = db;
+			return db;
+		})
+		.catch((error: unknown) => {
+			// Drop the rejected promise so the next getDB() retries instead
+			// of handing every caller the same failure forever.
+			dbs.delete(name);
+			throw error;
+		});
 }
 
 export function getDB(): Promise<IDBPDatabase<FCSchema>> {
@@ -141,21 +228,22 @@ export async function closeAndDeleteAccountDB(userId: string): Promise<void> {
 }
 
 // Close and delete every account's IndexedDB (used by "clear all data").
-export async function resetAllDBs(): Promise<void> {
+// extraNames comes from the persisted registry captured before localStorage
+// is cleared, so accounts opened in an earlier session are deleted even on
+// browsers without indexedDB.databases().
+export async function resetAllDBs(extraNames: string[] = []): Promise<void> {
 	// The background-session database is not an account database, but its
 	// open connection would block the delete below all the same.
 	await closeBackgroundSessionDB();
 
-	const names: string[] = [];
+	const known = new Set<string>(extraNames);
 
 	for (const [name, p] of dbs) {
-		names.push(name);
+		known.add(name);
 		const db = await p;
 		db.close();
 	}
 	dbs.clear();
-
-	let targets: string[] = names;
 
 	try {
 		const list = await (
@@ -164,18 +252,17 @@ export async function resetAllDBs(): Promise<void> {
 			}
 		).databases?.();
 
-		if (list !== undefined) {
-			targets = list
-				.map((d) => d.name)
-				.filter(
-					(n): n is string =>
-						n !== undefined && (n === DB_NAME || n.startsWith(`${DB_NAME}_`)),
-				);
+		for (const entry of list ?? []) {
+			if (entry.name !== undefined) known.add(entry.name);
 		}
 	} catch {
-		// indexedDB.databases() is not available everywhere; fall back to
-		// the databases opened this session.
+		// indexedDB.databases() is not available everywhere; the registry
+		// and the in-session map still cover the known names.
 	}
 
-	await Promise.all(targets.map((n) => deleteDatabase(n)));
+	const targets = [...known].filter(
+		(name) => name === DB_NAME || name.startsWith(`${DB_NAME}_`),
+	);
+	await Promise.all(targets.map((name) => deleteDatabase(name)));
+	clearDBRegistry();
 }

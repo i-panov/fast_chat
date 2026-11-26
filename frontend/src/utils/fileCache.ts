@@ -133,6 +133,7 @@ export async function saveFileOffline(
 	fileUrl: string,
 	token: string | undefined,
 ): Promise<void> {
+	const accountKey = getActiveAccountKey();
 	if (await fileCacheRepo.isCached(fileUrl)) return;
 	void navigator.storage?.persist?.().catch(() => false);
 
@@ -141,7 +142,13 @@ export async function saveFileOffline(
 	const response = await fetch(fileUrl, { headers });
 	if (!response.ok) throw new Error(`Failed to load file: ${response.status}`);
 	const blob = await response.blob();
-	await fileCacheRepo.put(fileUrl, blob, blob.type, true);
+	if (getActiveAccountKey() !== accountKey) {
+		throw new Error("account changed while saving the file");
+	}
+	const stored = await fileCacheRepo.put(fileUrl, blob, blob.type, true);
+	if (!stored) {
+		throw new Error("file is too large for the offline cache");
+	}
 }
 
 async function loadFile(
@@ -149,8 +156,12 @@ async function loadFile(
 	fileUrl: string,
 	token?: string,
 ): Promise<string> {
+	const accountKey = getActiveAccountKey();
 	// Try IDB cache first (the IDB itself is per-account).
 	const cached = await fileCacheRepo.get(fileUrl);
+	if (getActiveAccountKey() !== accountKey) {
+		throw new Error("account changed while loading the file");
+	}
 	if (cached !== undefined) {
 		const blobUrl = URL.createObjectURL(cached.blob);
 		const entry = inMemoryCache.get(key);
@@ -179,8 +190,12 @@ async function loadFile(
 	}
 	entry.blobUrl = blobUrl;
 
-	// Persist to IDB cache in background
-	void fileCacheRepo.put(fileUrl, blob, blob.type);
+	// Persist to IDB cache in background. A full cache or quota failure must
+	// not turn an already displayed file into an unhandled rejection. Never
+	// write one account's bytes into the database of another.
+	if (getActiveAccountKey() === accountKey) {
+		void fileCacheRepo.put(fileUrl, blob, blob.type).catch(() => {});
+	}
 
 	return blobUrl;
 }

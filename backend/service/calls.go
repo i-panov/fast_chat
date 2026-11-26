@@ -227,6 +227,10 @@ func (s *Service) HangupCall(ctx context.Context, userID, callID, reason string)
 // peer's connection is closed and would choke on them. A candidate for a call
 // owned by another server is forwarded to its owner instead.
 func (s *Service) SendIce(ctx context.Context, userID, callID string, candidate json.RawMessage) error {
+	if err := calls.ValidateICECandidate(candidate); err != nil {
+		return err
+	}
+
 	call, err := s.participantCall(callID, userID)
 	if err != nil {
 		if !errors.Is(err, ErrCallNotFound) {
@@ -349,11 +353,19 @@ func (s *Service) forwardEndedToRemote(call *calls.Call, reason string) {
 		// path, and huma rejects unknown properties.
 		body := map[string]any{keyReason: reason}
 
-		if _, err := s.fed.Request(context.Background(), http.MethodPost, s.fed.URL(remote, "/api/federated/calls/"+call.ID+"/ended"), body); err != nil {
+		// The report is best-effort and must not hold shutdown or a request
+		// for the peer's full timeout: the proxy expires its shadow anyway.
+		ctx, cancel := context.WithTimeout(context.Background(), federationCallReportTimeout)
+		_, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(remote, "/api/federated/calls/"+call.ID+"/ended"), body)
+		cancel()
+		if err != nil {
 			log().Warn("federated ended report failed", "callID", call.ID, "err", err)
 		}
 	}
 }
+
+// federationCallReportTimeout bounds a best-effort call report to a peer.
+const federationCallReportTimeout = 3 * time.Second
 
 // domainOfUserID returns the server part of a user identifier ("nick:domain").
 func domainOfUserID(userID string) string {

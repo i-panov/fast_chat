@@ -52,6 +52,7 @@ export function useMessageEditor(
 				messageId,
 				text,
 				files,
+				filesToRemove: [],
 				threadId,
 				location: msg?.location ?? null,
 			});
@@ -62,9 +63,13 @@ export function useMessageEditor(
 	const handleRemoveExistingFile = useCallback((fileId: string) => {
 		setEditingMessage((prev) => {
 			if (!prev) return null;
+			const removed = prev.filesToRemove ?? [];
 			return {
 				...prev,
 				files: prev.files?.filter((f) => f.id !== fileId),
+				filesToRemove: removed.includes(fileId)
+					? removed
+					: [...removed, fileId],
 			};
 		});
 	}, []);

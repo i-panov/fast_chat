@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 
 const BAR_COUNT = 28;
 const cache = new Map<string, number[]>();
+// Object URLs are unique per mount, so the cache would otherwise grow with
+// every rendered voice message. Keep the recently used peaks only.
+const MAX_CACHED_WAVEFORMS = 100;
 
 async function computePeaks(url: string): Promise<number[] | null> {
 	const Ctx = typeof AudioContext === "undefined" ? undefined : AudioContext;
@@ -56,6 +59,10 @@ export function useAudioWaveform(url: string | null): number[] | null {
 		void computePeaks(url).then((computed) => {
 			if (cancelled || computed === null) return;
 			cache.set(url, computed);
+			if (cache.size > MAX_CACHED_WAVEFORMS) {
+				const oldest = cache.keys().next().value;
+				if (oldest !== undefined) cache.delete(oldest);
+			}
 			setPeaks(computed);
 		});
 

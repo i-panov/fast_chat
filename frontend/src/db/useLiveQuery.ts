@@ -15,12 +15,20 @@ export function useLiveQuery<T>(query: () => T | Promise<T>): T {
 		// rely on the first render's contents anyway, since they
 		// re-render as soon as the promise resolves.
 		if (result instanceof Promise) {
+			// The initializer cannot await; the effect reads again. Catch the
+			// discarded promise so a blocked database is not an unhandled
+			// rejection.
+			void result.catch(() => {});
 			return undefined as unknown as T;
 		}
 		return result;
 	});
 
 	const queryRef = useRef(query);
+	// Results are applied only if they belong to the newest run. Without
+	// this, a slow read of the previous account/query can overwrite a newer
+	// result with stale data.
+	const runIdRef = useRef(0);
 
 	// Subscribe once: notifications always run the latest query via the ref.
 	// The initial run is left to the [query] effect below so mount does not
@@ -28,9 +36,10 @@ export function useLiveQuery<T>(query: () => T | Promise<T>): T {
 	useEffect(() => {
 		let alive = true;
 		const run = () => {
+			const runId = ++runIdRef.current;
 			Promise.resolve(queryRef.current())
 				.then((v) => {
-					if (alive) setValue(v);
+					if (alive && runId === runIdRef.current) setValue(v);
 				})
 				.catch(() => {});
 		};
@@ -49,9 +58,10 @@ export function useLiveQuery<T>(query: () => T | Promise<T>): T {
 	useEffect(() => {
 		queryRef.current = query;
 		let alive = true;
+		const runId = ++runIdRef.current;
 		void Promise.resolve(query())
 			.then((v) => {
-				if (alive) setValue(v);
+				if (alive && runId === runIdRef.current) setValue(v);
 			})
 			.catch(() => {});
 		return () => {

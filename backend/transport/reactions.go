@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -30,6 +31,7 @@ func registerMessageReactions(api huma.API, svc *service.Service) {
 		if err != nil {
 			return nil, messageOrInternalError(err)
 		}
+		relayReaction(ctx, svc, chat, input.MessageID, user.ID, input.Body.Emoji, true)
 		return reactionResponse(reactions), nil
 	})
 
@@ -52,6 +54,7 @@ func registerMessageReactions(api huma.API, svc *service.Service) {
 		if err != nil {
 			return nil, messageOrInternalError(err)
 		}
+		relayReaction(ctx, svc, chat, input.MessageID, user.ID, input.Emoji, false)
 		return reactionResponse(reactions), nil
 	})
 }
@@ -83,4 +86,16 @@ type reactionOutput struct {
 	Body struct {
 		Reactions []model.ReactionSummary `json:"reactions"`
 	}
+}
+
+// relayReaction forwards a local reaction change to the peer servers.
+func relayReaction(
+	ctx context.Context,
+	svc *service.Service,
+	chat *model.Chat,
+	messageID, userID, emoji string,
+	add bool,
+) {
+
+	svc.RelayReaction(ctx, chat, messageID, userID, emoji, add, time.Now().UTC(), "")
 }

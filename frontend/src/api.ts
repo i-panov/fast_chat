@@ -188,10 +188,14 @@ export function sseAuth(connectionId: string, token: string) {
 	});
 }
 
-export function registerDeviceKey(token: string, publicKey: string) {
+export function registerDeviceKey(
+	token: string,
+	publicKey: string,
+	protocolVersion = 2,
+) {
 	return request<{ status: string }>("/api/users/device-key", token, {
 		method: "PUT",
-		body: JSON.stringify({ publicKey }),
+		body: JSON.stringify({ publicKey, protocolVersion }),
 	});
 }
 

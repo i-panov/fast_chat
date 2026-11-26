@@ -256,10 +256,20 @@ export function createCallManager(
 
 			const data = payload as Record<string, unknown>;
 
-			// The event of another call must not touch the current one. A
-			// call the manager does not track yet is reported (missed call
-			// after reload), so an unknown identifier is accepted then.
+			// The event of another call must not touch the current one. An
+			// identifier this manager never saw belonged to another tab: a
+			// tab that was not in the call must not show its ending.
 			if (ctx.callId !== undefined && data.callId !== ctx.callId) {
+				return;
+			}
+			// A tab that never saw the call did not ring, so a normal hangup
+			// in another tab must not pop a notice here. A timeout is a missed
+			// call and remains useful after a reload.
+			if (
+				ctx.callId === undefined &&
+				ctx.role === undefined &&
+				data.reason !== "timeout"
+			) {
 				return;
 			}
 
@@ -411,6 +421,9 @@ async function startCall(
 	// call is on and must not offer a second one.
 	ctx.phase = "outgoing";
 	ctx.role = "caller";
+	// The chat is known before the server assigns a call id; the panel uses
+	// it to show the peer instead of an empty "Call with".
+	ctx.chatId = chatId;
 	notify();
 
 	// The stream and the connection belong to this call only: they are

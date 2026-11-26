@@ -11,10 +11,16 @@ import (
 	"time"
 )
 
+// maxCodeAttempts bounds guessing of the six-digit code. Without it the
+// per-IP rate limit is the only barrier and a distributed attacker gets the
+// full 10-minute window.
+const maxCodeAttempts = 5
+
 type VerificationCode struct {
 	Email     string
 	Code      string
 	ExpiresAt time.Time
+	Attempts  int
 }
 
 type SetupToken struct {
@@ -62,6 +68,10 @@ func (s *CodeStore) VerifyCode(email, code string) bool {
 	}
 
 	if len(vc.Code) != len(code) || subtle.ConstantTimeCompare([]byte(vc.Code), []byte(code)) != 1 {
+		vc.Attempts++
+		if vc.Attempts >= maxCodeAttempts {
+			delete(s.codes, email)
+		}
 		return false
 	}
 
@@ -100,6 +110,26 @@ func (s *CodeStore) CreateSetupTokenE(email string, ttl time.Duration) (string, 
 	}
 
 	return token, nil
+}
+
+// PeekSetupToken validates a setup token without consuming it. Registration
+// must be able to retry a rejected nickname without asking for a new e-mail
+// code; the token is consumed only after the account is created.
+func (s *CodeStore) PeekSetupToken(token string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st, ok := s.setupTokens[token]
+	if !ok {
+		return "", false
+	}
+
+	if time.Now().After(st.ExpiresAt) {
+		delete(s.setupTokens, token)
+		return "", false
+	}
+
+	return st.Email, true
 }
 
 func (s *CodeStore) VerifySetupToken(token string) (string, bool) {

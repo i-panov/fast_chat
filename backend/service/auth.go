@@ -163,7 +163,7 @@ func (s *Service) CompleteRegistration(
 		displayName = username
 	}
 
-	email, ok := s.store.Codes().VerifySetupToken(setupToken)
+	email, ok := s.store.Codes().PeekSetupToken(setupToken)
 	if !ok {
 		return nil, ErrInvalidSetupToken
 	}
@@ -185,6 +185,10 @@ func (s *Service) CompleteRegistration(
 			return nil, err
 		}
 	}
+
+	// The account exists now; the token's job is done. Consuming it earlier
+	// would strand a registration whose nickname was rejected.
+	_, _ = s.store.Codes().VerifySetupToken(setupToken)
 
 	if _, err := s.store.EnsureSelfChat(ctx, user.ID); err != nil {
 		log().Error("failed to ensure self-chat", "err", err)

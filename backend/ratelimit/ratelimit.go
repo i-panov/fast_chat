@@ -207,6 +207,11 @@ func New(limit int, window time.Duration, maxEntries int) *RateLimiter {
 	return rl
 }
 
+// Window reports the limiter window, used to populate Retry-After.
+func (rl *RateLimiter) Window() time.Duration {
+	return rl.window
+}
+
 func (rl *RateLimiter) Allow(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()

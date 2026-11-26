@@ -71,6 +71,15 @@ const (
 	// sealedBoxLen is the full sealed box for a 32-byte message key:
 	// ephemeral public key (32) + MAC (16) + message key (32).
 	sealedBoxLen = 80
+	// easyBoxLen is crypto_box_easy for a 32-byte message key: MAC (16) +
+	// message key (32), with the sender's key carried separately.
+	easyBoxLen = 48
+	// x25519KeyLen is a raw X25519 public key.
+	x25519KeyLen = 32
+	// ed25519KeyLen and ed25519SigLen describe the account identity key and
+	// its detached signature over the sender binding.
+	ed25519KeyLen = 32
+	ed25519SigLen = 64
 )
 
 // Realtime event names and payload keys used by the message domain.
@@ -221,11 +230,15 @@ func ValidateEncryptedPayload(encrypted bool, payload string) error {
 	}
 
 	var data struct {
-		V         int    `json:"v"`
-		Nonce     string `json:"nonce"`
-		Envelopes []struct {
+		V           int    `json:"v"`
+		Nonce       string `json:"nonce"`
+		SenderKey   string `json:"senderKey"`
+		IdentityKey string `json:"identityKey"`
+		IdentitySig string `json:"identitySig"`
+		Envelopes   []struct {
 			KeyID string `json:"keyId"`
 			Box   string `json:"box"`
+			Nonce string `json:"nonce"`
 		} `json:"envelopes"`
 	}
 
@@ -233,8 +246,22 @@ func ValidateEncryptedPayload(encrypted bool, payload string) error {
 		return ErrInvalidEncryptedPayload
 	}
 
-	if data.V != 1 {
+	if data.V != 1 && data.V != 2 {
 		return ErrUnsupportedPayloadVersion
+	}
+
+	if data.V == 2 {
+		senderKey, err := decodeEncryptedBase64(data.SenderKey)
+		if err != nil || len(senderKey) != x25519KeyLen {
+			return ErrInvalidEncryptedPayload
+		}
+		identityKey, keyErr := decodeEncryptedBase64(data.IdentityKey)
+		identitySig, sigErr := decodeEncryptedBase64(data.IdentitySig)
+		if keyErr != nil || sigErr != nil ||
+			len(identityKey) != ed25519KeyLen || len(identitySig) != ed25519SigLen {
+
+			return ErrInvalidEncryptedPayload
+		}
 	}
 
 	// XChaCha20 nonce is exactly 24 bytes (libsodium
@@ -248,13 +275,29 @@ func ValidateEncryptedPayload(encrypted bool, payload string) error {
 		return ErrMissingEnvelopes
 	}
 
-	// Sealed boxes for the 32-byte message key are 80 bytes: 32-byte ephemeral key + 16-byte MAC + 32-byte key.
-	for _, e := range data.Envelopes {
-		if e.KeyID == "" {
+	for _, envelope := range data.Envelopes {
+		if envelope.KeyID == "" {
 			return ErrEmptyKeyID
 		}
-		boxRaw, err := decodeEncryptedBase64(e.Box)
-		if err != nil || len(boxRaw) != sealedBoxLen {
+		boxRaw, err := decodeEncryptedBase64(envelope.Box)
+		if err != nil {
+			return ErrInvalidBox
+		}
+
+		if data.V == 2 {
+			// crypto_box_easy(32-byte key) = 48 bytes plus a 24-byte nonce.
+			nonceRaw, nonceErr := decodeEncryptedBase64(envelope.Nonce)
+			if nonceErr != nil || len(nonceRaw) != xchachaNonceLen {
+				return ErrInvalidNonce
+			}
+			if len(boxRaw) != easyBoxLen {
+				return ErrInvalidBox
+			}
+			continue
+		}
+
+		// v1: sealed boxes are 80 bytes (ephemeral key + MAC + 32-byte key).
+		if len(boxRaw) != sealedBoxLen {
 			return ErrInvalidBox
 		}
 	}
@@ -452,8 +495,6 @@ func (s *Service) GetThreadMessages(ctx context.Context, threadID, userID string
 // SendMessage persists a message in a chat. The chat is authoritative: a
 // thread id only selects the container, so the chat a message is written under
 // is always chat.ID.
-//
-//nolint:gocyclo,cyclop // bot mode, payload, blocking and attachments share validation.
 func (s *Service) SendMessage(
 	ctx context.Context,
 	chat *model.Chat,
@@ -463,12 +504,31 @@ func (s *Service) SendMessage(
 	input *SendMessageInput,
 ) (*model.Message, error) {
 
+	msg, _, err := s.SendMessageWithResult(ctx, chat, threadID, fromID, fromNick, input)
+
+	return msg, err
+}
+
+// SendMessageWithResult also reports whether the row was newly created. The
+// transport uses it to avoid a second federated POST and push fan-out when an
+// offline retry reuses the same message id.
+//
+//nolint:gocyclo,cyclop // bot mode, payload, blocking and attachments share validation.
+func (s *Service) SendMessageWithResult(
+	ctx context.Context,
+	chat *model.Chat,
+	threadID string,
+	fromID string,
+	fromNick string,
+	input *SendMessageInput,
+) (*model.Message, bool, error) {
+
 	if err := ValidateEncryptedPayload(input.Encrypted, input.EncryptedPayload); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if err := s.ValidateSendInput(input); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if chat.BotID != "" {
 		mode := chat.BotEncryptionMode
@@ -477,19 +537,19 @@ func (s *Service) SendMessage(
 		}
 		if mode == EncryptionModeE2EE {
 			if !input.Encrypted {
-				return nil, ErrBotEncryptionRequired
+				return nil, false, ErrBotEncryptionRequired
 			}
 			if input.Location != nil {
-				return nil, ErrBotMarkupInvalid
+				return nil, false, ErrBotMarkupInvalid
 			}
 		} else if input.Encrypted {
-			return nil, ErrBotEncryptionForbidden
+			return nil, false, ErrBotEncryptionForbidden
 		}
 	}
 	if chat.Type == callChatTypePrivate {
 		for _, memberID := range chat.Members {
 			if memberID != fromID && s.IsBlockedBetween(ctx, fromID, memberID) {
-				return nil, ErrUserBlocked
+				return nil, false, ErrUserBlocked
 			}
 		}
 	}
@@ -504,19 +564,19 @@ func (s *Service) SendMessage(
 			mode = bot.EncryptionMode
 		}
 		if mode == EncryptionModeE2EE && !s.filesEncrypted(ctx, fileIDs) {
-			return nil, ErrBotEncryptionRequired
+			return nil, false, ErrBotEncryptionRequired
 		}
 	}
 
 	if len(fileIDs) > MaxMessageFiles {
-		return nil, ErrTooManyFiles
+		return nil, false, ErrTooManyFiles
 	}
 
 	// Resolve drops foreign references: re-check emptiness on what is actually
 	// attached, or a text-less message naming only someone else's files would
 	// be stored empty.
 	if input.Text == "" && len(fileIDs) == 0 && input.Location == nil {
-		return nil, ErrEmptyMessage
+		return nil, false, ErrEmptyMessage
 	}
 
 	msg, created, err := s.store.AddMessage(
@@ -524,7 +584,7 @@ func (s *Service) SendMessage(
 		input.ID, input.ReplyToID, input.Location, input.Encrypted, input.EncryptedPayload,
 	)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// A retry from the offline outbox reuses the id it already got. The stored
@@ -532,7 +592,7 @@ func (s *Service) SendMessage(
 	// the first time, so broadcasting it again would repeat a message they have
 	// already seen under the same id.
 	if !created {
-		return msg, nil
+		return msg, false, nil
 	}
 
 	if len(fileIDs) > 0 {
@@ -552,7 +612,7 @@ func (s *Service) SendMessage(
 		}
 	}
 
-	return msg, nil
+	return msg, true, nil
 }
 
 // notifyMessageSent broadcasts a new message to all chat members. Delivery
@@ -564,7 +624,7 @@ func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *
 	// A new message brings a chat back to a member who deleted it for
 	// themselves: otherwise the push arrives, but the chat stays hidden and
 	// its history is never synced again.
-	if err := s.store.ClearChatDeletes(ctx, chat.ID, chat.Members...); err != nil {
+	if err := s.store.ClearChatDeletesForChat(ctx, chat.ID); err != nil {
 		log().Warn("failed to unhide chat after a new message", "chat", chat.ID, "err", err)
 	}
 
@@ -708,10 +768,21 @@ func (s *Service) EditMessage(
 		if err := s.store.SetMessageFiles(ctx, messageID, fileIDs); err != nil {
 			log().Info("failed to set message files", "err", err)
 		}
+	}
 
-		files, _ := s.store.GetMessageFiles(ctx, messageID) //nolint:errcheck // best-effort: failure is not actionable
+	// The client replaces the whole cached row on message_updated, so the
+	// response must carry the full state. Sending only the fields the edit
+	// touched would erase attachments and reactions downstream.
+	files, ferr := s.store.GetMessageFiles(ctx, messageID)
+	if ferr != nil {
+		log().Info("failed to load message files after edit", "err", ferr)
+	} else {
 		updated.Files = files
 	}
+
+	reactionSeed := []model.Message{updated}
+	s.attachReactions(ctx, reactionSeed, userID)
+	updated.Reactions = reactionSeed[0].Reactions
 
 	return updated, *edit, nil
 }
@@ -850,6 +921,7 @@ func (s *Service) CreateThread(ctx context.Context, chat *model.Chat, chatID, me
 	for _, memberID := range chat.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventThreadCreated, Data: thread})
 	}
+	s.RelayThreadCreated(ctx, chat, thread, "")
 
 	return thread, nil
 }
@@ -911,4 +983,147 @@ func parseLocationPatch(raw json.RawMessage) (*model.Location, bool, error) {
 	}
 
 	return &loc, false, nil
+}
+
+// FederatedThread describes a thread creation relayed by a peer.
+type FederatedThread struct {
+	Peer              string
+	ID                string
+	ParentMessageID   string
+	ParentMessageText string
+	ParentMessageFrom string
+	CreatedAt         time.Time
+}
+
+// ApplyFederatedThread creates the replica of a thread a peer reported. The
+// parent message must already be present (the relay always follows it); a
+// mismatch is retried rather than turning into a permanent dangling thread.
+func (s *Service) ApplyFederatedThread(ctx context.Context, chat *model.Chat, in *FederatedThread) (*model.Thread, error) {
+	if chat == nil || in.ID == "" || in.ParentMessageID == "" {
+		return nil, ErrThreadNotFound
+	}
+
+	parent, err := s.store.GetMessage(ctx, chat.ID, in.ParentMessageID)
+	if err != nil {
+		return nil, ErrMessageNotFound
+	}
+
+	createdAt := in.CreatedAt
+	if createdAt.IsZero() || createdAt.After(time.Now().UTC()) {
+		createdAt = time.Now().UTC()
+	}
+
+	thread := &model.Thread{
+		ID:                in.ID,
+		ChatID:            chat.ID,
+		ParentMessageID:   in.ParentMessageID,
+		ParentMessageText: parent.Text,
+		ParentMessageFrom: parent.FromNick,
+		CreatedAt:         createdAt,
+	}
+	created, err := s.store.UpsertRemoteThread(ctx, thread)
+	if err != nil {
+		return nil, err
+	}
+	if created {
+		for _, memberID := range chat.Members {
+			s.sendEvent(memberID, sse.Event{Event: eventThreadCreated, Data: thread})
+		}
+	}
+
+	// On the owner server the thread must reach the other member servers.
+	s.RelayThreadCreated(ctx, chat, thread, in.Peer)
+
+	return thread, nil
+}
+
+// RelayThreadCreated forwards a thread creation to the other servers that
+// hold the chat. exceptPeer skips the server the event came from.
+func (s *Service) RelayThreadCreated(
+	ctx context.Context,
+	chat *model.Chat,
+	thread *model.Thread,
+	exceptPeer string,
+) {
+
+	if s == nil || s.cfg == nil || s.fed == nil || chat == nil || thread == nil {
+		return
+	}
+
+	body := map[string]any{
+		"id":                thread.ID,
+		"parentMessageId":   thread.ParentMessageID,
+		"parentMessageText": thread.ParentMessageText,
+		"parentMessageFrom": thread.ParentMessageFrom,
+		"createdAt":         thread.CreatedAt,
+	}
+	path := "/api/federated/chats/" + chat.ID + "/threads"
+
+	targets := make(map[string]struct{})
+	if chat.RemoteServer != "" {
+		targets[chat.RemoteServer] = struct{}{}
+	} else if chat.Type == chatTypeGroup {
+		for _, memberID := range chat.Members {
+			domain := s.remoteServerFromID(memberID)
+			if domain != "" {
+				targets[domain] = struct{}{}
+			}
+		}
+	}
+
+	for domain := range targets {
+		if domain == s.cfg.Server.Domain || domain == exceptPeer {
+			continue
+		}
+		s.queueFederation(ctx, domain, "POST", path, body)
+	}
+}
+
+// ensureFederatedThread recreates the thread row of an inbound thread message
+// when the separate creation event was missed. The thread id is derived from
+// the parent message, so the parent can be found without extra metadata; an
+// older random id falls back to a row with an unresolved parent instead of
+// dropping the message.
+func (s *Service) ensureFederatedThread(ctx context.Context, chat *model.Chat, threadID, parentID string, createdAt time.Time) error {
+	if threadID == "" {
+		return nil
+	}
+	if existing, ok := s.store.GetThread(ctx, threadID); ok {
+		if existing.ChatID != chat.ID {
+			return ErrThreadNotFound
+		}
+		return nil
+	}
+
+	if parentID == "" {
+		parentID = threadID
+	}
+	parentText, parentFrom := "", ""
+	if parent, err := s.store.GetMessage(ctx, chat.ID, parentID); err == nil {
+		parentText = parent.Text
+		parentFrom = parent.FromNick
+	}
+	if createdAt.IsZero() || createdAt.After(time.Now().UTC()) {
+		createdAt = time.Now().UTC()
+	}
+
+	thread := &model.Thread{
+		ID:                threadID,
+		ChatID:            chat.ID,
+		ParentMessageID:   parentID,
+		ParentMessageText: parentText,
+		ParentMessageFrom: parentFrom,
+		CreatedAt:         createdAt,
+	}
+	created, err := s.store.UpsertRemoteThread(ctx, thread)
+	if err != nil {
+		return err
+	}
+	if created {
+		for _, memberID := range chat.Members {
+			s.sendEvent(memberID, sse.Event{Event: eventThreadCreated, Data: thread})
+		}
+	}
+
+	return nil
 }

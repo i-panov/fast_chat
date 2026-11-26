@@ -92,7 +92,12 @@ func (s *Service) catchupPeer(ctx context.Context, peer string) {
 			return
 		}
 
-		s.applyFederatedDelta(ctx, peer, &delta)
+		// Do not advance the cursor past a page that did not fully apply.
+		// Applied rows are idempotent, so the next tick retries the page.
+		if !s.applyFederatedDelta(ctx, peer, &delta) {
+			log().Warn("federation catch-up page could not be fully applied", "peer", peer)
+			break
+		}
 
 		if delta.NextSince == "" || round+1 >= maxCatchupRounds {
 			if delta.NextSince != "" {
@@ -138,17 +143,41 @@ func (s *Service) catchupPeer(ctx context.Context, peer string) {
 // reported. Every step is idempotent: the peer may send the same delta
 // twice, and the pull may overlap with a message that arrived through the
 // outbox.
-func (s *Service) applyFederatedDelta(ctx context.Context, peer string, delta *SyncFederatedResponse) {
+// applyFederatedDelta reports whether every row in the page was applied (or
+// deliberately skipped as non-retryable). A false result keeps the catch-up
+// cursor before this page so a transient store failure is retried instead of
+// losing the rows forever.
+func (s *Service) applyFederatedDelta(ctx context.Context, peer string, delta *SyncFederatedResponse) bool {
+	applied := true
+
 	for i := range delta.Chats {
-		s.ensureRemoteChat(ctx, peer, &delta.Chats[i])
+		if !s.ensureRemoteChat(ctx, peer, &delta.Chats[i]) {
+			applied = false
+		}
 	}
 
 	for i := range delta.Messages {
-		s.applyFederatedMessage(ctx, peer, &delta.Messages[i])
+		if !s.applyFederatedMessage(ctx, peer, &delta.Messages[i]) {
+			applied = false
+		}
 	}
 
 	for i := range delta.ThreadMessages {
-		s.applyFederatedMessage(ctx, peer, &delta.ThreadMessages[i])
+		if !s.applyFederatedMessage(ctx, peer, &delta.ThreadMessages[i]) {
+			applied = false
+		}
+	}
+
+	for i := range delta.Reactions {
+		if !s.applyFederatedReaction(ctx, peer, &delta.Reactions[i], true) {
+			applied = false
+		}
+	}
+
+	for i := range delta.ReactionDeletions {
+		if !s.applyFederatedReactionDeletion(ctx, peer, &delta.ReactionDeletions[i]) {
+			applied = false
+		}
 	}
 
 	for _, deleted := range delta.DeletedMessages {
@@ -160,30 +189,125 @@ func (s *Service) applyFederatedDelta(ctx context.Context, peer string, delta *S
 		// A deletion of a message that is already gone is not an error: the
 		// peer and this server may have processed it in a different order.
 		err := s.DeleteFederatedMessage(ctx, chat, deleted.MessageID, 0)
-		if err != nil && !errorsIsMessageNotFound(err) {
+		if err != nil && !errorsIsMessageNotFound(err) && !isPermanentFederationApplyError(err) {
 			log().Info("federation deletion could not be applied", "peer", peer, "messageID", deleted.MessageID, "err", err)
+			applied = false
 		}
 	}
+
+	return applied
+}
+
+// isPermanentFederationApplyError reports errors that will repeat for this
+// row forever. They are skipped so one poisoned message cannot stop the
+// peer's whole delta stream; transient failures keep the retry behaviour.
+func isPermanentFederationApplyError(err error) bool {
+	for _, sentinel := range []error{
+		ErrUserBlocked,
+		ErrMessageTooLong,
+		ErrFederatedFromNotRemote,
+		ErrFederatedAuthorNotRemote,
+		ErrInvalidCoordinates,
+		ErrEmptyMessage,
+		ErrFederatedIDRequired,
+		ErrBotEncryptionRequired,
+		ErrBotEncryptionForbidden,
+		ErrBotMarkupInvalid,
+		ErrInvalidReaction,
+		ErrMessageNotFound,
+		ErrDeleteWindowExpired,
+		ErrDeletingNotAllowed,
+	} {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyFederatedReaction applies a live reaction from a peer delta.
+func (s *Service) applyFederatedReaction(
+	ctx context.Context,
+	peer string,
+	reaction *model.MessageReaction,
+	add bool,
+) bool {
+
+	return s.applyFederatedReactionChange(
+		ctx, peer, reaction.MessageID, reaction.UserID, reaction.Emoji, add, reaction.CreatedAt,
+	)
+}
+
+// applyFederatedReactionDeletion applies a reaction tombstone from a peer.
+func (s *Service) applyFederatedReactionDeletion(
+	ctx context.Context,
+	peer string,
+	deletion *model.ReactionDeletion,
+) bool {
+
+	return s.applyFederatedReactionChange(
+		ctx, peer, deletion.MessageID, deletion.UserID, deletion.Emoji, false, deletion.RemovedAt,
+	)
+}
+
+// applyFederatedReactionChange is the shared body of the add and remove
+// application paths. A message that is already gone (deleted before the
+// catch-up) is skipped: the reaction has no visible target left.
+func (s *Service) applyFederatedReactionChange(
+	ctx context.Context,
+	peer, messageID, userID, emoji string,
+	add bool,
+	at time.Time,
+) bool {
+
+	msg, err := s.store.GetMessageByID(ctx, messageID)
+	if err != nil {
+		return true
+	}
+	chat, ok := s.store.GetChat(ctx, msg.ChatID)
+	if !ok || (chat.RemoteServer != "" && chat.RemoteServer != peer) {
+		return true
+	}
+	if !containsMember(chat.Members, userID) {
+		return true
+	}
+	// A locally owned chat has no RemoteServer: only the peer that owns the
+	// actor may report that actor's reaction. Without this a peer could
+	// forge or delete reactions of local users.
+	if chat.RemoteServer == "" && !UserIDBelongsToServer(userID, peer) {
+		log().Info("federation reaction skipped: author belongs to another server",
+			"peer", peer, "userID", userID)
+		return true
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	if _, err := s.ApplyFederatedReaction(ctx, chat, messageID, userID, emoji, add, at); err != nil {
+		log().Info("federation reaction could not be applied", "peer", peer, "messageID", messageID, "err", err)
+		return false
+	}
+
+	return true
 }
 
 // applyFederatedMessage applies a single chat or thread message a peer
 // reported. Reply context travels with the delta: SendFederatedMessage
 // re-validates that the parent lives in the same chat.
-func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *model.Message) {
+func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *model.Message) bool {
 	// The peer holds the messages of this server too: they are our own
 	// messages, echoed back by the catch-up.
 	if UserIDBelongsToServer(msg.FromID, s.cfg.Server.Domain) {
-		return
+		return true
 	}
 
 	chat, ok := s.store.GetChat(ctx, msg.ChatID)
 	if !ok || chat.RemoteServer != peer {
 		log().Info("federation message skipped: foreign chat", "peer", peer, "chatID", msg.ChatID)
-		return
+		return true
 	}
 	if !containsMember(chat.Members, msg.FromID) {
 		log().Info("federation message skipped: author is not a member", "peer", peer, "from", msg.FromID)
-		return
+		return true
 	}
 
 	maxLen := MaxMessageLen
@@ -200,10 +324,14 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 	// the file, so there is nothing to carry. The message arrives
 	// without them.
 	in := &FederatedInboundMessage{
-		ID:               msg.ID,
-		FromID:           msg.FromID,
-		FromNick:         msg.FromNick,
-		Text:             msg.Text,
+		ID:       msg.ID,
+		FromID:   msg.FromID,
+		FromNick: msg.FromNick,
+		Text:     msg.Text,
+		// The delta carries the source timestamp; using the application time
+		// would reorder a backlog into one "now" block and extend edit/delete
+		// windows for old messages.
+		CreatedAt:        msg.CreatedAt,
 		ReplyToID:        replyToID,
 		ThreadID:         msg.ThreadID,
 		Location:         msg.Location,
@@ -215,7 +343,12 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 	in.Peer = peer
 	if _, err := s.SendFederatedMessage(ctx, chat, in, maxLen); err != nil {
 		log().Info("federation message could not be applied", "peer", peer, "messageID", msg.ID, "err", err)
+		// A permanent rejection of this row must not wedge the cursor for
+		// the whole peer. Skipping the row keeps every other chat flowing.
+		return isPermanentFederationApplyError(err)
 	}
+
+	return true
 }
 
 // ensureRemoteChat creates the chat locally when the peer reports a chat this
@@ -224,10 +357,10 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 // The peer is authoritative for the chat: it holds the conversation on both
 // sides. A change of the membership has to reach the local members even when
 // the change itself was made while this server was offline.
-func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *FederatedChatDTO) {
+func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *FederatedChatDTO) bool {
 	if chat.BotID != "" && !containsMember(chat.Members, chat.BotID) {
 		log().Warn("federated chat has bot outside members", "chatID", chat.ID)
-		return
+		return true
 	}
 	mode := chat.BotEncryptionMode
 	if chat.BotID != "" && !UserIDBelongsToServer(chat.BotID, peer) {
@@ -238,11 +371,14 @@ func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *Feder
 	existing, ok := s.store.GetChat(ctx, chat.ID)
 	if ok {
 		if existing.RemoteServer != peer {
-			return
+			return true
 		}
+
+		applied := true
 		if chat.BotID != "" && (existing.BotID != chat.BotID || existing.BotEncryptionMode != mode) {
 			if err := s.store.SetChatBot(ctx, existing.ID, chat.BotID, mode); err != nil {
 				log().Warn("federated bot chat metadata could not be restored", "chatID", chat.ID, "err", err)
+				applied = false
 			} else {
 				existing.BotID = chat.BotID
 				existing.BotEncryptionMode = mode
@@ -253,8 +389,12 @@ func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *Feder
 				}
 			}
 		}
-		s.syncRemoteChatMembers(ctx, peer, existing, chat)
-		return
+
+		if !s.syncRemoteChatMembers(ctx, peer, existing, chat) {
+			applied = false
+		}
+
+		return applied
 	}
 
 	createdAt := chat.CreatedAt
@@ -276,7 +416,7 @@ func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *Feder
 
 	if err := s.store.CreateRemoteChat(ctx, remote); err != nil {
 		log().Warn("federated chat could not be created", "peer", peer, "chatID", chat.ID, "err", err)
-		return
+		return false
 	}
 	s.ensureBotChatReplica(ctx, remote)
 
@@ -286,6 +426,8 @@ func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *Feder
 	for _, memberID := range remote.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventChatCreated, Data: enriched})
 	}
+
+	return true
 }
 
 // ensureBotChatReplica restores the local bot lookup when a federated chat
@@ -309,27 +451,27 @@ func (s *Service) ensureBotChatReplica(ctx context.Context, chat *model.Chat) {
 
 // syncRemoteChatMembers applies the membership the peer reports to a chat
 // this server already knows.
-func (s *Service) syncRemoteChatMembers(ctx context.Context, peer string, existing *model.Chat, chat *FederatedChatDTO) {
+func (s *Service) syncRemoteChatMembers(ctx context.Context, peer string, existing *model.Chat, chat *FederatedChatDTO) bool {
 	// An empty list would empty the chat. The peer always reports its
 	// members, so an empty list means that the report is broken: applying it
 	// would take the local users out of a chat they are still part of.
 	if len(chat.Members) == 0 {
 		log().Warn("federated chat without members, membership left untouched", "peer", peer, "chatID", chat.ID)
-		return
+		return true
 	}
 
 	if sameMembers(existing.Members, chat.Members) {
-		return
+		return true
 	}
 
 	if err := s.store.ReplaceChatMembers(ctx, existing.ID, chat.Members); err != nil {
 		log().Warn("federated chat membership could not be updated", "peer", peer, "chatID", chat.ID, "err", err)
-		return
+		return false
 	}
 
 	updated, ok := s.store.GetChat(ctx, existing.ID)
 	if !ok {
-		return
+		return true
 	}
 
 	enriched := s.EnrichChat(ctx, updated)
@@ -349,6 +491,8 @@ func (s *Service) syncRemoteChatMembers(ctx context.Context, peer string, existi
 			s.sendEvent(memberID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: existing.ID}})
 		}
 	}
+
+	return true
 }
 
 // sameMembers reports whether two member lists hold the same users.

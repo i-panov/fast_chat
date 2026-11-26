@@ -2,9 +2,89 @@ package service
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"fast_chat/model"
 )
+
+// Orphan file GC. A file is orphaned when its message was deleted, an edit
+// dropped the attachment, or the upload never made it into a message. The
+// bytes stay on disk forever without this sweep.
+const (
+	orphanFileRetention     = 7 * 24 * time.Hour
+	orphanFileSweepInterval = 24 * time.Hour
+	orphanFileBatch         = 200
+)
+
+// RunFileGC sweeps orphaned uploads immediately and then once a day until the
+// context is cancelled.
+func (s *Service) RunFileGC(ctx context.Context, interval time.Duration) {
+	if s.cfg == nil || s.cfg.Uploads.Dir == "" {
+		return
+	}
+	if interval <= 0 {
+		interval = orphanFileSweepInterval
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	s.sweepOrphanFiles(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.sweepOrphanFiles(ctx)
+		}
+	}
+}
+
+func (s *Service) sweepOrphanFiles(ctx context.Context) {
+	before := time.Now().UTC().Add(-orphanFileRetention)
+
+	for {
+		deleted, paths, err := s.store.DeleteOrphanFilesBefore(ctx, before, orphanFileBatch)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				log().Warn("orphan file GC failed", "err", err)
+			}
+			return
+		}
+
+		for _, path := range paths {
+			s.removeUploadedFile(path)
+		}
+
+		if deleted == 0 || deleted < orphanFileBatch {
+			return
+		}
+	}
+}
+
+// removeUploadedFile deletes one stored upload after checking that the path
+// still resolves inside the uploads directory (a corrupted row must not become
+// an arbitrary file delete).
+func (s *Service) removeUploadedFile(relativePath string) {
+	root := filepath.Clean(s.cfg.Uploads.Dir)
+	full := filepath.Join(root, relativePath)
+
+	rel, err := filepath.Rel(root, full)
+	if err != nil || rel == ".." || filepath.IsAbs(rel) ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+
+		log().Warn("orphan file GC: refusing path outside uploads", "path", relativePath)
+		return
+	}
+
+	if err := os.Remove(full); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log().Warn("orphan file GC: cannot remove file", "path", relativePath, "err", err)
+	}
+}
 
 // IsHexString reports whether s consists solely of hexadecimal characters.
 // IsHexString reports whether s is a non-empty hex string. Empty is

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -28,6 +29,20 @@ var (
 	// primary key, so it is unique table-wide, not per chat.
 	ErrMessageIDConflict = errors.New("message id already used by another message")
 )
+
+// GetMessageByID loads a message by its globally unique id. Federation
+// deltas carry reaction rows without a chat id, so this is how the receiver
+// resolves the chat they belong to.
+func (s *Store) GetMessageByID(ctx context.Context, messageID string) (model.Message, error) {
+	var msg model.Message
+	if err := s.db.WithContext(ctx).First(&msg, "id = ?", messageID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.Message{}, ErrMessageNotFound
+		}
+		return model.Message{}, err
+	}
+	return msg, nil
+}
 
 func (s *Store) GetMessage(ctx context.Context, chatID, messageID string) (model.Message, error) {
 	var msg model.Message
@@ -394,7 +409,18 @@ func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
 	// Idempotent insert: if a row with the same primary key already
 	// exists (e.g. a federated message replayed by a retrying client),
 	// silently succeed rather than failing the whole request.
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(msg).Error
+	result := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(msg)
+	if result.Error != nil {
+		return result.Error
+	}
+
+	if result.RowsAffected > 0 && msg.ThreadID != "" {
+		if err := adjustThreadMessageCount(s.db.WithContext(ctx), msg.ThreadID, 1); err != nil {
+			slog.Warn("failed to update thread message_count", "threadID", msg.ThreadID, "err", err)
+		}
+	}
+
+	return nil
 }
 
 func (s *Store) GetMessagesPaginated(ctx context.Context, chatID string, limit int, before string) ([]model.Message, string, bool) {
@@ -442,8 +468,33 @@ func (s *Store) DeleteMessageAsAdmin(ctx context.Context, chatID, messageID stri
 	return s.deleteMessageTx(s.db.WithContext(ctx), chatID, messageID, audit)
 }
 
+// adjustThreadMessageCount keeps the denormalized counter in sync with the
+// thread's actual messages. Counters are client-visible, so a stale value is
+// a user-facing bug; a failed update is logged by the caller.
+func adjustThreadMessageCount(tx *gorm.DB, threadID string, delta int) error {
+	if threadID == "" {
+		return nil
+	}
+
+	expr := "message_count + 1"
+	if delta < 0 {
+		expr = "CASE WHEN message_count > 0 THEN message_count - 1 ELSE 0 END"
+	}
+
+	return tx.Model(&model.Thread{}).
+		Where("id = ?", threadID).
+		UpdateColumn("message_count", gorm.Expr(expr)).Error
+}
+
 func (s *Store) deleteMessageTx(db *gorm.DB, chatID, messageID string, audit *model.AdminAuditLog) error {
 	return db.Transaction(func(tx *gorm.DB) error {
+		var threadID string
+		if err := tx.Model(&model.Message{}).
+			Where("chat_id = ? AND id = ?", chatID, messageID).
+			Pluck("thread_id", &threadID).Error; err != nil {
+			return err
+		}
+
 		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
 			return err
 		}
@@ -457,13 +508,24 @@ func (s *Store) deleteMessageTx(db *gorm.DB, chatID, messageID string, audit *mo
 		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageReaction{}).Error; err != nil {
 			return err
 		}
+		if tx.Migrator().HasTable(&model.ReactionDeletion{}) {
+			if err := tx.Where("message_id = ?", messageID).Delete(&model.ReactionDeletion{}).Error; err != nil {
+				return err
+			}
+		}
 
 		if err := tx.Where("chat_id = ? AND message_id = ?", chatID, messageID).Delete(&model.ChatPin{}).Error; err != nil {
 			return err
 		}
 
-		if err := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{}).Error; err != nil {
-			return err
+		deleted := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
+		if deleted.Error != nil {
+			return deleted.Error
+		}
+		if deleted.RowsAffected > 0 {
+			if err := adjustThreadMessageCount(tx, threadID, -1); err != nil {
+				slog.Warn("failed to decrement thread message_count", "threadID", threadID, "err", err)
+			}
 		}
 
 		// Tombstone: lets the /api/sync delta tell offline clients
@@ -533,6 +595,13 @@ func (s *Store) DeleteRawMessage(ctx context.Context, chatID, messageID string) 
 	now := time.Now().UTC()
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var threadID string
+		if err := tx.Model(&model.Message{}).
+			Where("chat_id = ? AND id = ?", chatID, messageID).
+			Pluck("thread_id", &threadID).Error; err != nil {
+			return err
+		}
+
 		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
 			return err
 		}
@@ -543,12 +612,24 @@ func (s *Store) DeleteRawMessage(ctx context.Context, chatID, messageID string) 
 			}
 		}
 
+		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageReaction{}).Error; err != nil {
+			return err
+		}
+		if tx.Migrator().HasTable(&model.ReactionDeletion{}) {
+			if err := tx.Where("message_id = ?", messageID).Delete(&model.ReactionDeletion{}).Error; err != nil {
+				return err
+			}
+		}
+
 		result := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
 		if err := result.Error; err != nil {
 			return err
 		}
 		if result.RowsAffected == 0 {
 			return ErrMessageNotFound
+		}
+		if err := adjustThreadMessageCount(tx, threadID, -1); err != nil {
+			slog.Warn("failed to decrement thread message_count", "threadID", threadID, "err", err)
 		}
 
 		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.DeletedMessage{
@@ -577,27 +658,37 @@ func (s *Store) paginateMessagesE(ctx context.Context, scope messageScope, limit
 	query := s.db.WithContext(ctx).Where(scope.where, scope.args...)
 
 	if before != "" {
-		var beforeMsg struct {
-			CreatedAt time.Time
-		}
-
-		// The cursor row must belong to the same container, otherwise a
-		// client could page past the end of a chat using an id from elsewhere.
-		cursorScope := scope.and("id = ?", before)
-
-		if err := s.db.WithContext(ctx).Model(&model.Message{}).
-			Select(fieldCreatedAt).
-			Where(cursorScope.where, cursorScope.args...).
-			First(&beforeMsg).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, "", false, nil
+		cursorTime, cursorID, encoded := decodeMessageCursor(before)
+		if !encoded {
+			// Legacy cursor (bare message id): resolve its timestamp. A
+			// deleted row would otherwise end the history silently; new
+			// cursors carry the timestamp themselves.
+			var beforeMsg struct {
+				CreatedAt time.Time
 			}
 
-			return nil, "", false, err
+			// The cursor row must belong to the same container, otherwise a
+			// client could page past the end of a chat using an id from
+			// elsewhere.
+			cursorScope := scope.and("id = ?", before)
+
+			if err := s.db.WithContext(ctx).Model(&model.Message{}).
+				Select(fieldCreatedAt).
+				Where(cursorScope.where, cursorScope.args...).
+				First(&beforeMsg).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, "", false, nil
+				}
+
+				return nil, "", false, err
+			}
+
+			cursorTime = beforeMsg.CreatedAt
+			cursorID = before
 		}
 
 		query = query.Where("(created_at < ? OR (created_at = ? AND id < ?))",
-			beforeMsg.CreatedAt, beforeMsg.CreatedAt, before)
+			cursorTime, cursorTime, cursorID)
 	}
 
 	// Fetch limit+1 in one query and use the extra row as a hasMore
@@ -624,8 +715,30 @@ func (s *Store) paginateMessagesE(ctx context.Context, scope messageScope, limit
 	nextCursor := ""
 
 	if hasMore {
-		nextCursor = msgs[0].ID
+		nextCursor = encodeMessageCursor(&msgs[0])
 	}
 
 	return msgs, nextCursor, hasMore, nil
+}
+
+const messageCursorSeparator = "|"
+
+// encodeMessageCursor keeps the timestamp in the cursor, so deleting the
+// boundary message does not turn the next page into a silent end of history.
+func encodeMessageCursor(msg *model.Message) string {
+	return msg.CreatedAt.UTC().Format(time.RFC3339Nano) + messageCursorSeparator + msg.ID
+}
+
+func decodeMessageCursor(cursor string) (time.Time, string, bool) {
+	rawTime, id, ok := strings.Cut(cursor, messageCursorSeparator)
+	if !ok || rawTime == "" || id == "" {
+		return time.Time{}, "", false
+	}
+
+	parsed, err := time.Parse(time.RFC3339Nano, rawTime)
+	if err != nil {
+		return time.Time{}, "", false
+	}
+
+	return parsed, id, true
 }

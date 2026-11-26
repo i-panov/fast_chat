@@ -124,7 +124,7 @@ vi.mock("../components/chat/AudioPlayerBar.tsx", () => ({
 }));
 
 const { useSse } = await import("../useSse.ts");
-const { refreshToken, revokeSession } = await import("../api.ts");
+const { refreshToken } = await import("../api.ts");
 const { retryFailedOps, setTokenProvider } = await import(
 	"../sync/syncEngine.ts"
 );
@@ -608,22 +608,20 @@ describe("chat page", () => {
 		});
 	});
 
-	it("logs out when refresh fails or the token expires", async () => {
+	it("keeps the account when a token refresh fails transiently", async () => {
 		seedAccount();
-		vi.mocked(refreshToken).mockRejectedValueOnce(new Error("401"));
+		vi.mocked(refreshToken).mockRejectedValueOnce(new Error("network"));
 		renderPage();
 
 		await screen.findByText(SELECT_PROMPT, undefined, FIND_OPTIONS);
 		await sseHandler()("token_expiring", {});
 
 		await waitFor(() => {
-			expect(localStorage.getItem("accounts")).toBe("[]");
+			expect(localStorage.getItem("accounts")).toContain("tok");
 		});
 	});
 
-	// The logout revokes the token on the server: a token that only
-	// disappears from the browser stays usable until it expires.
-	it("revokes the session token when logging out", async () => {
+	it("drops the dead session when the token expires", async () => {
 		seedAccount();
 		renderPage();
 
@@ -631,7 +629,7 @@ describe("chat page", () => {
 		await sseHandler()("token_expired", {});
 
 		await waitFor(() => {
-			expect(vi.mocked(revokeSession)).toHaveBeenCalledWith("tok");
+			expect(localStorage.getItem("accounts")).toBe("[]");
 		});
 	});
 

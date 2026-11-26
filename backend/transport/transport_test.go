@@ -47,7 +47,7 @@ func newTransportTestServerWithHub(t *testing.T, rl *RateLimiters) (*Transport, 
 
 	if err := db.AutoMigrate(
 		&model.User{}, &model.Session{}, &model.Chat{}, &store.ChatMember{},
-		&model.Message{}, &model.MessageReaction{}, &model.ChatPin{}, &model.UserBlock{}, &model.UserDevice{}, &model.Thread{}, &model.File{},
+		&model.Message{}, &model.MessageReaction{}, &model.ReactionDeletion{}, &model.ChatPin{}, &model.UserBlock{}, &model.UserDevice{}, &model.Thread{}, &model.File{},
 		&model.MessageFile{}, &model.DeletedMessage{},
 		&model.DeletedChat{}, &model.PushSubscription{}, &model.FederationOp{}, &model.FederationCursor{},
 		&model.MessageReadStatus{}, &model.FederationOp{}, &model.FederationCursor{},
@@ -164,14 +164,15 @@ func TestTransportRateLimit(t *testing.T) {
 			continue
 		}
 
-		// Second request from the same IP exceeds the limit; pre-migration shape is a
-		// plain-text 429 from http.Error.
 		if rec.Code != http.StatusTooManyRequests {
 			t.Fatalf("second request: expected 429, got %d: %s", rec.Code, rec.Body.String())
 		}
 
-		if got := rec.Body.String(); got != "too many requests\n" {
-			t.Errorf("429 body = %q, want pre-migration plain-text form", got)
+		if got := rec.Body.String(); got != "{\"error\":\"too many requests\"}\n" {
+			t.Errorf("429 body = %q, want JSON error", got)
+		}
+		if rec.Header().Get("Retry-After") == "" {
+			t.Error("429 response must carry Retry-After")
 		}
 	}
 }
@@ -713,11 +714,11 @@ func TestFallbackBufferStreamsThrough(t *testing.T) {
 	}
 
 	// Subsequent writes keep flowing straight through.
-	if _, err := buf.Write([]byte(": heartbeat\n\n")); err != nil {
+	if _, err := buf.Write([]byte("event: ping\ndata: {}\n\n")); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := underlying.body.String(); got != "event: connected\n\n: heartbeat\n\n" {
+	if got := underlying.body.String(); got != "event: connected\n\nevent: ping\ndata: {}\n\n" {
 		t.Fatalf("underlying body = %q", got)
 	}
 }

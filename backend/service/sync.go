@@ -79,6 +79,12 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 		log().Error("failed to ensure self-chat", "err", err)
 	}
 
+	// The cursor must be older than every row the response could miss. Taking
+	// it after the queries would let rows committed during the request fall
+	// behind it and disappear from every later delta. Overlap is harmless:
+	// the client applies rows idempotently.
+	serverNow := time.Now().UTC()
+
 	// Tombstones are read before the chat list: if a chat is hidden between
 	// the two queries, this delta must not contain the chat at all. The other
 	// order would return the chat together with its tombstone, and the client
@@ -88,7 +94,10 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 		return SyncResponse{}, err
 	}
 
-	chats := s.store.GetUserChats(ctx, userID)
+	chats, err := s.store.GetUserChatsE(ctx, userID)
+	if err != nil {
+		return SyncResponse{}, err
+	}
 
 	chatIDs, memberIDs := collectChatAndMemberIDs(chats)
 
@@ -131,7 +140,7 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 	)
 
 	return SyncResponse{
-		ServerNow:       time.Now().UTC(),
+		ServerNow:       serverNow,
 		Chats:           s.buildChats(ctx, chats, nil, onlineStatus),
 		Messages:        messages,
 		ThreadMessages:  threadMessages,
@@ -172,7 +181,9 @@ func nextSyncCursor(pages ...cursorPage) (string, string) {
 	if best == nil {
 		return "", ""
 	}
-	return best.cursor.UTC().Format(time.RFC3339), best.cursorID
+	// Full precision: a truncated second lets a keyset page repeat itself
+	// forever when more than `limit` rows share the same second.
+	return best.cursor.UTC().Format(time.RFC3339Nano), best.cursorID
 }
 
 // ParseSince parses an RFC3339 since timestamp from a query parameter, falling

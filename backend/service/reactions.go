@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"fast_chat/model"
@@ -32,6 +33,44 @@ func (s *Service) RemoveReaction(
 ) ([]model.ReactionSummary, error) {
 
 	return s.toggleReaction(ctx, chat, messageID, userID, emoji, false)
+}
+
+// ApplyFederatedReaction stores a reaction change relayed by a peer at the
+// instant the source server recorded it. The timestamp lets a delayed retry
+// lose against a newer opposite action instead of resurrecting old state.
+func (s *Service) ApplyFederatedReaction(
+	ctx context.Context,
+	chat *model.Chat,
+	messageID, userID, emoji string,
+	add bool,
+	at time.Time,
+) ([]model.ReactionSummary, error) {
+
+	emoji = strings.TrimSpace(emoji)
+	if emoji == "" || utf8.RuneCountInString(emoji) > maxReactionRunes {
+		return nil, ErrInvalidReaction
+	}
+	if _, err := s.store.GetMessage(ctx, chat.ID, messageID); err != nil {
+		return nil, ErrMessageNotFound
+	}
+
+	var err error
+	if add {
+		err = s.store.AddMessageReactionAt(ctx, messageID, userID, emoji, at)
+	} else {
+		err = s.store.RemoveMessageReactionAt(ctx, messageID, userID, emoji, at)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.store.GetMessageReactionRows(ctx, messageID)
+	if err != nil {
+		return nil, err
+	}
+	s.broadcastReactions(chat, messageID, rows)
+
+	return reactionSummaries(rows, userID), nil
 }
 
 func (s *Service) toggleReaction(
@@ -123,5 +162,49 @@ func (s *Service) attachReactions(ctx context.Context, messages []model.Message,
 	}
 	for i := range messages {
 		messages[i].Reactions = reactions[messages[i].ID]
+	}
+}
+
+// RelayReaction forwards a reaction change to the other servers that hold the
+// chat. exceptPeer skips the server the change came from, so an inbound relay
+// is not echoed back.
+func (s *Service) RelayReaction(
+	ctx context.Context,
+	chat *model.Chat,
+	messageID, userID, emoji string,
+	add bool,
+	at time.Time,
+	exceptPeer string,
+) {
+
+	if s == nil || s.cfg == nil || s.fed == nil || chat == nil {
+		return
+	}
+
+	body := map[string]any{
+		"userId": userID,
+		"emoji":  emoji,
+		"add":    add,
+		"at":     at,
+	}
+	path := "/api/federated/chats/" + chat.ID + "/messages/" + messageID + "/reactions"
+
+	targets := make(map[string]struct{})
+	if chat.RemoteServer != "" {
+		targets[chat.RemoteServer] = struct{}{}
+	} else if chat.Type == chatTypeGroup {
+		for _, memberID := range chat.Members {
+			domain := s.remoteServerFromID(memberID)
+			if domain != "" {
+				targets[domain] = struct{}{}
+			}
+		}
+	}
+
+	for domain := range targets {
+		if domain == s.cfg.Server.Domain || domain == exceptPeer {
+			continue
+		}
+		s.queueFederation(ctx, domain, "POST", path, body)
 	}
 }

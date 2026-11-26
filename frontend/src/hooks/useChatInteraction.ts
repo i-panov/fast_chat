@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CallManager } from "../calls/callManager.ts";
 import { decryptFileStream } from "../e2ee/file-crypto.ts";
 import { ensureAccountKeys, RecoveryRequiredError } from "../e2ee/keys.ts";
@@ -36,7 +36,7 @@ interface ChatLifecycleDeps {
 		userId: string,
 		oldToken: string,
 	) => Promise<{ token: string; expiresAt: string }>;
-	logout: () => void;
+	sessionExpired: () => void;
 	// callManager receives the signaling events of the call domain.
 	callManager?: CallManager;
 }
@@ -47,11 +47,15 @@ function useChatLifecycle({
 	addTypingUser,
 	clearTyping,
 	refreshAccountToken,
-	logout,
+	sessionExpired,
 	callManager,
 }: ChatLifecycleDeps) {
 	useEffect(() => {
 		setTokenProvider(() => token ?? null);
+		// Logout/unmount must stop later ticks from using a token that no
+		// longer belongs to an account; otherwise a pending sync can write
+		// the signed-out history into the shared pre-account database.
+		return () => setTokenProvider(() => null);
 	}, [token]);
 
 	// E2E: make sure the account has a key pair and its public key is
@@ -78,17 +82,24 @@ function useChatLifecycle({
 		clearTyping,
 		onTokenExpiring: async (currentToken: string) => {
 			if (userId === undefined) {
-				logout();
+				sessionExpired();
 				return;
 			}
 			try {
 				await refreshAccountToken(userId, currentToken);
-			} catch {
-				logout();
+			} catch (err) {
+				// A 401 already went through the unauthorized handler, which
+				// dropped the token. A transient failure must not erase local
+				// data or force a logout; the next request retries or 401s.
+				if (err instanceof Error && err.message === "unauthorized") {
+					sessionExpired();
+				}
 			}
 		},
 		onTokenExpired: () => {
-			logout();
+			// The session is dead, but the account database and its E2EE key
+			// stay: a fresh login on this device must be able to resume.
+			sessionExpired();
 		},
 		callManager,
 	});
@@ -346,7 +357,8 @@ function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 const MAX_DRAFTS = 50;
 
 export function useChatPage(): ChatPageState {
-	const { activeAccount, logout, refreshAccountToken } = useAuth();
+	const { activeAccount, logout, sessionExpired, refreshAccountToken } =
+		useAuth();
 	const user = activeAccount?.user ?? null;
 	const token = activeAccount?.token;
 	const { config } = useServerConfig(token);
@@ -360,7 +372,15 @@ export function useChatPage(): ChatPageState {
 	const chatList = useChatList({ token });
 	const messages = useMessages({ token, chatId: chatList.activeChatId });
 	const threads = useThreads({ token, chatId: chatList.activeChatId });
-	const draftKey = `${user?.id ?? "anon"}::${chatList.activeChatId ?? "none"}::${threads.activeThreadId ?? "main"}`;
+	// A thread belongs to exactly one chat. After switching chats the old id
+	// may still be in state while its thread record is gone; using it would
+	// address a thread of another chat and lose the message server-side.
+	const activeThreadId =
+		threads.activeThread !== null &&
+		threads.activeThread.chatId === chatList.activeChatId
+			? threads.activeThreadId
+			: null;
+	const draftKey = `${user?.id ?? "anon"}::${chatList.activeChatId ?? "none"}::${activeThreadId ?? "main"}`;
 	// Load the stored draft only when switching conversations. Keystrokes go
 	// through setInputText (which writes both the field and the map), so
 	// re-running on every drafts change would redo the same setState on
@@ -402,6 +422,37 @@ export function useChatPage(): ChatPageState {
 		selectChat: chatList.selectChat,
 	});
 
+	// Attachments, the picked location, the reply target and the edit target
+	// are conversation state, not page state. Keeping them across a switch
+	// sends one conversation's private content to another. A ref compares the
+	// conversation key after every render; the alternative (a dependency
+	// array with draftKey) cannot express "run only when this key changes"
+	// without also re-running on every callback identity change.
+	const conversationRef = useRef(draftKey);
+	useEffect(() => {
+		if (conversationRef.current === draftKey) return;
+		conversationRef.current = draftKey;
+		editor.clearEditing();
+		editor.clearReply();
+		pendingFiles.clearAllPendingFiles();
+		location.clearPendingLocation();
+		search.clearPendingChat();
+	});
+
+	// Starting an edit must put the current text into the composer: the input
+	// is the only value the submit path reads.
+	const { handleStartEdit: startEditingMessage, clearReply: clearReplyTarget } =
+		editor;
+	const startEdit = useCallback(
+		(...args: Parameters<typeof startEditingMessage>) => {
+			const [, , text] = args;
+			startEditingMessage(...args);
+			clearReplyTarget();
+			setInputText(text);
+		},
+		[startEditingMessage, clearReplyTarget, setInputText],
+	);
+
 	const isOnline = useNetworkStatus();
 	const syncState = useSyncStatus();
 	const call = useCall(token, user?.id);
@@ -412,7 +463,7 @@ export function useChatPage(): ChatPageState {
 		addTypingUser: typing.addTypingUser,
 		clearTyping: typing.clearTyping,
 		refreshAccountToken,
-		logout,
+		sessionExpired,
 		callManager: call.manager ?? undefined,
 	});
 
@@ -449,7 +500,7 @@ export function useChatPage(): ChatPageState {
 		pendingChatWith: search.pendingChatWith,
 		pendingChatIsBot: search.pendingChatIsBot,
 		activeChatId: chatList.activeChatId,
-		activeThreadId: threads.activeThreadId,
+		activeThreadId,
 		replyToMessage: editor.replyToMessage,
 		sendMessage: sender.sendMessage,
 		editMessage: sender.editMessage,
@@ -476,13 +527,13 @@ export function useChatPage(): ChatPageState {
 		},
 		chatList,
 		messages,
-		threads,
+		threads: { ...threads, activeThreadId },
 		typing,
 		pendingFiles,
 		sender,
 		location,
 		search,
-		editor,
+		editor: { ...editor, handleStartEdit: startEdit },
 		groups,
 		actions,
 		call,

@@ -213,6 +213,11 @@ export function VoiceRecorderButton({
 				if (event.data.size > 0) chunksRef.current.push(event.data);
 			};
 			recorder.onerror = () => {
+				// onstop may still fire after onerror. The chunks are
+				// incomplete there: discard them instead of attaching a
+				// truncated recording.
+				discardRef.current = true;
+				recorder.onstop = null;
 				cleanup();
 				setRecording(false);
 				setRequesting(false);

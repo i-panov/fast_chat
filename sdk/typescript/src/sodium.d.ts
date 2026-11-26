@@ -5,6 +5,26 @@ declare module "libsodium-wrappers" {
 		to_base64(data: Uint8Array): string;
 		from_base64(data: string): Uint8Array;
 		randombytes_buf(length: number): Uint8Array;
+		crypto_box_NONCEBYTES: number;
+		crypto_box_easy(
+			message: Uint8Array,
+			nonce: Uint8Array,
+			publicKey: Uint8Array,
+			privateKey: Uint8Array,
+		): Uint8Array;
+		crypto_box_open_easy(
+			ciphertext: Uint8Array,
+			nonce: Uint8Array,
+			publicKey: Uint8Array,
+			privateKey: Uint8Array,
+		): Uint8Array;
+		crypto_sign_keypair(): { publicKey: Uint8Array; privateKey: Uint8Array };
+		crypto_sign_detached(message: Uint8Array | string, privateKey: Uint8Array): Uint8Array;
+		crypto_sign_verify_detached(
+			signature: Uint8Array,
+			message: Uint8Array | string,
+			publicKey: Uint8Array,
+		): boolean;
 		crypto_box_seal(message: Uint8Array, publicKey: Uint8Array): Uint8Array;
 		crypto_box_seal_open(
 			ciphertext: Uint8Array,

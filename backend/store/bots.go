@@ -42,6 +42,8 @@ func (s *Store) CreateBot(ctx context.Context, bot *model.Bot, initialChat *mode
 	})
 }
 
+const fieldIsActive = "is_active"
+
 func (s *Store) GetBot(ctx context.Context, userID string) (*model.Bot, bool) {
 	var bot model.Bot
 	if err := s.db.WithContext(ctx).First(&bot, "user_id = ?", userID).Error; err != nil {
@@ -58,6 +60,15 @@ func (s *Store) GetBotByTokenHash(ctx context.Context, tokenHash string) (*model
 		return nil, false
 	}
 	return &bot, true
+}
+
+// CountBotsByOwner reports how many bot identities an account owns.
+func (s *Store) CountBotsByOwner(ctx context.Context, ownerID string) int64 {
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&model.Bot{}).Where("owner_id = ?", ownerID).Count(&count).Error; err != nil {
+		slog.Warn("CountBotsByOwner failed", "err", err)
+	}
+	return count
 }
 
 func (s *Store) ListBotsByOwner(ctx context.Context, ownerID string) ([]model.Bot, error) {
@@ -88,7 +99,7 @@ func (s *Store) SetBotActive(ctx context.Context, userID string, active bool, au
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.Bot{}).
 			Where("user_id = ?", userID).
-			Updates(map[string]any{"is_active": active, fieldUpdatedAt: time.Now().UTC()}).Error; err != nil {
+			Updates(map[string]any{fieldIsActive: active, fieldUpdatedAt: time.Now().UTC()}).Error; err != nil {
 			return err
 		}
 
@@ -130,8 +141,13 @@ func (s *Store) GetBotChatByChatID(ctx context.Context, chatID string) (*model.B
 }
 
 func (s *Store) CreateBotChat(ctx context.Context, botID, userID, chatID string) error {
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
-		Create(&model.BotChat{BotID: botID, UserID: userID, ChatID: chatID, CreatedAt: time.Now().UTC()}).Error
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "bot_id"}, {Name: colUserID}},
+		// Reopening a bot chat after the old row was deleted otherwise kept
+		// the stale chat_id and every bot operation failed with "chat not
+		// found" while the UI showed a fresh chat.
+		DoUpdates: clause.AssignmentColumns([]string{"chat_id", "created_at"}),
+	}).Create(&model.BotChat{BotID: botID, UserID: userID, ChatID: chatID, CreatedAt: time.Now().UTC()}).Error
 }
 
 func (s *Store) AppendBotUpdate(ctx context.Context, botID, updateType, payload string) (*model.BotUpdate, error) {
@@ -140,6 +156,19 @@ func (s *Store) AppendBotUpdate(ctx context.Context, botID, updateType, payload 
 		return nil, err
 	}
 	return update, nil
+}
+
+// DeleteBotUpdatesBefore acknowledges every update below offset. Telegram's
+// getUpdates has the same contract; without it a restarted bot replays all
+// updates retained for seven days.
+func (s *Store) DeleteBotUpdatesBefore(ctx context.Context, botID string, offset uint64) error {
+	if offset == 0 {
+		return nil
+	}
+
+	return s.db.WithContext(ctx).
+		Where("bot_id = ? AND id < ?", botID, offset).
+		Delete(&model.BotUpdate{}).Error
 }
 
 func (s *Store) GetBotUpdates(ctx context.Context, botID string, offset uint64, limit int) ([]model.BotUpdate, error) {
@@ -234,6 +263,21 @@ func (s *Store) SetBotEncryptionKey(ctx context.Context, userID, publicKey strin
 		}
 		if err := tx.Model(&model.User{}).Where("id = ?", userID).
 			Update("public_key", publicKey).Error; err != nil {
+			return err
+		}
+		// The bot SDK understands v2 payloads, so its device entry must say
+		// so: otherwise web encryption would keep falling back to v1. The row
+		// id is the bot account id because bots have no browser session.
+		now := time.Now().UTC()
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				colUserID, "public_key", "protocol_version", fieldLastSeenAt,
+			}),
+		}).Create(&model.UserDevice{
+			ID: userID, UserID: userID, PublicKey: publicKey,
+			ProtocolVersion: 2, CreatedAt: now, LastSeenAt: now,
+		}).Error; err != nil {
 			return err
 		}
 		return tx.Model(&model.Chat{}).Where("bot_id = ?", userID).

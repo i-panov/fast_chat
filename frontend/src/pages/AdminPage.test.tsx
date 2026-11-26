@@ -71,6 +71,9 @@ describe("AdminPage", () => {
 			name: "admin.grantAdmin",
 		});
 		fireEvent.click(grantButtons[0]);
+		fireEvent.click(
+			await screen.findByRole("button", { name: "admin.confirm" }),
+		);
 
 		await waitFor(() => {
 			expect(adminPatchUser).toHaveBeenCalledWith("tok", "bob:test", {

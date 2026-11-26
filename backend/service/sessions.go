@@ -116,6 +116,11 @@ func (s *Service) RunSessionCleanup(ctx context.Context, interval time.Duration)
 			} else if removed > 0 {
 				log().Info("removed old sessions", "count", removed)
 			}
+			if removed, err := s.store.PruneReactionDeletions(ctx, cutoff); err != nil {
+				log().Warn("reaction tombstone cleanup failed", "err", err)
+			} else if removed > 0 {
+				log().Info("removed old reaction tombstones", "count", removed)
+			}
 		}
 	}
 }

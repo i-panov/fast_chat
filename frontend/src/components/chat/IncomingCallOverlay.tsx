@@ -29,6 +29,7 @@ export function IncomingCallOverlay({
 			opened={open}
 			onClose={onDismiss ?? (() => {})}
 			withCloseButton={false}
+			title={t("call.with", { nick: peerNick })}
 			centered
 		>
 			<Stack>

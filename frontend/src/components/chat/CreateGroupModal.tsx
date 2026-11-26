@@ -190,7 +190,7 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 										color="gray"
 										size="sm"
 										onClick={() => unpick(u.id)}
-										aria-label={t("media.closeMenu")}
+										aria-label={t("chat.deselectUser")}
 									>
 										<X size={14} />
 									</ActionIcon>

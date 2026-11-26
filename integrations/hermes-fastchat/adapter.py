@@ -125,6 +125,11 @@ class FastChatAdapter(BasePlatformAdapter):
 
         self._offset = self._load_offset()
 
+        # connect() can run again after a reconnect without disconnect():
+        # stop the previous poller first, or two loops consume updates in
+        # parallel and race the offset.
+        await self._stop_poll_task()
+
         self._client = client
         self._stop.clear()
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -132,15 +137,19 @@ class FastChatAdapter(BasePlatformAdapter):
         logger.info("Fast Chat connected to %s", self._base_url)
         return True
 
+    async def _stop_poll_task(self) -> None:
+        if self._poll_task is None:
+            return
+        self._poll_task.cancel()
+        try:
+            await self._poll_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+        self._poll_task = None
+
     async def disconnect(self) -> None:
         self._stop.set()
-        if self._poll_task is not None:
-            self._poll_task.cancel()
-            try:
-                await self._poll_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._poll_task = None
+        await self._stop_poll_task()
         self._client = None
         for path in self._temp_files:
             try:
@@ -484,7 +493,7 @@ def _env_enablement() -> Optional[dict[str, Any]]:
     return extra
 
 
-def _send_location_tool(args: dict[str, Any], **kwargs) -> str:
+async def _send_location_tool(args: dict[str, Any], **kwargs) -> str:
     requested = str(args.get("chat_id", ""))
     chat_id = _LAST_CHAT_ID
     if requested and requested != chat_id:
@@ -497,7 +506,8 @@ def _send_location_tool(args: dict[str, Any], **kwargs) -> str:
     token, base_url = credentials
     try:
         client = BotClient(token, base_url)
-        message = client.send_location(
+        message = await asyncio.to_thread(
+            client.send_location,
             chat_id,
             float(args["latitude"]),
             float(args["longitude"]),

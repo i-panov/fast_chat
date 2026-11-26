@@ -534,6 +534,16 @@ func (s *Store) HideChatForUser(ctx context.Context, chatID, userID string) erro
 		Create(&tomb).Error
 }
 
+// ClearChatDeletesForChat clears tombstones only for users who are members
+// now. The caller's chat snapshot may predate a concurrent removal; using it
+// would erase the tombstone of a user who was just removed and make the chat
+// reappear for them forever.
+func (s *Store) ClearChatDeletesForChat(ctx context.Context, chatID string) error {
+	return s.db.WithContext(ctx).
+		Where("chat_id = ? AND user_id IN (SELECT user_id FROM chat_members WHERE chat_id = ?)", chatID, chatID).
+		Delete(&model.DeletedChat{}).Error
+}
+
 // ClearChatDeletes removes the tombstones after a chat is reopened: a member
 // who deleted the chat gets it back when the other side starts it again.
 func (s *Store) ClearChatDeletes(ctx context.Context, chatID string, userIDs ...string) error {
@@ -572,12 +582,40 @@ func (s *Store) deleteChatTx(ctx context.Context, chat *model.Chat, audit *model
 			return err
 		}
 
+		// Reactions have no chat id of their own: resolve them through the
+		// messages before the message rows disappear.
+		if err := tx.Where("message_id IN (SELECT id FROM messages WHERE chat_id = ?)", chatID).
+			Delete(&model.MessageReaction{}).Error; err != nil {
+			return err
+		}
+		if tx.Migrator().HasTable(&model.ReactionDeletion{}) {
+			if err := tx.Where("message_id IN (SELECT id FROM messages WHERE chat_id = ?)", chatID).
+				Delete(&model.ReactionDeletion{}).Error; err != nil {
+				return err
+			}
+		}
+
 		if err := tx.Where("chat_id = ?", chatID).Delete(&model.Thread{}).Error; err != nil {
 			return err
 		}
 
 		if err := tx.Where("chat_id = ?", chatID).Delete(&ChatMember{}).Error; err != nil {
 			return err
+		}
+
+		// A deleted bot chat must not leave bot_chats pointing at a missing
+		// row: OpenBotChat would create a new chat but bot_chats would keep
+		// the old id, and the bot could never answer again.
+		if tx.Migrator().HasTable(&model.BotChat{}) {
+			if err := tx.Where("chat_id = ?", chatID).Delete(&model.BotChat{}).Error; err != nil {
+				return err
+			}
+		}
+
+		if tx.Migrator().HasTable(&model.BotCallbackQuery{}) {
+			if err := tx.Where("chat_id = ?", chatID).Delete(&model.BotCallbackQuery{}).Error; err != nil {
+				return err
+			}
 		}
 
 		if err := tx.Where("id = ?", chatID).Delete(&model.Chat{}).Error; err != nil {
@@ -678,6 +716,18 @@ func writeMessageDeleteTombs(tx *gorm.DB, chatID string, at time.Time) error {
 }
 
 func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
+	chats, err := s.GetUserChatsE(ctx, userID)
+	if err != nil {
+		slog.Warn("GetUserChats failed", "userID", userID, "err", err)
+		return nil
+	}
+
+	return chats
+}
+
+// GetUserChatsE is the error-reporting form used by the sync path: an empty
+// list means "no chats", while a storage failure must not advance a cursor.
+func (s *Store) GetUserChatsE(ctx context.Context, userID string) ([]*model.Chat, error) {
 	// The subquery keeps the statement size independent of how many chats
 	// the user has hidden over time: a plain IN list would hit the driver's
 	// SQLite variable limit and silently empty the whole list.
@@ -687,12 +737,11 @@ func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
 
 	var chatIDs []string
 	if err := memberQuery.Pluck("chat_id", &chatIDs).Error; err != nil {
-		slog.Warn("GetUserChats: failed to list chat ids", "userID", userID, "err", err)
-		return nil
+		return nil, err
 	}
 
 	if len(chatIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var chats []*model.Chat
@@ -700,8 +749,7 @@ func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
 	chatsQuery := s.db.WithContext(ctx).Where("id IN ?", chatIDs).
 		Order("CASE WHEN type = 'self' THEN 0 ELSE 1 END, created_at DESC")
 	if err := chatsQuery.Find(&chats).Error; err != nil {
-		slog.Warn("GetUserChats: failed to load chats", "userID", userID, "err", err)
-		return nil
+		return nil, err
 	}
 
 	// One query for all memberships across all of the user's chats,
@@ -717,8 +765,7 @@ func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
 		Where("chat_id IN ?", chatIDs).
 		Select("chat_id, user_id").
 		Scan(&rows).Error; err != nil {
-		slog.Warn("GetUserChats: failed to load members", "userID", userID, "err", err)
-		return nil
+		return nil, err
 	}
 
 	membersByChat := make(map[string][]string, len(chats))
@@ -730,7 +777,7 @@ func (s *Store) GetUserChats(ctx context.Context, userID string) []*model.Chat {
 		c.Members = membersByChat[c.ID]
 	}
 
-	return chats
+	return chats, nil
 }
 
 func (s *Store) GetChat(ctx context.Context, chatID string) (*model.Chat, bool) {
@@ -753,7 +800,14 @@ func (s *Store) GetChat(ctx context.Context, chatID string) (*model.Chat, bool) 
 
 func (s *Store) GetFederatedChatIDs(ctx context.Context, remoteServer string) []string {
 	var chatIDs []string
-	if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("remote_server = ?", remoteServer).Pluck("id", &chatIDs).Error; err != nil {
+	// Include chats this server owns but the peer participates in. The old
+	// remote_server-only filter hid every locally created group from the
+	// peer's catch-up, so a missed relay could never be recovered.
+	memberSuffix := "%:" + escapeLike(remoteServer)
+	if err := s.db.WithContext(ctx).Model(&model.Chat{}).
+		Where("remote_server = ? OR id IN (SELECT chat_id FROM chat_members WHERE user_id LIKE ? ESCAPE '\\')",
+			remoteServer, memberSuffix).
+		Pluck("id", &chatIDs).Error; err != nil {
 		slog.Warn("GetFederatedChatIDs failed", "err", err)
 		return []string{}
 	}

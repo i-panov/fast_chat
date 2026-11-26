@@ -275,6 +275,9 @@ func registerBots(api huma.API, st *store.Store, svc *service.Service, cfg *conf
 		if err != nil {
 			return nil, err
 		}
+		if len(input.Body.Files) > service.MaxMessageFiles {
+			return nil, &statusError{ErrorMessage: msgTooManyFiles, code: http.StatusBadRequest}
+		}
 		var msg *model.Message
 		fileIDs := make([]string, 0, len(input.Body.Files))
 		for _, file := range input.Body.Files {
@@ -478,6 +481,8 @@ func botError(err error) error {
 		return &statusError{ErrorMessage: "invalid bot username", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrBotUsernameTaken):
 		return &statusError{ErrorMessage: "bot username taken", code: http.StatusConflict}
+	case errors.Is(err, service.ErrBotQuotaExceeded):
+		return &statusError{ErrorMessage: "bot limit reached", code: http.StatusConflict}
 	case errors.Is(err, service.ErrBotUsernameReserved):
 		return &statusError{ErrorMessage: "bot username reserved", code: http.StatusConflict}
 	case errors.Is(err, service.ErrBotNotActive):

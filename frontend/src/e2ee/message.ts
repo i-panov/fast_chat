@@ -1,9 +1,11 @@
 import sodium from "libsodium-wrappers";
 import { messagesRepo } from "../db/messagesRepo.ts";
+import { metaRepo } from "../db/metaRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import i18n from "../i18n.ts";
 import type { FileInfo, InlineKeyboardMarkup, Message } from "../types/api.ts";
 import { fileTypeForMime } from "../utils/fileType.ts";
+import { messageAAD } from "./chat-encrypt.ts";
 import {
 	decryptContent,
 	decryptText,
@@ -13,7 +15,10 @@ import {
 	type FileMeta,
 	type KeyPair,
 	openMessageKey,
+	openMessageKeyV2,
+	samePublicKey,
 	sealMessageKey,
+	verifySenderBinding,
 } from "./crypto.ts";
 import type { FileKey } from "./file-crypto.ts";
 
@@ -100,6 +105,63 @@ export async function encryptMessageText(
 	return { text: ciphertext, encryptedPayload: JSON.stringify(payload) };
 }
 
+const identityPin = (userId: string) => `e2ee.identity.${userId}`;
+
+// Trust-on-first-use for the account identity. The device key may change
+// (new browser, recovered backup); the identity is what must stay stable.
+async function pinSenderIdentity(
+	fromId: string,
+	identityKey: string,
+	viewerId: string,
+): Promise<void> {
+	// Own messages come from this very account. A recovery may legitimately
+	// rotate the identity, and pinning would make the user's own messages
+	// unreadable on the device that performed it.
+	if (fromId === viewerId) return;
+
+	const pinned = await metaRepo.get(identityPin(fromId));
+	if (typeof pinned === "string" && pinned !== "") {
+		if (!samePublicKey(pinned, identityKey)) {
+			throw new Error("sender identity changed");
+		}
+		return;
+	}
+	await metaRepo.setNoNotify(identityPin(fromId), identityKey);
+}
+
+// openBoundV2 validates the identity signature and returns the AAD string.
+// Every field of the binding is required: without them neither the AEAD nor
+// the signature can prove where the ciphertext belongs.
+async function openBoundV2(
+	payload: EncryptedPayload,
+	msg: EncryptedContentSource,
+	viewerId: string,
+): Promise<string> {
+	const { senderKey, identityKey, identitySig } = payload;
+	const { chatId, id, fromId } = msg;
+	if (
+		senderKey === undefined ||
+		identityKey === undefined ||
+		identitySig === undefined ||
+		chatId === undefined ||
+		id === undefined ||
+		fromId === undefined
+	) {
+		throw new Error("v2 message is missing its binding fields");
+	}
+	const aad = messageAAD({
+		chatId,
+		messageId: id,
+		fromId,
+		threadId: msg.threadId,
+	});
+	if (!(await verifySenderBinding(identityKey, aad, senderKey, identitySig))) {
+		throw new Error("sender identity signature is invalid");
+	}
+	await pinSenderIdentity(fromId, identityKey, viewerId);
+	return aad;
+}
+
 async function openAnyEnvelope(
 	payload: EncryptedPayload,
 	userId: string,
@@ -111,6 +173,16 @@ async function openAnyEnvelope(
 	];
 	for (const envelope of ordered) {
 		try {
+			if (payload.v === 2) {
+				if (payload.senderKey === undefined) {
+					throw new Error("missing sender key");
+				}
+				return await openMessageKeyV2(
+					envelope,
+					payload.senderKey,
+					key.privateKey,
+				);
+			}
 			return await openMessageKey(envelope, key.publicKey, key.privateKey);
 		} catch {
 			// The envelope belongs to another device key; try the next one.
@@ -119,16 +191,34 @@ async function openAnyEnvelope(
 	throw new Error("no envelope for this key");
 }
 
+// EncryptedContentSource is the subset of a message needed to decrypt v1
+// content. A v2 payload additionally binds chatId/id/fromId (and threadId)
+// as AEAD associated data; those fields are optional here so callers that
+// only have a partial record still decrypt legacy v1 content, while a v2
+// payload missing its binding fails closed.
+export interface EncryptedContentSource {
+	text: string;
+	encryptedPayload?: string;
+	location?: { lat: number; lng: number };
+	chatId?: string;
+	id?: string;
+	fromId?: string;
+	threadId?: string;
+}
+
 // decryptMessageText decrypts a single message's ciphertext using the
 // user's own envelope.
 export async function decryptMessageText(
-	msg: Pick<Message, "text" | "encryptedPayload">,
+	msg: EncryptedContentSource,
 	userId: string,
 	key: KeyPair,
 ): Promise<string> {
 	if (!msg.encryptedPayload) return msg.text;
 
 	const payload = JSON.parse(msg.encryptedPayload) as EncryptedPayload;
+	if (payload.v === 2) {
+		await openBoundV2(payload, msg, userId);
+	}
 	const msgKey = await openAnyEnvelope(payload, userId, key);
 	return decryptText(msg.text, payload.nonce, msgKey);
 }
@@ -139,7 +229,7 @@ export async function decryptMessageText(
 // Exported so edit flows can recover the kept files' keys without duplicating
 // the v1/v2 detection logic.
 export async function decryptMessageContent(
-	msg: Pick<Message, "text" | "encryptedPayload" | "location">,
+	msg: EncryptedContentSource,
 	userId: string,
 	key: KeyPair,
 ): Promise<{
@@ -151,14 +241,22 @@ export async function decryptMessageContent(
 } | null> {
 	if (!msg.encryptedPayload) return null;
 
-	// encryptedPayload carries the sealed msgKey envelopes + nonce.
+	// encryptedPayload carries the msgKey envelopes + content nonce.
 	const payload = JSON.parse(msg.encryptedPayload) as EncryptedPayload;
+	if (payload.v !== 1 && payload.v !== 2) {
+		throw new Error("unsupported encrypted payload version");
+	}
+	let aad: string | undefined;
+	if (payload.v === 2) {
+		aad = await openBoundV2(payload, msg, userId);
+	}
 	const msgKey = await openAnyEnvelope(payload, userId, key);
 
 	try {
 		const content = await decryptContent(
 			{ v: 1, nonce: payload.nonce, ciphertext: msg.text },
 			msgKey,
+			aad,
 		);
 
 		if (typeof content.text !== "string") return null;
@@ -187,8 +285,21 @@ function applyFileMeta(
 	}
 
 	return files.map((file) => {
-		const meta = file.hash !== undefined ? fileMeta[file.hash] : undefined;
-		if (meta === undefined) return file;
+		// hasOwn, not ?.[hash]: a server-controlled hash such as "__proto__"
+		// would otherwise resolve to Object.prototype and pass the
+		// authentication filter in decryptMessage.
+		const meta =
+			file.hash !== undefined && Object.hasOwn(fileMeta, file.hash)
+				? fileMeta[file.hash]
+				: undefined;
+		if (
+			meta === undefined ||
+			typeof meta.mimeType !== "string" ||
+			typeof meta.name !== "string" ||
+			typeof meta.size !== "number"
+		) {
+			return file;
+		}
 
 		return {
 			...file,
@@ -206,7 +317,7 @@ function applyFileMeta(
 // (plaintext message, missing key, or undecryptable content) — never throws,
 // so the edit itself always proceeds with at least the new files' keys.
 export async function recoverKeptFileKeys(
-	msg: Pick<Message, "text" | "encryptedPayload" | "location" | "encrypted">,
+	msg: EncryptedContentSource & { encrypted?: boolean },
 	userId: string,
 	key: KeyPair | null,
 ): Promise<{
@@ -273,6 +384,25 @@ export async function decryptMessage(
 		out.replyTo = { ...message.replyTo, files: undefined, location: undefined };
 	}
 
+	if (
+		message.encrypted &&
+		(message.encryptedPayload === undefined || message.encryptedPayload === "")
+	) {
+		// Fail closed: a record marked encrypted without an envelope is
+		// server-controlled and must never be rendered as plaintext.
+		out.text = i18n.t(UNDECRYPTABLE_I18N_KEY);
+		out.undecryptable = true;
+		if (message.replyTo !== undefined) {
+			out.replyTo = {
+				...message.replyTo,
+				text: "",
+				files: undefined,
+				location: undefined,
+			};
+		}
+		return out;
+	}
+
 	if (key === null) {
 		out.text = i18n.t(UNDECRYPTABLE_I18N_KEY);
 		out.undecryptable = true;
@@ -299,7 +429,7 @@ export async function decryptMessage(
 			const authenticatedFiles = (serverFiles ?? []).filter(
 				(file) =>
 					file.hash !== undefined &&
-					content.fileMeta?.[file.hash] !== undefined,
+					Object.hasOwn(content.fileMeta ?? {}, file.hash),
 			);
 			out.files = applyFileMeta(
 				authenticatedFiles.length > 0 ? authenticatedFiles : undefined,

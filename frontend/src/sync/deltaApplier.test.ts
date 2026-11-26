@@ -92,7 +92,9 @@ beforeEach(() => {
 });
 
 describe("applyDelta", () => {
-	it("upserts chats, messages, and records serverNow", async () => {
+	it("upserts chats and messages without advancing the cursor", async () => {
+		const cursorBefore = await metaRepo.getLastSyncedAt();
+
 		await applyDelta(
 			delta({
 				chats: [chat("chat-1", "room", ["alice:test"])],
@@ -104,7 +106,9 @@ describe("applyDelta", () => {
 
 		const stored = await messagesRepo.getByChat("chat-1");
 		expect(stored.map((m) => m.text)).toEqual(["hello", "world"]);
-		expect(await metaRepo.getLastSyncedAt()).toBe("2026-08-30T11:00:00.000Z");
+		// The sync engine owns the cursor: a page may still have a
+		// continuation and must not jump over it.
+		expect(await metaRepo.getLastSyncedAt()).toBe(cursorBefore);
 	});
 
 	it("removes deleted chats and applies deleted messages", async () => {

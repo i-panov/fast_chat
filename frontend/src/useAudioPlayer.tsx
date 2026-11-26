@@ -7,6 +7,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { releaseBlobUrl, retainBlobUrl } from "./utils/blobUrlRefs.ts";
 
 export interface AudioTrack {
 	fileId: string;
@@ -32,6 +33,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 	const audioRef = useRef<HTMLAudioElement | null>(null);
 	const currentTrackRef = useRef(currentTrack);
 	const generationRef = useRef(0);
+	// The URL the player itself keeps alive while the track is loaded.
+	const ownedUrlRef = useRef<string | null>(null);
 	useEffect(() => {
 		currentTrackRef.current = currentTrack;
 	}, [currentTrack]);
@@ -42,6 +45,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 		return () => {
 			audioRef.current?.pause();
 			audioRef.current = null;
+			if (ownedUrlRef.current !== null) {
+				releaseBlobUrl(ownedUrlRef.current);
+				ownedUrlRef.current = null;
+			}
 		};
 	}, []);
 
@@ -122,6 +129,13 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 			}
 			return;
 		}
+		// Retain only URLs this app created (the decrypted-file hook owns
+		// them). A foreign object URL must not be revoked by the player.
+		const owned = retainBlobUrl(track.url);
+		if (ownedUrlRef.current !== null) {
+			releaseBlobUrl(ownedUrlRef.current);
+		}
+		ownedUrlRef.current = owned ? track.url : null;
 		setCurrentTrack(track);
 	}, []);
 
@@ -153,6 +167,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 		generationRef.current += 1;
 		audioRef.current?.pause();
 		if (audioRef.current) audioRef.current.src = "";
+		if (ownedUrlRef.current !== null) {
+			releaseBlobUrl(ownedUrlRef.current);
+			ownedUrlRef.current = null;
+		}
 		setCurrentTrack(null);
 		setIsPlaying(false);
 	}, []);

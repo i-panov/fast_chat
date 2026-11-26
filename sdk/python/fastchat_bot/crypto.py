@@ -22,9 +22,11 @@ from nacl.bindings import (
     crypto_aead_xchacha20poly1305_ietf_decrypt,
     crypto_aead_xchacha20poly1305_ietf_encrypt,
     crypto_box_keypair,
+    crypto_box_open_easy,
     crypto_box_seal,
     crypto_box_seal_open,
 )
+from nacl.signing import VerifyKey
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,26 +85,76 @@ def encrypt_content(
     return _b64(ciphertext), json.dumps(payload, separators=(",", ":"))
 
 
+def message_aad(
+    chat_id: str, message_id: str, from_id: str, thread_id: str | None = None
+) -> str:
+    return "|".join([chat_id, message_id, from_id, thread_id or ""])
+
+
 def decrypt_content(
     text: str,
     encrypted_payload: str,
     key_id: str,
     key: EncryptionKeyPair,
+    binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Open the envelope addressed to key_id and decrypt message content."""
+    """Open the envelope addressed to key_id and decrypt message content.
+
+    v2 payloads are authenticated: the envelope is a crypto_box_easy signed
+    by the account identity. Without the binding fields neither the AAD nor
+    the signature can be checked, so such a payload fails closed.
+    """
     payload = json.loads(encrypted_payload)
+    version = payload.get("v")
+    if version not in (1, 2):
+        raise ValueError("unsupported encrypted payload version")
+
+    aad: bytes | None = None
+    if version == 2:
+        sender_key = payload.get("senderKey")
+        identity_key = payload.get("identityKey")
+        identity_sig = payload.get("identitySig")
+        if (
+            binding is None
+            or not isinstance(sender_key, str)
+            or not isinstance(identity_key, str)
+            or not isinstance(identity_sig, str)
+        ):
+            raise ValueError("v2 message is missing its sender binding")
+        aad_text = message_aad(
+            binding["chatId"],
+            binding["messageId"],
+            binding["fromId"],
+            binding.get("threadId"),
+        )
+        try:
+            VerifyKey(_unb64(identity_key)).verify(
+                f"{aad_text}|{sender_key}".encode(), _unb64(identity_sig)
+            )
+        except Exception as exc:
+            raise ValueError("sender identity signature is invalid") from exc
+        aad = aad_text.encode()
+
     for envelope in payload.get("envelopes", []):
         if str(envelope.get("keyId", "")) != key_id:
             continue
         try:
-            message_key = crypto_box_seal_open(
-                _unb64(str(envelope["box"])),
-                _unb64(key.public_key),
-                _unb64(key.private_key),
-            )
+            if version == 2:
+                message_key = crypto_box_open_easy(
+                    _unb64(str(envelope["box"])),
+                    _unb64(str(envelope["nonce"])),
+                    _unb64(str(payload["senderKey"])),
+                    _unb64(key.private_key),
+                )
+            else:
+                message_key = crypto_box_seal_open(
+                    _unb64(str(envelope["box"])),
+                    _unb64(key.public_key),
+                    _unb64(key.private_key),
+                )
             plaintext = crypto_aead_xchacha20poly1305_ietf_decrypt(
                 _unb64(text),
-                None,
+                aad,
                 _unb64(str(payload["nonce"])),
                 message_key,
             )

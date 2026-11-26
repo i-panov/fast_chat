@@ -9,7 +9,7 @@ import {
 	encryptFileStream,
 	generateFileKey,
 } from "./file-crypto.ts";
-import { confirmNewKey } from "./keys.ts";
+import { confirmNewKey, ensureAccountKeys } from "./keys.ts";
 import { decryptMessage } from "./message.ts";
 
 // Mutable holder for the keys generated per test. vi.mock factories are
@@ -47,6 +47,27 @@ vi.mock("../api.ts", () => ({
 	),
 	setKeyBackup: vi.fn(),
 	deleteKeyBackup: vi.fn(),
+	registerDeviceKey: vi.fn(() => Promise.resolve({ status: "ok" })),
+	getUserDeviceKeys: vi.fn((_token: string, userId: string) => {
+		const pair =
+			userId === "alice:test"
+				? keyStore.alice
+				: userId === "bob:test"
+					? keyStore.bob
+					: null;
+		return Promise.resolve({
+			devices:
+				pair === null
+					? []
+					: [
+							{
+								id: `dev-${userId}`,
+								publicKey: pair.publicKey,
+								protocolVersion: 2,
+							},
+						],
+		});
+	}),
 }));
 
 function toMessage(id: string, encrypted: EncryptResult): Message {
@@ -58,8 +79,11 @@ function toMessage(id: string, encrypted: EncryptResult): Message {
 		text: encrypted.ciphertext,
 		encrypted: true,
 		encryptedPayload: JSON.stringify({
-			v: 1,
+			v: encrypted.version,
 			nonce: encrypted.nonce,
+			senderKey: encrypted.senderKey,
+			identityKey: encrypted.identityKey,
+			identitySig: encrypted.identitySig,
 			envelopes: encrypted.envelopes,
 		}),
 		createdAt: "2026-01-01T00:00:00Z",
@@ -70,7 +94,9 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 	beforeEach(async () => {
 		setActiveAccountKey("alice:test");
 		confirmNewKey();
-		keyStore.alice = await generateKeyPair();
+		// Use the key ensureAccountKeys actually stores locally; the sender's
+		// own device envelope must be part of every encrypted message.
+		keyStore.alice = await ensureAccountKeys("token");
 		keyStore.bob = await generateKeyPair();
 
 		await chatsRepo.upsert({
@@ -224,6 +250,47 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 		expect(out.fileKeys?.[hash]).toEqual(prepared[0]?.fileKey);
 	});
 
+	it("authenticates v2 content and rejects a moved message", async () => {
+		const encrypted = await encryptForChat(
+			"token",
+			"chat-v2",
+			{ text: "bound" },
+			{},
+			undefined,
+			{
+				messageId: "m-v2",
+				fromId: "alice:test",
+			},
+		);
+		if (encrypted === null) throw new Error("encryption failed");
+
+		const msg = toMessage("m-v2", encrypted);
+		const out = await decryptMessage(msg, "bob:test", keyStore.bob);
+		expect(out.text).toBe("bound");
+
+		// Moving the ciphertext into another chat changes the AAD: the
+		// message must not decrypt as a valid message there.
+		const moved = await decryptMessage(
+			{ ...msg, chatId: "chat-other" },
+			"bob:test",
+			keyStore.bob,
+		);
+		expect(moved.undecryptable).toBe(true);
+
+		// A server that swaps the sender key must also forge the identity
+		// signature; a broken signature makes the message undecryptable.
+		const payload = JSON.parse(msg.encryptedPayload ?? "{}") as {
+			identitySig?: string;
+		};
+		payload.identitySig = "AAAA";
+		const forged = await decryptMessage(
+			{ ...msg, encryptedPayload: JSON.stringify(payload) },
+			"bob:test",
+			keyStore.bob,
+		);
+		expect(forged.undecryptable).toBe(true);
+	});
+
 	it("round-trips text-only content (no location, plaintext files)", async () => {
 		const encrypted = await encryptForChat(
 			"token",
@@ -303,7 +370,11 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 
 	it("returns null when key lookup fails", async () => {
 		const { getPublicKey } = await import("../api.ts");
-		vi.mocked(getPublicKey).mockRejectedValueOnce(new Error("down"));
+		keyStore.alice = null;
+		keyStore.bob = null;
+		vi.mocked(getPublicKey)
+			.mockRejectedValueOnce(new Error("down"))
+			.mockRejectedValueOnce(new Error("down"));
 
 		await expect(
 			encryptForChat("token", "chat-v2", { text: "x" }, {}),

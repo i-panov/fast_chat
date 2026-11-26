@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -30,6 +32,8 @@ func RegisterFederated(api huma.API, st *store.Store, svc *service.Service, fm *
 	registerFederatedDeviceKeys(api, st)
 	registerFederatedFiles(api, st, svc, cfg)
 }
+
+const msgUserNotRemote = "user does not belong to remote server"
 
 // fedSecurity is the security declaration for federation operations.
 var fedSecurity = []map[string][]string{{federationScheme: {}}}
@@ -76,6 +80,8 @@ func registerFederatedUsers(api huma.API, st *store.Store, svc *service.Service,
 // registerFederatedChats registers a subset of the operations.
 func registerFederatedChats(api huma.API, st *store.Store, svc *service.Service, fm *federation.Manager, cfg *config.Config) {
 	registerFederatedChatMessages(api, st, svc, fm, cfg)
+	registerFederatedThreadOps(api, st, svc)
+	registerFederatedGroupMemberOps(api, st, svc)
 	registerFederatedChatMutations(api, st, svc, cfg)
 }
 
@@ -200,12 +206,8 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 		Summary:     "Remove a member from a federated group replica",
 		Security:    fedSecurity,
 	}, func(ctx context.Context, input *federatedGroupMemberInput) (*statusOutput, error) {
-		chat, err := federatedChatForMutation(ctx, st, input.ID)
-		if err != nil {
+		if err := federatedGroupForMemberChange(ctx, st, input.ID, input.UserID); err != nil {
 			return nil, err
-		}
-		if chat.Type != chatTypeGroup {
-			return nil, &statusError{ErrorMessage: msgNotGroup, code: http.StatusBadRequest}
 		}
 		if _, err := svc.RemoveChatMember(ctx, input.ID, input.UserID, ""); err != nil {
 			return nil, federatedOrInternalError(err)
@@ -264,6 +266,100 @@ func registerFederatedChatMessages(api huma.API, st *store.Store, svc *service.S
 	})
 }
 
+// registerFederatedThreadOps registers thread creation and live thread message
+// delivery. Separated from registerFederatedChatMessages to keep both
+// registration functions within the cyclomatic budget.
+func registerFederatedThreadOps(api huma.API, st *store.Store, svc *service.Service) {
+	huma.Register(api, huma.Operation{
+		OperationID: "federated-create-thread",
+		Method:      http.MethodPost,
+		Path:        "/api/federated/chats/{id}/threads",
+		Summary:     "Create a thread replica on behalf of a remote server",
+		Security:    fedSecurity,
+	}, func(ctx context.Context, input *federatedCreateThreadInput) (*statusOutput, error) {
+		chat, err := federatedChatForPeerAction(ctx, st, input.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = svc.ApplyFederatedThread(ctx, chat, &service.FederatedThread{
+			Peer:              federatedServerFromContext(ctx),
+			ID:                input.Body.ID,
+			ParentMessageID:   input.Body.ParentMessageID,
+			ParentMessageText: input.Body.ParentMessageText,
+			ParentMessageFrom: input.Body.ParentMessageFrom,
+			CreatedAt:         input.Body.CreatedAt,
+		})
+		if err != nil {
+			return nil, federatedOrInternalError(err)
+		}
+
+		return okStatus(), nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "federated-send-thread-message",
+		Method:      http.MethodPost,
+		Path:        "/api/federated/chats/{id}/threads/{threadId}/messages",
+		Summary:     "Receive a thread message from a remote server",
+		Security:    fedSecurity,
+	}, func(ctx context.Context, input *federatedSendThreadMessageInput) (*federatedMessageOutput, error) {
+		chat, err := federatedChatForSource(ctx, st, input.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		maxLen := service.MaxMessageLen
+		if input.Body.Encrypted {
+			maxLen = service.EncryptedMaxLen
+		}
+
+		msg, err := svc.SendFederatedMessage(ctx, chat, &service.FederatedInboundMessage{
+			Peer:             federatedServerFromContext(ctx),
+			ID:               input.Body.ID,
+			FromID:           input.Body.FromID,
+			FromNick:         input.Body.FromNick,
+			Text:             input.Body.Text,
+			ReplyToID:        input.Body.ReplyToID,
+			ThreadID:         input.ThreadID,
+			ThreadParentID:   input.Body.ThreadParentID,
+			Location:         input.Body.Location,
+			Encrypted:        input.Body.Encrypted,
+			EncryptedPayload: input.Body.EncryptedPayload,
+			Files:            input.Body.Files,
+		}, maxLen)
+		if err != nil {
+			return nil, federatedOrInternalError(err)
+		}
+
+		var out federatedMessageOutput
+		out.Status = http.StatusCreated
+		out.Body.Message = msg
+
+		return &out, nil
+	})
+}
+
+// registerFederatedGroupMemberOps registers the add-member relay that a
+// replica sends to its owner when it invites a local user.
+func registerFederatedGroupMemberOps(api huma.API, st *store.Store, svc *service.Service) {
+	huma.Register(api, huma.Operation{
+		OperationID: "federated-add-group-member",
+		Method:      http.MethodPost,
+		Path:        "/api/federated/groups/{id}/members",
+		Summary:     "Add a member reported by a participant server",
+		Security:    fedSecurity,
+	}, func(ctx context.Context, input *federatedAddGroupMemberInput) (*statusOutput, error) {
+		if err := federatedGroupForMemberChange(ctx, st, input.ID, input.Body.UserID); err != nil {
+			return nil, err
+		}
+		if _, err := svc.AddChatMember(ctx, input.ID, input.Body.UserID); err != nil {
+			return nil, federatedOrInternalError(err)
+		}
+		return okStatus(), nil
+	})
+}
+
 // registerFederatedChatMutations registers edit/delete/typing operations.
 func registerFederatedChatMutations(api huma.API, st *store.Store, svc *service.Service, cfg *config.Config) {
 	huma.Register(api, huma.Operation{
@@ -296,6 +392,54 @@ func registerFederatedChatMutations(api huma.API, st *store.Store, svc *service.
 	})
 
 	huma.Register(api, huma.Operation{
+		OperationID: "federated-reaction",
+		Method:      http.MethodPost,
+		Path:        "/api/federated/chats/{id}/messages/{messageId}/reactions",
+		Summary:     "Receive a reaction change from a remote server",
+		Security:    fedSecurity,
+	}, func(ctx context.Context, input *federatedReactionInput) (*statusOutput, error) {
+		chat, err := federatedChatForPeerAction(ctx, st, input.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		body := input.Body
+		if body.UserID == "" || body.Emoji == "" {
+			return nil, &statusError{ErrorMessage: "userId and emoji are required", code: http.StatusBadRequest}
+		}
+		// The acting user must be a member. On a locally owned chat the peer
+		// may only speak for its own users; a replica accepts a relayed
+		// reaction from any member because its owner is the relay.
+		peer := federatedServerFromContext(ctx)
+		if !slices.Contains(chat.Members, body.UserID) {
+			return nil, &statusError{ErrorMessage: "user is not a chat member", code: http.StatusForbidden}
+		}
+		if original, ok := st.GetChat(ctx, input.ID); ok &&
+			original.RemoteServer == "" &&
+			!service.UserIDBelongsToServer(body.UserID, peer) {
+
+			return nil, &statusError{ErrorMessage: msgUserNotRemote, code: http.StatusForbidden}
+		}
+
+		at := body.At
+		if at.IsZero() {
+			at = time.Now().UTC()
+		}
+
+		if _, err := svc.ApplyFederatedReaction(ctx, chat, input.MessageID, body.UserID, body.Emoji, body.Add, at); err != nil {
+			return nil, federatedOrInternalError(err)
+		}
+
+		// On the owner server the change must reach the other member
+		// servers too. A replica does not relay: its owner already does.
+		if original, ok := st.GetChat(ctx, input.ID); ok {
+			svc.RelayReaction(ctx, original, input.MessageID, body.UserID, body.Emoji, body.Add, at, peer)
+		}
+
+		return okStatus(), nil
+	})
+
+	huma.Register(api, huma.Operation{
 		OperationID: "federated-typing",
 		Method:      http.MethodPost,
 		Path:        "/api/federated/chats/{id}/typing",
@@ -307,11 +451,16 @@ func registerFederatedChatMutations(api huma.API, st *store.Store, svc *service.
 			return nil, err
 		}
 
-		// Like send/edit/delete, a typing indicator must come from a user of
-		// the sending server: otherwise a signed peer could emit typing as
-		// any local user.
-		if input.Body.UserID == "" || !service.UserIDBelongsToServer(input.Body.UserID, chat.RemoteServer) {
-			return nil, &statusError{ErrorMessage: "user does not belong to remote server", code: http.StatusForbidden}
+		// On a locally owned chat the peer may only speak for its own users.
+		// A replica accepts a typing relayed by its owner for any member.
+		if input.Body.UserID == "" || !slices.Contains(chat.Members, input.Body.UserID) {
+			return nil, &statusError{ErrorMessage: "user is not a chat member", code: http.StatusForbidden}
+		}
+		if original, ok := st.GetChat(ctx, input.ID); ok &&
+			original.RemoteServer == "" &&
+			!service.UserIDBelongsToServer(input.Body.UserID, federatedServerFromContext(ctx)) {
+
+			return nil, &statusError{ErrorMessage: msgUserNotRemote, code: http.StatusForbidden}
 		}
 
 		svc.HandleFederatedTyping(ctx, chat, input.Body.UserID, input.Body.Nick, input.Body.Active)
@@ -368,6 +517,38 @@ func federatedChatForMutation(ctx context.Context, st *store.Store, chatID strin
 	return chat, nil
 }
 
+// federatedGroupForMemberChange authorises a membership change reported by a
+// participant server. The owner is authoritative for a replica; the owner
+// itself accepts changes only for users that belong to the authenticated
+// peer. Without the second rule a member server could remove third-party
+// users from the group.
+func federatedGroupForMemberChange(ctx context.Context, st *store.Store, chatID, targetUserID string) error {
+	chat, ok := st.GetChat(ctx, chatID)
+	if !ok {
+		return &statusError{ErrorMessage: msgChatNotFound, code: http.StatusNotFound}
+	}
+	peer := federatedServerFromContext(ctx)
+	if peer == "" {
+		return &statusError{ErrorMessage: msgNotMember, code: http.StatusForbidden}
+	}
+	if chat.Type != chatTypeGroup {
+		return &statusError{ErrorMessage: msgNotGroup, code: http.StatusBadRequest}
+	}
+
+	switch chat.RemoteServer {
+	case peer:
+		// The owner is authoritative for its replica.
+		return nil
+	case "":
+		if !service.UserIDBelongsToServer(targetUserID, peer) {
+			return &statusError{ErrorMessage: msgUserNotRemote, code: http.StatusForbidden}
+		}
+		return nil
+	default:
+		return &statusError{ErrorMessage: msgNotMember, code: http.StatusForbidden}
+	}
+}
+
 // federatedChatForSource loads the chat and verifies the request originates
 // from the server that owns it (pre-migration authorizeFederatedSource).
 func federatedChatForSource(ctx context.Context, st *store.Store, chatID string) (*model.Chat, error) {
@@ -405,12 +586,16 @@ func federatedChatForPeerAction(ctx context.Context, st *store.Store, chatID str
 		return nil, err
 	}
 	peer := federatedServerFromContext(ctx)
+	clone := *chat
+	clone.FederatedPeer = peer
 	if chat.RemoteServer == "" {
-		clone := *chat
+		// A locally owned chat has no RemoteServer. Mark the copy as local
+		// and set the peer for the legacy author checks, but keep LocalChat
+		// so relay guards know this chat must fan out.
 		clone.RemoteServer = peer
-		return &clone, nil
+		clone.LocalChat = true
 	}
-	return chat, nil
+	return &clone, nil
 }
 
 // federatedEdit performs the shared federated edit flow for chat and thread
@@ -469,6 +654,52 @@ func federatedOrInternalError(err error) error {
 }
 
 // --- Input/output types ---
+
+type federatedReactionInput struct {
+	ID        string `path:"id"`
+	MessageID string `path:"messageId"`
+	Body      struct {
+		UserID string    `json:"userId"`
+		Emoji  string    `json:"emoji"`
+		Add    bool      `json:"add"`
+		At     time.Time `json:"at"`
+	}
+}
+
+type federatedAddGroupMemberInput struct {
+	ID   string `path:"id"`
+	Body struct {
+		UserID string `json:"userId"`
+	}
+}
+
+type federatedCreateThreadInput struct {
+	ID   string `path:"id"`
+	Body struct {
+		ID                string    `json:"id"`
+		ParentMessageID   string    `json:"parentMessageId"`
+		ParentMessageText string    `json:"parentMessageText,omitempty"`
+		ParentMessageFrom string    `json:"parentMessageFrom,omitempty"`
+		CreatedAt         time.Time `json:"createdAt"`
+	}
+}
+
+type federatedSendThreadMessageInput struct {
+	ID       string `path:"id"`
+	ThreadID string `path:"threadId"`
+	Body     struct {
+		ID               string           `json:"id"`
+		FromID           string           `json:"fromId"`
+		FromNick         string           `json:"fromNick"`
+		Text             string           `json:"text"`
+		ReplyToID        string           `json:"replyToId,omitempty"`
+		ThreadParentID   string           `json:"threadParentId,omitempty"`
+		Location         *model.Location  `json:"location,omitempty"`
+		Encrypted        bool             `json:"encrypted,omitempty"`
+		EncryptedPayload string           `json:"encryptedPayload,omitempty"`
+		Files            []model.FileInfo `json:"files,omitempty"`
+	}
+}
 
 type federatedSearchInput struct {
 	Q string `query:"q"`

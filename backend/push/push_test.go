@@ -1,6 +1,7 @@
 package push
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,20 +80,26 @@ func TestLoadOrGenerateVAPIDKeys(t *testing.T) {
 		}
 	})
 
-	t.Run("corrupt key file triggers regeneration", func(t *testing.T) {
+	t.Run("corrupt key file is fatal", func(t *testing.T) {
 		dir := t.TempDir()
+		path := filepath.Join(dir, "vapid_keys.json")
 
-		if err := os.WriteFile(filepath.Join(dir, "vapid_keys.json"), []byte("not json"), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 
-		keys, err := loadOrGenerateVAPIDKeys(dir)
-		if err != nil {
-			t.Fatalf("load: %v", err)
+		if _, err := loadOrGenerateVAPIDKeys(dir); !errors.Is(err, errVAPIDKeysUnreadable) {
+			t.Fatalf("load = %v, want errVAPIDKeysUnreadable", err)
 		}
 
-		if keys.PublicKey == "" {
-			t.Error("expected regeneration to yield a public key")
+		// The unreadable file must be left in place for the operator to
+		// restore; silently rewriting it would invalidate every subscription.
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "not json" {
+			t.Fatalf("file was rewritten: %q", data)
 		}
 	})
 }

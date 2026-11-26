@@ -101,6 +101,10 @@ export function UsersTab({
 			{error !== null && <Alert color="red">{error}</Alert>}
 			{loading ? (
 				<Loader size="sm" />
+			) : users.length === 0 ? (
+				<Text size="sm" c="dimmed">
+					{t("admin.empty")}
+				</Text>
 			) : (
 				<Table.ScrollContainer minWidth={640}>
 					<Table striped highlightOnHover>
@@ -150,9 +154,18 @@ export function UsersTab({
 											<Button
 												size="compact-xs"
 												variant="light"
-												disabled={user.id === selfID}
+												disabled={user.id === selfID || user.isBot}
 												onClick={() => {
-													void patch(user, { isAdmin: !user.isAdmin });
+													const next = !user.isAdmin;
+													ask({
+														title: next
+															? t("admin.grantAdmin")
+															: t("admin.revokeAdmin"),
+														body: next
+															? t("admin.grantAdminConfirm")
+															: t("admin.revokeAdminConfirm"),
+														onConfirm: () => patch(user, { isAdmin: next }),
+													});
 												}}
 											>
 												{user.isAdmin

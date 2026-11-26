@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"time"
+
+	"gorm.io/gorm"
 
 	"fast_chat/model"
 )
@@ -10,6 +13,26 @@ import (
 // no session and cannot log in through the normal auth flow.
 func (s *Store) CreateBotUser(ctx context.Context, user *model.User) error {
 	return s.db.WithContext(ctx).Create(user).Error
+}
+
+// CreateBotAccount inserts the synthetic user and the bot profile in one
+// transaction. Two separate inserts could leave an orphan users row (with
+// is_bot=true) that permanently squats a username when the second insert
+// fails.
+func (s *Store) CreateBotAccount(ctx context.Context, user *model.User, bot *model.Bot) error {
+	now := time.Now().UTC()
+	if bot.CreatedAt.IsZero() {
+		bot.CreatedAt = now
+	}
+	bot.UpdatedAt = now
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(user).Error; err != nil {
+			return err
+		}
+
+		return tx.Create(bot).Error
+	})
 }
 
 func (s *Store) SetChatBotID(ctx context.Context, chatID, botID string) error {

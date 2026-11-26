@@ -177,15 +177,13 @@ export function useMessages({
 		setIsLoadingMore(true);
 
 		try {
-			// Get list of message IDs already in cache
-			const cachedMessages = await messagesRepo.getByChat(chatId);
-			const cachedIds = cachedMessages.map((m) => m.id);
-
-			// Fetch messages with status info for missing IDs
+			// Do not send the local cache as missingIDs: it grows past the
+			// server's 100-id cap and the server uses that list to pick which
+			// rows get status enrichment. Without it the whole page is
+			// enriched, which is what the history view needs.
 			const res = await getMessages(token, chatId, {
 				limit: PAGE_SIZE,
 				before: cursor === null ? undefined : cursor,
-				missingIDs: cachedIds,
 			});
 
 			await messagesRepo.upsertMany(res.messages);

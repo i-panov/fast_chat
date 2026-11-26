@@ -473,7 +473,10 @@ function MessageForm({
 				}}
 				onKeyDown={(e) => {
 					if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-					if (e.key === "Enter" && !e.shiftKey) {
+					const coarsePointer =
+						typeof window !== "undefined" &&
+						window.matchMedia?.("(pointer: coarse)").matches === true;
+					if (e.key === "Enter" && !e.shiftKey && !coarsePointer) {
 						e.preventDefault();
 						e.currentTarget.form?.requestSubmit();
 					}

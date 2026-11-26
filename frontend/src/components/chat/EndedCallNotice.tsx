@@ -33,6 +33,8 @@ export function EndedCallNotice({
 					: t("call.missed", { nick: peerNick });
 		} else if (reason === "peer-left" && callRole === "callee") {
 			message = t("call.peerLeft");
+		} else if (reason === "rejected" && callRole === "caller") {
+			message = t("call.rejected");
 		}
 	}
 

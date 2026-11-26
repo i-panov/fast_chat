@@ -54,6 +54,8 @@ beforeEach(async () => {
 	setActiveAccountKey(`alice-${scopeCounter++}:test`);
 	backupOnServer = null;
 	vi.clearAllMocks();
+	// The delete action asks for confirmation; tests take the confirm path.
+	vi.spyOn(window, "confirm").mockReturnValue(true);
 	keys = await generateKeyPair();
 });
 

@@ -1,4 +1,4 @@
-import { setActiveAccountKey } from "../db/init.ts";
+import { getActiveAccountKey, setActiveAccountKey } from "../db/init.ts";
 import {
 	clearBackgroundSession,
 	readBackgroundSession,
@@ -23,13 +23,26 @@ function isUnauthorized(error: unknown): boolean {
  * the same token will never work again; the credentials are dropped and the
  * application mirrors fresh ones on the next login.
  */
-export async function runBackgroundOutbox(): Promise<void> {
+// Background Sync events may overlap: a second one can start while the first
+// is still awaiting the network. Both mutate the process-wide active account,
+// so they run one after another instead of interleaving their IDB writes.
+let runQueue: Promise<void> = Promise.resolve();
+
+export function runBackgroundOutbox(): Promise<void> {
+	const run = runQueue.then(() => runBackgroundOutboxLocked());
+	// Keep the queue alive after a rejection: the next event still runs.
+	runQueue = run.catch(() => undefined);
+	return run;
+}
+
+async function runBackgroundOutboxLocked(): Promise<void> {
 	const session = await readBackgroundSession();
 	if (session === null) return;
 
+	const previousAccount = getActiveAccountKey();
 	setActiveAccountKey(session.accountKey);
 	try {
-		const completed = await processOutbox(session.token);
+		const { completed } = await processOutbox(session.token);
 		if (!completed) {
 			// The browser retries a rejected sync event with its own backoff;
 			// a resolved one would drop the queue until the next launch.
@@ -43,6 +56,6 @@ export async function runBackgroundOutbox(): Promise<void> {
 
 		throw error;
 	} finally {
-		setActiveAccountKey(null);
+		setActiveAccountKey(previousAccount);
 	}
 }

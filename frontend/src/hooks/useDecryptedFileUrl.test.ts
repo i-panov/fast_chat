@@ -91,6 +91,7 @@ describe("useDecryptedFileUrl", () => {
 		const fileKey = await generateFileKey();
 		const fetchMock = vi.fn(() => Promise.reject(new Error("no fetch")));
 		vi.stubGlobal("fetch", fetchMock);
+		const getCached = vi.spyOn(decryptedFilesRepo, "get");
 
 		const { result } = renderHook(() =>
 			useDecryptedFileUrl(
@@ -104,7 +105,9 @@ describe("useDecryptedFileUrl", () => {
 			expect(result.current.blobUrl).toBe("blob:pending-1");
 		});
 		expect(result.current.error).toBeNull();
-		expect(createObjectURL).not.toHaveBeenCalled();
+		// No decryption/cache path: the local plaintext URL is returned as-is.
+		expect(getCached).not.toHaveBeenCalled();
+		expect(fetchMock).not.toHaveBeenCalled();
 		vi.unstubAllGlobals();
 	});
 

@@ -95,6 +95,7 @@ beforeEach(() => {
 	sessionStorage.clear();
 	seedAccount();
 	vi.clearAllMocks();
+	vi.spyOn(window, "confirm").mockReturnValue(true);
 	vi.mocked(searchUsers).mockResolvedValue({ users: [] });
 });
 

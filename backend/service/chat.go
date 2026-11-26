@@ -19,6 +19,7 @@ import (
 const (
 	groupNameField  = "name"
 	groupNameMaxLen = 60
+	chatTypeGroup   = "group"
 )
 
 // Realtime event names and event payload keys shared across the chat domain.
@@ -246,24 +247,25 @@ func (s *Service) CreatePrivateChat(ctx context.Context, userID, withUserID stri
 		return ChatView{}, err
 	}
 
-	// Reopening a chat that either side deleted for themselves must bring it
-	// back into their lists.
-	if err := s.store.ClearChatDeletes(ctx, chat.ID, userID, withUserID); err != nil {
+	// Only the opener's own tombstone is cleared. The other side keeps the
+	// chat hidden until a real message arrives: merely opening a dialog must
+	// not resurrect it in their list.
+	if err := s.store.ClearChatDeletes(ctx, chat.ID, userID); err != nil {
 		return ChatView{}, err
 	}
 
-	if isBot {
-		mode := EncryptionModeServer
-		if remoteServer != "" {
-			if remoteMode, ok := s.remoteBotEncryptionMode(ctx, withUserID, remoteServer); ok {
-				mode = remoteMode
+	// isBot is a client hint, not proof: only an authoritative lookup (a local
+	// bot account or the peer's bot metadata) may mark a chat as a bot chat.
+	// Trusting the flag would let a caller downgrade a normal E2EE dialog to
+	// plaintext by claiming the peer is a server-mode bot.
+	if isBot && remoteServer != "" {
+		if mode, ok := s.remoteBotEncryptionMode(ctx, withUserID, remoteServer); ok {
+			if err := s.store.SetChatBot(ctx, chat.ID, withUserID, mode); err != nil {
+				return ChatView{}, err
 			}
+			chat.BotID = withUserID
+			chat.BotEncryptionMode = mode
 		}
-		if err := s.store.SetChatBot(ctx, chat.ID, withUserID, mode); err != nil {
-			return ChatView{}, err
-		}
-		chat.BotID = withUserID
-		chat.BotEncryptionMode = mode
 	}
 
 	view := s.EnrichChat(ctx, chat)
@@ -336,10 +338,7 @@ func (s *Service) CreateGroupChat(ctx context.Context, ownerID, name string, mem
 			"ownerId":      ownerID,
 			"members":      chat.Members,
 		}
-		groupURL := s.fed.URL(domain, "/api/federated/groups")
-		if _, err := s.fed.Request(ctx, "POST", groupURL, body); err != nil {
-			log().Warn("federated group create failed", "server", domain, "err", err)
-		}
+		s.queueFederation(ctx, domain, "POST", "/api/federated/groups", body)
 	}
 
 	return view, nil
@@ -373,10 +372,8 @@ func (s *Service) UpdateChatName(ctx context.Context, chatID, name string) (Chat
 				continue
 			}
 			seen[domain] = struct{}{}
-			groupURL := s.fed.URL(domain, "/api/federated/groups/"+updated.ID)
-			if _, err := s.fed.Request(ctx, "PATCH", groupURL, map[string]string{groupNameField: updated.Name}); err != nil {
-				log().Warn("federated group rename failed", "server", domain, "err", err)
-			}
+			s.queueFederation(ctx, domain, "PATCH", "/api/federated/groups/"+updated.ID,
+				map[string]string{groupNameField: updated.Name})
 		}
 	}
 
@@ -398,10 +395,7 @@ func (s *Service) DeleteChat(ctx context.Context, chat *model.Chat) error {
 		return err
 	}
 	for domain := range domains {
-		groupURL := s.fed.URL(domain, "/api/federated/groups/"+chat.ID)
-		if _, err := s.fed.Request(ctx, "DELETE", groupURL, nil); err != nil {
-			log().Warn("federated group delete failed", "server", domain, "err", err)
-		}
+		s.queueFederation(ctx, domain, "DELETE", "/api/federated/groups/"+chat.ID, nil)
 	}
 
 	for _, memberID := range chat.Members {
@@ -420,7 +414,7 @@ func (s *Service) DeleteChatForUser(ctx context.Context, chatID, userID string) 
 		return ErrChatNotFound
 	}
 
-	if chat.Type == "group" {
+	if chat.Type == chatTypeGroup {
 		return ErrDeleteGroupChat
 	}
 
@@ -453,8 +447,12 @@ func (s *Service) AddChatMember(ctx context.Context, chatID, userID string) (Cha
 		if s.fed == nil {
 			return ChatView{}, ErrRemoteMember
 		}
-	} else if _, ok := s.store.GetUserByID(ctx, userID); !ok {
+	} else if target, ok := s.store.GetUserByID(ctx, userID); !ok {
 		return ChatView{}, ErrUserNotFound
+	} else if target.IsBot {
+		// Bot chats are 1-1 by design: a group bot has no bot_chats row,
+		// cannot read the group, and only leaks file access.
+		return ChatView{}, ErrBotGroupMember
 	}
 
 	if err := s.store.AddChatMember(ctx, chatID, userID, 0); err != nil {
@@ -475,18 +473,31 @@ func (s *Service) AddChatMember(ctx context.Context, chatID, userID string) (Cha
 		}})
 	}
 
-	if remoteServer != "" && remoteServer != s.cfg.Server.Domain {
-		seen := make(map[string]struct{})
-		for _, memberID := range updated.Members {
-			domain := s.remoteServerFromID(memberID)
-			if domain == "" || domain == s.cfg.Server.Domain {
-				continue
+	if s.fed != nil {
+		if updated.RemoteServer != "" {
+			// A replica must tell the owner; the owner is authoritative for
+			// the membership and relays it to the other servers. Sending the
+			// whole member snapshot here would let a replica remove members,
+			// so only the addition is reported.
+			s.queueFederation(ctx, updated.RemoteServer, "POST",
+				"/api/federated/groups/"+url.PathEscape(chatID)+"/members",
+				map[string]any{keyUserID: userID})
+		} else {
+			// Any membership change on a locally owned group goes to every
+			// peer, not only when the added user is remote: a locally added
+			// member must be visible to the neighbours too.
+			seen := make(map[string]struct{})
+			for _, memberID := range updated.Members {
+				domain := s.remoteServerFromID(memberID)
+				if domain == "" || domain == s.cfg.Server.Domain {
+					continue
+				}
+				if _, ok := seen[domain]; ok {
+					continue
+				}
+				seen[domain] = struct{}{}
+				s.replicateGroupMembership(ctx, updated, domain)
 			}
-			if _, ok := seen[domain]; ok {
-				continue
-			}
-			seen[domain] = struct{}{}
-			s.replicateGroupMembership(ctx, updated, domain)
 		}
 	}
 
@@ -519,20 +530,26 @@ func (s *Service) RemoveChatMember(ctx context.Context, chatID, targetUserID, ac
 
 	s.sendEvent(targetUserID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: chatID}})
 
-	if s.fed != nil && before.RemoteServer == "" {
-		seen := make(map[string]struct{})
-		for _, memberID := range before.Members {
-			domain := s.remoteServerFromID(memberID)
-			if domain == "" || domain == s.cfg.Server.Domain {
-				continue
-			}
-			if _, ok := seen[domain]; ok {
-				continue
-			}
-			seen[domain] = struct{}{}
-			groupURL := s.fed.URL(domain, "/api/federated/groups/"+chatID+"/members/"+url.PathEscape(targetUserID))
-			if _, err := s.fed.Request(ctx, "DELETE", groupURL, nil); err != nil {
-				log().Warn("federated group remove member failed", "server", domain, "err", err)
+	if s.fed != nil && before != nil {
+		if before.RemoteServer != "" {
+			// A replica has to tell the owner about a leave/removal too;
+			// otherwise the owner keeps federating the group to a user who
+			// left and the next membership sync re-adds them.
+			s.queueFederation(ctx, before.RemoteServer, "DELETE",
+				"/api/federated/groups/"+chatID+"/members/"+url.PathEscape(targetUserID), nil)
+		} else {
+			seen := make(map[string]struct{})
+			for _, memberID := range before.Members {
+				domain := s.remoteServerFromID(memberID)
+				if domain == "" || domain == s.cfg.Server.Domain {
+					continue
+				}
+				if _, ok := seen[domain]; ok {
+					continue
+				}
+				seen[domain] = struct{}{}
+				s.queueFederation(ctx, domain, "DELETE",
+					"/api/federated/groups/"+chatID+"/members/"+url.PathEscape(targetUserID), nil)
 			}
 		}
 	}
@@ -831,10 +848,7 @@ func (s *Service) replicateGroupMembership(ctx context.Context, chat *model.Chat
 		"ownerId":      chat.OwnerID,
 		"members":      chat.Members,
 	}
-	groupURL := s.fed.URL(domain, "/api/federated/groups")
-	if _, err := s.fed.Request(ctx, "POST", groupURL, body); err != nil {
-		log().Warn("federated group membership sync failed", "server", domain, "err", err)
-	}
+	s.queueFederation(ctx, domain, "POST", "/api/federated/groups", body)
 }
 
 func (s *Service) remoteBotEncryptionMode(ctx context.Context, userID, remoteServer string) (string, bool) {

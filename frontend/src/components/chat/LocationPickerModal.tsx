@@ -60,6 +60,27 @@ function PickerMarker({
 	);
 }
 
+// geolocationErrorKey separates a timeout (worth retrying) from an actual
+// refusal, instead of reporting every failure as "unavailable".
+function geolocationErrorKey(err: unknown): string {
+	const code =
+		typeof err === "object" && err !== null && "code" in err
+			? (err as { code?: number }).code
+			: undefined;
+	return code === 3 ? "error.geolocationTimeout" : "error.geolocationDenied";
+}
+
+function hasValidCoords(position: Location): boolean {
+	return (
+		!Number.isNaN(position.lat) &&
+		!Number.isNaN(position.lng) &&
+		position.lat >= -90 &&
+		position.lat <= 90 &&
+		position.lng >= -180 &&
+		position.lng <= 180
+	);
+}
+
 export function LocationPickerModal({
 	open,
 	initial,
@@ -83,21 +104,22 @@ export function LocationPickerModal({
 	const [errorKey, setErrorKey] = useState<string | null>(null);
 	const markerRef = useRef<L.Marker | null>(null);
 	const autoLocatedRef = useRef(false);
+	// A late geolocation result must not overwrite a manual choice.
+	const manualRef = useRef(false);
 
 	useEffect(() => {
 		if (!open) {
 			autoLocatedRef.current = false;
+			manualRef.current = false;
 			return;
 		}
 		setErrorKey(null);
-
 		if (initial !== null) {
 			setPosition({ lat: initial.lat, lng: initial.lng });
 			setCenter([initial.lat, initial.lng]);
 			setZoom(DEFAULT_ZOOM);
 			return;
 		}
-
 		if (!autoLocatedRef.current) {
 			autoLocatedRef.current = true;
 
@@ -110,6 +132,7 @@ export function LocationPickerModal({
 
 			requestGeolocation()
 				.then((loc) => {
+					if (manualRef.current) return;
 					setPosition({ lat: loc.lat, lng: loc.lng });
 					setCenter([loc.lat, loc.lng]);
 					setZoom(15);
@@ -121,12 +144,20 @@ export function LocationPickerModal({
 	}, [open, initial]);
 
 	function handlePositionChange(loc: Location) {
+		manualRef.current = true;
 		setPosition({ lat: loc.lat, lng: loc.lng });
 		setCenter([loc.lat, loc.lng]);
 	}
 
 	function handleCoordChange(field: "lat" | "lng", raw: number | string) {
-		const n = typeof raw === "number" ? raw : Number(raw);
+		// Number("") is 0: an emptied field must mean "not set", not the
+		// Gulf of Guinea.
+		const n =
+			typeof raw === "number"
+				? raw
+				: raw.trim() === ""
+					? Number.NaN
+					: Number(raw);
 		if (Number.isFinite(n)) {
 			handlePositionChange(
 				field === "lat"
@@ -145,22 +176,15 @@ export function LocationPickerModal({
 			const loc = await requestGeolocation();
 			handlePositionChange(loc);
 			setZoom(15);
-		} catch {
-			setErrorKey("error.geolocationDenied");
+		} catch (err) {
+			setErrorKey(geolocationErrorKey(err));
 		} finally {
 			setBusy(false);
 		}
 	}
 
 	function handleConfirm() {
-		if (
-			Number.isNaN(position.lat) ||
-			Number.isNaN(position.lng) ||
-			position.lat < -90 ||
-			position.lat > 90 ||
-			position.lng < -180 ||
-			position.lng > 180
-		) {
+		if (!hasValidCoords(position)) {
 			setErrorKey("error.invalidCoords");
 			return;
 		}

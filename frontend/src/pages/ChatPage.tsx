@@ -422,10 +422,12 @@ function ActiveChatView({
 	s,
 	userId,
 	onBack,
+	scrollToMessageId,
 }: {
 	s: ChatPageState;
 	userId: string;
 	onBack?: () => void;
+	scrollToMessageId?: string | null;
 }) {
 	const { t } = useTranslation();
 	const showAuthorForGroup = s.activeChat?.type === "group";
@@ -615,6 +617,7 @@ function ActiveChatView({
 			)}
 			<MessageSelectionProvider value={selection}>
 				<MessageList
+					key={s.activeChatId ?? "none"}
 					messages={s.activeMessages}
 					userId={userId}
 					chatId={s.activeChatId}
@@ -622,6 +625,7 @@ function ActiveChatView({
 					onDelete={s.handleDeleteMessage}
 					onStartEdit={s.handleStartEdit}
 					onReply={s.handleReply}
+					scrollToMessageId={scrollToMessageId}
 					editTTL={s.config?.messageEditTTL ?? 0}
 					deleteTTL={s.config?.messageDeleteTTL ?? 0}
 					hasMore={s.hasMore}
@@ -731,6 +735,9 @@ export function ChatPage() {
 	const { t } = useTranslation();
 	const isMobile = useMediaQuery("(max-width: 48em)") === true;
 	const [messageSearchOpen, setMessageSearchOpen] = useState(false);
+	const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(
+		null,
+	);
 	const [chatToDelete, setChatToDelete] = useState<Chat | null>(null);
 	const [deletingChat, setDeletingChat] = useState(false);
 
@@ -824,6 +831,9 @@ export function ChatPage() {
 	const openChat = useCallback(
 		(chatId: string) => {
 			selectChat(chatId);
+			// A pending jump belongs to the chat that requested it; a manual
+			// switch must not inherit a stale target.
+			setScrollToMessageId(null);
 			const chat = s.chats.find((c) => c.id === chatId);
 			if (chat !== undefined) {
 				navigateToChat(chat);
@@ -941,7 +951,10 @@ export function ChatPage() {
 					open={messageSearchOpen}
 					onClose={() => setMessageSearchOpen(false)}
 					userId={s.user.id}
-					onSelect={openChat}
+					onSelect={(chatId, messageId) => {
+						openChat(chatId);
+						setScrollToMessageId(messageId);
+					}}
 				/>
 				<AccountSwitcher
 					open={s.switcherOpen}
@@ -996,6 +1009,7 @@ export function ChatPage() {
 										<ActiveChatView
 											s={s}
 											userId={s.user.id}
+											scrollToMessageId={scrollToMessageId}
 											onBack={isMobile ? closeMobileChat : undefined}
 										/>
 									)}

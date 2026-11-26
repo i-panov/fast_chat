@@ -333,6 +333,103 @@ func (s *Store) CreateRemoteFile(ctx context.Context, file *model.File) error {
 	return s.db.WithContext(ctx).Create(file).Error
 }
 
+// DeleteOrphanFilesBefore removes file records created before the cutoff that
+// are not attached to a message and are not a user or chat avatar. It returns
+// the deleted row count and the storage paths that no surviving row references
+// any more; the caller removes those bytes from disk.
+//
+// Remote placeholders are skipped: their bytes live on another server and the
+// row itself is the only way to proxy them. The reference check and the delete
+// run in one transaction, so an upload that is attached concurrently is either
+// seen by the check or fails to attach to a removed id.
+func (s *Store) DeleteOrphanFilesBefore(ctx context.Context, before time.Time, limit int) (int, []string, error) {
+	if limit <= 0 {
+		return 0, nil, nil
+	}
+
+	messageFiles := s.db.Model(&model.MessageFile{}).Select("file_id")
+	userAvatars := s.db.Model(&model.User{}).Select("avatar_file_id").Where("avatar_file_id <> ''")
+	chatAvatars := s.db.Model(&model.Chat{}).Select("avatar_file_id").Where("avatar_file_id <> ''")
+
+	var candidates []model.File
+	if err := s.db.WithContext(ctx).
+		Where("created_at < ? AND remote_server = ''", before).
+		Where("id NOT IN (?)", messageFiles).
+		Where("id NOT IN (?)", userAvatars).
+		Where("id NOT IN (?)", chatAvatars).
+		Order("created_at ASC").
+		Limit(limit).
+		Find(&candidates).Error; err != nil {
+		return 0, nil, err
+	}
+	if len(candidates) == 0 {
+		return 0, nil, nil
+	}
+
+	paths := make(map[string]struct{}, len(candidates))
+	deleted := 0
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for i := range candidates {
+			file := &candidates[i]
+			var references int64
+
+			for _, ref := range []struct {
+				model any
+				where string
+			}{
+				{&model.MessageFile{}, "file_id = ?"},
+				{&model.User{}, "avatar_file_id = ?"},
+				{&model.Chat{}, "avatar_file_id = ?"},
+			} {
+				var count int64
+				if err := tx.Model(ref.model).Where(ref.where, file.ID).Count(&count).Error; err != nil {
+					return err
+				}
+				references += count
+			}
+
+			if references > 0 {
+				continue
+			}
+
+			result := tx.Delete(&model.File{}, "id = ?", file.ID)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				continue
+			}
+			deleted++
+			if file.StoragePath != "" {
+				paths[file.StoragePath] = struct{}{}
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+
+	unused := make([]string, 0, len(paths))
+	for path := range paths {
+		var stillUsed int64
+		if err := s.db.WithContext(ctx).Model(&model.File{}).
+			Where("storage_path = ?", path).Count(&stillUsed).Error; err != nil {
+			// Keep the bytes: reporting the row as deleted but leaving the
+			// file is harmless, deleting a shared blob is not.
+			slog.Warn("orphan file GC: reference check failed", "path", path, "err", err)
+			continue
+		}
+		if stillUsed == 0 {
+			unused = append(unused, path)
+		}
+	}
+
+	return deleted, unused, nil
+}
+
 // GetFilesByIDs loads file metadata for many ids in one query.
 //
 //nolint:dupl // mirrors the generic bot batch loader.

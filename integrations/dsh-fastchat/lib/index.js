@@ -41,9 +41,16 @@ function log(message, ...args) {
   console.log(`[fastchat] ${message}`, ...args);
 }
 
+function botIdentity(bot) {
+  // The token rotates; sessions and offsets must survive it. The name and the
+  // workspace already identify the configured bot, and the base URL keeps two
+  // servers apart.
+  return `${bot.baseUrl}\0${bot.name}\0${bot.cwd}`;
+}
+
 function sessionIdFor(bot, chatId) {
   const digest = createHash("sha256")
-    .update(`${bot.token}\0${bot.name}\0${bot.cwd}\0${chatId}`)
+    .update(`${botIdentity(bot)}\0${chatId}`)
     .digest("hex")
     .slice(0, 20);
   return `session-fastchat-${digest}`;
@@ -148,8 +155,11 @@ async function runBot(ctx, botConfig, signal, handles, sessionBots) {
   if (!cwdStat.isDirectory() || cwd === resolve("/") || cwd === home) {
     throw new Error(`refusing unsafe Fast Chat cwd: ${cwd}`);
   }
-  const tokenHash = createHash("sha256").update(botConfig.token).digest("hex").slice(0, 16);
-  const offsetPath = resolve(cwd, ".fastchat", `offset-${tokenHash}`);
+  const identityHash = createHash("sha256")
+    .update(`${botConfig.baseUrl || "http://localhost:8080"}\0${botConfig.name}\0${cwd}`)
+    .digest("hex")
+    .slice(0, 16);
+  const offsetPath = resolve(cwd, ".fastchat", `offset-${identityHash}`);
   let initialOffset = 0;
   try {
     initialOffset = Number.parseInt(await readFile(offsetPath, "utf8"), 10) || 0;

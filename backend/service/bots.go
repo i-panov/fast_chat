@@ -32,8 +32,12 @@ const (
 	EncryptionModeE2EE = "e2ee"
 )
 
+// MaxBotsPerOwner bounds how many bot identities one account can create.
+const MaxBotsPerOwner = 20
+
 var (
 	ErrBotUsernameInvalid     = errors.New("bot username must match the username rules and end with _bot")
+	ErrBotQuotaExceeded       = errors.New("bot limit reached")
 	ErrBotUsernameTaken       = errors.New("bot username taken")
 	ErrBotUsernameReserved    = errors.New("bot username reserved")
 	ErrBotOwnerRequired       = errors.New("bot owner is required")
@@ -44,6 +48,7 @@ var (
 	ErrBotEncryptionForbidden = errors.New("plaintext message required for this bot")
 	ErrBotActionInvalid       = errors.New("unsupported bot action")
 	ErrBotAttachmentRemote    = errors.New("files and locations are not supported for federated bot chats")
+	ErrBotGroupMember         = errors.New("bots can only be used in 1-1 chats")
 )
 
 var botBaseRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_]{0,26}[a-z0-9])?$`)
@@ -56,7 +61,11 @@ func ParseBotUsername(username string) (string, bool) {
 		return "", false
 	}
 	base := strings.TrimSuffix(username, "_bot")
-	if len(base) < 2 || !botBaseRE.MatchString(base) {
+	// Apply the shared username rules to the base, minus the 3-rune minimum:
+	// pay__bot next to pay_bot is confusing and must be rejected.
+	if len(base) < 2 || strings.Contains(base, "__") || strings.HasSuffix(base, "_") ||
+		!botBaseRE.MatchString(base) {
+
 		return "", false
 	}
 	return username, true
@@ -100,6 +109,9 @@ func (s *Service) CreateBot(ctx context.Context, ownerID, username, displayName 
 	if _, ok := s.store.GetUserByID(ctx, ownerID); !ok {
 		return nil, ErrUserNotFound
 	}
+	if s.store.CountBotsByOwner(ctx, ownerID) >= MaxBotsPerOwner {
+		return nil, ErrBotQuotaExceeded
+	}
 	if _, ok := s.store.GetUserByID(ctx, username+":"+s.ServerDomain()); ok {
 		return nil, ErrBotUsernameTaken
 	}
@@ -115,16 +127,20 @@ func (s *Service) CreateBot(ctx context.Context, ownerID, username, displayName 
 		DisplayName: displayName,
 		IsBot:       true,
 	}
-	if err := s.store.CreateBotUser(ctx, user); err != nil {
-		return nil, ErrBotUsernameTaken
-	}
 	token, hash, prefix := newBotToken()
 	bot := &model.Bot{
 		UserID: userID, OwnerID: ownerID,
 		TokenHash: hash, TokenPrefix: prefix,
 		EncryptionMode: EncryptionModeServer, IsActive: true,
 	}
-	if err := s.store.CreateBot(ctx, bot, nil); err != nil {
+	// One transaction: a failure between the two inserts must not leave a
+	// bot-shaped users row that occupies the username forever.
+	if err := s.store.CreateBotAccount(ctx, user, bot); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return nil, ErrBotUsernameTaken
+		}
+		// A database or CSPRNG failure is not "the username is taken": keep
+		// the real cause instead of sending the user to pick another name.
 		return nil, err
 	}
 	return &CreatedBot{Bot: bot, User: user, Username: username, Token: token}, nil
@@ -138,6 +154,11 @@ func (s *Service) GetBotByToken(ctx context.Context, token string) (*model.Bot, 
 	}
 	user, ok := s.store.GetUserByID(ctx, bot.UserID)
 	if !ok || !user.IsBot || !bot.IsActive {
+		return nil, nil, false
+	}
+	// A banned owner must not regain Bot API access just because an admin
+	// later re-enables the bot.
+	if owner, ok := s.store.GetUserByID(ctx, bot.OwnerID); !ok || owner.Banned {
 		return nil, nil, false
 	}
 	return bot, user, true
@@ -193,6 +214,11 @@ func (s *Service) PruneBotData(ctx context.Context) error {
 // single-process SQLite deployment; a notifier can replace it later.
 func (s *Service) PollBotUpdates(ctx context.Context, botID string, offset uint64, limit int, timeout time.Duration) ([]model.BotUpdate, error) {
 	s.pruneBotDataOnce(ctx)
+	if offset > 0 {
+		if err := s.store.DeleteBotUpdatesBefore(ctx, botID, offset); err != nil {
+			log().Warn("failed to acknowledge bot updates", "botID", botID, "offset", offset, "err", err)
+		}
+	}
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
@@ -275,6 +301,9 @@ type federationEnqueuer interface {
 }
 
 func (s *Service) queueFederation(ctx context.Context, remoteServer, method, path string, body any) {
+	// The outbox INSERT must survive a dropped client connection: the
+	// operation is the durable half of the delivery guarantee.
+	ctx = context.WithoutCancel(ctx)
 	if fed, ok := s.fed.(federationEnqueuer); ok {
 		switch method {
 		case "POST":
@@ -294,7 +323,7 @@ func (s *Service) queueFederation(ctx context.Context, remoteServer, method, pat
 	}
 }
 
-//nolint:gocyclo,gocognit,cyclop // attachments, markup, push and federation share one send path.
+//nolint:gocyclo,gocognit,cyclop,nestif // attachments, markup, push and federation share one send path.
 func (s *Service) sendBotMessage(
 	ctx context.Context,
 	botID, chatID, text string,
@@ -328,6 +357,11 @@ func (s *Service) sendBotMessage(
 	bc, ok := s.store.GetBotChatByChatID(ctx, chatID)
 	if !ok || bc.BotID != botID {
 		return nil, ErrChatNotFound
+	}
+	// Blocking a bot is the user's only way to stop unsolicited messages;
+	// the bot path must honour it just like a private user-to-user chat.
+	if s.IsBlockedBetween(ctx, botID, bc.UserID) {
+		return nil, ErrUserBlocked
 	}
 	user, ok := s.store.GetUserByID(ctx, botID)
 	if !ok {
@@ -384,6 +418,11 @@ func (s *Service) sendBotMessage(
 				return nil, err
 			}
 			msg.ReplyMarkup = markup
+		}
+		// A bot message is still a new message: it must bring a hidden chat
+		// back, otherwise the push arrives while the chat stays invisible.
+		if err := s.store.ClearChatDeletes(ctx, chat.ID, bc.UserID); err != nil {
+			log().Warn("failed to unhide bot chat after a message", "chat", chat.ID, "err", err)
 		}
 		s.sendEvent(bc.UserID, sse.Event{Event: eventNewMessage, Data: msg})
 		s.SendPushForMessage(ctx, chat, msg, "", bc.UserID)
@@ -521,6 +560,9 @@ func (s *Service) CreateBotCallback(ctx context.Context, userID, chatID, message
 	// handled in-process; queueing the update would leave it unanswered
 	// forever.
 	if s.isMasterBot(ctx, bc.BotID) {
+		if bot, ok := s.store.GetBot(ctx, bc.BotID); !ok || !bot.IsActive {
+			return nil, ErrBotNotActive
+		}
 		// Persist the query so the returned id is truthful for clients that
 		// later answer it; it is not queued in bot_updates because the root
 		// bot has no poller.

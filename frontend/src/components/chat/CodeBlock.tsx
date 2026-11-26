@@ -56,6 +56,7 @@ export function CodeBlock({ className, code, lang }: Props) {
 					color="gray"
 					size="sm"
 					onClick={() => {
+						if (navigator.clipboard === undefined) return;
 						void navigator.clipboard
 							.writeText(code)
 							.then(() => {

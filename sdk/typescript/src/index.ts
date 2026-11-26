@@ -298,7 +298,16 @@ export class BotClient {
 				throw new BotApiError("bot is in e2ee mode; an encryption key is required", 0, 0);
 			}
 			const userID = this.chatUsers.get(chatId);
-			if (userID === undefined) throw new Error("unknown chat user");
+			if (userID === undefined) {
+				// Proactive messages carry no user context, so the device keys
+				// to encrypt for are unknown. Keep the same error type as the
+				// rest of the Bot API instead of a bare Error.
+				throw new BotApiError(
+					"cannot send an E2EE message before receiving a message from this chat",
+					0,
+					0,
+				);
+			}
 			const devices = await this.getUserDeviceKeys(userID);
 			const encrypted = await encryptBotReply(
 				text,
@@ -369,7 +378,16 @@ export class BotClient {
 				throw new BotApiError("bot is in e2ee mode; an encryption key is required", 0, 0);
 			}
 			const userID = this.chatUsers.get(chatId);
-			if (userID === undefined) throw new Error("unknown chat user");
+			if (userID === undefined) {
+				// Proactive messages carry no user context, so the device keys
+				// to encrypt for are unknown. Keep the same error type as the
+				// rest of the Bot API instead of a bare Error.
+				throw new BotApiError(
+					"cannot send an E2EE message before receiving a message from this chat",
+					0,
+					0,
+				);
+			}
 			const devices = await this.getUserDeviceKeys(userID);
 			const encrypted = await encryptBotReply(
 				text,
@@ -701,7 +719,17 @@ export class BotClient {
 		if (decrypt && this.encryptionKey !== undefined && raw.encrypted === true && raw.encrypted_payload !== undefined) {
 			try {
 				const me = await this.getMe();
-				const content = await decryptBotMessage(raw.text, raw.encrypted_payload, me.id ?? "", this.encryptionKey);
+				const content = await decryptBotMessage(
+					raw.text,
+					raw.encrypted_payload,
+					me.id ?? "",
+					this.encryptionKey,
+					{
+						chatId: raw.chat_id,
+						messageId: raw.message_id,
+						fromId: raw.from.id,
+					},
+				);
 				base.text = typeof content.text === "string" ? content.text : "";
 				base.location = content.location;
 				base.fileKeys = content.fileKeys;
@@ -825,15 +853,17 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 			resolve();
 			return;
 		}
-		const timer = setTimeout(resolve, ms);
-		signal?.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(timer);
-				resolve();
-			},
-			{ once: true },
-		);
+		let settled = false;
+		const finish = () => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		};
+		const timer = setTimeout(finish, ms);
+		const onAbort = () => finish();
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 

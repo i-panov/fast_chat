@@ -78,6 +78,7 @@ export function BotsModal({ open, onClose, token }: Props) {
 
 	async function handleRotate(botUsername: string) {
 		if (token === undefined || busy) return;
+		if (!window.confirm(t("bots.rotateConfirm"))) return;
 		setBusy(true);
 		setError(null);
 		try {

@@ -2,6 +2,7 @@ package sse
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -514,6 +515,40 @@ func TestBindSessionReportsNewBindingOnce(t *testing.T) {
 	}
 	if len(h.userConns["u1"]) != 1 {
 		t.Fatalf("userConns = %v, want one entry", h.userConns["u1"])
+	}
+}
+
+func TestBindSessionRejectsAtCapWithoutEviction(t *testing.T) {
+	h := NewHub(time.Hour)
+	defer h.Close()
+
+	exp := time.Now().Add(time.Hour)
+	for i := range maxConnectionsPerUser {
+		id := fmt.Sprintf("c%d", i)
+		h.Register(id)
+		if _, err := h.BindSession(id, "u1", fmt.Sprintf("s%d", i), exp); err != nil {
+			t.Fatalf("bind %s: %v", id, err)
+		}
+	}
+
+	h.Register("new")
+	if _, err := h.BindSession("new", "u1", "s-new", exp); !errors.Is(err, ErrTooManyConnections) {
+		t.Fatalf("bind over cap: err = %v, want ErrTooManyConnections", err)
+	}
+
+	if h.GetConnection("c0") == nil {
+		t.Error("existing connections must not be evicted")
+	}
+	if h.GetConnection("new") == nil {
+		t.Error("the rejected connection itself stays registered until closed")
+	}
+
+	h.mu.RLock()
+	userCount := len(h.userConns["u1"])
+	h.mu.RUnlock()
+
+	if userCount != maxConnectionsPerUser {
+		t.Errorf("user connections = %d, want %d", userCount, maxConnectionsPerUser)
 	}
 }
 

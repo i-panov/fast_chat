@@ -98,7 +98,13 @@ export function BubbleContextMenu({
 				// A photo with a caption still copies the photo: that is what
 				// the menu item is for on an image message.
 				if (!hasImage) {
-					void navigator.clipboard.writeText(text);
+					if (navigator.clipboard === undefined) {
+						emitNotification(t("message.copyTextFailed"));
+					} else {
+						void navigator.clipboard
+							.writeText(text)
+							.catch(() => emitNotification(t("message.copyTextFailed")));
+					}
 					onClose();
 					return;
 				}

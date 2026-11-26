@@ -1,5 +1,10 @@
 import sodium from "libsodium-wrappers";
-import { decodeBase64, ensureSodium, type KeyPair } from "./crypto.ts";
+import {
+	decodeBase64,
+	ensureSodium,
+	type IdentityKeyPair,
+	type KeyPair,
+} from "./crypto.ts";
 
 // libsodium-wrappers is compiled without the password-hashing (Argon2id)
 // primitives, so the passphrase KDF uses the browser's native WebCrypto
@@ -12,16 +17,24 @@ const KEY_BYTES = 32; // XChaCha20-Poly1305 key length
 
 // Version tag in the serialized payload. Bumped whenever the blob shape
 // changes so we can reject old blobs and migrate rather than mis-parsing.
-const BLOB_VERSION = 1;
+const BLOB_VERSION = 2; // v2 adds the optional identity key pair
+const MIN_BLOB_VERSION = 1;
 const MALFORMED_BACKUP_MSG = "malformed backup blob";
 
 interface PlainBackup {
 	publicKey: string;
 	privateKey: string;
+	identityPublicKey?: string;
+	identityPrivateKey?: string;
+}
+
+export interface BackupData {
+	keyPair: KeyPair;
+	identityKeyPair?: IdentityKeyPair;
 }
 
 interface BlobPayload {
-	v: typeof BLOB_VERSION; // format version
+	v: number; // format version
 	salt: string; // base64 PBKDF2 salt
 	nonce: string; // base64 XChaCha20 nonce
 	ct: string; // base64 ciphertext of PlainBackup JSON
@@ -67,9 +80,13 @@ async function deriveKey(
 // An empty password is rejected: it would produce a valid-looking blob on a
 // trivially guessable key. Callers should enforce a stronger minimum (the UI
 // validates length); this is only the last-resort guard.
-export async function encryptBackup(
+export function encryptBackup(password: string, kp: KeyPair): Promise<string> {
+	return encryptBackupData(password, { keyPair: kp });
+}
+
+export async function encryptBackupData(
 	password: string,
-	kp: KeyPair,
+	data: BackupData,
 ): Promise<string> {
 	if (password === "") {
 		throw new E2EBackupError("backup password must not be empty");
@@ -83,9 +100,13 @@ export async function encryptBackup(
 	);
 
 	const plain: PlainBackup = {
-		publicKey: kp.publicKey,
-		privateKey: kp.privateKey,
+		publicKey: data.keyPair.publicKey,
+		privateKey: data.keyPair.privateKey,
 	};
+	if (data.identityKeyPair !== undefined) {
+		plain.identityPublicKey = data.identityKeyPair.publicKey;
+		plain.identityPrivateKey = data.identityKeyPair.privateKey;
+	}
 	const ct = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
 		sodium.from_string(JSON.stringify(plain)),
 		null,
@@ -112,6 +133,13 @@ export async function decryptBackup(
 	password: string,
 	blob: string,
 ): Promise<KeyPair> {
+	return (await decryptBackupData(password, blob)).keyPair;
+}
+
+export async function decryptBackupData(
+	password: string,
+	blob: string,
+): Promise<BackupData> {
 	if (password === "") {
 		throw new E2EBackupError("backup password must not be empty");
 	}
@@ -136,7 +164,11 @@ export async function decryptBackup(
 
 	// Reject blobs written by an older (or newer) format rather than
 	// silently mis-parsing a changed payload shape.
-	if (payload.v !== BLOB_VERSION) {
+	if (
+		typeof payload.v !== "number" ||
+		payload.v < MIN_BLOB_VERSION ||
+		payload.v > BLOB_VERSION
+	) {
 		throw new E2EBackupError("unsupported backup format");
 	}
 
@@ -187,5 +219,18 @@ export async function decryptBackup(
 		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}
 
-	return { publicKey: parsed.publicKey, privateKey: parsed.privateKey };
+	const out: BackupData = {
+		keyPair: { publicKey: parsed.publicKey, privateKey: parsed.privateKey },
+	};
+	// Both halves must be present together: a half identity is unusable.
+	if (
+		typeof parsed.identityPublicKey === "string" &&
+		typeof parsed.identityPrivateKey === "string"
+	) {
+		out.identityKeyPair = {
+			publicKey: parsed.identityPublicKey,
+			privateKey: parsed.identityPrivateKey,
+		};
+	}
+	return out;
 }

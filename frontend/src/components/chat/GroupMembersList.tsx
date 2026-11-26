@@ -64,7 +64,17 @@ export function GroupMembersList({
 										variant="subtle"
 										color="red"
 										size="sm"
-										onClick={() => onRemoveMember(m.id)}
+										aria-label={t("chat.removeMemberConfirm", { nick: m.nick })}
+										onClick={() => {
+											if (
+												!window.confirm(
+													t("chat.removeMemberConfirm", { nick: m.nick }),
+												)
+											) {
+												return;
+											}
+											onRemoveMember(m.id);
+										}}
 									>
 										<X size={14} />
 									</ActionIcon>

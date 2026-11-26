@@ -186,6 +186,35 @@ func TestCreatePrivateChatRoutesToBot(t *testing.T) {
 	}
 }
 
+func TestCreatePrivateChatIgnoresBotFlagForHuman(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	alice, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := s.store.CreateUser(ctx, "bob@test.local", "bob", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := s.CreatePrivateChat(ctx, alice.ID, bob.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.IsBotChat || view.BotID != "" || view.BotEncryptionMode != "" {
+		t.Fatalf("human chat was marked as a bot chat: %+v", view)
+	}
+
+	chat, ok := s.store.GetChat(ctx, view.ID)
+	if !ok {
+		t.Fatal("chat missing")
+	}
+	if chat.BotID != "" || chat.BotEncryptionMode != "" {
+		t.Fatalf("stored chat was poisoned: botID=%q mode=%q", chat.BotID, chat.BotEncryptionMode)
+	}
+}
+
 func TestBotEncryptionMode(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()

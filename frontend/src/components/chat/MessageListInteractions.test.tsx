@@ -134,16 +134,9 @@ function renderList(props: Partial<React.ComponentProps<typeof MessageList>>) {
 	);
 }
 
-const scrollIntoView = vi.fn();
-
 beforeEach(() => {
 	setActiveAccountKey("alice:test");
 	vi.clearAllMocks();
-	Object.defineProperty(window.Element.prototype, "scrollIntoView", {
-		value: scrollIntoView,
-		configurable: true,
-		writable: true,
-	});
 });
 
 describe("message list chrome", () => {
@@ -246,11 +239,15 @@ describe("message list scrolling", () => {
 		});
 
 		const preview = await screen.findByText("parent");
-		const callsBefore = scrollIntoView.mock.calls.length;
+		const callsBefore = scrollToIndex.mock.calls.length;
 		fireEvent.click(preview);
 
 		await waitFor(() => {
-			expect(scrollIntoView.mock.calls.length).toBeGreaterThan(callsBefore);
+			expect(scrollToIndex.mock.calls.length).toBeGreaterThan(callsBefore);
+		});
+		expect(scrollToIndex).toHaveBeenLastCalledWith({
+			index: 1,
+			align: "center",
 		});
 	});
 });

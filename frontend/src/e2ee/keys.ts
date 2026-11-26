@@ -12,12 +12,19 @@ import {
 } from "../api.ts";
 import { getActiveAccountKey, getDB } from "../db/init.ts";
 import { metaRepo } from "../db/metaRepo.ts";
-import { decryptBackup, encryptBackup } from "./backup.ts";
-import { generateKeyPair, type KeyPair } from "./crypto.ts";
+import { decryptBackupData, encryptBackupData } from "./backup.ts";
+import {
+	generateIdentityKeyPair,
+	generateKeyPair,
+	type IdentityKeyPair,
+	type KeyPair,
+} from "./crypto.ts";
 
 const PRIVATE_KEY_META = "e2ee.privateKey";
 const PUBLIC_KEY_META = "e2ee.publicKey";
 const PUBLIC_KEY_UPLOADED_META = "e2ee.publicKeyUploaded";
+const IDENTITY_PRIVATE_KEY_META = "e2ee.identityPrivateKey";
+const IDENTITY_PUBLIC_KEY_META = "e2ee.identityPublicKey";
 const deviceKeyRegistered = new Set<string>();
 
 // Security trade-off: the private key is stored in plaintext in the
@@ -123,6 +130,8 @@ async function ensureDeviceKey(
 // account's key pair into another's requests. IndexedDB is already
 // per-account; these mirrors keep repeated reads off the DB.
 const keyCacheByAccount = new Map<string, KeyPair>();
+const identityCacheByAccount = new Map<string, IdentityKeyPair>();
+const identityInFlightByAccount = new Map<string, Promise<IdentityKeyPair>>();
 const ACCOUNT_CHANGED = "account changed while creating the key";
 
 type KeyLockManager = {
@@ -139,6 +148,66 @@ const inFlightIdByAccount = new Map<string, object>();
 
 function accountScope(): string {
 	return getActiveAccountKey() ?? "";
+}
+
+// getIdentityKeyPair returns this account's long-lived Ed25519 identity.
+// Unlike the device key it does not change when the browser creates a new
+// X25519 pair: recipients pin it once and accept messages from every device
+// restored from the same password backup.
+export async function getIdentityKeyPair(): Promise<IdentityKeyPair | null> {
+	const scope = accountScope();
+	const cached = identityCacheByAccount.get(scope);
+	if (cached !== undefined) return cached;
+
+	const [publicKey, privateKey] = await Promise.all([
+		metaRepo.get(IDENTITY_PUBLIC_KEY_META),
+		metaRepo.get(IDENTITY_PRIVATE_KEY_META),
+	]);
+	if (typeof publicKey !== "string" || typeof privateKey !== "string") {
+		return null;
+	}
+	const kp = { publicKey, privateKey };
+	identityCacheByAccount.set(scope, kp);
+	return kp;
+}
+
+// ensureIdentityKeys creates the identity on first use. Single-flight per
+// account: two concurrent sends must not generate two different identities.
+export function ensureIdentityKeys(): Promise<IdentityKeyPair> {
+	const scope = accountScope();
+	const inFlight = identityInFlightByAccount.get(scope);
+	if (inFlight !== undefined) return inFlight;
+
+	const run = (async () => {
+		const existing = await getIdentityKeyPair();
+		if (existing !== null) return existing;
+
+		return withKeyLock(scope, async () => {
+			identityCacheByAccount.delete(scope);
+			const raced = await getIdentityKeyPair();
+			if (raced !== null) return raced;
+			if (accountScope() !== scope) throw new Error(ACCOUNT_CHANGED);
+			const generated = await generateIdentityKeyPair();
+			await storeIdentityKeyPair(generated);
+			return generated;
+		});
+	})().finally(() => identityInFlightByAccount.delete(scope));
+
+	identityInFlightByAccount.set(scope, run);
+	return run;
+}
+
+async function storeIdentityKeyPair(kp: IdentityKeyPair): Promise<void> {
+	await metaRepo.setNoNotify(IDENTITY_PUBLIC_KEY_META, kp.publicKey);
+	await metaRepo.setNoNotify(IDENTITY_PRIVATE_KEY_META, kp.privateKey);
+	identityCacheByAccount.set(accountScope(), kp);
+}
+
+async function clearIdentityKeys(): Promise<void> {
+	identityCacheByAccount.delete(accountScope());
+	identityInFlightByAccount.delete(accountScope());
+	await metaRepo.setNoNotify(IDENTITY_PUBLIC_KEY_META, null);
+	await metaRepo.setNoNotify(IDENTITY_PRIVATE_KEY_META, null);
 }
 
 // --- Server key backup (recovery) ---------------------------------------
@@ -250,7 +319,13 @@ export async function uploadKeyBackup(
 	kp: KeyPair,
 	deviceID?: string,
 ): Promise<void> {
-	const blob = await encryptBackup(password, kp);
+	// The identity is backed up together with the device key: without it a
+	// recovered browser would look like a different account to every peer.
+	const identityKeyPair = await ensureIdentityKeys();
+	const blob = await encryptBackupData(password, {
+		keyPair: kp,
+		identityKeyPair,
+	});
 	await setKeyBackup(token, blob);
 	if (deviceID !== undefined) {
 		await setDeviceKeyBackup(token, blob);
@@ -264,13 +339,25 @@ export async function restoreKeyPairFromBackup(
 	token: string,
 	password: string,
 ): Promise<KeyPair> {
+	const scope = accountScope();
 	const { backup } = await getKeyBackup(token);
-	const kp = await decryptBackup(password, backup);
-	await metaRepo.setNoNotify(PUBLIC_KEY_META, kp.publicKey);
-	await metaRepo.setNoNotify(PRIVATE_KEY_META, kp.privateKey);
+	if (accountScope() !== scope) throw new Error(ACCOUNT_CHANGED);
+	const data = await decryptBackupData(password, backup);
+	// The KDF is deliberately slow: a switch during it must not write this
+	// account's private key into another account's database.
+	if (accountScope() !== scope) throw new Error(ACCOUNT_CHANGED);
+	await metaRepo.setNoNotify(PUBLIC_KEY_META, data.keyPair.publicKey);
+	await metaRepo.setNoNotify(PRIVATE_KEY_META, data.keyPair.privateKey);
 	await metaRepo.setNoNotify(PUBLIC_KEY_UPLOADED_META, true);
-	keyCacheByAccount.set(accountScope(), kp);
-	return kp;
+	keyCacheByAccount.set(scope, data.keyPair);
+	if (data.identityKeyPair !== undefined) {
+		await storeIdentityKeyPair(data.identityKeyPair);
+	} else {
+		// Backups written before identities existed cannot restore one. A new
+		// identity is generated; peers see the change once.
+		await ensureIdentityKeys();
+	}
+	return data.keyPair;
 }
 
 // clearServerKeyBackup deletes the tracked user's backup blob (revocation
@@ -293,15 +380,23 @@ export async function restoreKeyPairFromDeviceBackup(
 	deviceID: string,
 	password: string,
 ): Promise<KeyPair> {
+	const scope = accountScope();
 	const { backup } = await getDeviceKeyBackup(token, deviceID);
-	const kp = await decryptBackup(password, backup);
-	await metaRepo.setNoNotify(PUBLIC_KEY_META, kp.publicKey);
-	await metaRepo.setNoNotify(PRIVATE_KEY_META, kp.privateKey);
+	if (accountScope() !== scope) throw new Error(ACCOUNT_CHANGED);
+	const data = await decryptBackupData(password, backup);
+	if (accountScope() !== scope) throw new Error(ACCOUNT_CHANGED);
+	await metaRepo.setNoNotify(PUBLIC_KEY_META, data.keyPair.publicKey);
+	await metaRepo.setNoNotify(PRIVATE_KEY_META, data.keyPair.privateKey);
 	await metaRepo.setNoNotify(PUBLIC_KEY_UPLOADED_META, true);
-	keyCacheByAccount.set(accountScope(), kp);
-	deviceKeyRegistered.delete(`${accountScope()}:${token}`);
-	await ensureDeviceKey(token, kp.publicKey);
-	return kp;
+	keyCacheByAccount.set(scope, data.keyPair);
+	if (data.identityKeyPair !== undefined) {
+		await storeIdentityKeyPair(data.identityKeyPair);
+	} else {
+		await ensureIdentityKeys();
+	}
+	deviceKeyRegistered.delete(`${scope}:${token}`);
+	await ensureDeviceKey(token, data.keyPair.publicKey);
+	return data.keyPair;
 }
 
 export async function hasServerKeyBackup(token: string): Promise<boolean> {
@@ -315,6 +410,9 @@ export async function discardRecoveryAndGenerate(
 	token: string,
 ): Promise<KeyPair> {
 	await clearServerKeyBackup(token);
+	// A fresh start gets a fresh identity too: keeping the old one would let
+	// peers link the discarded account to the new keys.
+	await clearIdentityKeys();
 	confirmNewKey();
 	return ensureAccountKeys(token);
 }
@@ -478,18 +576,28 @@ export async function clearLocalKeys(): Promise<void> {
 // getRecipientDeviceKeys returns the active device keys of every member.
 // Users with no registered devices fall back to the legacy account key with
 // keyId=userId, so old clients keep receiving envelopes.
+export interface RecipientDeviceKey {
+	keyId: string;
+	publicKey: string;
+	protocolVersion: number;
+}
+
 export async function getRecipientDeviceKeys(
 	token: string,
 	userIds: string[],
-): Promise<Map<string, Array<{ keyId: string; publicKey: string }>>> {
-	const out = new Map<string, Array<{ keyId: string; publicKey: string }>>();
+): Promise<Map<string, RecipientDeviceKey[]>> {
+	const out = new Map<string, RecipientDeviceKey[]>();
 	await Promise.all(
 		userIds.map(async (userId) => {
-			const keys: Array<{ keyId: string; publicKey: string }> = [];
+			const keys: RecipientDeviceKey[] = [];
 			try {
 				const { devices } = await getUserDeviceKeys(token, userId);
 				for (const device of devices) {
-					keys.push({ keyId: device.id, publicKey: device.publicKey });
+					keys.push({
+						keyId: device.id,
+						publicKey: device.publicKey,
+						protocolVersion: device.protocolVersion ?? 0,
+					});
 				}
 			} catch {
 				// Fall through to the legacy account key.
@@ -503,7 +611,9 @@ export async function getRecipientDeviceKeys(
 					publicKey !== "" &&
 					!keys.some((key) => key.publicKey === publicKey)
 				) {
-					keys.push({ keyId: userId, publicKey });
+					// The legacy account key has no capability record; treat it
+					// as v1-only so encryption stays readable for old clients.
+					keys.push({ keyId: userId, publicKey, protocolVersion: 0 });
 				}
 			} catch {
 				// The caller reports the missing key.

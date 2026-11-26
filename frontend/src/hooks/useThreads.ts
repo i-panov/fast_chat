@@ -75,13 +75,19 @@ function useDecryptedThreadMessages(
 			// Decrypt in parallel: thread pages are small (PAGE_SIZE) and each
 			// item is independent, so sequential awaits only add latency.
 			const out = await Promise.all(
-				(activeThreadMessagesStored ?? []).map((m) => {
-					const { _updatedAt: _u, threadId: _tid, status: _s, ...rest } = m;
+				(activeThreadMessagesStored ?? []).map(async (m) => {
+					const { _updatedAt: _u, threadId: _tid, status, ...rest } = m;
 					void _u;
 					void _tid;
-					void _s;
-					if (userId === undefined) return Promise.resolve(rest);
-					return decryptMessage(m, userId, key);
+					const message =
+						userId === undefined ? rest : await decryptMessage(m, userId, key);
+					// Thread rows carry the same queued/failed state as the main
+					// feed; dropping it makes a failed send look delivered and
+					// removes retry/cancel from the message menu.
+					return {
+						...message,
+						status: status === "deleted" ? "sent" : status,
+					};
 				}),
 			);
 

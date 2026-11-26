@@ -272,6 +272,29 @@ func (s *Service) AdminDeleteMessage(ctx context.Context, actorID, chatID, messa
 		return mapAdminStoreError(err)
 	}
 
+	// Moderation is not local: the peer that hosts the chat (or every peer in
+	// a locally owned group) must delete the same message, otherwise it stays
+	// visible on the other server and returns with the next catch-up.
+	if s.fed != nil {
+		path := "/api/federated/chats/" + chatID + "/messages/" + messageID
+		if chat.RemoteServer != "" {
+			s.queueFederation(ctx, chat.RemoteServer, "DELETE", path, nil)
+		} else {
+			seen := make(map[string]struct{})
+			for _, memberID := range chat.Members {
+				domain := s.remoteServerFromID(memberID)
+				if domain == "" || domain == s.cfg.Server.Domain {
+					continue
+				}
+				if _, ok := seen[domain]; ok {
+					continue
+				}
+				seen[domain] = struct{}{}
+				s.queueFederation(ctx, domain, "DELETE", path, nil)
+			}
+		}
+	}
+
 	for _, memberID := range chat.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{keyChatID: chatID, keyMessageID: messageID}})
 	}

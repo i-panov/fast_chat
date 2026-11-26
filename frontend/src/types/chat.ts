@@ -15,6 +15,10 @@ export interface EditingMessage {
 	messageId: string;
 	text: string;
 	files?: FileInfo[];
+	// IDs of attachments the user removed from the original message. The
+	// sender needs the explicit list because edit compares it with the
+	// stored files, not with the filtered preview.
+	filesToRemove?: string[];
 	threadId?: string;
 	location?: Location | null;
 }

@@ -87,6 +87,10 @@ export function ChatsTab({
 			{error !== null && <Alert color="red">{error}</Alert>}
 			{loading ? (
 				<Loader size="sm" />
+			) : chats.length === 0 ? (
+				<Text size="sm" c="dimmed">
+					{t("admin.empty")}
+				</Text>
 			) : (
 				<Table.ScrollContainer minWidth={640}>
 					<Table striped highlightOnHover>

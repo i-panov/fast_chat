@@ -1,7 +1,7 @@
 import { getSync } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
+import { getActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
-import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import type { OutboxOp, OutboxOpPin } from "../db/schema.ts";
@@ -10,13 +10,31 @@ import type { Message, SyncResponse } from "../types/api.ts";
 
 const DEFAULT_SINCE = "1970-01-01T00:00:00.000Z";
 
+type EnsureAccount = () => void;
+
+// Each repository resolves the active database at call time. Checking before
+// every store call keeps a long apply from starting a write after an account
+// switch and placing one account's rows in another account's cache.
+function accountGuard(expected: string | null): EnsureAccount {
+	return () => {
+		if (getActiveAccountKey() !== expected) {
+			throw new Error("sync account changed");
+		}
+	};
+}
+
 // applyDelta folds a /api/sync response into the local IDB cache.
 // It implements LWW conflict resolution: when the server reports a
 // message edited at a later timestamp than the user's local queued
 // edit, the local outbox op is dropped; otherwise the local edit
 // will be replayed over the server copy on the next outbox tick.
-export async function applyDelta(delta: SyncResponse): Promise<void> {
+export async function applyDelta(
+	delta: SyncResponse,
+	accountKey: string | null = getActiveAccountKey(),
+): Promise<void> {
+	const ensure = accountGuard(accountKey);
 	const outbox = await outboxRepo.list();
+	ensure();
 
 	const chats = delta.chats ?? [];
 	const deletedChats = delta.deletedChats ?? [];
@@ -28,30 +46,49 @@ export async function applyDelta(delta: SyncResponse): Promise<void> {
 	// group and came back is in the list again, and the chat must survive the
 	// tombstone of the earlier removal.
 	if (deletedChats.length > 0) {
+		ensure();
 		await chatsRepo.removeMany(deletedChats.map((d) => d.chatId));
 	}
 
 	if (chats.length > 0) {
-		await chatsRepo.upsertMany(chats);
+		ensure();
+		// A pin or unpin still queued locally must survive the server snapshot:
+		// the delta was built before the op was delivered and would otherwise
+		// revert the optimistic list.
+		const pendingPinChats = new Set(
+			outbox.filter((op) => op.kind === "pin").map((op) => op.chatId),
+		);
+		let chatsToStore = chats;
+		if (pendingPinChats.size > 0) {
+			chatsToStore = await Promise.all(
+				chats.map(async (chat) => {
+					if (!pendingPinChats.has(chat.id)) return chat;
+					const local = await chatsRepo.getById(chat.id);
+					return local === undefined
+						? chat
+						: { ...chat, pinnedMessageIds: local.pinnedMessageIds };
+				}),
+			);
+		}
+		await chatsRepo.upsertMany(chatsToStore);
 	}
 
 	if (delta.onlineStatus) {
 		for (const [userId, online] of Object.entries(delta.onlineStatus)) {
+			ensure();
 			await chatsRepo.updateMemberStatus(userId, online);
 		}
 	}
 
-	await applyMessages(messages, outbox);
+	await applyMessages(messages, outbox, ensure);
 
 	// The messages of the threads go into their own store: the chat feed
 	// holds the top-level messages only. Thread records get the same
 	// queued/failed guard and LWW resolution as top-level messages so a
 	// parallel send in a thread is not clobbered by the delta.
-	await applyThreadMessages(threadMessages, outbox);
+	await applyThreadMessages(threadMessages, outbox, ensure);
 
-	await applyDeletions(deletedMessages, outbox);
-
-	await metaRepo.setLastSyncedAt(delta.serverNow);
+	await applyDeletions(deletedMessages, outbox, ensure);
 }
 
 // applyMessages stores the chat messages of the delta, resolving the
@@ -59,12 +96,14 @@ export async function applyDelta(delta: SyncResponse): Promise<void> {
 async function applyMessages(
 	messages: Message[],
 	outbox: OutboxOp[],
+	ensure: EnsureAccount,
 ): Promise<void> {
 	if (messages.length === 0) return;
 
 	const stored: Message[] = [];
 
 	for (const msg of messages) {
+		ensure();
 		const local = await messagesRepo.getById(msg.chatId, msg.id);
 
 		// If we have a queued send-op for this id, keep the local
@@ -109,6 +148,7 @@ async function applyMessages(
 	}
 
 	if (stored.length > 0) {
+		ensure();
 		await messagesRepo.upsertMany(stored);
 	}
 }
@@ -120,6 +160,7 @@ async function applyMessages(
 async function applyThreadMessages(
 	threadMessages: Message[],
 	outbox: OutboxOp[],
+	ensure: EnsureAccount,
 ): Promise<void> {
 	if (threadMessages.length === 0) return;
 
@@ -128,6 +169,7 @@ async function applyThreadMessages(
 	for (const msg of threadMessages) {
 		if (msg.threadId === undefined) continue;
 
+		ensure();
 		const local = await threadMessagesRepo.getById(msg.threadId, msg.id);
 
 		if (local?.status === "queued" || local?.status === "failed") {
@@ -169,6 +211,7 @@ async function applyThreadMessages(
 			byThread.set(threadId, list);
 		}
 		for (const [threadId, list] of byThread) {
+			ensure();
 			await threadMessagesRepo.upsertMany(list, threadId);
 		}
 	}
@@ -179,8 +222,10 @@ async function applyThreadMessages(
 async function applyDeletions(
 	deletedMessages: SyncResponse["deletedMessages"],
 	outbox: OutboxOp[],
+	ensure: EnsureAccount,
 ): Promise<void> {
 	for (const d of deletedMessages) {
+		ensure();
 		// If we have a queued send-op for this id, the user's send is
 		// still pending. The server will replay the delete once the
 		// send arrives. We do not modify the local row.

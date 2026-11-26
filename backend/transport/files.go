@@ -21,6 +21,16 @@ import (
 	"fast_chat/store"
 )
 
+const (
+	// Federated file responses carry the raw ciphertext, so the JSON cap of
+	// the federation client does not apply. Keep a margin above the upload
+	// limit and bound how many copies may be in memory at once.
+	federatedFileMaxBytes = 64 << 20
+	federatedFileWorkers  = 4
+)
+
+var federatedFileSlots = make(chan struct{}, federatedFileWorkers)
+
 // RegisterFiles adds the file upload, download, and existence-check
 // operations.
 func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, fed *federation.Client, cfg *config.Config) {
@@ -77,8 +87,18 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, fed *fed
 			if fed == nil {
 				return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
 			}
+			// The generic federation client caps JSON responses at 10 MiB,
+			// below the 50 MiB upload limit. Fetch file bytes with their own
+			// cap and bound the number of concurrent in-memory copies.
+			select {
+			case federatedFileSlots <- struct{}{}:
+				defer func() { <-federatedFileSlots }()
+			case <-ctx.Done():
+				return nil, &statusError{ErrorMessage: "request cancelled", code: http.StatusServiceUnavailable}
+			}
+
 			remoteURL := fed.URL(fileRecord.RemoteServer, "/api/federated/files/"+input.FileID)
-			body, err := fed.Request(ctx, http.MethodGet, remoteURL, nil)
+			body, err := fed.RequestWithLimit(ctx, http.MethodGet, remoteURL, nil, federatedFileMaxBytes)
 			if err != nil {
 				return nil, &statusError{ErrorMessage: "failed to fetch federated file", code: http.StatusBadGateway}
 			}

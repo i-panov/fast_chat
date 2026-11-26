@@ -8,12 +8,33 @@ export interface EncryptionKeyPair {
 interface Envelope {
 	keyId: string;
 	box: string;
+	nonce?: string;
 }
 
 interface EncryptedPayload {
-	v: 1;
+	v: 1 | 2;
 	nonce: string;
+	// v2: authenticated sender envelope.
+	senderKey?: string;
+	identityKey?: string;
+	identitySig?: string;
 	envelopes: Envelope[];
+}
+
+export interface MessageBinding {
+	chatId: string;
+	messageId: string;
+	fromId: string;
+	threadId?: string;
+}
+
+export function messageAAD(binding: MessageBinding): string {
+	return [
+		binding.chatId,
+		binding.messageId,
+		binding.fromId,
+		binding.threadId ?? "",
+	].join("|");
 }
 
 interface DeviceKey {
@@ -72,21 +93,64 @@ export async function decryptBotMessage(
 	payloadJSON: string,
 	botID: string,
 	key: EncryptionKeyPair,
+	binding?: MessageBinding,
 ): Promise<BotContent> {
 	await sodium.ready;
 	const payload = JSON.parse(payloadJSON) as EncryptedPayload;
+	if (payload.v !== 1 && payload.v !== 2) {
+		throw new Error("unsupported encrypted payload version");
+	}
+
+	let aad: Uint8Array | null = null;
+	if (payload.v === 2) {
+		const { senderKey, identityKey, identitySig } = payload;
+		if (
+			binding === undefined ||
+			senderKey === undefined ||
+			identityKey === undefined ||
+			identitySig === undefined
+		) {
+			throw new Error("v2 message is missing its sender binding");
+		}
+		const aadText = messageAAD(binding);
+		const signed = new TextEncoder().encode(`${aadText}|${senderKey}`);
+		const valid = sodium.crypto_sign_verify_detached(
+			decodeBase64(identitySig),
+			signed,
+			decodeBase64(identityKey),
+		);
+		if (!valid) throw new Error("sender identity signature is invalid");
+		aad = new TextEncoder().encode(aadText);
+	}
+
 	for (const envelope of payload.envelopes) {
 		if (envelope.keyId !== botID) continue;
 		try {
-			const msgKey = sodium.crypto_box_seal_open(
-				decodeBase64(envelope.box),
-				decodeBase64(key.publicKey),
-				decodeBase64(key.privateKey),
-			);
+			let msgKey: Uint8Array;
+			if (payload.v === 2) {
+				if (
+					payload.senderKey === undefined ||
+					envelope.nonce === undefined
+				) {
+					throw new Error("v2 envelope is incomplete");
+				}
+				msgKey = sodium.crypto_box_open_easy(
+					decodeBase64(envelope.box),
+					decodeBase64(envelope.nonce),
+					decodeBase64(payload.senderKey),
+					decodeBase64(key.privateKey),
+				);
+			} else {
+				msgKey = sodium.crypto_box_seal_open(
+					decodeBase64(envelope.box),
+					decodeBase64(key.publicKey),
+					decodeBase64(key.privateKey),
+				);
+			}
 			const plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
 				null,
 				decodeBase64(text),
-				null,
+				aad,
 				decodeBase64(payload.nonce),
 				msgKey,
 			);

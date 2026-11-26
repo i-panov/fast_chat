@@ -29,6 +29,7 @@ interface ChatSubmitDeps {
 		messageId: string;
 		text: string;
 		pendingFiles?: PendingFile[];
+		filesToRemove?: string[];
 		location?: Location | null;
 		clearLocation?: boolean;
 		threadId?: string;
@@ -167,7 +168,18 @@ async function sendFromComposer(
 	} = ctx;
 
 	const text = inputText.trim();
-	if (!text && pendingFiles.length === 0 && !pendingLocation) return;
+	const hasExistingEditContent =
+		editingMessage !== null &&
+		((editingMessage.files?.length ?? 0) > 0 ||
+			editingMessage.location !== null);
+	if (
+		!text &&
+		pendingFiles.length === 0 &&
+		!pendingLocation &&
+		!hasExistingEditContent
+	) {
+		return;
+	}
 
 	if (editingMessage !== null) {
 		const nextLocation =
@@ -181,6 +193,7 @@ async function sendFromComposer(
 				messageId: editingMessage.messageId,
 				text,
 				pendingFiles: pendingFiles.length > 0 ? pendingFiles : undefined,
+				filesToRemove: editingMessage.filesToRemove,
 				location: nextLocation,
 				clearLocation: nextLocation === null,
 				threadId: editingMessage.threadId,

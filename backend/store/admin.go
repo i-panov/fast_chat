@@ -130,13 +130,20 @@ func (s *Store) AdminSetUserBanned(ctx context.Context, userID string, banned bo
 			return err
 		}
 		if !banned {
+			// Restore only the bots the ban itself disabled: a bot the owner
+			// switched off earlier must stay off.
+			if err := tx.Model(&model.Bot{}).
+				Where("owner_id = ? AND disabled_by_ban = ?", userID, true).
+				Updates(map[string]any{fieldIsActive: true, "disabled_by_ban": false}).Error; err != nil {
+				return err
+			}
 			return insertAuditTx(tx, audit)
 		}
 
 		// Bots keep their own API token and bypass the user session check:
 		// disabling the owned bots closes that write path too.
-		if err := tx.Model(&model.Bot{}).Where("owner_id = ?", userID).
-			Update("is_active", false).Error; err != nil {
+		if err := tx.Model(&model.Bot{}).Where("owner_id = ? AND is_active = ?", userID, true).
+			Updates(map[string]any{fieldIsActive: false, "disabled_by_ban": true}).Error; err != nil {
 			return err
 		}
 

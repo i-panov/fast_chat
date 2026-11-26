@@ -167,8 +167,14 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
 			.matchAll({ type: "window", includeUncontrolled: true })
 			.then((windowClients) => {
 				const anyChatClient = windowClients.find((client) => {
-					const u = new URL(client.url);
-					return u.pathname === "/chat";
+					const path = new URL(client.url).pathname;
+					// The chat lives on /chat, /chat/<ref> and /group/<id>;
+					// an exact match misses the canonical deep links.
+					return (
+						path === "/chat" ||
+						path.startsWith("/chat/") ||
+						path.startsWith("/group/")
+					);
 				});
 
 				if (anyChatClient) {

@@ -6,6 +6,9 @@ export interface DeviceKey {
 	createdAt: string;
 	lastSeenAt: string;
 	hasBackup?: boolean;
+	// protocolVersion is the highest E2EE payload version the device
+	// announced. Missing/0 means a client that can only read v1.
+	protocolVersion?: number;
 }
 
 export interface BlockedUser {

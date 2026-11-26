@@ -9,7 +9,11 @@ import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import type { StoredMessage } from "../db/schema.ts";
 import type { KeyPair } from "../e2ee/crypto.ts";
 import { generateKeyPair } from "../e2ee/crypto.ts";
-import { clearLocalKeys, confirmNewKey } from "../e2ee/keys.ts";
+import {
+	clearLocalKeys,
+	confirmNewKey,
+	ensureAccountKeys,
+} from "../e2ee/keys.ts";
 import { decryptMessage } from "../e2ee/message.ts";
 import type { PendingFile } from "../types/api.ts";
 
@@ -41,6 +45,21 @@ vi.mock("../api.ts", () => ({
 	),
 	setKeyBackup: vi.fn(),
 	deleteKeyBackup: vi.fn(),
+	registerDeviceKey: vi.fn(() => Promise.resolve({ status: "ok" })),
+	getUserDeviceKeys: vi.fn((_token: string, userId: string) => {
+		const pair =
+			userId === "alice:test"
+				? keyStore.alice
+				: userId === "bob:test"
+					? keyStore.bob
+					: null;
+		return Promise.resolve({
+			devices:
+				pair === null
+					? []
+					: [{ id: `dev-${userId}`, publicKey: pair.publicKey }],
+		});
+	}),
 }));
 
 vi.mock("../sync/syncEngine.ts", () => ({
@@ -81,7 +100,9 @@ function pendingFile(): PendingFile {
 beforeEach(async () => {
 	setActiveAccountKey("alice:test");
 	confirmNewKey();
-	keyStore.alice = await generateKeyPair();
+	// The sender's own device envelope is part of every message; use the
+	// locally stored pair rather than an unrelated test key.
+	keyStore.alice = await ensureAccountKeys("tok");
 	keyStore.bob = await generateKeyPair();
 
 	await chatsRepo.upsert({
@@ -168,7 +189,7 @@ describe("useMessageSender", () => {
 		expect(ops.map((o) => o.kind)).toContain("edit");
 	});
 
-	it("deletes a queued message via the outbox path", async () => {
+	it("cancels a queued send instead of delivering and deleting it", async () => {
 		const { result } = renderHook(() => useMessageSender({ token: "tok" }));
 
 		await result.current.sendMessage({ chatId: "c1", text: "bye" });
@@ -176,11 +197,8 @@ describe("useMessageSender", () => {
 
 		await result.current.deleteMessage("c1", first.id);
 
-		const stored = await messagesRepo.getById("c1", first.id);
-		expect(stored?.status).toBe("deleted");
-
-		const ops = await outboxRepo.list();
-		expect(ops.map((o) => o.kind)).toContain("delete");
+		expect(await messagesRepo.getById("c1", first.id)).toBeUndefined();
+		expect(await outboxRepo.list()).toHaveLength(0);
 	});
 
 	it("retries a failed send", async () => {
