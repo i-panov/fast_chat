@@ -10,8 +10,8 @@ import (
 )
 
 // startFakeSMTP runs a minimal SMTP responder on a loopback port. The returned
-// channel receives the DATA body of the first message.
-func startFakeSMTP(t *testing.T) (string, int, <-chan string) {
+// channels receive the DATA body of the first message and its MAIL FROM line.
+func startFakeSMTP(t *testing.T) (string, int, <-chan string, <-chan string) {
 	t.Helper()
 
 	var listenCfg net.ListenConfig
@@ -23,6 +23,7 @@ func startFakeSMTP(t *testing.T) (string, int, <-chan string) {
 	t.Cleanup(func() { _ = listener.Close() })
 
 	delivered := make(chan string, 1)
+	mailFrom := make(chan string, 1)
 
 	go func() {
 		conn, acceptErr := listener.Accept()
@@ -52,7 +53,10 @@ func startFakeSMTP(t *testing.T) (string, int, <-chan string) {
 			case strings.HasPrefix(command, "EHLO"), strings.HasPrefix(command, "HELO"):
 				write("250-fake")
 				write("250 8BITMIME")
-			case strings.HasPrefix(command, "MAIL FROM"), strings.HasPrefix(command, "RCPT TO"):
+			case strings.HasPrefix(command, "MAIL FROM"):
+				mailFrom <- strings.TrimSpace(line)
+				write("250 OK")
+			case strings.HasPrefix(command, "RCPT TO"):
 				write("250 OK")
 			case strings.HasPrefix(command, "DATA"):
 				write("354 go ahead")
@@ -82,11 +86,11 @@ func startFakeSMTP(t *testing.T) (string, int, <-chan string) {
 
 	addr := listener.Addr().(*net.TCPAddr)
 
-	return "127.0.0.1", addr.Port, delivered
+	return "127.0.0.1", addr.Port, delivered, mailFrom
 }
 
 func TestSendCodeDeliversTheCode(t *testing.T) {
-	host, port, messages := startFakeSMTP(t)
+	host, port, messages, _ := startFakeSMTP(t)
 
 	sender := NewSMTPSender(host, port, "", "", "no-reply@example.test")
 	if err := sender.SendCode("alice@example.test", "123456"); err != nil {
@@ -100,6 +104,38 @@ func TestSendCodeDeliversTheCode(t *testing.T) {
 		}
 		if !strings.Contains(body, "To: alice@example.test") {
 			t.Fatalf("delivered body has no recipient: %q", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the message was not delivered")
+	}
+}
+
+// A display name in the configured sender belongs in the From header only:
+// net/smtp sends MAIL FROM verbatim inside angle brackets, so the envelope
+// must carry the bare address or the server rejects it (501 5.1.8).
+func TestSendCodeUsesBareAddressInMailFrom(t *testing.T) {
+	host, port, messages, mailFrom := startFakeSMTP(t)
+
+	sender := NewSMTPSender(host, port, "", "", "Fast Chat <fast_chat@example.test>")
+	if err := sender.SendCode("alice@example.test", "654321"); err != nil {
+		t.Fatalf("SendCode: %v", err)
+	}
+
+	select {
+	case got := <-mailFrom:
+		// net/smtp appends ESMTP parameters (BODY=8BITMIME) after the address.
+		want := "MAIL FROM:<fast_chat@example.test>"
+		if !strings.HasPrefix(got, want) {
+			t.Fatalf("MAIL FROM = %q, want prefix %q", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no MAIL FROM was sent")
+	}
+
+	select {
+	case body := <-messages:
+		if !strings.Contains(body, "From: Fast Chat <fast_chat@example.test>") {
+			t.Fatalf("delivered body lost the display name: %q", body)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the message was not delivered")
@@ -151,7 +187,7 @@ func TestSendCodeGivesUpOnAStalledServer(t *testing.T) {
 // The message headers are composed by hand: a header injection through the
 // recipient or the sender must be refused before anything is written.
 func TestSendCodeRejectsHeaderInjection(t *testing.T) {
-	host, port, _ := startFakeSMTP(t)
+	host, port, _, _ := startFakeSMTP(t)
 	sender := NewSMTPSender(host, port, "", "", "no-reply@example.test")
 
 	if err := sender.SendCode("alice@example.test\r\nBcc: victim@example.test", "1"); err == nil {

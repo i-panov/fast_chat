@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strconv"
 	"strings"
@@ -110,7 +111,7 @@ func (s *SMTPSender) send(recipient string, message []byte) error {
 		}
 	}
 
-	if err := client.Mail(s.from); err != nil {
+	if err := client.Mail(envelopeAddress(s.from)); err != nil {
 		return fmt.Errorf("smtp mail from: %w", err)
 	}
 	if err := client.Rcpt(recipient); err != nil {
@@ -131,6 +132,22 @@ func (s *SMTPSender) send(recipient string, message []byte) error {
 	}
 
 	return client.Quit()
+}
+
+// envelopeAddress returns the bare address for the SMTP envelope. net/smtp
+// wraps the argument in angle brackets verbatim, so a configured display name
+// ("Fast Chat <bot@example.com>") reaches the server as a malformed MAIL FROM
+// and is rejected (Stalwart answers 501 5.1.8 Bad sender's system address).
+// The header keeps the original value; only the envelope is reduced. On an
+// unparsable value the caller's string is passed through unchanged, preserving
+// the previous behaviour.
+func envelopeAddress(from string) string {
+	addr, err := mail.ParseAddress(from)
+	if err != nil {
+		return from
+	}
+
+	return addr.Address
 }
 
 // buildMessage renders a single-part UTF-8 text message. The subject is
