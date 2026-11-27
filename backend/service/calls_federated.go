@@ -57,6 +57,11 @@ func (s *Service) startFederatedCall(ctx context.Context, callerID, chatID, offe
 			switch statusErr.Status {
 			case http.StatusConflict:
 				return nil, calls.ErrBusyCallee
+			case http.StatusForbidden:
+				// The callee's server refused because the callee blocked the
+				// caller locally; blocks are not federated, so the owner side
+				// only learns it from this status.
+				return nil, ErrUserBlocked
 			case http.StatusNotFound, http.StatusGone:
 				return nil, ErrCallNotFound
 			}
@@ -219,6 +224,14 @@ func (s *Service) HandleFederatedInvite(ctx context.Context, owner, callID, chat
 // handler delivers the owner's report to the local callee.
 func (s *Service) HandleFederatedAccept(ctx context.Context, callID, answer string, iceServers any) error {
 	if call, ok := s.calls.Get(callID); ok {
+		// A retried accept must be a no-op: the federation client retries when
+		// the answer is lost, and a second click or tab is common. The call is
+		// already up, both events were delivered, and answering 409 would send
+		// the peer into a permanent-error path for a call that succeeded.
+		if call.State == calls.StateActive {
+			return nil
+		}
+
 		accepted, err := s.calls.AcceptCall(callID, answer)
 		if err != nil {
 			return err
@@ -235,9 +248,9 @@ func (s *Service) HandleFederatedAccept(ctx context.Context, callID, answer stri
 
 		s.sendEvent(accepted.CallerID, sse.Event{Event: eventCallAccepted, Data: acceptedData})
 
-		s.sendEvent(accepted.CalleeID, sse.Event{Event: eventCallAccepted, Data: map[string]any{
-			callIDKey: accepted.ID,
-		}})
+		// No event for the callee: the callee is remote on this side (that is
+		// why the accept arrived over federation), and the shadow branch on
+		// its own server already delivered the event there.
 
 		if remote := domainOfUserID(call.CalleeID); remote != "" && s.fed != nil {
 			body := map[string]any{keyAnswer: answer, keyIceServers: s.localICE(call.CalleeID)}
@@ -368,7 +381,7 @@ func (s *Service) HandleFederatedIce(ctx context.Context, callID, fromID string,
 			keyCandidate: candidate,
 		}})
 
-		if remote := domainOfUserID(peer); remote != "" && remote != s.cfg.Server.Domain && s.fed != nil {
+		if remote := domainOfUserID(peer); remote != "" && !s.isLocalUserID(peer) && s.fed != nil {
 			body := map[string]any{keyCandidate: candidate}
 
 			if _, err := s.fed.Request(ctx, http.MethodPost, s.fed.URL(remote, "/api/federated/calls/"+callID+"/ice"), body); err != nil {

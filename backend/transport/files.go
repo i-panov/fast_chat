@@ -26,6 +26,8 @@ import (
 )
 
 const (
+	// msgSaveFileMetadata is shared by the upload and dedup failure paths.
+	msgSaveFileMetadata = "failed to save file metadata"
 	// Federated file responses carry the raw ciphertext, so the JSON cap of
 	// the federation client does not apply. Keep a margin above the upload
 	// limit and bound how many copies may be in memory at once.
@@ -105,12 +107,17 @@ func RegisterFiles(api huma.API, st *store.Store, svc *service.Service, fed *fed
 			return nil, &statusError{ErrorMessage: "hash parameter required", code: http.StatusBadRequest}
 		}
 
-		if len(input.Hash) != 64 || !service.IsHexString(input.Hash) {
+		// The upload path normalizes the hash to lowercase; the existence
+		// check must do the same, or an uppercase hash answers false for a
+		// file the server already has.
+		hash := strings.ToLower(input.Hash)
+
+		if len(hash) != 64 || !service.IsHexString(hash) {
 			return nil, &statusError{ErrorMessage: "invalid hash format", code: http.StatusBadRequest}
 		}
 
 		var out fileExistsOutput
-		out.Body.Exists = st.FileExistsByHash(ctx, input.Hash, user.ID)
+		out.Body.Exists = st.FileExistsByHash(ctx, hash, user.ID)
 
 		return &out, nil
 	})
@@ -259,7 +266,12 @@ func registerServeFile(api huma.API, st *store.Store, svc *service.Service, fed 
 
 		fileRecord, err := st.GetFile(ctx, input.FileID)
 		if err != nil {
-			return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+			if errors.Is(err, store.ErrFileNotFound) {
+				return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+			}
+			slog.Error("failed to load file record", "fileID", input.FileID, "err", err)
+
+			return nil, errInternal
 		}
 
 		if !svc.UserCanAccessFile(ctx, user.ID, input.FileID) {
@@ -293,6 +305,22 @@ func registerServeFile(api huma.API, st *store.Store, svc *service.Service, fed 
 
 		fullPath := filepath.Join(cfg.Uploads.Dir, fileRecord.StoragePath)
 
+		// Check the blob before the headers are written: http.ServeFile would
+		// otherwise send a 404 body under the attachment headers, and the
+		// browser would save "404 page not found" as the file. The path must
+		// stay inside the uploads directory, like the GC insists: a corrupted
+		// row must not turn a download into an arbitrary file read.
+		if remoteResp == nil {
+			if !isInsideUploads(cfg.Uploads.Dir, fileRecord.StoragePath) {
+				slog.Error("refusing to serve a file outside the uploads directory", "fileID", input.FileID)
+
+				return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+			}
+			if _, statErr := os.Stat(fullPath); statErr != nil {
+				return nil, &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound}
+			}
+		}
+
 		return &huma.StreamResponse{
 			Body: func(hctx huma.Context) {
 				r, w := humachi.Unwrap(hctx)
@@ -321,6 +349,24 @@ func registerServeFile(api huma.API, st *store.Store, svc *service.Service, fed 
 	})
 }
 
+// isInsideUploads reports whether the stored relative path resolves inside the
+// uploads root.
+func isInsideUploads(root, relativePath string) bool {
+	if relativePath == "" {
+		return false
+	}
+
+	cleanRoot := filepath.Clean(root)
+	full := filepath.Join(cleanRoot, relativePath)
+
+	rel, err := filepath.Rel(cleanRoot, full)
+	if err != nil || rel == ".." || filepath.IsAbs(rel) {
+		return false
+	}
+
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // mimeCacheMaxAge matches the pre-migration file cache duration (one day).
 const mimeCacheMaxAge = 86400
 
@@ -345,7 +391,12 @@ func uploadFile(
 	r.Body = http.MaxBytesReader(w, r.Body, filestage.MaxUploadSize)
 
 	if err := r.ParseMultipartForm(multipartMaxMemory); err != nil {
-		return nil, &statusError{ErrorMessage: "file too large", code: http.StatusRequestEntityTooLarge}
+		if _, isTooLarge := errors.AsType[*http.MaxBytesError](err); isTooLarge { //nolint:errcheck // the boolean is the result
+			return nil, &statusError{ErrorMessage: "file too large", code: http.StatusRequestEntityTooLarge}
+		}
+		// A broken multipart body, a missing field or a truncated request is
+		// a client error, not "the file is too large".
+		return nil, &statusError{ErrorMessage: "invalid multipart body", code: http.StatusBadRequest}
 	}
 
 	file, header, err := r.FormFile("file")
@@ -377,6 +428,15 @@ func uploadFile(
 
 	defer os.Remove(staged.TempPath) //nolint:errcheck // best-effort: failure is not actionable
 
+	if quotaErr := svc.EnsureUploadQuota(ctx, uploader, staged.Size); quotaErr != nil {
+		if errors.Is(quotaErr, service.ErrUploadQuotaExceeded) {
+			return nil, &statusError{ErrorMessage: "storage quota exceeded", code: http.StatusRequestEntityTooLarge}
+		}
+		slog.Error("failed to check the upload quota", "err", quotaErr)
+
+		return nil, &statusError{ErrorMessage: msgSaveFileMetadata, code: http.StatusInternalServerError}
+	}
+
 	check, deduped, err := svc.DedupFileByHash(ctx, &service.FileUpload{
 		Hash:         staged.Hash,
 		MimeType:     staged.MimeType,
@@ -387,7 +447,7 @@ func uploadFile(
 	})
 	if err != nil {
 		slog.Error("failed to dedup file", "err", err)
-		return nil, &statusError{ErrorMessage: "failed to save file metadata", code: http.StatusInternalServerError}
+		return nil, &statusError{ErrorMessage: msgSaveFileMetadata, code: http.StatusInternalServerError}
 	}
 
 	if deduped {
@@ -413,7 +473,7 @@ func uploadFile(
 		// longer applies: remove the renamed file best-effort instead of
 		// leaving an orphan with no DB row.
 		os.Remove(staged.FullPath) //nolint:errcheck,gosec // best-effort: already failing
-		return nil, &statusError{ErrorMessage: "failed to save file metadata", code: http.StatusInternalServerError}
+		return nil, &statusError{ErrorMessage: msgSaveFileMetadata, code: http.StatusInternalServerError}
 	}
 
 	var out uploadFileOutput

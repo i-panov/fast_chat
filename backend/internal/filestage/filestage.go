@@ -58,6 +58,10 @@ func isHexString(s string) bool {
 // The hash is normalized to lowercase so the same content deduplicates
 // regardless of the hex case the client sent.
 func ParseFileHash(r *http.Request) (string, bool, string) {
+	// The flag is the literal "true"; any other spelling is a plaintext
+	// upload. This is the contract the client SDKs implement (they send
+	// "true" or omit the field), and accepting loose booleans would make the
+	// meaning depend on the client.
 	encrypted := r.FormValue("encrypted") == "true"
 	clientHash := strings.ToLower(strings.TrimSpace(r.FormValue("hash")))
 

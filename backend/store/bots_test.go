@@ -67,3 +67,40 @@ func TestBotStoreLifecycle(t *testing.T) {
 		t.Fatal("double answer must fail")
 	}
 }
+
+// An explicit state change supersedes the ban marker. Otherwise an unban
+// later resurrects a bot that an admin had just switched off.
+func TestSetBotActiveClearsTheBanMarker(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, s, "alice")
+	botUser := createTestUser(t, s, "status_bot")
+
+	bot := &model.Bot{
+		UserID: botUser.ID, OwnerID: owner.ID,
+		TokenHash: "hash-status", TokenPrefix: "fcb_2",
+		EncryptionMode: "server", IsActive: true, DisabledByBan: true,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.CreateBot(ctx, bot, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetBotActive(ctx, botUser.ID, false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, ok := s.GetBot(ctx, botUser.ID)
+	if !ok {
+		t.Fatal("bot not found")
+	}
+
+	if stored.IsActive {
+		t.Fatal("the bot is still active")
+	}
+
+	if stored.DisabledByBan {
+		t.Fatal("an explicit disable kept the ban marker; a later unban would resurrect the bot")
+	}
+}

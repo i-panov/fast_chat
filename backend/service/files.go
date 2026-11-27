@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"fast_chat/internal/filestage"
 	"fast_chat/model"
 )
 
@@ -18,7 +19,17 @@ const (
 	orphanFileRetention     = 7 * 24 * time.Hour
 	orphanFileSweepInterval = 24 * time.Hour
 	orphanFileBatch         = 200
+
+	// maxUnattachedFileBytes caps the total size of one account's uploads
+	// that are not attached to a message or an avatar. Such files live for
+	// the whole orphan retention window, so without the cap one account can
+	// fill the instance disk with uploads that are never used.
+	maxUnattachedFileBytes = 512 << 20
 )
+
+// ErrUploadQuotaExceeded reports that the user's unattached uploads are at the
+// cap and the new file would exceed it.
+var ErrUploadQuotaExceeded = errors.New("upload quota exceeded")
 
 // RunFileGC sweeps orphaned uploads immediately and then once a day until the
 // context is cancelled.
@@ -46,6 +57,15 @@ func (s *Service) RunFileGC(ctx context.Context, interval time.Duration) {
 
 func (s *Service) sweepOrphanFiles(ctx context.Context) {
 	before := time.Now().UTC().Add(-orphanFileRetention)
+
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
+
+	// Crashed uploads leave their stage files behind; the startup sweep alone
+	// is not enough for a long-lived process.
+	if _, err := filestage.SweepStaleTempFiles(s.cfg.Uploads.Dir, orphanFileSweepInterval); err != nil {
+		log().Warn("failed to sweep stale upload temp files", "err", err)
+	}
 
 	for {
 		deleted, paths, err := s.store.DeleteOrphanFilesBefore(ctx, before, orphanFileBatch)
@@ -84,6 +104,26 @@ func (s *Service) removeUploadedFile(relativePath string) {
 	if err := os.Remove(full); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log().Warn("orphan file GC: cannot remove file", "path", relativePath, "err", err)
 	}
+}
+
+// EnsureUploadQuota rejects an upload that would push the user's unattached
+// files past maxUnattachedFileBytes. It is checked before the bytes hit the
+// disk, so a rejected upload costs nothing.
+func (s *Service) EnsureUploadQuota(ctx context.Context, userID string, size int64) error {
+	if size <= 0 {
+		return nil
+	}
+
+	used, err := s.store.UnattachedFileBytes(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	if used+size > maxUnattachedFileBytes {
+		return ErrUploadQuotaExceeded
+	}
+
+	return nil
 }
 
 // IsHexString reports whether s consists solely of hexadecimal characters.
@@ -144,11 +184,18 @@ func (s *Service) DedupFileByHash(ctx context.Context, upload *FileUpload) (File
 		return FileUploadCheck{}, false, nil
 	}
 
-	if exact, ok := s.store.FindFileByHashAndName(ctx, upload.Hash, upload.OriginalName, upload.Uploader); ok {
+	// Serialize with the orphan sweep: it may delete the shared blob of this
+	// hash, and a record created after that would point at nothing.
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
+
+	if exact, ok := s.store.FindFileByHashAndName(ctx, upload.Hash, upload.OriginalName, upload.Uploader); ok &&
+		s.storedBlobExists(exact.StoragePath) {
+
 		return FileUploadCheck{File: exact, ExactMatch: true}, true, nil
 	}
 
-	if existing, ok := s.store.FindFileByHash(ctx, upload.Hash); ok {
+	if existing, ok := s.store.FindFileByHash(ctx, upload.Hash); ok && s.storedBlobExists(existing.StoragePath) {
 		saved, err := s.store.SaveFile(
 			ctx, upload.Hash, upload.MimeType, upload.Size,
 			upload.OriginalName, existing.StoragePath, upload.Uploader,
@@ -161,6 +208,23 @@ func (s *Service) DedupFileByHash(ctx context.Context, upload *FileUpload) (File
 	}
 
 	return FileUploadCheck{}, false, nil
+}
+
+// storedBlobExists reports whether the bytes of a stored record are still on
+// disk. A dedup hit must not reuse a path the GC already removed: the caller
+// would get a 404 forever, and re-uploading the same content would hit the
+// same broken record again. Reporting "not stored" lets the upload stage the
+// bytes and heal the file with a fresh record.
+func (s *Service) storedBlobExists(storagePath string) bool {
+	if storagePath == "" || s.cfg == nil || s.cfg.Uploads.Dir == "" {
+		return false
+	}
+
+	if _, err := os.Stat(filepath.Join(s.cfg.Uploads.Dir, storagePath)); err != nil {
+		return false
+	}
+
+	return true
 }
 
 // UserCanAccessFile reports whether the user may read the file: either

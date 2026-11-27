@@ -15,6 +15,12 @@ type Session struct {
 	LastSeenAt time.Time  `gorm:"not null"                                      json:"lastSeenAt"`
 	ExpiresAt  time.Time  `gorm:"index;not null"                                json:"expiresAt"`
 	RevokedAt  *time.Time `gorm:"index"                                         json:"-"`
+	// PrevTokenHash keeps the token a rotation just replaced usable for a
+	// short grace window. Two tabs of one device share the session, and
+	// without the window a simultaneous refresh killed the token the other
+	// tab had just received.
+	PrevTokenHash string     `gorm:"not null;default:''" json:"-"`
+	PrevExpiresAt *time.Time `json:"-"`
 }
 
 // Active reports whether the session may authenticate a request at now.

@@ -11,15 +11,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fast_chat/model"
 	"fast_chat/sse"
+	"fast_chat/store"
 )
 
 const (
 	groupNameField  = "name"
 	groupNameMaxLen = 60
 	chatTypeGroup   = "group"
+	// MaxGroupMembers bounds one request's work: every member costs a
+	// block check and a lookup, so an unbounded memberIDs list would tie up
+	// the small SQLite pool for the whole edit of a 1MB body.
+	MaxGroupMembers = 1000
 )
 
 // Realtime event names and event payload keys shared across the chat domain.
@@ -115,7 +121,8 @@ func (s *Service) Chat(ctx context.Context, chatID string) (*model.Chat, error) 
 
 // EnrichChatFromNicks builds a ChatView, resolving avatar URL, member nicks
 // and online status from the store. When nicks is non-nil it is used as a
-// ready-made nick lookup (skipping per-member DB queries).
+// ready-made nick lookup; the member profiles themselves are loaded in one
+// batched query, not per member.
 func (s *Service) EnrichChatFromNicks(ctx context.Context, chat *model.Chat, nicks map[string]string) ChatView {
 	view := ChatView{
 		ID:                chat.ID,
@@ -144,25 +151,28 @@ func (s *Service) EnrichChatFromNicks(ctx context.Context, chat *model.Chat, nic
 		view.PinnedMessageIDs = ids
 	}
 
+	users := s.store.GetUsersFullByIDs(ctx, chat.Members)
+
 	for _, member := range chat.Members {
 		nick, ok := nicks[member]
+		profile := users[member]
 		avatarURL := ""
-		if u, found := s.store.GetUserByID(ctx, member); found {
+		if profile != nil {
 			if !ok {
-				nick = u.Username
+				nick = profile.Username
 			}
-			if u.AvatarFileID != "" {
-				avatarURL = "/api/files/" + u.AvatarFileID
+			if profile.AvatarFileID != "" {
+				avatarURL = "/api/files/" + profile.AvatarFileID
 			}
 		} else if !ok {
 			nick = member
 		}
 
 		memberView := MemberView{ID: member, Nick: nick, Online: s.store.IsOnline(member), AvatarURL: avatarURL}
-		if u, found := s.store.GetUserByID(ctx, member); found {
-			memberView.Username = u.Username
-			memberView.DisplayName = u.DisplayName
-			memberView.IsBot = u.IsBot
+		if profile != nil {
+			memberView.Username = profile.Username
+			memberView.DisplayName = profile.DisplayName
+			memberView.IsBot = profile.IsBot
 		}
 		view.Members = append(view.Members, memberView)
 	}
@@ -175,9 +185,52 @@ func (s *Service) EnrichChat(ctx context.Context, c *model.Chat) ChatView {
 	return s.EnrichChatFromNicks(ctx, c, nil)
 }
 
+// ChatViewFor builds the view a specific user may see: the enriched chat with
+// the presence of a blocked private peer masked. The profile itself stays —
+// the chat row still has to render — but online state is a live channel a
+// block must close, or the blocker keeps leaking activity to the blocked user.
+func (s *Service) ChatViewFor(ctx context.Context, c *model.Chat, viewerID string) ChatView {
+	view := s.EnrichChat(ctx, c)
+	s.maskBlockedPeerPresence(ctx, &view, viewerID)
+
+	return view
+}
+
+func (s *Service) maskBlockedPeerPresence(ctx context.Context, view *ChatView, viewerID string) {
+	if viewerID == "" || view.Type != callChatTypePrivate {
+		return
+	}
+
+	for idx := range view.Members {
+		if view.Members[idx].ID == viewerID {
+			continue
+		}
+
+		if s.IsBlockedBetween(ctx, viewerID, view.Members[idx].ID) {
+			view.Members[idx].Online = false
+		}
+	}
+}
+
 // GetChats returns the enriched views of all chats a user belongs to.
 func (s *Service) GetChats(ctx context.Context, userID string) []ChatView {
-	chats := s.store.GetUserChats(ctx, userID)
+	views, err := s.GetChatsE(ctx, userID)
+	if err != nil {
+		log().Warn("failed to list the chats", "userID", userID, "err", err)
+
+		return []ChatView{}
+	}
+
+	return views
+}
+
+// GetChatsE reports a storage failure instead of answering with an empty list:
+// for the client "no chats" and "the query failed" must not look the same.
+func (s *Service) GetChatsE(ctx context.Context, userID string) ([]ChatView, error) {
+	chats, err := s.store.GetUserChatsE(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
 
 	_, memberIDs := collectChatAndMemberIDs(chats)
 
@@ -185,29 +238,39 @@ func (s *Service) GetChats(ctx context.Context, userID string) []ChatView {
 
 	out := make([]ChatView, 0, len(chats))
 	for _, c := range chats {
-		out = append(out, s.EnrichChatFromNicks(ctx, c, nicks))
+		view := s.EnrichChatFromNicks(ctx, c, nicks)
+		s.maskBlockedPeerPresence(ctx, &view, userID)
+		out = append(out, view)
 	}
 
-	return out
+	return out, nil
 }
 
 // BroadcastUserStatus notifies all chat partners of a user's online status.
+// Partners in a block with the user are skipped: presence must not reach
+// someone who asked for no contact.
 func (s *Service) BroadcastUserStatus(ctx context.Context, userID string, online bool) {
 	chats := s.store.GetUserChats(ctx, userID)
 	notified := make(map[string]bool)
 
 	for _, chat := range chats {
 		for _, memberID := range chat.Members {
-			if memberID != userID && !notified[memberID] {
-				s.sendEvent(memberID, sse.Event{
-					Event: eventUserStatusChanged,
-					Data: map[string]any{
-						keyUserID: userID,
-						keyOnline: online,
-					},
-				})
-				notified[memberID] = true
+			if memberID == userID || notified[memberID] {
+				continue
 			}
+			if chat.Type == callChatTypePrivate && s.IsBlockedBetween(ctx, userID, memberID) {
+				notified[memberID] = true
+
+				continue
+			}
+			s.sendEvent(memberID, sse.Event{
+				Event: eventUserStatusChanged,
+				Data: map[string]any{
+					keyUserID: userID,
+					keyOnline: online,
+				},
+			})
+			notified[memberID] = true
 		}
 	}
 }
@@ -282,8 +345,13 @@ func (s *Service) CreatePrivateChat(ctx context.Context, userID, withUserID stri
 // members over the realtime hub. Group members must be local to this server.
 func (s *Service) CreateGroupChat(ctx context.Context, ownerID, name string, memberIDs []string) (ChatView, error) {
 	name = strings.TrimSpace(name)
-	if name == "" || len(name) > groupNameMaxLen {
+	if name == "" || utf8.RuneCountInString(name) > groupNameMaxLen {
 		return ChatView{}, ErrGroupNameInvalid
+	}
+
+	// Reject before the per-member block checks and lookups below.
+	if len(memberIDs) > MaxGroupMembers {
+		return ChatView{}, ErrTooManyMembers
 	}
 
 	seen := make(map[string]struct{}, len(memberIDs)+1)
@@ -348,7 +416,7 @@ func (s *Service) CreateGroupChat(ctx context.Context, ownerID, name string, mem
 // notifies all members, returning the enriched view for the transport response.
 func (s *Service) UpdateChatName(ctx context.Context, chatID, name string) (ChatView, error) {
 	name = strings.TrimSpace(name)
-	if name == "" || len(name) > groupNameMaxLen {
+	if name == "" || utf8.RuneCountInString(name) > groupNameMaxLen {
 		return ChatView{}, ErrGroupNameInvalid
 	}
 
@@ -442,6 +510,18 @@ func (s *Service) AddChatMember(ctx context.Context, chatID, userID string) (Cha
 		return ChatView{}, ErrUserIDRequired
 	}
 
+	chat, ok := s.store.GetChat(ctx, chatID)
+	if !ok {
+		return ChatView{}, ErrChatNotFound
+	}
+
+	// Adding is the same reach as creating: a group must not become a way
+	// around a block, so the owner's pair with the invitee is checked here
+	// like CreateGroupChat does.
+	if s.IsBlockedBetween(ctx, chat.OwnerID, userID) {
+		return ChatView{}, ErrUserBlocked
+	}
+
 	remoteServer := s.remoteServerFromID(userID)
 	if remoteServer != "" && remoteServer != s.cfg.Server.Domain {
 		if s.fed == nil {
@@ -510,6 +590,10 @@ func (s *Service) RemoveChatMember(ctx context.Context, chatID, targetUserID, ac
 	before, _ := s.store.GetChat(ctx, chatID)
 
 	if err := s.store.RemoveChatMember(ctx, chatID, targetUserID); err != nil {
+		if errors.Is(err, store.ErrNotMember) {
+			return ChatView{}, ErrUserNotFound
+		}
+
 		return ChatView{}, err
 	}
 

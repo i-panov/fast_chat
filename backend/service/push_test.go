@@ -76,6 +76,36 @@ func TestSendPushForMessageNilServiceIsNoop(t *testing.T) {
 	s.SendPushForMessage(context.Background(), &model.Chat{ID: "c1"}, nil, "", "alice:localhost:8080")
 }
 
+// A caller that passes no message (or no chat) must not panic the request: the
+// payload builder dereferences both.
+func TestSendPushForMessageNilMessageIsNoop(t *testing.T) {
+	s := newPushTestService(t)
+
+	recorder := &mockPushService{sent: make(chan []byte, 1)}
+	s.push = recorder
+
+	// The recipient has an offline subscription, so the payload would be
+	// built if the guard were missing.
+	chat, err := s.store.CreateChat(context.Background(), "alice:test", "bob:test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.AddPushSubscriptionForSession(
+		context.Background(), "bob:test", "s-1", "https://fcm.googleapis.com/fcm/send/abc", "p", "a",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	s.SendPushForMessage(context.Background(), chat, nil, "", "bob:test")
+	s.SendPushForMessage(context.Background(), nil, &model.Message{ID: "m"}, "", "bob:test")
+
+	select {
+	case payload := <-recorder.sent:
+		t.Fatalf("a nil message/chat must not produce a push, got %s", payload)
+	default:
+	}
+}
+
 func TestSendPushForMessageOnlineRecipientSkipped(t *testing.T) {
 	s := newPushTestService(t)
 

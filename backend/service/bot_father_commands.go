@@ -21,47 +21,22 @@ func (s *Service) HandleRootBotManagement(ctx context.Context, bot *model.Bot, c
 	lower := strings.ToLower(strings.TrimSpace(text))
 	switch {
 	case lower == "/mybots":
-		bots, err := s.store.ListBotsByOwner(ctx, userID)
-		if err != nil {
-			s.rootReply(ctx, bot.UserID, chat.ID, "Could not load the list.")
-			return true
-		}
-		if len(bots) == 0 {
-			s.rootReply(ctx, bot.UserID, chat.ID, "You have no bots yet. Use Create a bot.")
-			return true
-		}
-		var builder strings.Builder
-		builder.WriteString("Your bots:\n")
-		for idx := range bots {
-			user, ok := s.store.GetUserByID(ctx, bots[idx].UserID)
-			if !ok {
-				continue
-			}
-			status := botStatusActive
-			if !bots[idx].IsActive {
-				status = botStatusDisabled
-			}
-			builder.WriteString("@")
-			builder.WriteString(user.Username)
-			builder.WriteString(" — ")
-			builder.WriteString(status)
-			builder.WriteString("\n")
-		}
-		s.rootReply(ctx, bot.UserID, chat.ID, strings.TrimSpace(builder.String()))
+		s.rootReply(ctx, bot.UserID, chat.ID, s.rootBotsText(ctx, userID))
 		return true
 	case strings.HasPrefix(lower, "/token "):
 		username := botCommandArg(text)
 		token, err := s.RotateBotToken(ctx, userID, username)
 		if err != nil {
-			s.rootReply(ctx, bot.UserID, chat.ID, "Could not issue a token: "+err.Error())
+			s.rootReply(ctx, bot.UserID, chat.ID, "Could not issue a token. Check that the bot exists and belongs to you.")
 			return true
 		}
-		s.rootReply(ctx, bot.UserID, chat.ID, "New token for @"+username+" (shown once):\n"+token)
+		s.rootReplySecret(ctx, bot.UserID, chat.ID,
+			"New token for @"+username+" (shown once, deleted in a minute):\n"+token)
 		return true
 	case strings.HasPrefix(lower, "/revoke "), strings.HasPrefix(lower, "/disable "):
 		username := botCommandArg(text)
 		if err := s.SetBotEnabled(ctx, userID, username, false); err != nil {
-			s.rootReply(ctx, bot.UserID, chat.ID, "Could not disable: "+err.Error())
+			s.rootReply(ctx, bot.UserID, chat.ID, "Could not disable the bot. Check the username.")
 			return true
 		}
 		s.rootReply(ctx, bot.UserID, chat.ID, "@"+username+" is disabled.")
@@ -69,7 +44,7 @@ func (s *Service) HandleRootBotManagement(ctx context.Context, bot *model.Bot, c
 	case strings.HasPrefix(lower, "/enable "):
 		username := botCommandArg(text)
 		if err := s.SetBotEnabled(ctx, userID, username, true); err != nil {
-			s.rootReply(ctx, bot.UserID, chat.ID, "Could not enable: "+err.Error())
+			s.rootReply(ctx, bot.UserID, chat.ID, "Could not enable the bot. Check the username.")
 			return true
 		}
 		s.rootReply(ctx, bot.UserID, chat.ID, "@"+username+" is enabled.")

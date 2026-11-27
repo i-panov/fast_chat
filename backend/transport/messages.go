@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -146,21 +147,29 @@ func registerMessageMutations(api huma.API, svc *service.Service, st *store.Stor
 			return nil, err
 		}
 
-		out, err := sendMessage(ctx, svc, fed, cfg.Federation.AllowPrivateAddresses, chat, threadID, threadParentID, user, &service.SendMessageInput{
-			ID:               input.Body.ID,
-			Text:             input.Body.Text,
-			ReplyToID:        input.Body.ReplyToID,
-			FileIDs:          input.Body.FileIDs,
-			FileHashes:       input.Body.FileHashes,
-			Location:         input.Body.Location,
-			Encrypted:        input.Body.Encrypted,
-			EncryptedPayload: input.Body.EncryptedPayload,
-		})
+		out, created, err := sendMessage(
+			ctx, svc, fed, cfg.Federation.AllowPrivateAddresses, chat, threadID, threadParentID, user, &service.SendMessageInput{
+				ID:               input.Body.ID,
+				Text:             input.Body.Text,
+				ReplyToID:        input.Body.ReplyToID,
+				FileIDs:          input.Body.FileIDs,
+				FileHashes:       input.Body.FileHashes,
+				Location:         input.Body.Location,
+				Encrypted:        input.Body.Encrypted,
+				EncryptedPayload: input.Body.EncryptedPayload,
+			})
 		if err != nil {
 			return nil, err
 		}
 
-		return messageResponseBody(out, http.StatusCreated), nil
+		// A retry of an already stored id is not a creation: answering 201
+		// would tell the outbox it wrote a new row.
+		status := http.StatusCreated
+		if !created {
+			status = http.StatusOK
+		}
+
+		return messageResponseBody(out, status), nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -355,21 +364,27 @@ func registerThreadMessages(api huma.API, svc *service.Service, st *store.Store,
 			return nil, err
 		}
 
-		out, err := sendMessage(ctx, svc, fed, cfg.Federation.AllowPrivateAddresses, chat, threadID, threadParentID, user, &service.SendMessageInput{
-			ID:               input.Body.ID,
-			Text:             input.Body.Text,
-			ReplyToID:        input.Body.ReplyToID,
-			FileIDs:          input.Body.FileIDs,
-			FileHashes:       input.Body.FileHashes,
-			Location:         input.Body.Location,
-			Encrypted:        input.Body.Encrypted,
-			EncryptedPayload: input.Body.EncryptedPayload,
-		})
+		out, created, err := sendMessage(
+			ctx, svc, fed, cfg.Federation.AllowPrivateAddresses, chat, threadID, threadParentID, user, &service.SendMessageInput{
+				ID:               input.Body.ID,
+				Text:             input.Body.Text,
+				ReplyToID:        input.Body.ReplyToID,
+				FileIDs:          input.Body.FileIDs,
+				FileHashes:       input.Body.FileHashes,
+				Location:         input.Body.Location,
+				Encrypted:        input.Body.Encrypted,
+				EncryptedPayload: input.Body.EncryptedPayload,
+			})
 		if err != nil {
 			return nil, err
 		}
 
-		return messageResponseBody(out, http.StatusCreated), nil
+		status := http.StatusCreated
+		if !created {
+			status = http.StatusOK
+		}
+
+		return messageResponseBody(out, status), nil
 	})
 
 	huma.Register(api, huma.Operation{
@@ -491,9 +506,14 @@ func resolveMessageTarget(
 
 // requireThread loads a thread or maps to the pre-migration 404.
 func requireThread(ctx context.Context, st *store.Store, threadID string) (*model.Thread, error) {
-	thread, ok := st.GetThread(ctx, threadID)
-	if !ok {
-		return nil, errThreadNotFound
+	thread, err := st.GetThreadE(ctx, threadID)
+	if err != nil {
+		if errors.Is(err, store.ErrThreadNotFound) {
+			return nil, errThreadNotFound
+		}
+		slog.Error("failed to load a thread", "threadID", threadID, "err", err)
+
+		return nil, errInternal
 	}
 
 	return &thread, nil
@@ -510,23 +530,23 @@ func sendMessage(
 	threadID, threadParentID string,
 	user *authUser,
 	input *service.SendMessageInput,
-) (*model.Message, error) {
+) (*model.Message, bool, error) {
 
 	// File references resolve with one store lookup each: reject an obviously
 	// abusive batch on the transport before the service fans out to the DB.
 	if len(input.FileIDs) > service.MaxMessageFiles || len(input.FileHashes) > service.MaxMessageFiles {
-		return nil, &statusError{ErrorMessage: msgTooManyFiles, code: http.StatusBadRequest}
+		return nil, false, &statusError{ErrorMessage: msgTooManyFiles, code: http.StatusBadRequest}
 	}
 
 	msg, created, err := svc.SendMessageWithResult(ctx, chat, threadID, user.ID, user.Nick, input)
 	if err != nil {
-		return nil, messageOrInternalError(err)
+		return nil, false, messageOrInternalError(err)
 	}
 
 	// A retry of an already stored id must not federate or push again: the
 	// members saw the first fan-out and the peer already inserted the row.
 	if !created {
-		return msg, nil
+		return msg, false, nil
 	}
 
 	// The attachments are not federated: the peer does not have the file, and
@@ -580,7 +600,7 @@ func sendMessage(
 		svc.SendPushForMessage(ctx, chat, msg, threadID, memberID)
 	}
 
-	return msg, nil
+	return msg, true, nil
 }
 
 // editMessage performs the shared edit flow for chat and thread messages.
@@ -688,9 +708,9 @@ type queryMessagesInput struct {
 type sendMessageInput struct {
 	ID   string `path:"id"`
 	Body struct {
-		ID               string          `json:"id,omitempty"`
+		ID               string          `json:"id,omitempty"               maxLength:"128"`
 		Text             string          `json:"text,omitempty"`
-		ReplyToID        string          `json:"replyToId,omitempty"`
+		ReplyToID        string          `json:"replyToId,omitempty"        maxLength:"128"`
 		FileIDs          []string        `json:"fileIDs,omitempty"`
 		FileHashes       []string        `json:"fileHashes,omitempty"`
 		Location         *model.Location `json:"location,omitempty"`
@@ -793,9 +813,9 @@ type sendThreadMessageInput struct {
 	ID       string `path:"id"`
 	ThreadID string `path:"threadId"`
 	Body     struct {
-		ID               string          `json:"id,omitempty"`
+		ID               string          `json:"id,omitempty"               maxLength:"128"`
 		Text             string          `json:"text,omitempty"`
-		ReplyToID        string          `json:"replyToId,omitempty"`
+		ReplyToID        string          `json:"replyToId,omitempty"        maxLength:"128"`
 		FileIDs          []string        `json:"fileIDs,omitempty"`
 		FileHashes       []string        `json:"fileHashes,omitempty"`
 		Location         *model.Location `json:"location,omitempty"`

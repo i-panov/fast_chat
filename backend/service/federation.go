@@ -32,17 +32,23 @@ const (
 	// typing event names for federation fan-out.
 	federationEventTyping     = "typing"
 	federationEventTypingStop = "typing_stop"
+	// maxFederatedNickRunes bounds the author nick a peer may store. It
+	// matches the local display-name limit.
+	maxFederatedNickRunes = 64
 )
 
-// UserIDBelongsToServer reports whether userID is a federated ID whose domain
-// suffix matches serverDomain. The domain starts after the FIRST colon so
-// that host:port domains ("nick:localhost:8080") parse consistently with
-// RemoteServerFromID.
 // federatedAuthorAllowed applies the same trust model as SendFederatedMessage:
 // the owner's authors are trusted directly, a peer may act on behalf of its
 // own users, and (only for a replica) the owner may relay an author from a
 // third server. A locally owned chat must not accept such a relay.
-func federatedAuthorAllowed(chat *model.Chat, authorID string) bool {
+//
+// A local author is never covered by the relay branch: the local server owns
+// that identity, so letting a peer edit or delete its messages would let any
+// peer rewrite the conversation of our own users. The live path clones a
+// replica chat with FederatedPeer == RemoteServer == peer, which is exactly
+// the state the relay branch accepts, so the local-domain check is the only
+// thing standing between a peer and the messages of local users.
+func (s *Service) federatedAuthorAllowed(chat *model.Chat, authorID string) bool {
 	if UserIDBelongsToServer(authorID, chat.RemoteServer) {
 		return true
 	}
@@ -53,9 +59,21 @@ func federatedAuthorAllowed(chat *model.Chat, authorID string) bool {
 	return !chat.LocalChat &&
 		chat.FederatedPeer != "" &&
 		chat.FederatedPeer == chat.RemoteServer &&
+		!s.isLocalUserID(authorID) &&
 		containsMember(chat.Members, authorID)
 }
 
+// isLocalUserID reports whether userID belongs to this server. A nil config
+// (tests, one-shot tools) counts as "not local": the caller only uses this to
+// narrow a permission, so the conservative answer is fine.
+func (s *Service) isLocalUserID(userID string) bool {
+	return s.cfg != nil && UserIDBelongsToServer(userID, s.cfg.Server.Domain)
+}
+
+// UserIDBelongsToServer reports whether userID is a federated ID whose domain
+// suffix matches serverDomain. The domain starts after the FIRST colon so
+// that host:port domains ("nick:localhost:8080") parse consistently with
+// RemoteServerFromID.
 func UserIDBelongsToServer(userID, serverDomain string) bool {
 	idx := strings.Index(userID, ":")
 	if idx < 0 || idx == len(userID)-1 {
@@ -87,20 +105,6 @@ func FederatedChatMembersValid(members []string, remoteServer, localServer strin
 	}
 
 	return remoteCount == 1 && localCount == 1
-}
-
-// ValidFileIDs filters fileIDs to those that exist in the store. Used by
-// federated edits to resolve explicit remote file references.
-func (s *Service) ValidFileIDs(ctx context.Context, fileIDs []string) []string {
-	valid := make([]string, 0, len(fileIDs))
-
-	for _, fid := range fileIDs {
-		if _, err := s.store.GetFile(ctx, fid); err == nil {
-			valid = append(valid, fid)
-		}
-	}
-
-	return valid
 }
 
 // validFileIDsForMembers filters fileIDs down to the files uploaded by one of
@@ -294,11 +298,17 @@ func (s *Service) SendFederatedMessage(
 		// The authoritative owner may relay a message from another member
 		// server; the author must still be a member of this group.
 		if chat.RemoteServer != in.Peer ||
-			!containsMember(chat.Members, in.FromID) ||
-			UserIDBelongsToServer(in.FromID, s.cfg.Server.Domain) {
+			s.isLocalUserID(in.FromID) {
 
 			return nil, ErrFederatedFromNotRemote
 		}
+	}
+	// Every path requires the author to be a member: a peer may write only
+	// for its own users that take part in the conversation, not for an
+	// arbitrary account it happens to host (in particular not for an
+	// unrelated "admin" of the peer).
+	if !containsMember(chat.Members, in.FromID) {
+		return nil, ErrFederatedFromNotRemote
 	}
 
 	if chat.BotID != "" {
@@ -331,6 +341,18 @@ func (s *Service) SendFederatedMessage(
 
 	if utf8.RuneCountInString(in.Text) > maxLen {
 		return nil, ErrMessageTooLong
+	}
+
+	// The peer chooses the nick; it is stored, fanned out over SSE and put
+	// into the push title, so it is bounded like a local display name.
+	if utf8.RuneCountInString(in.FromNick) > maxFederatedNickRunes {
+		in.FromNick = string([]rune(in.FromNick)[:maxFederatedNickRunes])
+	}
+
+	// A peer is bounded by the same attachment count as a local sender:
+	// without it a 1 MiB body could carry thousands of file rows.
+	if len(in.Files) > MaxMessageFiles {
+		return nil, ErrTooManyFiles
 	}
 
 	for _, memberID := range chat.Members {
@@ -396,7 +418,7 @@ func (s *Service) SendFederatedMessage(
 			if fromServer := RemoteServerFromID(in.FromID); fromServer != "" {
 				sourceServer = fromServer
 			}
-			if err := s.store.CreateRemoteFile(ctx, &model.File{
+			err := s.store.CreateRemoteFile(ctx, &model.File{
 				ID:           fileInfo.ID,
 				Hash:         fileInfo.Hash,
 				MimeType:     fileInfo.MimeType,
@@ -404,7 +426,16 @@ func (s *Service) SendFederatedMessage(
 				OriginalName: fileInfo.OriginalName,
 				UploadedBy:   in.FromID,
 				RemoteServer: sourceServer,
-			}); err != nil && !errors.Is(err, store.ErrFileConflict) {
+			})
+			if errors.Is(err, store.ErrFileConflict) {
+				// The id already belongs to a file of this server. Attaching it
+				// to the peer's message would hand its bytes to every member, so
+				// only an upload of a chat member may be reused here.
+				existing, getErr := s.store.GetFile(ctx, fileInfo.ID)
+				if getErr != nil || !containsMember(chat.Members, existing.UploadedBy) {
+					continue
+				}
+			} else if err != nil {
 				return nil, err
 			}
 			fileIDs = append(fileIDs, fileInfo.ID)
@@ -481,7 +512,7 @@ func (s *Service) EditFederatedMessage(
 		return nil, ErrMessageNotFound
 	}
 
-	if !federatedAuthorAllowed(chat, stored.FromID) {
+	if !s.federatedAuthorAllowed(chat, stored.FromID) {
 		return nil, ErrFederatedAuthorNotRemote
 	}
 
@@ -600,7 +631,7 @@ func (s *Service) DeleteFederatedMessage(
 		return ErrMessageNotFound
 	}
 
-	if !federatedAuthorAllowed(chat, stored.FromID) {
+	if !s.federatedAuthorAllowed(chat, stored.FromID) {
 		return ErrFederatedAuthorNotRemote
 	}
 
@@ -849,6 +880,11 @@ func (s *Service) CreateFederatedGroup(
 	if chatID == "" || name == "" || ownerID == "" || len(members) == 0 {
 		return ChatView{}, false, ErrFederatedMembersNotValid
 	}
+	// The peer chooses the name; bound it like a local group name so it cannot
+	// bloat every chat list it lands in.
+	if utf8.RuneCountInString(name) > groupNameMaxLen {
+		return ChatView{}, false, ErrGroupNameInvalid
+	}
 	if !UserIDBelongsToServer(ownerID, ownerServer) {
 		return ChatView{}, false, ErrFederatedMembersNotValid
 	}
@@ -856,7 +892,12 @@ func (s *Service) CreateFederatedGroup(
 	for _, memberID := range members {
 		if UserIDBelongsToServer(memberID, localServer) {
 			local = true
-			break
+			// A local member must be a real account: a ghost id would create
+			// a chat nobody can leave or open, and would leave a phantom row
+			// in every member list.
+			if _, ok := s.store.GetUserByID(ctx, memberID); !ok {
+				return ChatView{}, false, ErrFederatedMembersNotValid
+			}
 		}
 	}
 	if !local {

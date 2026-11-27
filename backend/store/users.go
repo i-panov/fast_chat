@@ -173,6 +173,7 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (*model.User, bool) 
 	return &user, true
 }
 
+// GetUserByEmail resolves a user by their verified email address.
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*model.User, bool) {
 	var user model.User
 	if err := s.db.WithContext(ctx).Where("email = ?", email).First(&user).Error; err != nil {
@@ -180,6 +181,24 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*model.User, 
 	}
 
 	return &user, true
+}
+
+// PublicUserByID resolves a user for display. Unlike GetUserByID it never
+// drops an unknown id: a federated user has no local users row, and a block
+// placed on one must stay visible (and therefore removable) in the settings
+// list. The fallback nick is the local part of the federated id
+// ("nick:domain").
+func (s *Store) PublicUserByID(ctx context.Context, id string) model.PublicUser {
+	if user, ok := s.GetUserByID(ctx, id); ok {
+		return user.Public()
+	}
+
+	nick := id
+	if idx := strings.Index(id, ":"); idx > 0 {
+		nick = id[:idx]
+	}
+
+	return model.PublicUser{ID: id, Username: nick, Nick: nick, DisplayName: nick}
 }
 
 const fieldPublicKey = "public_key"

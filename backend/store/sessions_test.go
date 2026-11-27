@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -141,6 +143,32 @@ func TestRevokeSessionOnlyRevokesOne(t *testing.T) {
 	}
 }
 
+func TestGetSessionByTokenReportsStorageFailures(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+
+	if _, _, err := s.GetSessionByTokenE(ctx, "nope"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("unknown token = %v, want ErrSessionNotFound", err)
+	}
+
+	user := createTestUser(t, s, "alice")
+	_, token, err := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.GetSessionByTokenE(ctx, token); err != nil {
+		t.Fatalf("live token = %v, want no error", err)
+	}
+
+	// A closed database is an outage, not an invalid token: the client must
+	// not be told to drop its credentials.
+	s.Close()
+
+	if _, _, err := s.GetSessionByTokenE(ctx, token); err == nil || errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("storage failure = %v, want a real error", err)
+	}
+}
+
 func TestRefreshSessionRotatesOnlyOne(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
@@ -153,14 +181,115 @@ func TestRefreshSessionRotatesOnlyOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := s.GetSessionByToken(ctx, firstToken); ok {
-		t.Fatal("old first token must be rotated")
+	// The replaced token stays usable during the grace window: another tab of
+	// the same device may still be sending requests with it.
+	if _, _, ok := s.GetSessionByToken(ctx, firstToken); !ok {
+		t.Error("the replaced token must stay valid during the grace window")
 	}
 	if _, _, ok := s.GetSessionByToken(ctx, newFirstToken); !ok {
-		t.Fatal("new first token must work")
+		t.Error("new first token must work")
 	}
 	if _, _, ok := s.GetSessionByToken(ctx, secondToken); !ok {
-		t.Fatal("second session must survive")
+		t.Error("second session must survive")
+	}
+
+	// Once the window closes the replaced token is dead.
+	past := time.Now().Add(-time.Minute).UTC()
+	if err := s.db.Model(&model.Session{}).Where("id = ?", first.ID).
+		Update("prev_expires_at", past).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, firstToken); ok {
+		t.Error("the replaced token must expire with the grace window")
+	}
+}
+
+func TestRefreshSessionConcurrentTabsUseOneToken(t *testing.T) {
+	s := newSessionTestStore(t)
+	ctx := context.Background()
+
+	// The in-memory database is per connection: keep the pool at one
+	// connection so every goroutine sees the same schema. The rotation cache
+	// is what makes the concurrent case correct, and it is checked before the
+	// transaction, so the two calls still interleave as they do in production.
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+
+	user := createTestUser(t, s, "alice")
+
+	session, firstToken, _ := s.CreateSession(ctx, user.ID, "dev-1", "Chrome", "ua", time.Hour)
+
+	// Two tabs of one device fire refresh-token at the same moment.
+	const tabs = 2
+
+	var (
+		wg     sync.WaitGroup
+		tokens = make([]string, tabs)
+		errs   = make(chan error, tabs)
+	)
+
+	for i := range tabs {
+		wg.Go(func() {
+			_, token, err := s.RefreshSession(ctx, session.ID, time.Hour)
+			if err != nil {
+				errs <- err
+
+				return
+			}
+			tokens[i] = token
+		})
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("refresh failed: %v", err)
+	}
+
+	// Whatever interleaving happened, no tab may be left with a dead token:
+	// that is the silent logout this test guards against.
+	for _, token := range tokens {
+		if token == "" {
+			t.Fatal("both refreshes must return a token")
+		}
+		if _, _, ok := s.GetSessionByToken(ctx, token); !ok {
+			t.Fatalf("token %q was dead on arrival", token)
+		}
+	}
+	if tokens[0] == firstToken {
+		t.Fatal("the refresh must rotate the token")
+	}
+
+	// A refresh inside the window reuses the token of the last rotation
+	// instead of minting a second one.
+	_, again, err := s.RefreshSession(ctx, session.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, again); !ok {
+		t.Fatal("the reissued token must work")
+	}
+
+	// After the window the rotation happens again.
+	s.refreshMu.Lock()
+	for id, cached := range s.lastRotations {
+		cached.rotatedAt = time.Now().Add(-2 * sessionRotateGrace)
+		s.lastRotations[id] = cached
+	}
+	s.refreshMu.Unlock()
+
+	_, nextToken, err := s.RefreshSession(ctx, session.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextToken == again {
+		t.Fatal("an expired grace window must rotate the token again")
+	}
+	if _, _, ok := s.GetSessionByToken(ctx, nextToken); !ok {
+		t.Fatal("the newly rotated token must work")
 	}
 }
 

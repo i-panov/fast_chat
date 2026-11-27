@@ -547,3 +547,89 @@ func TestOpenStreamReturnsBodyWithoutBuffering(t *testing.T) {
 		t.Fatalf("body length = %d, want %d", len(body), len(payload))
 	}
 }
+
+// A peer may not have a signed mutation delivered anywhere but to itself, and
+// a 302-to-200 must not look like a successful delivery of a body that was
+// dropped on the way.
+func TestRequestRefusesRedirectsForMutations(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	var victimHits atomic.Int64
+
+	victim := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		victimHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer victim.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, victim.URL+"/collect", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	c := NewClient(m, "local.test", "http", 5, false)
+	c.SetHTTPClient(redirector.Client())
+
+	_, err := c.Request(context.Background(), http.MethodPost,
+		c.URL(peerHost(t, redirector), "/api/federated/chats"), map[string]string{"op": "create"})
+	if !errors.Is(err, ErrRedirectRefused) {
+		t.Fatalf("Request error = %v, want ErrRedirectRefused", err)
+	}
+
+	if hits := victimHits.Load(); hits != 0 {
+		t.Fatalf("the third host received %d requests, want none", hits)
+	}
+}
+
+func TestRequestRefusesCrossHostGETRedirect(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	victim := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer victim.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, victim.URL+"/collect", http.StatusMovedPermanently)
+	}))
+	defer redirector.Close()
+
+	c := NewClient(m, "local.test", "http", 5, false)
+	c.SetHTTPClient(redirector.Client())
+
+	_, err := c.Request(context.Background(), http.MethodGet,
+		c.URL(peerHost(t, redirector), "/api/federated/sync"), nil)
+	if !errors.Is(err, ErrRedirectRefused) {
+		t.Fatalf("Request error = %v, want ErrRedirectRefused", err)
+	}
+}
+
+// A hostile peer answers with a huge error body; only the capped prefix may
+// reach the outbox row, the log line and the dead-letter queue.
+func TestRequestCapsTheBodyOfAFailedResponse(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 1<<20))
+	}))
+	defer srv.Close()
+
+	c := NewClient(m, "local.test", "http", 5, false)
+	c.SetHTTPClient(srv.Client())
+
+	_, err := c.Request(context.Background(), http.MethodPost, c.URL(peerHost(t, srv), "/x"), nil)
+
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("error = %v, want *StatusError", err)
+	}
+
+	if len(statusErr.Body) > statusErrorBodyLimit {
+		t.Fatalf("quoted body = %d bytes, want at most %d", len(statusErr.Body), statusErrorBodyLimit)
+	}
+
+	if statusErr.Body == "" {
+		t.Fatal("the quoted body is empty, want the capped prefix")
+	}
+}

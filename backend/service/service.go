@@ -59,6 +59,12 @@ type Service struct {
 	authMu       sync.Mutex
 	botPruneMu   sync.Mutex
 	lastBotPrune time.Time
+	// fileMu serializes the upload dedup insert against the orphan sweep.
+	// Dedup points a new row at a path found by hash while the GC decides to
+	// delete bytes from the rows; interleaved, the GC can remove the blob
+	// between the lookup and the insert and leave a record that answers 404
+	// forever and blocks re-uploading the same content.
+	fileMu sync.Mutex
 	// botLastSeen tracks the Bot API activity of external bots. Bots have no
 	// SSE connection, so their presence is driven by polling requests and a
 	// five-minute expiry sweep.

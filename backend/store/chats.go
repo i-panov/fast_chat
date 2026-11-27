@@ -35,6 +35,7 @@ var (
 	ErrDeleteGroupForUser = errors.New("group chats are deleted for everyone")
 	ErrDeleteSelfChat     = errors.New("the favorites chat cannot be deleted")
 	ErrSelfPrivateChat    = errors.New("private chat with self must use EnsureSelfChat")
+	ErrNotMember          = errors.New("user is not a member of the chat")
 )
 
 func (s *Store) CreateChat(ctx context.Context, member1, member2, remoteServer string) (*model.Chat, error) {
@@ -45,17 +46,8 @@ func (s *Store) CreateChat(ctx context.Context, member1, member2, remoteServer s
 		return nil, ErrSelfPrivateChat
 	}
 
-	chat, ok, err := s.findPrivateChat(ctx, member1, member2, remoteServer)
-	if err != nil {
-		return nil, err
-	}
-
-	if ok {
-		return chat, nil
-	}
-
 	id := GenerateID()
-	chat = &model.Chat{
+	chat := &model.Chat{
 		ID:           id,
 		Type:         chatTypePrivate,
 		RemoteServer: remoteServer,
@@ -74,19 +66,33 @@ func (s *Store) CreateChat(ctx context.Context, member1, member2, remoteServer s
 		members = append(members, ChatMember{ChatID: id, UserID: memberID})
 	}
 
-	// Chat and members go out in one transaction so a crash between them
-	// cannot leave a member-less orphan visible in lists.
-	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(chat).Error; err != nil {
-			return err
+	// Lookup and insert share one write transaction: _txlock=immediate
+	// serializes them, so two simultaneous "open the dialog" calls cannot
+	// both see "no chat" and mint a duplicate pair whose messages split.
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		existing, ok, findErr := s.findPrivateChat(ctx, tx, member1, member2, remoteServer)
+		if findErr != nil {
+			return findErr
+		}
+		if ok {
+			chat = existing
+
+			return nil
+		}
+
+		if createErr := tx.Create(chat).Error; createErr != nil {
+			return createErr
 		}
 
 		return tx.Create(&members).Error
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 
-	chat.Members = memberIDs
+	if chat.Members == nil {
+		chat.Members = memberIDs
+	}
 
 	return chat, nil
 }
@@ -94,10 +100,10 @@ func (s *Store) CreateChat(ctx context.Context, member1, member2, remoteServer s
 // findPrivateChat returns the existing private chat of the two members.
 // ok=false means no such chat (or a lookup miss); err reports a database
 // failure, which the caller must not mistake for "no chat".
-func (s *Store) findPrivateChat(ctx context.Context, member1, member2, remoteServer string) (*model.Chat, bool, error) {
+func (s *Store) findPrivateChat(ctx context.Context, db *gorm.DB, member1, member2, remoteServer string) (*model.Chat, bool, error) {
 	var chatIDs []string
 
-	if err := s.db.WithContext(ctx).Model(&ChatMember{}).
+	if err := db.WithContext(ctx).Model(&ChatMember{}).
 		Select("chat_id").
 		Where("user_id IN ?", []string{member1, member2}).
 		Group("chat_id").
@@ -111,7 +117,7 @@ func (s *Store) findPrivateChat(ctx context.Context, member1, member2, remoteSer
 	}
 
 	var foundID string
-	chatIDQuery := s.db.WithContext(ctx).Model(&model.Chat{}).
+	chatIDQuery := db.WithContext(ctx).Model(&model.Chat{}).
 		Select("id").
 		Where("id IN ? AND type = ?", chatIDs, chatTypePrivate)
 
@@ -125,7 +131,7 @@ func (s *Store) findPrivateChat(ctx context.Context, member1, member2, remoteSer
 	}
 
 	var chat model.Chat
-	if firstErr := s.db.WithContext(ctx).First(&chat, "id = ?", foundID).Error; firstErr != nil {
+	if firstErr := db.WithContext(ctx).First(&chat, "id = ?", foundID).Error; firstErr != nil {
 		if errors.Is(firstErr, gorm.ErrRecordNotFound) {
 			return nil, false, nil
 		}
@@ -135,7 +141,7 @@ func (s *Store) findPrivateChat(ctx context.Context, member1, member2, remoteSer
 	chat.Members = []string{member1, member2}
 
 	if remoteServer != "" && chat.RemoteServer == "" {
-		if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chat.ID).Update("remote_server", remoteServer).Error; err != nil {
+		if err := db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", chat.ID).Update("remote_server", remoteServer).Error; err != nil {
 			return nil, false, err
 		}
 
@@ -326,7 +332,10 @@ func (s *Store) RemoveChatMember(ctx context.Context, chatID, userID string) err
 		}
 
 		if result.RowsAffected == 0 {
-			return nil
+			// Silently succeeding here made the service broadcast
+			// "member removed" and a federation DELETE for someone who was
+			// never in the group.
+			return ErrNotMember
 		}
 
 		return writeChatDeleteTombs(tx, chatID, []string{userID}, time.Now().UTC())
@@ -574,11 +583,29 @@ func (s *Store) deleteChatTx(ctx context.Context, chat *model.Chat, audit *model
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 
-		if err := writeChatDeleteTombs(tx, chatID, chat.Members, now); err != nil {
+		// Re-read the members inside the transaction: the caller's snapshot
+		// may predate a join, and a member who is not tombstoned would keep
+		// the chat forever while the rows behind it are gone.
+		var members []string
+		if err := tx.Model(&ChatMember{}).Where("chat_id = ?", chatID).Pluck("user_id", &members).Error; err != nil {
+			return err
+		}
+		if len(members) == 0 {
+			members = chat.Members
+		}
+
+		if err := writeChatDeleteTombs(tx, chatID, members, now); err != nil {
 			return err
 		}
 
 		if err := writeMessageDeleteTombs(tx, chatID, now); err != nil {
+			return err
+		}
+
+		// Pins have no cascade of their own: an orphan row would make the
+		// recreated chat (the favorites one has a deterministic id) serve
+		// pinnedMessageIds pointing at messages that no longer exist.
+		if err := tx.Where("chat_id = ?", chatID).Delete(&model.ChatPin{}).Error; err != nil {
 			return err
 		}
 

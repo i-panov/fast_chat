@@ -11,6 +11,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -412,5 +414,128 @@ func TestNonceMapIsCapped(t *testing.T) {
 
 	if m.markNonceFresh("remote.test", "sig") {
 		t.Fatal("markNonceFresh past the cap should refuse")
+	}
+}
+
+// TOFU pinning: once a peer's key is seen, a later well-known that answers
+// with a different key must not replace the identity of that domain.
+func TestPeerKeyChangeIsRefusedAfterPinning(t *testing.T) {
+	keyA, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keyB, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	remoteA := New(keyA, "remote.test", "http", 5, false)
+	t.Cleanup(remoteA.Close)
+
+	remoteB := New(keyB, "remote.test", "http", 5, false)
+	t.Cleanup(remoteB.Close)
+
+	pemA, err := remoteA.PublicKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pemB, err := remoteB.PublicKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var serveB atomic.Bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != wellKnownPath {
+			http.NotFound(w, r)
+			return
+		}
+
+		pemStr := pemA
+		if serveB.Load() {
+			pemStr = pemB
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"publicKeyPem":     pemStr,
+			"protocolVersions": []int{CurrentProtocolVersion},
+		})
+	}))
+	defer srv.Close()
+
+	m := newTestManager(t, "local.test")
+
+	m.client = srv.Client()
+
+	domain := strings.TrimPrefix(srv.URL, "http://")
+
+	first := m.getPublicKey(context.Background(), domain)
+	if first == nil || first.N.Cmp(keyA.PublicKey.N) != 0 {
+		t.Fatal("the first fetch did not return the peer key")
+	}
+
+	// Expire the cache and have the peer serve a different key, as a
+	// compromised DNS or a hijacked host would.
+	m.mu.Lock()
+	m.pubKeyCache[domain].expiresAt = time.Now().Add(-time.Second)
+	m.mu.Unlock()
+
+	serveB.Store(true)
+
+	second := m.getPublicKey(context.Background(), domain)
+	if second == nil || second.N.Cmp(keyA.PublicKey.N) != 0 {
+		t.Fatal("a changed peer key replaced the pinned one")
+	}
+}
+
+// cleanupExpiredNonces must actually free the replay map, or a flood of fresh
+// nonces keeps the global cap full until the ticker catches up.
+func TestCleanupExpiredNoncesFreesTheMap(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	if !m.markNonceFresh("peer.test", "sig1") {
+		t.Fatal("markNonceFresh refused a fresh nonce")
+	}
+
+	m.nonces.Range(func(key, _ any) bool {
+		m.nonces.Store(key, nonceEntry{expiresAt: time.Now().Add(-time.Second)})
+		return true
+	})
+
+	if !m.cleanupExpiredNonces(time.Now()) {
+		t.Fatal("cleanupExpiredNonces freed nothing")
+	}
+
+	if got := m.nonceCount.Load(); got != 0 {
+		t.Fatalf("nonceCount = %d after cleanup, want 0", got)
+	}
+
+	m.mu.RLock()
+	perServer := m.noncePerServer["peer.test"]
+	m.mu.RUnlock()
+
+	if perServer != 0 {
+		t.Fatalf("noncePerServer[peer.test] = %d after cleanup, want 0", perServer)
+	}
+}
+
+// The per-peer nonce share must reject only the peer that exhausts it: one
+// hostile server may not deny Verify to the honest ones.
+func TestNonceCapIsPerPeer(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	m.mu.Lock()
+	m.noncePerServer["noisy.test"] = maxNoncesPerServer
+	m.mu.Unlock()
+
+	if m.markNonceFresh("noisy.test", "sig") {
+		t.Fatal("a peer past its share was accepted")
+	}
+
+	if !m.markNonceFresh("honest.test", "sig") {
+		t.Fatal("an honest peer was refused because of another peer")
 	}
 }

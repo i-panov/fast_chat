@@ -81,7 +81,8 @@ func (s *Store) CreateThread(ctx context.Context, chatID, parentMessageID, paren
 
 	// OnConflict DoNothing reports success with zero rows on a conflict
 	// when the index exists; without the index the pre-check above is the
-	// guard. Re-read to distinguish the two.
+	// guard. Re-read to distinguish the two, and return the stored row: the
+	// local copy may differ from what a concurrent creator wrote.
 	var check model.Thread
 	if err := s.db.WithContext(ctx).First(&check, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -91,7 +92,7 @@ func (s *Store) CreateThread(ctx context.Context, chatID, parentMessageID, paren
 		return nil, err
 	}
 
-	return thread, nil
+	return &check, nil
 }
 
 // UpsertRemoteThread creates a thread row reported by a peer. It never
@@ -112,13 +113,28 @@ func (s *Store) UpsertRemoteThread(ctx context.Context, thread *model.Thread) (b
 }
 
 func (s *Store) GetThread(ctx context.Context, threadID string) (model.Thread, bool) {
-	var thread model.Thread
-
-	if err := s.db.WithContext(ctx).First(&thread, "id = ?", threadID).Error; err != nil {
+	thread, err := s.GetThreadE(ctx, threadID)
+	if err != nil {
 		return model.Thread{}, false
 	}
 
 	return thread, true
+}
+
+// GetThreadE reports a storage failure instead of folding it into "no such
+// thread": the transport answered 404 for a database outage otherwise.
+func (s *Store) GetThreadE(ctx context.Context, threadID string) (model.Thread, error) {
+	var thread model.Thread
+
+	if err := s.db.WithContext(ctx).First(&thread, "id = ?", threadID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.Thread{}, ErrThreadNotFound
+		}
+
+		return model.Thread{}, err
+	}
+
+	return thread, nil
 }
 
 func (s *Store) GetThreadByParentMessage(ctx context.Context, chatID, parentMessageID string) (model.Thread, bool) {

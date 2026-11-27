@@ -288,9 +288,14 @@ func registerSSEAuth(api huma.API, svc *service.Service, st *store.Store, hub *s
 		Path:        "/api/auth/sse-auth",
 		Summary:     "Authenticate an SSE connection",
 	}, func(ctx context.Context, input *sseAuthInput) (*sseAuthOutput, error) {
-		session, user, ok := st.GetSessionByToken(ctx, input.Body.Token)
-		if !ok {
-			return nil, errUnauthorized
+		session, user, err := st.GetSessionByTokenE(ctx, input.Body.Token)
+		if err != nil {
+			if errors.Is(err, store.ErrSessionNotFound) {
+				return nil, errUnauthorized
+			}
+			slog.Error("failed to resolve the session of an SSE connection", "err", err)
+
+			return nil, errInternal
 		}
 		if user.Banned {
 			return nil, errAccountBanned
@@ -432,7 +437,7 @@ func mapSessionError(err error) huma.StatusError { //nolint:ireturn // huma.Stat
 
 // errInternal is the generic 500 for unmapped service failures, matching the
 // pre-migration transport's "internal error".
-var errInternal = &statusError{ErrorMessage: "internal error", code: http.StatusInternalServerError}
+var errInternal = &statusError{ErrorMessage: msgInternalError, code: http.StatusInternalServerError}
 
 // Shared error messages (the wire format must stay byte-identical to the pre-migration transport).
 const (
@@ -490,11 +495,20 @@ func AuthMiddleware(st *store.Store) func(ctx huma.Context, next func(huma.Conte
 			return
 		}
 
-		session, user, ok := st.GetSessionByToken(ctx.Context(), token)
-		if !ok {
-			ctx.SetHeader("Content-Type", "application/json")
-			ctx.SetStatus(http.StatusUnauthorized)
-			ctx.BodyWriter().Write([]byte(`{"error":"unauthorized"}`)) //nolint:errcheck,gosec // best-effort: auth rejection
+		session, user, err := st.GetSessionByTokenE(ctx.Context(), token)
+		if err != nil {
+			// A storage failure must not be answered as an invalid token:
+			// the client would drop credentials that are still valid.
+			if errors.Is(err, store.ErrSessionNotFound) {
+				ctx.SetHeader("Content-Type", "application/json")
+				ctx.SetStatus(http.StatusUnauthorized)
+				ctx.BodyWriter().Write([]byte(`{"error":"unauthorized"}`)) //nolint:errcheck,gosec // best-effort: auth rejection
+			} else {
+				slog.Error("failed to resolve the bearer token", "err", err)
+				ctx.SetHeader("Content-Type", "application/json")
+				ctx.SetStatus(http.StatusInternalServerError)
+				ctx.BodyWriter().Write([]byte(`{"error":"internal error"}`)) //nolint:errcheck,gosec // best-effort: failure response
+			}
 
 			return
 		}

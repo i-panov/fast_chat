@@ -18,10 +18,21 @@ const (
 	// sessionTouchInterval throttles last_seen_at writes on the request path.
 	sessionTouchInterval = 5 * time.Minute
 
+	// sessionRotateGrace keeps the token replaced by a refresh usable for a
+	// short window: two tabs of one device share the session row and may
+	// refresh at the same moment, and the loser must not be logged out.
+	sessionRotateGrace = 30 * time.Second
+
+	// maxCachedRotations bounds the in-memory rotation cache. Only sessions
+	// that refreshed inside the grace window occupy it.
+	maxCachedRotations = 4096
+
 	fieldTokenHash  = "token_hash"
 	fieldLastSeenAt = "last_seen_at"
 	fieldExpiresAt  = "expires_at"
 	fieldRevokedAt  = "revoked_at"
+	fieldPrevHash   = "prev_token_hash"
+	fieldPrevExpiry = "prev_expires_at"
 )
 
 var (
@@ -32,21 +43,49 @@ var (
 )
 
 // GetSessionByToken resolves a bearer token to an active session and its user.
+// A token rotated within the grace window still authenticates: the other tab
+// of the same device holds it and has not refreshed yet.
 func (s *Store) GetSessionByToken(ctx context.Context, token string) (*model.Session, *model.User, bool) {
-	var session model.Session
-	err := s.db.WithContext(ctx).
-		Where("token_hash = ? AND revoked_at IS NULL AND expires_at > ?", hashToken(token), time.Now().UTC()).
-		First(&session).Error
+	session, user, err := s.GetSessionByTokenE(ctx, token)
 	if err != nil {
 		return nil, nil, false
 	}
 
-	var user model.User
-	if err := s.db.WithContext(ctx).First(&user, "id = ?", session.UserID).Error; err != nil {
-		return nil, nil, false
+	return session, user, true
+}
+
+// GetSessionByTokenE is GetSessionByToken with the storage failure reported
+// separately: an expired token and an unreachable database must not look the
+// same to the caller, or a transient outage answers 401 and the client throws
+// away credentials that are still valid.
+func (s *Store) GetSessionByTokenE(ctx context.Context, token string) (*model.Session, *model.User, error) {
+	now := time.Now().UTC()
+
+	var session model.Session
+	err := s.db.WithContext(ctx).
+		Where("(token_hash = ? OR (prev_token_hash = ? AND prev_expires_at > ?)) AND revoked_at IS NULL AND expires_at > ?",
+			hashToken(token), hashToken(token), now, now).
+		First(&session).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, ErrSessionNotFound
+		}
+
+		return nil, nil, err
 	}
 
-	return &session, &user, true
+	var user model.User
+	if err := s.db.WithContext(ctx).First(&user, "id = ?", session.UserID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// A session without its account is not usable; the row is a
+			// leftover the cleanup worker will remove.
+			return nil, nil, ErrSessionNotFound
+		}
+
+		return nil, nil, err
+	}
+
+	return &session, &user, nil
 }
 
 // CreateSession creates or replaces the session of a device. It returns the
@@ -101,6 +140,8 @@ func (s *Store) CreateSession(
 				Where("id = ?", session.ID).
 				Updates(map[string]any{
 					fieldTokenHash:  tokenHash,
+					fieldPrevHash:   "",
+					fieldPrevExpiry: nil,
 					"device_name":   deviceName,
 					"user_agent":    userAgent,
 					fieldExpiresAt:  expiresAt,
@@ -123,6 +164,9 @@ func (s *Store) CreateSession(
 	if err != nil {
 		return nil, "", err
 	}
+
+	// A fresh login supersedes any token handed out by a rotation.
+	s.forgetRotation(session.ID)
 
 	return &session, token, nil
 }
@@ -162,21 +206,51 @@ func (s *Store) GetSessionsByIDs(ctx context.Context, sessionIDs []string) (map[
 	return out, nil
 }
 
-// RefreshSession rotates the token of one session and extends its expiry.
+// RefreshSession rotates the token of one session and extends its expiry. Two
+// tabs of the same device share the session row and may refresh at the same
+// moment; the rotation is made idempotent within sessionRotateGrace so both
+// get one working token instead of killing each other's. The replaced token
+// stays usable for the same window, covering requests already in flight.
 func (s *Store) RefreshSession(ctx context.Context, sessionID string, ttl time.Duration) (*model.Session, string, error) {
 	if ttl <= 0 {
 		return nil, "", errInvalidTTL
 	}
 
 	now := time.Now().UTC()
+
+	if cached, ok := s.recentRotation(sessionID, now); ok {
+		session, found := s.GetSessionByID(ctx, sessionID)
+		if !found || !session.Active(now) {
+			return nil, "", ErrSessionNotFound
+		}
+
+		return session, cached, nil
+	}
+
 	token := GenerateID()
 
 	var session model.Session
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&session, "id = ?", sessionID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrSessionNotFound
+			}
+
+			return err
+		}
+		if !session.Active(now) {
+			return ErrSessionNotFound
+		}
+
+		// The compare-and-set on the hash keeps two writers from both
+		// believing they rotated the same value; the loser simply retries
+		// with the hash the winner stored.
 		res := tx.Model(&model.Session{}).
-			Where("id = ? AND revoked_at IS NULL AND expires_at > ?", sessionID, now).
+			Where("id = ? AND token_hash = ?", sessionID, session.TokenHash).
 			Updates(map[string]any{
 				fieldTokenHash:  hashToken(token),
+				fieldPrevHash:   session.TokenHash,
+				fieldPrevExpiry: now.Add(sessionRotateGrace),
 				fieldExpiresAt:  now.Add(ttl),
 				fieldLastSeenAt: now,
 			})
@@ -200,7 +274,59 @@ func (s *Store) RefreshSession(ctx context.Context, sessionID string, ttl time.D
 		return nil, "", err
 	}
 
+	s.rememberRotation(sessionID, token, now)
+
 	return &session, token, nil
+}
+
+// recentRotation returns the token issued by a rotation of the session within
+// the grace window, so a concurrent refresh of the same device reuses it
+// instead of minting a second token.
+func (s *Store) recentRotation(sessionID string, now time.Time) (string, bool) {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+
+	cached, ok := s.lastRotations[sessionID]
+	if !ok {
+		return "", false
+	}
+	if now.Sub(cached.rotatedAt) >= sessionRotateGrace {
+		delete(s.lastRotations, sessionID)
+
+		return "", false
+	}
+
+	return cached.token, true
+}
+
+// rememberRotation stores the token of the last rotation and drops expired
+// entries. The map is bounded: it only ever holds sessions that refreshed in
+// the last window, and a full map is cleared of stale entries.
+func (s *Store) rememberRotation(sessionID, token string, now time.Time) {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+
+	if len(s.lastRotations) >= maxCachedRotations {
+		for id, cached := range s.lastRotations {
+			if now.Sub(cached.rotatedAt) >= sessionRotateGrace {
+				delete(s.lastRotations, id)
+			}
+		}
+		if len(s.lastRotations) >= maxCachedRotations {
+			s.lastRotations = make(map[string]cachedRotation)
+		}
+	}
+
+	s.lastRotations[sessionID] = cachedRotation{token: token, rotatedAt: now}
+}
+
+// forgetRotation drops the cached token of a session that was revoked or
+// recreated, so a stale entry cannot answer a later refresh.
+func (s *Store) forgetRotation(sessionID string) {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+
+	delete(s.lastRotations, sessionID)
 }
 
 // TouchSession advances last_seen_at when the recorded value is older than
@@ -222,13 +348,19 @@ func (s *Store) TouchSession(ctx context.Context, sessionID string, now time.Tim
 func (s *Store) RevokeSession(ctx context.Context, userID, sessionID string) error {
 	now := time.Now().UTC()
 
+	// Drop the cached rotation first: a revocation must not leave a token the
+	// refresh path would happily hand out again.
+	s.forgetRotation(sessionID)
+
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&model.Session{}).
 			Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessionID, userID).
 			Updates(map[string]any{
-				fieldRevokedAt: now,
-				fieldExpiresAt: now,
-				fieldTokenHash: hashToken(GenerateID()),
+				fieldRevokedAt:  now,
+				fieldExpiresAt:  now,
+				fieldTokenHash:  hashToken(GenerateID()),
+				fieldPrevHash:   "",
+				fieldPrevExpiry: nil,
 			})
 		if res.Error != nil {
 			return res.Error
@@ -292,9 +424,11 @@ func revokeAllSessionsTx(tx *gorm.DB, userID string, now time.Time) (int64, erro
 		res := tx.Model(&model.Session{}).
 			Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessions[idx].ID, userID).
 			Updates(map[string]any{
-				fieldRevokedAt: now,
-				fieldExpiresAt: now,
-				fieldTokenHash: hashToken(GenerateID()),
+				fieldRevokedAt:  now,
+				fieldExpiresAt:  now,
+				fieldTokenHash:  hashToken(GenerateID()),
+				fieldPrevHash:   "",
+				fieldPrevExpiry: nil,
 			})
 		if res.Error != nil {
 			return 0, res.Error

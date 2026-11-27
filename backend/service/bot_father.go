@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"time"
 
 	"fast_chat/model"
+	"fast_chat/sse"
 	"fast_chat/store"
 )
 
@@ -151,7 +154,17 @@ func (s *Service) HandleRootBotCommand(ctx context.Context, chat *model.Chat, ms
 	if s.HandleRootBotManagement(ctx, bot, chat, msg.FromID, text) {
 		return
 	}
-	if strings.HasPrefix(lower, "/start") || strings.HasPrefix(lower, "/help") {
+	if strings.HasPrefix(lower, "/start") {
+		// A new dialog: an abandoned /newbot flow must not turn the next
+		// arbitrary message into a display name.
+		s.clearRootState(ctx, msg.FromID)
+		s.rootReply(ctx, bot.UserID, chat.ID,
+			"Hi! I'm Root Bot. I can create bots for you and show the ones you already have.",
+			rootMenu())
+
+		return
+	}
+	if strings.HasPrefix(lower, "/help") {
 		s.rootReply(ctx, bot.UserID, chat.ID,
 			"Hi! I'm Root Bot. I can create bots for you and show the ones you already have.",
 			rootMenu())
@@ -178,14 +191,15 @@ func (s *Service) HandleRootBotCommand(ctx context.Context, chat *model.Chat, ms
 	case "newbot_username":
 		created, err := s.CreateBot(ctx, msg.FromID, text, state.Payload)
 		if err != nil {
-			s.rootReply(ctx, bot.UserID, chat.ID, "Could not create the bot: "+err.Error(), rootCancelMenu())
+			// Never paste a raw database error into the chat: map the known
+			// rejections to the action the user can take.
+			s.rootReply(ctx, bot.UserID, chat.ID, botCreateErrorMessage(err), rootCancelMenu())
 
 			return
 		}
 		s.clearRootState(ctx, msg.FromID)
-		s.rootReply(ctx, bot.UserID, chat.ID,
-			"Bot created: @"+created.Username+"\nToken (shown once):\n"+created.Token,
-			rootMenu())
+		s.rootReplySecret(ctx, bot.UserID, chat.ID,
+			"Bot created: @"+created.Username+"\nToken (shown once, deleted in a minute):\n"+created.Token)
 	}
 }
 
@@ -274,6 +288,27 @@ func (s *Service) rootBotsText(ctx context.Context, userID string) string {
 	return strings.TrimSpace(builder.String())
 }
 
+// botCreateErrorMessage turns a CreateBot rejection into a sentence the user
+// can act on. Raw errors (database, driver) never reach the chat.
+func botCreateErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, ErrBotUsernameInvalid):
+		return "That username is not valid. It must end with _bot, for example weather_bot."
+	case errors.Is(err, ErrBotUsernameTaken):
+		return "That username is already taken. Try another one."
+	case errors.Is(err, ErrBotUsernameReserved):
+		return "That username is reserved."
+	case errors.Is(err, ErrBotQuotaExceeded):
+		return "You have reached the bot limit. Delete or reuse an existing bot."
+	case errors.Is(err, ErrBotDisplayNameInvalid):
+		return "That display name is too long."
+	case errors.Is(err, ErrUserNotFound):
+		return "Your account could not be found."
+	default:
+		return "Could not create the bot. Try again later."
+	}
+}
+
 func (s *Service) rootReply(ctx context.Context, botID, chatID, text string, markups ...*model.InlineKeyboardMarkup) {
 	var markup *model.InlineKeyboardMarkup
 	if len(markups) > 0 {
@@ -281,5 +316,54 @@ func (s *Service) rootReply(ctx context.Context, botID, chatID, text string, mar
 	}
 	if _, err := s.SendBotMessage(ctx, botID, chatID, text, markup); err != nil {
 		log().Warn("root bot reply failed", "err", err)
+	}
+}
+
+// oneTimeTokenTTL controls how long a one-time bot token stays in the chat
+// history. It is a variable so tests do not have to wait a minute.
+var oneTimeTokenTTL = time.Minute
+
+// rootReplySecret sends a one-time secret (a bot token) and deletes the
+// message after oneTimeTokenTTL. The bot profile stores only the token hash;
+// a plaintext token in the chat history would otherwise leak through every
+// backup, every database dump and every synced device.
+func (s *Service) rootReplySecret(ctx context.Context, botID, chatID, text string) {
+	msg, err := s.SendBotMessage(ctx, botID, chatID, text, rootMenu())
+	if err != nil {
+		log().Warn("root bot reply failed", "err", err)
+
+		return
+	}
+
+	// The timer outlives the request, so the request cancellation must not
+	// abort the deletion; the background work keeps its own deadline. The TTL
+	// is captured here, not read inside the goroutine: a test that shortens it
+	// must not race with a timer of an earlier message.
+	go s.expireRootSecret(context.WithoutCancel(ctx), chatID, msg.ID, oneTimeTokenTTL)
+}
+
+func (s *Service) expireRootSecret(ctx context.Context, chatID, messageID string, ttl time.Duration) {
+	timer := time.NewTimer(ttl)
+	defer timer.Stop()
+
+	<-timer.C
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := s.store.DeleteRawMessage(ctx, chatID, messageID); err != nil {
+		if !errors.Is(err, store.ErrMessageNotFound) {
+			log().Warn("failed to expire a one-time bot token message", "chatID", chatID, "err", err)
+		}
+
+		return
+	}
+
+	if chat, ok := s.store.GetChat(ctx, chatID); ok {
+		for _, memberID := range chat.Members {
+			s.sendEvent(memberID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{
+				keyChatID: chatID, keyMessageID: messageID,
+			}})
+		}
 	}
 }

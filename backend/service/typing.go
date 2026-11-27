@@ -21,9 +21,9 @@ var nowFunc = time.Now
 // records the activity, and fans out the event to every chat member except the
 // originating user. The transport is responsible for propagating the event to
 // remote federation peers. Returns true when the indicator was throttled
-// (suppressed).
+// (suppressed), including when a block silences the chat.
 func (s *Service) HandleTyping(
-	_ context.Context,
+	ctx context.Context,
 	chat *model.Chat,
 	chatID,
 	userID,
@@ -31,6 +31,9 @@ func (s *Service) HandleTyping(
 	active bool,
 ) bool {
 
+	if s.ensureNotBlocked(ctx, chat, userID) != nil {
+		return true
+	}
 	if active {
 		key := chatID + ":" + userID
 		if s.hub != nil {

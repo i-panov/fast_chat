@@ -438,3 +438,195 @@ func TestFetchFederatedBotFile(t *testing.T) {
 		t.Fatalf("err = %v, want ErrFileNotFound", err)
 	}
 }
+
+// A megabyte display name would be copied into every chat list the bot
+// appears in; the bot endpoint applies the human limit.
+func TestCreateBotRejectsOverlongDisplayName(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CreateBot(ctx, owner.ID, "long_bot", strings.Repeat("n", maxBotDisplayNameRunes+1))
+	if !errors.Is(err, ErrBotDisplayNameInvalid) {
+		t.Fatalf("error = %v, want ErrBotDisplayNameInvalid", err)
+	}
+}
+
+// The token of a disabled bot is exactly what needs rotating: a leaked token
+// must be revocable without re-enabling the bot first.
+func TestRotateBotTokenWorksForADisabledBot(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := s.CreateBot(ctx, owner.ID, "rotate_bot", "Rotate")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetBotEnabled(ctx, owner.ID, "rotate_bot", false); err != nil {
+		t.Fatal(err)
+	}
+
+	token, err := s.RotateBotToken(ctx, owner.ID, "rotate_bot")
+	if err != nil {
+		t.Fatalf("rotate of a disabled bot: %v", err)
+	}
+
+	if token == created.Token {
+		t.Fatal("the token was not rotated")
+	}
+
+	// The old token stops resolving even though the bot is disabled.
+	if _, _, ok := s.GetBotByToken(ctx, created.Token); ok {
+		t.Fatal("the old token still resolves")
+	}
+}
+
+// A bot blocked by the user must not keep sending chat actions or callback
+// answers: both reach the user over the hub.
+func TestBotBlockedByUserStopsChatActionsAndCallbackAnswers(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := s.CreateBot(ctx, owner.ID, "quiet_bot", "Quiet")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := s.OpenBotChat(ctx, owner.ID, "quiet_bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg, err := s.SendBotMessage(ctx, created.User.ID, view.ID, "press", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	query := &model.BotCallbackQuery{
+		ID: "cb-1", BotID: created.User.ID, ChatID: view.ID,
+		MessageID: msg.ID, UserID: owner.ID, Data: "yes", CreatedAt: time.Now().UTC(),
+	}
+	if err := s.store.CreateBotCallbackQuery(ctx, query); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.BlockUser(ctx, owner.ID, created.User.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.BotChatAction(ctx, created.User.ID, view.ID, "typing"); !errors.Is(err, ErrUserBlocked) {
+		t.Errorf("BotChatAction = %v, want ErrUserBlocked", err)
+	}
+
+	if err := s.AnswerBotCallback(ctx, created.User.ID, "cb-1", "hi", false, false, ""); !errors.Is(err, ErrUserBlocked) {
+		t.Errorf("AnswerBotCallback = %v, want ErrUserBlocked", err)
+	}
+}
+
+func TestAnswerBotCallbackRejectsOverlongText(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := s.CreateBot(ctx, owner.ID, "answer_bot", "Answer")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := s.OpenBotChat(ctx, owner.ID, "answer_bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg, err := s.SendBotMessage(ctx, created.User.ID, view.ID, "press", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.store.CreateBotCallbackQuery(ctx, &model.BotCallbackQuery{
+		ID: "cb-1", BotID: created.User.ID, ChatID: view.ID,
+		MessageID: msg.ID, UserID: owner.ID, Data: "yes", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.AnswerBotCallback(ctx, created.User.ID, "cb-1", strings.Repeat("x", maxBotCallbackAnswerRunes+1), false, false, "")
+	if !errors.Is(err, ErrBotAnswerTooLong) {
+		t.Fatalf("error = %v, want ErrBotAnswerTooLong", err)
+	}
+}
+
+// A one-time token must not stay in the chat history: the bot profile keeps
+// only its hash.
+func TestRootBotSecretMessageExpires(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	// The expiry runs in a goroutine. A ":memory:" database gives every pool
+	// connection its own schema, so the test pins the pool to one connection
+	// before anything else touches it.
+	sqlDB, err := s.store.DB().DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+
+	owner, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := s.CreateBot(ctx, owner.ID, "secret_bot", "Secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := s.OpenBotChat(ctx, owner.ID, "secret_bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	previous := oneTimeTokenTTL
+	oneTimeTokenTTL = 20 * time.Millisecond
+
+	t.Cleanup(func() { oneTimeTokenTTL = previous })
+
+	s.rootReplySecret(ctx, created.User.ID, view.ID, "Token (shown once): abc")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		messages, _, _, err := s.store.GetMessagesPaginatedE(ctx, view.ID, 10, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if len(messages) == 0 {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatalf("the token message is still stored (%d messages)", len(messages))
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+}

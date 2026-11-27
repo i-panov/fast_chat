@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -183,8 +185,21 @@ func registerBots(api huma.API, st *store.Store, svc *service.Service, fed *fede
 		fullPath := filepath.Join(cfg.Uploads.Dir, file.StoragePath)
 		return &huma.StreamResponse{Body: func(hctx huma.Context) {
 			r, w := humachi.Unwrap(hctx)
+			// Same hardening as the user-facing file endpoint: never sniff or
+			// execute inline scripts, and force download for HTML/JS/SVG. A
+			// bot file served inline would run in the site origin.
 			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 			w.Header().Set("Content-Type", file.MimeType)
+
+			disposition := contentDispositionAttachment
+			if filestage.IsInlinableMIME(file.MimeType) {
+				disposition = contentDispositionInline
+			}
+
+			w.Header().Set("Content-Disposition", filestage.ContentDisposition(disposition, file.OriginalName))
+			w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(mimeCacheMaxAge))
+
 			if remoteResp != nil {
 				writeFederatedFile(w, remoteResp, releaseSlot, file.ID)
 				return
@@ -257,13 +272,30 @@ func registerBots(api huma.API, st *store.Store, svc *service.Service, fed *fede
 		if err != nil {
 			return nil, err
 		}
+
+		// The rate limiter counts requests on entry, so one token could
+		// legally hold hundreds of two-minute polls, each hitting SQLite
+		// every 100ms. A second concurrent long poll answers 409 like
+		// Telegram: the SDKs know that status and drop the extra poller.
+		if !acquireBotPoll(bot.UserID) {
+			return nil, &statusError{
+				ErrorMessage: "terminated by another getUpdates request",
+				code:         http.StatusConflict,
+			}
+		}
+		defer releaseBotPoll(bot.UserID)
+
 		updates, err := svc.PollBotUpdates(ctx, bot.UserID, input.Body.Offset, input.Body.Limit, time.Duration(input.Body.Timeout)*time.Second)
 		if err != nil {
+			// A cancelled context is the client that disconnected or the
+			// server shutting down, not a bot-server failure.
+			if ctx.Err() != nil {
+				return emptyBotUpdates(), nil
+			}
+
 			return nil, &statusError{ErrorMessage: "failed to poll updates", code: http.StatusInternalServerError}
 		}
-		out := &botUpdatesOutput{}
-		out.Status = http.StatusOK
-		out.Body.OK = true
+		out := emptyBotUpdates()
 		out.Body.Result = make([]map[string]any, 0, len(updates))
 		for i := range updates {
 			var payload map[string]any
@@ -543,12 +575,20 @@ func botError(err error) error {
 		return &statusError{ErrorMessage: err.Error(), code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrBotMarkupInvalid):
 		return &statusError{ErrorMessage: "invalid inline keyboard", code: http.StatusBadRequest}
+	case errors.Is(err, service.ErrBotDisplayNameInvalid):
+		return &statusError{ErrorMessage: "bot display name is too long", code: http.StatusBadRequest}
+	case errors.Is(err, service.ErrBotAnswerTooLong):
+		return &statusError{ErrorMessage: "callback answer is too long", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrBotActionInvalid):
 		return &statusError{ErrorMessage: "unsupported chat action", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrBotAttachmentRemote):
-		return &statusError{ErrorMessage: "files and locations are not supported in federated bot chats", code: http.StatusBadRequest}
+		return &statusError{ErrorMessage: "inline keyboards and locations are not supported in federated bot chats", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrMessageNotFound):
 		return &statusError{ErrorMessage: msgMessageNotFound, code: http.StatusNotFound}
+	case errors.Is(err, service.ErrUserBlocked):
+		return &statusError{ErrorMessage: "bot was blocked by the user", code: http.StatusForbidden}
+	case errors.Is(err, store.ErrBotCallbackAlreadyAnswered):
+		return &statusError{ErrorMessage: "callback query is already answered", code: http.StatusConflict}
 	case errors.Is(err, store.ErrMessageIDConflict):
 		return &statusError{ErrorMessage: "message id already used", code: http.StatusConflict}
 	default:
@@ -585,6 +625,51 @@ type botGetUpdatesInput struct {
 		Limit   int    `json:"limit"`
 		Timeout int    `json:"timeout"`
 	}
+}
+
+// emptyBotUpdates builds the successful "no updates" answer.
+func emptyBotUpdates() *botUpdatesOutput {
+	out := &botUpdatesOutput{}
+	out.Status = http.StatusOK
+	out.Body.OK = true
+	out.Body.Result = []map[string]any{}
+
+	return out
+}
+
+// Content-Disposition values shared with the federated file stream.
+const (
+	contentDispositionAttachment = "attachment"
+	contentDispositionInline     = "inline"
+)
+
+// botPollGuard bounds the number of concurrent long polls per bot. The
+// request rate limiter counts entries, not in-flight polls, so without this
+// limit a single token could hold hundreds of two-minute polls at once.
+var botPollGuard = struct {
+	mu     sync.Mutex
+	active map[string]struct{}
+}{active: make(map[string]struct{})}
+
+// acquireBotPoll reserves the single long-poll slot of a bot.
+func acquireBotPoll(botID string) bool {
+	botPollGuard.mu.Lock()
+	defer botPollGuard.mu.Unlock()
+
+	if _, busy := botPollGuard.active[botID]; busy {
+		return false
+	}
+
+	botPollGuard.active[botID] = struct{}{}
+
+	return true
+}
+
+func releaseBotPoll(botID string) {
+	botPollGuard.mu.Lock()
+	defer botPollGuard.mu.Unlock()
+
+	delete(botPollGuard.active, botID)
 }
 
 type botUpdatesOutput struct {

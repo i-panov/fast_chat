@@ -65,7 +65,12 @@ const (
 	// pair lives 10 minutes, so a hostile peer naming fresh nonces could
 	// otherwise grow the sync.Map without bound. Past the cap Verify
 	// refuses, which fails closed under flood.
-	maxNonces = 100000
+	//
+	// The cap is 100x the per-peer share on purpose: a sybil that fills its
+	// own shares with a few domains must not reach the global cap and deny
+	// Verify to every honest peer. Before refusing, the map is swept for
+	// entries that are already past the replay window.
+	maxNonces = 1000000
 	// maxNoncesPerServer bounds one peer's share of the nonce map: without
 	// it a single hostile peer could eat the global cap and deny Verify to
 	// every legitimate peer until the cleanup tick. Rejected excess counts
@@ -106,8 +111,14 @@ type Manager struct {
 	// noncePerServer tracks live entries per peer under mu, so one peer
 	// cannot starve the rest of the global cap.
 	noncePerServer map[string]int64
-	closeCh        chan struct{}
-	closeOnce      sync.Once
+	// pinnedKeys remembers the first key seen for every peer (TOFU
+	// pinning). A later fetch that returns a different key is refused: a
+	// compromised DNS or a hostile well-known server must not be able to
+	// replace a peer's identity under the same domain. Rotation therefore
+	// needs an explicit restart after the new key is verified out of band.
+	pinnedKeys map[string]*rsa.PublicKey
+	closeCh    chan struct{}
+	closeOnce  sync.Once
 }
 
 // ServerDomain returns the local server's domain as configured at startup.
@@ -136,6 +147,7 @@ func New(privateKey *rsa.PrivateKey, serverDomain, scheme string, timeoutSec int
 		pubKeyCache:    make(map[string]*cacheEntry),
 		negCache:       make(map[string]time.Time),
 		noncePerServer: make(map[string]int64),
+		pinnedKeys:     make(map[string]*rsa.PublicKey),
 		cacheDuration:  cacheTTL,
 		closeCh:        make(chan struct{}),
 	}
@@ -202,8 +214,9 @@ func NewSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 
 	// nosemgrep: fast-chat-inline-http-client -- this is the safe constructor.
 	return &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
+		Timeout:       timeout,
+		Transport:     transport,
+		CheckRedirect: noCrossHostRedirect,
 	}
 }
 
@@ -468,6 +481,29 @@ func (m *Manager) getPublicKey(ctx context.Context, serverDomain string) *rsa.Pu
 	}
 
 	m.mu.Lock()
+	// TOFU pinning: the first key seen for a domain is the only one this
+	// process will trust. A later well-known that answers with a different
+	// key means a compromised DNS, a hijacked host, or a rotation nobody
+	// verified; refusing it fails closed instead of accepting the new
+	// identity and verifying an attacker's signatures for that domain.
+	if pinned, ok := m.pinnedKeys[serverDomain]; ok {
+		if !pinned.Equal(key) {
+			slog.Error("federation peer key changed, refusing the new key (DNS or identity takeover?)",
+				"server", serverDomain)
+
+			m.pubKeyCache[serverDomain] = &cacheEntry{
+				key:       pinned,
+				versions:  versions,
+				expiresAt: time.Now().Add(m.cacheDuration),
+			}
+			m.mu.Unlock()
+
+			return pinned
+		}
+	} else {
+		m.pinnedKeys[serverDomain] = key
+	}
+
 	m.pubKeyCache[serverDomain] = &cacheEntry{
 		key:       key,
 		versions:  versions,
@@ -493,10 +529,21 @@ func (m *Manager) timestampFresh(ts int64) bool {
 func (m *Manager) markNonceFresh(serverDomain, signature string) bool {
 	// Reserve the slot before the check-then-act: a burst of concurrent
 	// verifies must not overshoot the cap together.
+	swept := false
+
 	for {
 		count := m.nonceCount.Load()
 		if count >= maxNonces {
-			return false
+			// The map is full. Expire what is already past the replay window
+			// instead of denying Verify to everyone for the whole cleanup
+			// tick: a flood of fresh nonces is exactly the state where the
+			// ticker is too slow.
+			if swept || !m.cleanupExpiredNonces(time.Now()) {
+				return false
+			}
+			swept = true
+
+			continue
 		}
 		if m.nonceCount.CompareAndSwap(count, count+1) {
 			break
@@ -541,35 +588,45 @@ func (m *Manager) cleanupNonces() {
 	for {
 		select {
 		case <-ticker.C:
-			now := time.Now()
-
-			m.nonces.Range(func(key any, v any) bool {
-				entry := v.(nonceEntry) //nolint:errcheck // invariant: only nonceEntry is stored
-				if now.After(entry.expiresAt) {
-					m.nonces.Delete(key)
-					m.nonceCount.Add(-1)
-					// The signature carries no colon, so everything
-					// before the last one is the server domain.
-					if keyStr, ok := key.(string); ok {
-						if idx := strings.LastIndex(keyStr, ":"); idx > 0 {
-							server := keyStr[:idx]
-							m.mu.Lock()
-							m.noncePerServer[server]--
-							if m.noncePerServer[server] <= 0 {
-								delete(m.noncePerServer, server)
-							}
-							m.mu.Unlock()
-						}
-					}
-				}
-
-				return true
-			})
-
+			m.cleanupExpiredNonces(time.Now())
 		case <-m.closeCh:
 			return
 		}
 	}
+}
+
+// cleanupExpiredNonces drops every replay entry past its window and reports
+// whether it freed anything. It is shared by the ticker and by the inline
+// sweep markNonceFresh runs when the map hits its cap.
+func (m *Manager) cleanupExpiredNonces(now time.Time) bool {
+	freed := false
+
+	m.nonces.Range(func(key any, v any) bool {
+		entry := v.(nonceEntry) //nolint:errcheck // invariant: only nonceEntry is stored
+		if now.After(entry.expiresAt) {
+			m.nonces.Delete(key)
+			m.nonceCount.Add(-1)
+			// The signature carries no colon, so everything
+			// before the last one is the server domain.
+			if keyStr, ok := key.(string); ok {
+				if idx := strings.LastIndex(keyStr, ":"); idx > 0 {
+					server := keyStr[:idx]
+					m.mu.Lock()
+					m.noncePerServer[server]--
+					if m.noncePerServer[server] <= 0 {
+						delete(m.noncePerServer, server)
+					}
+					m.mu.Unlock()
+				}
+			}
+
+			freed = true
+		}
+
+		return true
+	})
+
+	return freed
 }
 
 // httpClient returns the client used for .well-known fetches. SetHTTPClient
@@ -580,6 +637,25 @@ func (m *Manager) httpClient() *http.Client {
 	defer m.mu.RUnlock()
 
 	return m.client
+}
+
+// redirectSafeClient enforces the redirect policy even when a test injected
+// its own client: a well-known response redirected to another host would
+// otherwise cache a foreign key under the peer's domain.
+func (m *Manager) redirectSafeClient() *http.Client {
+	client := m.httpClient()
+	if client == nil {
+		return &http.Client{CheckRedirect: noCrossHostRedirect}
+	}
+
+	if client.CheckRedirect != nil {
+		return client
+	}
+
+	clone := *client
+	clone.CheckRedirect = noCrossHostRedirect
+
+	return &clone
 }
 
 func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa.PublicKey, []int, error) {
@@ -599,7 +675,7 @@ func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa
 	// resolved IP (DNS-rebinding safe); a forged peer still fails signature
 	// verification.
 	// codeql[go/request-forgery]
-	resp, err := m.httpClient().Do(req)
+	resp, err := m.redirectSafeClient().Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("well-known request failed: %w", err)
 	}
@@ -612,6 +688,7 @@ func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa
 	var data struct {
 		PublicKeyPem     string `json:"publicKeyPem"`
 		ProtocolVersions []int  `json:"protocolVersions"`
+		ServerDomain     string `json:"serverDomain"`
 	}
 
 	// The body is read before the request is authenticated: Verify fetches the
@@ -624,6 +701,14 @@ func (m *Manager) fetchWellKnown(ctx context.Context, serverDomain string) (*rsa
 
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, nil, fmt.Errorf("failed to decode well-known response: %w", err)
+	}
+
+	// The field is not part of the trust decision (the key is), but a peer
+	// that declares a different name is worth a warning: it is either a
+	// misconfigured mirror or a sign of a hijacked host.
+	if data.ServerDomain != "" && data.ServerDomain != serverDomain {
+		slog.Warn("well-known serverDomain does not match the requested host",
+			"requested", serverDomain, "declared", data.ServerDomain)
 	}
 
 	key, err := parsePublicKeyPEM(data.PublicKeyPem)

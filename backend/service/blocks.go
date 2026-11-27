@@ -31,13 +31,29 @@ func (s *Service) BlockedUsers(ctx context.Context, userID string) []model.Publi
 	}
 	out := make([]model.PublicUser, 0, len(ids))
 	for _, id := range ids {
-		if user, ok := s.store.GetUserByID(ctx, id); ok {
-			out = append(out, user.Public())
-		}
+		out = append(out, s.store.PublicUserByID(ctx, id))
 	}
 	return out
 }
 
 func (s *Service) IsBlockedBetween(ctx context.Context, firstID, secondID string) bool {
 	return s.store.IsBlockedBetween(ctx, firstID, secondID)
+}
+
+// ensureNotBlocked rejects a chat action that would reach a member who blocked
+// the actor (or whom the actor blocked) in a private chat. Blocking has to
+// silence every channel, not only new messages: typing indicators, read
+// receipts, edits and deletes are all a way to keep contacting the blocker.
+func (s *Service) ensureNotBlocked(ctx context.Context, chat *model.Chat, userID string) error {
+	if chat == nil || chat.Type != callChatTypePrivate {
+		return nil
+	}
+
+	for _, memberID := range chat.Members {
+		if memberID != userID && s.IsBlockedBetween(ctx, userID, memberID) {
+			return ErrUserBlocked
+		}
+	}
+
+	return nil
 }

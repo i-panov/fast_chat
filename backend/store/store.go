@@ -26,16 +26,29 @@ type Store struct {
 	// good holds no call, so the call domain needs the time and not only
 	// the flag.
 	offlineSince map[string]time.Time
+
+	// refreshMu guards lastRotations: the token issued by the latest rotation
+	// of a session, kept briefly so concurrent refreshes of one device do not
+	// mint two different tokens and kill each other.
+	refreshMu     sync.Mutex
+	lastRotations map[string]cachedRotation
+}
+
+// cachedRotation is the token the last rotation of a session issued, and when.
+type cachedRotation struct {
+	token     string
+	rotatedAt time.Time
 }
 
 func New(db *gorm.DB) *Store {
 	return &Store{
-		db:           db,
-		codes:        NewCodeStore(),
-		conns:        make(map[string]int),
-		sessionConns: make(map[string]int),
-		online:       make(map[string]struct{}),
-		offlineSince: make(map[string]time.Time),
+		db:            db,
+		codes:         NewCodeStore(),
+		conns:         make(map[string]int),
+		sessionConns:  make(map[string]int),
+		online:        make(map[string]struct{}),
+		offlineSince:  make(map[string]time.Time),
+		lastRotations: make(map[string]cachedRotation),
 	}
 }
 

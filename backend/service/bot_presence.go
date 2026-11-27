@@ -48,10 +48,6 @@ func (s *Service) ExpireInactiveBots(ctx context.Context, now time.Time, window 
 	// a concurrent TouchBotActivity is serialised behind the whole sweep:
 	// a live bot's online event can never be followed by a stale offline
 	// one from a sweep that caught it mid-request.
-	// The state transition and its event belong to one critical section, so
-	// a concurrent TouchBotActivity is serialised behind the whole sweep:
-	// a live bot's online event can never be followed by a stale offline
-	// one from a sweep that caught it mid-request.
 	s.botPresenceMu.Lock()
 	defer s.botPresenceMu.Unlock()
 

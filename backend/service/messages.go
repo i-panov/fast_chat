@@ -19,6 +19,7 @@ import (
 var (
 	ErrEmptyMessage        = errors.New("empty message")
 	ErrMessageTooLong      = errors.New("message too long")
+	ErrMessageIDInvalid    = errors.New("message id is too long")
 	ErrInvalidCoordinates  = errors.New("invalid coordinates")
 	ErrTooManyFiles        = errors.New("too many files")
 	ErrThreadNotFound      = errors.New("thread not found")
@@ -62,6 +63,10 @@ const (
 	EncryptedMaxLen  = 100000
 	MaxMessageFiles  = 10
 	MaxReadByMembers = 100
+	// MaxMessageIDLen bounds the client-supplied message id. Ids are global
+	// primary keys, so an unbounded value would bloat the table and every
+	// index it appears in.
+	MaxMessageIDLen = 128
 
 	// MaxEncryptedPayloadLen bounds encryptedPayload JSON. One envelope per
 	// member is ~200 bytes, so 64 KiB keeps large E2EE groups workable while
@@ -316,6 +321,12 @@ func decodeEncryptedBase64(value string) ([]byte, error) {
 func (s *Service) ValidateSendInput(input *SendMessageInput) error {
 	input.Text = strings.TrimSpace(input.Text)
 
+	// The client id becomes a global primary key: a 1MB body must not be
+	// able to store a message id (and its indexes) of that size.
+	if len(input.ID) > MaxMessageIDLen || len(input.ReplyToID) > MaxMessageIDLen {
+		return ErrMessageIDInvalid
+	}
+
 	if input.Text == "" && len(input.FileIDs) == 0 && len(input.FileHashes) == 0 && input.Location == nil {
 		return ErrEmptyMessage
 	}
@@ -499,8 +510,6 @@ func (s *Service) SendMessage(
 // SendMessageWithResult also reports whether the row was newly created. The
 // transport uses it to avoid a second federated POST and push fan-out when an
 // offline retry reuses the same message id.
-//
-//nolint:gocyclo,cyclop // bot mode, payload, blocking and attachments share validation.
 func (s *Service) SendMessageWithResult(
 	ctx context.Context,
 	chat *model.Chat,
@@ -533,12 +542,8 @@ func (s *Service) SendMessageWithResult(
 			return nil, false, ErrBotEncryptionForbidden
 		}
 	}
-	if chat.Type == callChatTypePrivate {
-		for _, memberID := range chat.Members {
-			if memberID != fromID && s.IsBlockedBetween(ctx, fromID, memberID) {
-				return nil, false, ErrUserBlocked
-			}
-		}
+	if err := s.ensureNotBlocked(ctx, chat, fromID); err != nil {
+		return nil, false, err
 	}
 
 	// Resolve the attachments the sender is allowed to use. The client sends
@@ -577,18 +582,14 @@ func (s *Service) SendMessageWithResult(
 	// A retry from the offline outbox reuses the id it already got. The stored
 	// row comes back as the answer, but the members already received this event
 	// the first time, so broadcasting it again would repeat a message they have
-	// already seen under the same id.
-	if !created {
-		return msg, false, nil
+	// already seen under the same id. The attachments are still repaired: a
+	// previous attempt may have failed between the row insert and the link.
+	if len(fileIDs) > 0 {
+		msg.Files = s.linkMessageFiles(ctx, msg.ID, fileIDs)
 	}
 
-	if len(fileIDs) > 0 {
-		if err := s.store.AddMessageFiles(ctx, msg.ID, fileIDs); err != nil {
-			log().Info("failed to link files to message", "err", err)
-		}
-
-		files, _ := s.store.GetMessageFiles(ctx, msg.ID) //nolint:errcheck // best-effort: failure is not actionable
-		msg.Files = files
+	if !created {
+		return msg, false, nil
 	}
 
 	s.notifyMessageSent(ctx, chat, msg, threadID, fromID)
@@ -600,6 +601,25 @@ func (s *Service) SendMessageWithResult(
 	}
 
 	return msg, true, nil
+}
+
+// linkMessageFiles attaches the resolved uploads to a stored message and
+// returns them for the response. A link failure is logged at Warn: the message
+// is then delivered without attachments, and a retry with the same id repairs
+// the missing links.
+func (s *Service) linkMessageFiles(ctx context.Context, messageID string, fileIDs []string) []model.FileInfo {
+	if err := s.store.AddMessageFiles(ctx, messageID, fileIDs); err != nil {
+		log().Warn("failed to link files to message", "messageID", messageID, "err", err)
+	}
+
+	files, err := s.store.GetMessageFiles(ctx, messageID)
+	if err != nil {
+		log().Warn("failed to load message files", "messageID", messageID, "err", err)
+
+		return nil
+	}
+
+	return files
 }
 
 // notifyMessageSent broadcasts a new message to all chat members. Delivery
@@ -657,7 +677,7 @@ func (s *Service) notifyMessageSent(ctx context.Context, chat *model.Chat, msg *
 // and setting files. It returns the updated message plus the resolved edit
 // payload so the transport can fan out federation/push payloads unchanged.
 //
-//nolint:gocyclo,cyclop // edit validation, bot mode, files, location and threads share one flow.
+//nolint:gocyclo,gocognit,cyclop // edit validation, bot mode, files, location and threads share one flow.
 func (s *Service) EditMessage(
 	ctx context.Context,
 	chatID string,
@@ -679,6 +699,16 @@ func (s *Service) EditMessage(
 		return model.Message{}, EditPayload{}, ErrNotYourMessage
 	}
 
+	// One read serves the block check and the bot-mode checks below: the chat
+	// cannot change between them, and loading it twice per edit is waste.
+	chat, hasChat := s.store.GetChat(ctx, chatID)
+
+	if hasChat {
+		if err := s.ensureNotBlocked(ctx, chat, userID); err != nil {
+			return model.Message{}, EditPayload{}, err
+		}
+	}
+
 	if editTTL < 0 {
 		return model.Message{}, EditPayload{}, ErrEditingNotAllowed
 	}
@@ -692,7 +722,7 @@ func (s *Service) EditMessage(
 		return model.Message{}, EditPayload{}, err
 	}
 
-	if chat, ok := s.store.GetChat(ctx, chatID); ok && chat.BotID != "" {
+	if hasChat && chat.BotID != "" {
 		mode := chat.BotEncryptionMode
 		if bot, found := s.store.GetBot(ctx, chat.BotID); found {
 			mode = bot.EncryptionMode
@@ -719,7 +749,7 @@ func (s *Service) EditMessage(
 	// does not own are dropped: a file id that leaked from another chat must
 	// not become a way to pull the content into a message.
 	fileIDs := s.ResolveMessageFiles(ctx, userID, edit.FileIDs, edit.FileHashes)
-	if chat, ok := s.store.GetChat(ctx, chatID); ok && chat.BotID != "" {
+	if hasChat && chat.BotID != "" {
 		mode := chat.BotEncryptionMode
 		if bot, found := s.store.GetBot(ctx, chat.BotID); found {
 			mode = bot.EncryptionMode
@@ -775,22 +805,52 @@ func (s *Service) EditMessage(
 }
 
 // BroadcastMessageUpdated fans out an edit/update event to every chat member.
-func (s *Service) BroadcastMessageUpdated(_ context.Context, chat *model.Chat, threadID string, message *model.Message) {
-	if threadID != "" {
-		eventData := map[string]any{
-			keyThreadID: threadID,
-			keyMessage:  message,
-		}
-		for _, memberID := range chat.Members {
-			s.sendEvent(memberID, sse.Event{Event: eventThreadMessageUpd, Data: eventData})
-		}
-
-		return
-	}
+// The reactions aggregate is viewer-specific (Me marks the reader's own emoji),
+// so it is recomputed per member instead of pushing the editor's copy to
+// everyone.
+func (s *Service) BroadcastMessageUpdated(ctx context.Context, chat *model.Chat, threadID string, message *model.Message) {
+	rows, haveRows := s.reactionRowsFor(ctx, message)
 
 	for _, memberID := range chat.Members {
-		s.sendEvent(memberID, sse.Event{Event: eventMessageUpdated, Data: message})
+		payload := message
+		if haveRows {
+			copied := *message
+			copied.Reactions = reactionSummaries(rows, memberID)
+			payload = &copied
+		}
+
+		if threadID != "" {
+			s.sendEvent(memberID, sse.Event{
+				Event: eventThreadMessageUpd,
+				Data: map[string]any{
+					keyThreadID: threadID,
+					keyMessage:  payload,
+				},
+			})
+
+			continue
+		}
+
+		s.sendEvent(memberID, sse.Event{Event: eventMessageUpdated, Data: payload})
 	}
+}
+
+// reactionRowsFor loads the raw reaction rows of a message that carries an
+// aggregate, so per-viewer summaries can be rebuilt without one query per
+// member. A message without reactions needs none.
+func (s *Service) reactionRowsFor(ctx context.Context, message *model.Message) ([]model.MessageReaction, bool) {
+	if message == nil || len(message.Reactions) == 0 {
+		return nil, false
+	}
+
+	rows, err := s.store.GetMessageReactionRows(ctx, message.ID)
+	if err != nil {
+		log().Warn("failed to reload reactions for the broadcast", "messageID", message.ID, "err", err)
+
+		return nil, false
+	}
+
+	return rows, true
 }
 
 // DeleteMessage loads, authorizes and deletes a message, broadcasting the
@@ -817,7 +877,14 @@ func (s *Service) DeleteMessage(ctx context.Context, chat *model.Chat, messageID
 		return ErrDeleteForbidden
 	}
 
-	for _, memberID := range chat.Members {
+	// The delete must stay possible, but a blocked pair must not exchange
+	// notifications: only the author's own streams hear about it then.
+	members := chat.Members
+	if s.ensureNotBlocked(ctx, chat, userID) != nil {
+		members = []string{userID}
+	}
+
+	for _, memberID := range members {
 		s.sendEvent(memberID, sse.Event{Event: eventMessageDeleted, Data: map[string]string{keyChatID: chat.ID, keyMessageID: messageID}})
 	}
 
@@ -846,19 +913,24 @@ func (s *Service) MarkMessagesRead(ctx context.Context, chatID, userID string, m
 		validIDs[i] = messages[i].ID
 	}
 
-	if err := s.store.MarkMessagesRead(ctx, validIDs, userID); err != nil {
+	// One instant for the stored row and the broadcast receipt: the client
+	// compares the two.
+	now := time.Now().UTC()
+
+	if err := s.store.MarkMessagesReadAt(ctx, validIDs, userID, now); err != nil {
 		return err
 	}
 
-	// Collect unique authors (excluding self).
+	// Collect unique authors (excluding self and anyone in a block with the
+	// reader): a read receipt is a signal, and a block must silence it too.
 	authors := make(map[string]bool)
 	for i := range messages {
-		if messages[i].FromID != userID {
-			authors[messages[i].FromID] = true
+		if messages[i].FromID == userID || s.IsBlockedBetween(ctx, userID, messages[i].FromID) {
+			continue
 		}
+		authors[messages[i].FromID] = true
 	}
 
-	now := time.Now().UTC()
 	for authorID := range authors {
 		var authorMsgIDs []string
 		for i := range messages {

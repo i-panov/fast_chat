@@ -49,9 +49,22 @@ var (
 	ErrBotEncryptionRequired  = errors.New("encrypted message required for this bot")
 	ErrBotEncryptionForbidden = errors.New("plaintext message required for this bot")
 	ErrBotActionInvalid       = errors.New("unsupported bot action")
-	ErrBotAttachmentRemote    = errors.New("files and locations are not supported for federated bot chats")
+	ErrBotAttachmentRemote    = errors.New("inline keyboards and locations are not supported for federated bot chats")
 	ErrBotGroupMember         = errors.New("bots can only be used in 1-1 chats")
 	ErrBotKeysAlreadySet      = errors.New("bot already has E2EE keys")
+	ErrBotDisplayNameInvalid  = errors.New("bot display name is too long")
+	ErrBotAnswerTooLong       = errors.New("callback answer is too long")
+)
+
+const (
+	// maxBotDisplayNameRunes mirrors the human display-name limit: the name is
+	// copied into every chat list and message the bot appears in.
+	maxBotDisplayNameRunes = 64
+	// maxBotCallbackAnswerRunes mirrors the Telegram limit for the text of a
+	// callback answer. The text is pushed to the user over SSE.
+	maxBotCallbackAnswerRunes = 200
+	// botPollInterval is how often a long poll re-checks the update table.
+	botPollInterval = 100 * time.Millisecond
 )
 
 var botBaseRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_]{0,26}[a-z0-9])?$`)
@@ -121,6 +134,9 @@ func (s *Service) CreateBot(ctx context.Context, ownerID, username, displayName 
 	displayName = strings.TrimSpace(displayName)
 	if displayName == "" {
 		displayName = username
+	}
+	if utf8.RuneCountInString(displayName) > maxBotDisplayNameRunes {
+		return nil, ErrBotDisplayNameInvalid
 	}
 	userID := username + ":" + s.ServerDomain()
 	user := &model.User{
@@ -229,6 +245,9 @@ func (s *Service) PollBotUpdates(ctx context.Context, botID string, offset uint6
 		timeout = MaxBotPollTimeout
 	}
 	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(botPollInterval)
+	defer ticker.Stop()
+
 	for {
 		updates, err := s.store.GetBotUpdates(ctx, botID, offset, limit)
 		if err != nil {
@@ -240,19 +259,21 @@ func (s *Service) PollBotUpdates(ctx context.Context, botID string, offset uint6
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-ticker.C:
 		}
 	}
 }
 
 func (s *Service) SetBotEncryptionKey(ctx context.Context, botID, publicKey, identityPublicKey string) error {
+	// Bots cannot rotate their key (checked below), so the version they are
+	// expected to be at and the version written are always the same. The
+	// store keeps both parameters for the account path, where they differ.
 	expectedVersion := 1
 	if user, ok := s.store.GetUserByID(ctx, botID); ok {
 		if user.KeyVersion >= 1 {
 			expectedVersion = user.KeyVersion
 		}
 	}
-	keyVersion := expectedVersion
 	if bot, ok := s.store.GetBot(ctx, botID); ok && bot.EncryptionMode == EncryptionModeE2EE {
 		user, _ := s.store.GetUserByID(ctx, botID)
 		if user != nil && user.IdentityPublicKey != "" {
@@ -278,7 +299,7 @@ func (s *Service) SetBotEncryptionKey(ctx context.Context, botID, publicKey, ide
 		publicKey,
 		identityPublicKey,
 		expectedVersion,
-		keyVersion,
+		expectedVersion,
 	); err != nil {
 		if errors.Is(err, store.ErrBotIdentityConflict) {
 			return ErrBotKeysAlreadySet
@@ -664,6 +685,14 @@ func (s *Service) AnswerBotCallback(
 	if !ok {
 		return ErrMessageNotFound
 	}
+	// The user may have blocked the bot after pressing the button: the answer
+	// travels to that user over SSE, so the block applies here as well.
+	if s.IsBlockedBetween(ctx, botID, query.UserID) {
+		return ErrUserBlocked
+	}
+	if utf8.RuneCountInString(text) > maxBotCallbackAnswerRunes {
+		return ErrBotAnswerTooLong
+	}
 	bot, ok := s.store.GetBot(ctx, botID)
 	if !ok || !bot.IsActive {
 		return ErrBotNotActive
@@ -702,7 +731,7 @@ func (s *Service) RotateBotToken(ctx context.Context, ownerID, username string) 
 		return "", ErrBotUsernameInvalid
 	}
 	bot, ok := s.store.GetBot(ctx, username+":"+s.ServerDomain())
-	if !ok || bot.OwnerID != ownerID || !bot.IsActive {
+	if !ok || bot.OwnerID != ownerID {
 		return "", ErrBotNotActive
 	}
 	token, hash, prefix := newBotToken()
@@ -939,6 +968,11 @@ func (s *Service) BotChatAction(ctx context.Context, botID, chatID, action strin
 	bc, ok := s.store.GetBotChatByChatID(ctx, chatID)
 	if !ok || bc.BotID != botID {
 		return ErrChatNotFound
+	}
+	// A blocked bot must not keep sending typing events either: they reach
+	// the user over the same hub as messages.
+	if s.IsBlockedBetween(ctx, botID, bc.UserID) {
+		return ErrUserBlocked
 	}
 	if action != "typing" {
 		return ErrBotActionInvalid

@@ -19,6 +19,7 @@ const (
 	msgSessionRequired   = "session required"
 	msgInvalidBackup     = "invalid backup"
 	msgNotGroup          = "not a group"
+	msgInternalError     = "internal error"
 )
 
 // statusError implements huma.StatusError using the pre-migration error
@@ -145,7 +146,7 @@ func mapServerError(err error) huma.StatusError { //nolint:ireturn // huma.Statu
 
 	slog.Error("huma: unmapped service error", "err", err)
 
-	return &statusError{ErrorMessage: "internal error", code: http.StatusInternalServerError}
+	return &statusError{ErrorMessage: msgInternalError, code: http.StatusInternalServerError}
 }
 
 func isEncryptedPayloadError(err error) bool {
@@ -213,11 +214,7 @@ var sentinelErrors = []sentinelErrPair{
 	},
 	{
 		sentinel: service.ErrNickInvalid,
-		target:   &statusError{ErrorMessage: "nick must be 1-20 characters", code: http.StatusBadRequest},
-	},
-	{
-		sentinel: service.ErrNickColon,
-		target:   &statusError{ErrorMessage: "nick must not contain ':'", code: http.StatusBadRequest},
+		target:   &statusError{ErrorMessage: service.ErrNickInvalid.Error(), code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrNicknameTaken,
@@ -226,6 +223,10 @@ var sentinelErrors = []sentinelErrPair{
 	{
 		sentinel: service.ErrEmailAlreadyTaken,
 		target:   &statusError{ErrorMessage: "email already registered", code: http.StatusConflict},
+	},
+	{
+		sentinel: service.ErrInternal,
+		target:   &statusError{ErrorMessage: msgInternalError, code: http.StatusInternalServerError},
 	},
 
 	// Chat domain.
@@ -273,6 +274,10 @@ var sentinelErrors = []sentinelErrPair{
 		sentinel: service.ErrFileNotFound,
 		target:   &statusError{ErrorMessage: msgFileNotFound, code: http.StatusNotFound},
 	},
+	{
+		sentinel: service.ErrUploadQuotaExceeded,
+		target:   &statusError{ErrorMessage: "storage quota exceeded", code: http.StatusRequestEntityTooLarge},
+	},
 
 	// Message domain.
 	{
@@ -302,6 +307,10 @@ var sentinelErrors = []sentinelErrPair{
 	{
 		sentinel: service.ErrMessageTooLong,
 		target:   &statusError{ErrorMessage: "message too long", code: http.StatusBadRequest},
+	},
+	{
+		sentinel: service.ErrMessageIDInvalid,
+		target:   &statusError{ErrorMessage: service.ErrMessageIDInvalid.Error(), code: http.StatusBadRequest},
 	},
 	{
 		sentinel: service.ErrInvalidCoordinates,

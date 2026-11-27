@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,7 +33,7 @@ func (f *fakeOutbox) EnqueueFederationOp(_ context.Context, op *model.Federation
 	}
 
 	if op.ID == "" {
-		op.ID = "op-1"
+		op.ID = fmt.Sprintf("op-%d", len(f.ops)+1)
 	}
 
 	if op.CreatedAt.IsZero() {
@@ -481,4 +483,90 @@ func TestOutbox404IsRetriedNotDropped(t *testing.T) {
 	if dead := c.DeadLetters(); len(dead) != 0 {
 		t.Fatalf("dead letters = %+v, want none for a first 404", dead)
 	}
+}
+
+// errQueueFull stands for a transient database failure on the enqueue path.
+var errQueueFull = errors.New("disk full")
+
+// A failed enqueue must not silently drop the operation: the local user was
+// already told "sent", so the loss has to stay inspectable.
+func TestOutboxEnqueueFailureIsDeadLettered(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	c := NewClient(m, "local.test", "http", 5, false)
+	c.SetOutbox(&fakeOutbox{enqueueErr: errQueueFull})
+
+	c.Post(context.Background(), "peer.test", "/api/federated/chats", map[string]string{"op": "create"})
+
+	dead := c.DeadLetters()
+	if len(dead) != 1 {
+		t.Fatalf("dead letters = %d, want 1", len(dead))
+	}
+
+	if !strings.Contains(dead[0].Reason, "disk full") {
+		t.Errorf("reason = %q, want the enqueue error", dead[0].Reason)
+	}
+
+	if dead[0].Op.Path != "/api/federated/chats" {
+		t.Errorf("dead letter lost the operation: %+v", dead[0].Op)
+	}
+}
+
+// One unavailable or slow peer must not hold back the deliveries of every
+// other peer for its whole retry budget.
+func TestOutboxDrainsPeersIndependently(t *testing.T) {
+	m := newTestManager(t, "local.test")
+
+	slowStarted := make(chan struct{})
+	var slowOnce sync.Once
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		slowOnce.Do(func() { close(slowStarted) })
+		time.Sleep(300 * time.Millisecond)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer slow.Close()
+
+	fastDone := make(chan struct{})
+	var fastOnce sync.Once
+
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fastOnce.Do(func() { close(fastDone) })
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fast.Close()
+
+	c := NewClient(m, "local.test", "http", 5, false)
+	c.SetHTTPClient(fast.Client())
+
+	outbox := &fakeOutbox{}
+	c.SetOutbox(outbox)
+
+	// The failing peer is first in the queue: the old sequential drain would
+	// reach the healthy peer only after the retries of the slow one.
+	c.Post(context.Background(), peerHost(t, slow), "/slow", nil)
+	c.Post(context.Background(), peerHost(t, fast), "/fast", nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		c.drainOutbox(ctx)
+	}()
+
+	select {
+	case <-slowStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the slow peer was never attempted")
+	}
+
+	select {
+	case <-fastDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the healthy peer was held back by the unavailable one")
+	}
+
+	cancel()
+	<-done
 }

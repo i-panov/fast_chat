@@ -37,6 +37,10 @@ var (
 	ErrInvalidTURNConfig    = errors.New("ice.turn entry must list at least one non-empty url")
 	ErrInvalidCORSOrigin    = errors.New("cors.origin must be an http(s)://host[:port] origin or empty")
 	ErrUnsafeDebugEmail     = errors.New("email.debug_mode must be off when server.public_domain is set")
+	ErrUnsafeFederation     = errors.New(
+		"insecure federation settings (http scheme or private addresses) " +
+			"are not allowed when server.public_domain is set",
+	)
 	ErrSecretNotRegular     = errors.New("secret file must be a regular file")
 	ErrSecretFilePermissive = errors.New("secret file permissions must be 0600")
 )
@@ -583,6 +587,12 @@ func applyDefaults(cfg *Config) {
 		cfg.Federation.Scheme = federationSchemeHTTPS
 	}
 
+	// Without a default the empty path reaches LoadOrGenerateKeys and the
+	// process dies with "mkdir : no such file or directory".
+	if cfg.Federation.KeyPath == "" {
+		cfg.Federation.KeyPath = "./keys"
+	}
+
 	if cfg.Federation.Timeout == 0 {
 		cfg.Federation.Timeout = 10
 	}
@@ -678,7 +688,7 @@ func validateConfig(cfg *Config) error {
 		return fmt.Errorf("%w: got %d/%d", ErrInvalidTTL, cfg.MessageEditTTL, cfg.MessageDeleteTTL)
 	}
 
-	if err := validateFederation(&cfg.Federation); err != nil {
+	if err := validateFederation(&cfg.Federation, cfg.Server.PublicDomain); err != nil {
 		return err
 	}
 
@@ -718,7 +728,12 @@ func validateConfig(cfg *Config) error {
 }
 
 // validateFederation checks the outbound federation scheme and timeout.
-func validateFederation(fed *FederationConfig) error {
+//
+// A public domain marks a production deployment. Plain http (a peer key and
+// every signature travel in clear text, so an active MITM can impersonate any
+// peer) and allow_private_addresses (lifts the SSRF guard) are refused there,
+// the same way email.debug_mode is refused: both are loopback-only tools.
+func validateFederation(fed *FederationConfig, publicDomain string) error {
 	switch fed.Scheme {
 	case "http", federationSchemeHTTPS:
 	default:
@@ -727,6 +742,15 @@ func validateFederation(fed *FederationConfig) error {
 
 	if fed.Timeout < 1 || fed.Timeout > 300 {
 		return fmt.Errorf("%w: got %d", ErrInvalidFedTimeout, fed.Timeout)
+	}
+
+	if publicDomain != "" && (fed.Scheme != federationSchemeHTTPS || fed.AllowPrivateAddresses) {
+		return fmt.Errorf("%w: scheme=%q allow_private_addresses=%t",
+			ErrUnsafeFederation, fed.Scheme, fed.AllowPrivateAddresses)
+	}
+
+	if fed.AllowPrivateAddresses {
+		slog.Warn("federation.allow_private_addresses is enabled: the SSRF guard is off")
 	}
 
 	return nil

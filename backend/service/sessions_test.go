@@ -97,8 +97,11 @@ func TestRefreshSessionRotatesOnlyOneDevice(t *testing.T) {
 		t.Fatal("refresh must issue a new token")
 	}
 
-	if _, _, ok := s.store.GetSessionByToken(ctx, first.Token); ok {
-		t.Error("the old token of the refreshed device must stop working")
+	// The replaced token of the refreshed device stays usable during the
+	// grace window (another tab of the same device may still use it), and the
+	// issued token works.
+	if _, _, ok := s.store.GetSessionByToken(ctx, first.Token); !ok {
+		t.Error("the replaced token must stay valid during the grace window")
 	}
 
 	if _, _, ok := s.store.GetSessionByToken(ctx, token); !ok {

@@ -491,6 +491,10 @@ func registerFederatedSync(api huma.API, svc *service.Service) {
 
 		body, err := svc.SyncFederated(ctx, serverDomain, since, input.SinceID, limit)
 		if err != nil {
+			// Without the log the cause of a store failure is invisible: the
+			// peer only sees a generic 500.
+			slog.Error("federated sync failed", "peer", serverDomain, "err", err)
+
 			return nil, errInternal
 		}
 
@@ -842,9 +846,9 @@ func registerFederatedFiles(api huma.API, st *store.Store, svc *service.Service,
 				w.Header().Set("X-Content-Type-Options", "nosniff")
 				w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 				w.Header().Set("Content-Type", file.MimeType)
-				disposition := "attachment"
+				disposition := contentDispositionAttachment
 				if filestage.IsInlinableMIME(file.MimeType) {
-					disposition = "inline"
+					disposition = contentDispositionInline
 				}
 				w.Header().Set("Content-Disposition", filestage.ContentDisposition(disposition, file.OriginalName))
 				w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(mimeCacheMaxAge))

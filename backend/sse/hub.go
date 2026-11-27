@@ -19,8 +19,8 @@ const (
 	maxHubConnections = 10000
 	// maxConnectionsPerUser stops one account from exhausting the transport's
 	// SSE backstop (1024 streams) and silencing realtime for everyone. The
-	// oldest stream of the same user is evicted instead of rejecting the new
-	// one: a crashed browser must not lock the account out until token expiry.
+	// new stream is rejected with ErrTooManyConnections rather than evicting
+	// a live one: eviction made every client reconnect and evict the next.
 	maxConnectionsPerUser = 8
 	// hubAuthTimeout is how long an unauthenticated connection may hold its
 	// slot: Register happens before the auth request, and a client that
@@ -68,6 +68,7 @@ type Hub struct {
 	sessionConns map[string]map[string]struct{}
 	lastTyping   sync.Map
 	closeCh      chan struct{}
+	closeOnce    sync.Once
 }
 
 func NewHub(cleanupInterval time.Duration) *Hub {
@@ -83,11 +84,7 @@ func NewHub(cleanupInterval time.Duration) *Hub {
 }
 
 func (h *Hub) Close() {
-	select {
-	case <-h.closeCh:
-	default:
-		close(h.closeCh)
-	}
+	h.closeOnce.Do(func() { close(h.closeCh) })
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -113,17 +110,7 @@ func (h *Hub) Register(connectionID string) *Connection {
 	defer h.mu.Unlock()
 
 	if existing, ok := h.connections[connectionID]; ok {
-		close(existing.Channel)
-
-		if existing.UserID != "" {
-			conns := h.userConns[existing.UserID]
-			for i, c := range conns {
-				if c == connectionID {
-					h.userConns[existing.UserID] = append(conns[:i], conns[i+1:]...)
-					break
-				}
-			}
-		}
+		h.dropConnectionLocked(existing)
 	}
 
 	now := time.Now()
@@ -137,8 +124,7 @@ func (h *Hub) Register(connectionID string) *Connection {
 		// the result unconditionally).
 		if victim := h.oldestUnauthenticatedLocked(); victim != "" {
 			if conn, ok := h.connections[victim]; ok {
-				close(conn.Channel)
-				delete(h.connections, victim)
+				h.dropConnectionLocked(conn)
 			}
 
 			slog.Warn("SSE hub at capacity, evicted oldest unauthenticated connection",
@@ -191,29 +177,7 @@ func (h *Hub) Unregister(connectionID string, conn *Connection) {
 
 	close(current.Channel)
 	delete(h.connections, connectionID)
-
-	if current.UserID != "" {
-		conns := h.userConns[current.UserID]
-		for i, c := range conns {
-			if c == connectionID {
-				h.userConns[current.UserID] = append(conns[:i], conns[i+1:]...)
-				break
-			}
-		}
-
-		if len(h.userConns[current.UserID]) == 0 {
-			delete(h.userConns, current.UserID)
-		}
-	}
-
-	if current.SessionID != "" {
-		if conns := h.sessionConns[current.SessionID]; conns != nil {
-			delete(conns, connectionID)
-			if len(conns) == 0 {
-				delete(h.sessionConns, current.SessionID)
-			}
-		}
-	}
+	h.removeFromIndexesLocked(current)
 }
 
 func (h *Hub) GetConnection(connectionID string) *Connection {
@@ -249,11 +213,30 @@ func (h *Hub) BindSession(connectionID, userID, sessionID string, expiresAt time
 		conn.Warned = false
 		conn.mu.Unlock()
 
+		// A retried sse-auth must repair the index: a connection whose slot
+		// was dropped by a reap or an eviction would otherwise answer 200
+		// and silently receive no events.
+		if !h.indexConnectionLocked(conn) {
+			return false, ErrTooManyConnections
+		}
+
 		return false, nil
 	case conn.Authorized:
 		conn.mu.Unlock()
 
 		return false, ErrConnectionInUse
+	}
+
+	// Check the cap before mutating conn: a rejected bind must leave the
+	// connection unauthenticated and unindexed. Doing it afterwards left an
+	// "authorized but invisible" stream whose retry replayed successfully
+	// with no events ever arriving.
+	if !slices.Contains(h.userConns[userID], connectionID) &&
+		len(h.userConns[userID]) >= maxConnectionsPerUser {
+
+		conn.mu.Unlock()
+
+		return false, ErrTooManyConnections
 	}
 
 	conn.UserID = userID
@@ -263,20 +246,7 @@ func (h *Hub) BindSession(connectionID, userID, sessionID string, expiresAt time
 	conn.Warned = false
 	conn.mu.Unlock()
 
-	// Avoid duplicate entries if sseAuth is replayed for the same
-	// connection (e.g. a retried auth request).
-	if !slices.Contains(h.userConns[userID], connectionID) {
-		if len(h.userConns[userID]) >= maxConnectionsPerUser {
-			return false, ErrTooManyConnections
-		}
-		h.userConns[userID] = append(h.userConns[userID], connectionID)
-	}
-	if sessionID != "" {
-		if h.sessionConns[sessionID] == nil {
-			h.sessionConns[sessionID] = make(map[string]struct{})
-		}
-		h.sessionConns[sessionID][connectionID] = struct{}{}
-	}
+	h.indexConnectionLocked(conn)
 
 	return true, nil
 }
@@ -298,9 +268,19 @@ func (h *Hub) CloseSession(sessionID string) {
 	}
 
 	for _, id := range h.sessionConnectionIDs(sessionID) {
-		if conn := h.GetConnection(id); conn != nil {
-			h.Unregister(id, conn)
+		conn := h.GetConnection(id)
+		if conn == nil {
+			continue
 		}
+		// A stale index entry from an older binding must not close a stream
+		// that now belongs to another session of the same user.
+		conn.mu.Lock()
+		bound := conn.SessionID == sessionID
+		conn.mu.Unlock()
+		if !bound {
+			continue
+		}
+		h.Unregister(id, conn)
 	}
 }
 
@@ -335,6 +315,10 @@ func (h *Hub) UpdateSessionExpiry(sessionID string, expiresAt time.Time) {
 		conn.mu.Lock()
 		if conn.SessionID == sessionID {
 			conn.ExpiresAt = expiresAt
+			// Send flips Authorized off when it sees an expired token; a
+			// refresh proves the session is valid again and must restore the
+			// stream instead of leaving it a ping-only zombie.
+			conn.Authorized = true
 		}
 		conn.mu.Unlock()
 	}
@@ -393,7 +377,7 @@ func (h *Hub) sessionConnectionIDs(sessionID string) []string {
 func (h *Hub) reapStaleUnauthenticatedLocked(now time.Time) int {
 	reaped := 0
 
-	for id, conn := range h.connections {
+	for _, conn := range h.connections {
 		conn.mu.Lock()
 		authorized := conn.Authorized
 		created := conn.CreatedAt
@@ -404,8 +388,7 @@ func (h *Hub) reapStaleUnauthenticatedLocked(now time.Time) int {
 		}
 
 		if now.Sub(created) > hubAuthTimeout {
-			close(conn.Channel)
-			delete(h.connections, id)
+			h.dropConnectionLocked(conn)
 			reaped++
 		}
 	}
@@ -460,4 +443,62 @@ func (h *Hub) cleanupLastTyping(cleanupInterval time.Duration) {
 			return
 		}
 	}
+}
+
+// dropConnectionLocked closes conn and removes it together with its index
+// entries. Runs under the write lock.
+func (h *Hub) dropConnectionLocked(conn *Connection) {
+	close(conn.Channel)
+	delete(h.connections, conn.ID)
+	h.removeFromIndexesLocked(conn)
+}
+
+// removeFromIndexesLocked forgets a closed connection. Stale ids left in
+// userConns/sessionConns were counted against maxConnectionsPerUser forever,
+// so a reaped or evicted stream could lock an account out of realtime until
+// the process restarted. Runs under the write lock.
+func (h *Hub) removeFromIndexesLocked(conn *Connection) {
+	if conn.UserID != "" {
+		conns := h.userConns[conn.UserID]
+		for i, c := range conns {
+			if c == conn.ID {
+				h.userConns[conn.UserID] = append(conns[:i], conns[i+1:]...)
+				break
+			}
+		}
+
+		if len(h.userConns[conn.UserID]) == 0 {
+			delete(h.userConns, conn.UserID)
+		}
+	}
+
+	if conn.SessionID != "" {
+		if conns := h.sessionConns[conn.SessionID]; conns != nil {
+			delete(conns, conn.ID)
+			if len(conns) == 0 {
+				delete(h.sessionConns, conn.SessionID)
+			}
+		}
+	}
+}
+
+// indexConnectionLocked adds conn to the user and session indexes. It reports
+// false when the per-user cap is already reached: the caller must not treat
+// the connection as usable then. Runs under the write lock.
+func (h *Hub) indexConnectionLocked(conn *Connection) bool {
+	if conn.UserID != "" && !slices.Contains(h.userConns[conn.UserID], conn.ID) {
+		if len(h.userConns[conn.UserID]) >= maxConnectionsPerUser {
+			return false
+		}
+		h.userConns[conn.UserID] = append(h.userConns[conn.UserID], conn.ID)
+	}
+
+	if conn.SessionID != "" {
+		if h.sessionConns[conn.SessionID] == nil {
+			h.sessionConns[conn.SessionID] = make(map[string]struct{})
+		}
+		h.sessionConns[conn.SessionID][conn.ID] = struct{}{}
+	}
+
+	return true
 }

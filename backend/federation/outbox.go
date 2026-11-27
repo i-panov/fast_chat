@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"time"
 
 	"fast_chat/model"
@@ -73,6 +74,9 @@ func outboxDelay(attempts int) time.Duration {
 // SetOutbox attaches the durable queue to the client. Without it the client
 // falls back to sending the operations in the background, which is what the
 // tests and the one-shot tools use.
+//
+// Call it once, before RunOutbox and before any traffic starts: the field is
+// read without a lock by enqueue.
 func (c *Client) SetOutbox(outbox Outbox) {
 	c.outbox = outbox
 }
@@ -101,6 +105,9 @@ func (c *Client) enqueue(ctx context.Context, remoteServer, method, path string,
 
 		if err := c.outbox.EnqueueFederationOp(ctx, op); err != nil {
 			slog.Error("federation operation could not be queued", "method", method, "path", path, "err", err)
+			// The local user already got success: the loss must at least stay
+			// inspectable instead of vanishing into a log line.
+			c.deadLetter(op, "enqueue failed: "+err.Error())
 
 			return
 		}
@@ -132,7 +139,11 @@ func marshalBody(body any) ([]byte, error) {
 //
 // The order of the operations of one peer is preserved: the store only hands
 // out the operations whose predecessors are already delivered, and a failure
-// stops the queue of that peer for the rest of the drain.
+// stops the queue of that peer for the rest of the drain. Peers drain in
+// parallel, so one unreachable peer does not delay the others.
+//
+// Run it exactly once per client: there is no lease, so a second worker would
+// deliver the same operations twice.
 func (c *Client) RunOutbox(ctx context.Context, interval time.Duration) {
 	if c.outbox == nil {
 		return
@@ -160,17 +171,36 @@ func (c *Client) drainOutbox(ctx context.Context) {
 		return
 	}
 
-	// A peer whose operation failed waits for the next drain: the operations
-	// behind it would arrive out of order. The store keeps the same order
-	// across the ticks: an operation that is postponed blocks the queue of
-	// its peer there as well.
-	blocked := make(map[string]struct{})
+	// Deliver each peer's queue in its own goroutine. The order inside one
+	// peer is preserved (the store hands the operations out in order and a
+	// failure stops that peer's queue), but an unreachable or tarpitting peer
+	// no longer holds back every other peer for its whole retry budget.
+	byPeer := make(map[string][]*model.FederationOp)
 
 	for _, op := range ops {
-		if _, ok := blocked[op.RemoteServer]; ok {
-			continue
-		}
+		byPeer[op.RemoteServer] = append(byPeer[op.RemoteServer], op)
+	}
 
+	var wg sync.WaitGroup
+
+	for peer, peerOps := range byPeer {
+		wg.Add(1)
+
+		go func(peer string, peerOps []*model.FederationOp) {
+			defer wg.Done()
+
+			c.drainPeer(ctx, peer, peerOps)
+		}(peer, peerOps)
+	}
+
+	wg.Wait()
+}
+
+// drainPeer delivers the operations of one peer in order. The first failure
+// stops the queue of that peer: the operations behind it would arrive out of
+// order, and the store keeps the same order across ticks.
+func (c *Client) drainPeer(ctx context.Context, peer string, ops []*model.FederationOp) {
+	for _, op := range ops {
 		err := c.deliverOp(ctx, op)
 		if err == nil {
 			if delErr := c.outbox.DeleteFederationOp(ctx, op.ID); delErr != nil {
@@ -220,9 +250,9 @@ func (c *Client) drainOutbox(ctx context.Context) {
 			slog.Error("federation operation could not be rescheduled", "opID", op.ID, "err", reschedErr)
 		}
 
-		slog.Info("federation operation failed, will retry", "opID", op.ID, "peer", op.RemoteServer, "attempts", attempts, "err", err)
+		slog.Info("federation operation failed, will retry", "opID", op.ID, "peer", peer, "attempts", attempts, "err", err)
 
-		blocked[op.RemoteServer] = struct{}{}
+		return
 	}
 }
 

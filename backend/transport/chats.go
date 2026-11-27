@@ -40,8 +40,15 @@ func registerChatCRUD(api huma.API, svc *service.Service, fed *federation.Client
 			return nil, errUnauthorized
 		}
 
+		chats, err := svc.GetChatsE(ctx, user.ID)
+		if err != nil {
+			slog.Error("failed to list the chats of a user", "userID", user.ID, "err", err)
+
+			return nil, errInternal
+		}
+
 		var out chatsOutput
-		out.Body.Chats = svc.GetChats(ctx, user.ID)
+		out.Body.Chats = chats
 
 		return &out, nil
 	})
@@ -91,8 +98,11 @@ func registerChatCRUD(api huma.API, svc *service.Service, fed *federation.Client
 			"members":      memberIDs,
 			"remoteServer": cfg.Server.Domain,
 		}
-		if input.Body.WithUserIsBot {
-			body["botId"] = input.Body.WithUserID
+		// Only an authoritative decision may mark the chat as a bot chat on
+		// the peer: a lying flag on a normal person would make the peer's
+		// CreateFederatedChat fail and the replica would never exist.
+		if view.BotID != "" {
+			body["botId"] = view.BotID
 		}
 		fedPost(ctx, fed, remoteServer, "/api/federated/chats", body)
 
@@ -121,7 +131,7 @@ func registerChatCRUD(api huma.API, svc *service.Service, fed *federation.Client
 		}
 
 		var out chatOutput
-		out.Body.Chat = svc.EnrichChat(ctx, chat)
+		out.Body.Chat = svc.ChatViewFor(ctx, chat, user.ID)
 
 		return &out, nil
 	})
@@ -399,7 +409,7 @@ type createChatInput struct {
 		WithUserID    string   `json:"withUserId,omitempty"`
 		WithUserIsBot bool     `json:"withUserIsBot,omitempty"`
 		Name          string   `json:"name,omitempty"`
-		MemberIDs     []string `json:"memberIDs,omitempty"`
+		MemberIDs     []string `json:"memberIDs,omitempty"     maxItems:"1000"`
 	}
 }
 

@@ -26,11 +26,18 @@ const readStatusBulkChunk = 2000
 // MarkMessagesRead marks messages as read for a user. Uses upsert to
 // handle the case where a status already exists (e.g. delivered -> read).
 func (s *Store) MarkMessagesRead(ctx context.Context, messageIDs []string, userID string) error {
+	return s.MarkMessagesReadAt(ctx, messageIDs, userID, time.Now().UTC())
+}
+
+// MarkMessagesReadAt is MarkMessagesRead with an explicit instant, so the
+// read receipt broadcast to the authors carries the same timestamp the row
+// holds.
+func (s *Store) MarkMessagesReadAt(ctx context.Context, messageIDs []string, userID string, at time.Time) error {
 	if len(messageIDs) == 0 {
 		return nil
 	}
 
-	now := time.Now().UTC()
+	now := at.UTC()
 
 	for start := 0; start < len(messageIDs); start += readStatusBulkChunk {
 		end := min(start+readStatusBulkChunk, len(messageIDs))
@@ -245,22 +252,6 @@ func (s *Store) GetMessageDeliveryStatuses(ctx context.Context, messageIDs []str
 	}
 
 	return result, nil
-}
-
-// GetMessageReaders returns the list of user IDs who read a specific message.
-// Used for showing who read a message in group chats.
-func (s *Store) GetMessageReaders(ctx context.Context, messageID string, limit int) ([]string, error) {
-	var readers []string
-	if err := s.db.WithContext(ctx).
-		Model(&model.MessageReadStatus{}).
-		Where(colMessageID+" = ? AND "+colStatus+" = ?", messageID, statusRead).
-		Order(colReadAt+" ASC").
-		Limit(limit).
-		Pluck(colUserID, &readers).Error; err != nil {
-		return nil, err
-	}
-
-	return readers, nil
 }
 
 // GetMessagesByIDs returns messages by their IDs filtered by chat ID.

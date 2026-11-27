@@ -177,6 +177,12 @@ func (s *Service) SendPushForMessage(
 		return
 	}
 
+	// A caller without a message (or a chat) has nothing to notify about;
+	// dereferencing them below would panic the request.
+	if msg == nil || chat == nil {
+		return
+	}
+
 	subs := s.offlinePushSubscriptions(ctx, recipientID)
 	if len(subs) == 0 {
 		return

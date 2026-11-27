@@ -3,9 +3,11 @@ package transport
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"fast_chat/ratelimit"
 	"fast_chat/service"
 )
 
@@ -14,6 +16,14 @@ import (
 const (
 	syncDefaultPageLimit = 500
 	syncMaxPageLimit     = 1000
+
+	// syncRequestsPerMinute bounds the catch-up endpoint per account: every
+	// call runs five queries and sends the whole chat list, so a client that
+	// loops on since=epoch must not keep the small SQLite pool busy for
+	// everyone else.
+	syncRequestsPerMinute = 60
+	// syncLimiterEntries bounds the per-account buckets held in memory.
+	syncLimiterEntries = 10000
 )
 
 // syncPageLimit clamps the client limit into [1, syncMaxPageLimit],
@@ -30,13 +40,14 @@ func syncPageLimit(limit int) int {
 
 // RegisterSync adds the client catch-up operation.
 //
-// The since cursor is validated here (RFC3339, 400 otherwise), but the size
-// of the delta itself is a store contract: since="" replays from the epoch,
-// so the store must paginate/bound the delta (limit+cursor or truncated with
-// nextSince) instead of loading the whole history into one response. Until
-// that contract exists the transport cannot cap the delta without breaking
-// long-offline clients.
+// The since cursor is validated here (RFC3339, 400 otherwise); the size of the
+// delta is a store contract: the delta is paginated with nextSince (see
+// store.DeltaPage), and the per-request page is clamped to syncMaxPageLimit.
 func RegisterSync(api huma.API, svc *service.Service) {
+	// Per-account throttle: the endpoint is authenticated, so the bucket key
+	// is the user id, not the address.
+	syncLimiter := ratelimit.New(syncRequestsPerMinute, time.Minute, syncLimiterEntries)
+
 	huma.Register(api, huma.Operation{
 		OperationID: "sync",
 		Method:      http.MethodGet,
@@ -47,6 +58,10 @@ func RegisterSync(api huma.API, svc *service.Service) {
 		user, ok := userFromContext(ctx)
 		if !ok {
 			return nil, errUnauthorized
+		}
+
+		if !syncLimiter.Allow(user.ID) {
+			return nil, &statusError{ErrorMessage: "too many sync requests", code: http.StatusTooManyRequests}
 		}
 
 		since, err := service.ParseSince(input.Since)

@@ -140,6 +140,12 @@ func (s *Service) Dropped() int64 {
 // capability URL: the endpoint itself is a bearer secret, and even a
 // truncated prefix narrows brute force.
 func hashEndpoint(endpoint string) string {
+	return HashEndpoint(endpoint)
+}
+
+// HashEndpoint is hashEndpoint for callers outside the package: the endpoint
+// is a capability URL, so it must never be logged verbatim.
+func HashEndpoint(endpoint string) string {
 	sum := sha256.Sum256([]byte(endpoint))
 
 	return hex.EncodeToString(sum[:])[:12]
@@ -249,12 +255,4 @@ func loadOrGenerateVAPIDKeys(keysDir string) (VAPIDKeys, error) {
 	slog.Info("VAPID keys saved", "path", keysPath)
 
 	return keys, nil
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-
-	return s[:maxLen] + "..."
 }

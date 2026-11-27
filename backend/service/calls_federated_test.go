@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
 
 	"fast_chat/calls"
 	"fast_chat/config"
+	"fast_chat/federation"
 )
 
 // fakeFed records the federated requests the service makes. URL mimics
@@ -624,5 +626,67 @@ func TestHandleFederatedInviteRejectsForeignCaller(t *testing.T) {
 
 	if _, ok := s.calls.GetFederated("call-spoof"); ok {
 		t.Fatal("a spoofed invite must not reserve the callee")
+	}
+}
+
+// A retried federated accept must be a no-op: the peer retries when the answer
+// is lost, and 409 ("call is not ringing") is a permanent error for it even
+// though the call is already up.
+func TestHandleFederatedAcceptIsIdempotent(t *testing.T) {
+	fed := &fakeFed{}
+	s, recorder := newFederatedCallService(t, fed)
+	ctx := context.Background()
+
+	chatID := createPrivateChat(t, s, "alice:localhost:8080", "bob:remote.test")
+
+	call, err := s.StartCall(ctx, "alice:localhost:8080", chatID, "offer")
+	if err != nil {
+		t.Fatalf("StartCall federated: %v", err)
+	}
+
+	if err := s.HandleFederatedAccept(ctx, call.ID, "answer", nil); err != nil {
+		t.Fatalf("HandleFederatedAccept: %v", err)
+	}
+
+	acceptedEvents := 0
+	for _, event := range recorder.all() {
+		if event.Event.Event == eventCallAccepted {
+			acceptedEvents++
+		}
+	}
+
+	if err := s.HandleFederatedAccept(ctx, call.ID, "answer", nil); err != nil {
+		t.Fatalf("a repeated accept must be a no-op, got %v", err)
+	}
+
+	after := 0
+	for _, event := range recorder.all() {
+		if event.Event.Event == eventCallAccepted {
+			after++
+		}
+	}
+
+	if after != acceptedEvents {
+		t.Fatalf("call_accepted events = %d after the retry, want the original %d", after, acceptedEvents)
+	}
+
+	stored, ok := s.calls.Get(call.ID)
+	if !ok || stored.State != calls.StateActive {
+		t.Fatalf("call = %+v ok=%v, want an active call", stored, ok)
+	}
+}
+
+// A callee whose server answers 403 (the callee blocked the caller locally)
+// must surface as ErrUserBlocked: a raw StatusError becomes a 500.
+func TestStartFederatedCallMapsABlockedCalleeToErrUserBlocked(t *testing.T) {
+	fed := &fakeFed{err: &federation.StatusError{Status: http.StatusForbidden}}
+	s, _ := newFederatedCallService(t, fed)
+	ctx := context.Background()
+
+	chatID := createPrivateChat(t, s, "alice:localhost:8080", "bob:remote.test")
+
+	_, err := s.StartCall(ctx, "alice:localhost:8080", chatID, "offer")
+	if !errors.Is(err, ErrUserBlocked) {
+		t.Fatalf("error = %v, want ErrUserBlocked", err)
 	}
 }

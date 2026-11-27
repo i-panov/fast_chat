@@ -49,6 +49,38 @@ var errFederatedStatus = errors.New("federated request returned unexpected statu
 // the caller's cap. It is detected before any bytes are relayed.
 var ErrResponseTooLarge = errors.New("federated response is too large")
 
+// ErrRedirectRefused reports a redirect the federation client will not follow.
+// A signed request must reach the peer it was signed for.
+var ErrRedirectRefused = errors.New("federated redirect refused")
+
+// noCrossHostRedirect refuses a redirect that leaves the peer's host or that
+// would turn a mutating request into a GET.
+//
+// Go drops the body of a 301/302 on a POST and repeats it as a GET, so a peer
+// (or a proxy in front of it) could answer 302 and have the operation count as
+// delivered while the body never arrived. Forwarding to another host would
+// additionally hand the signed headers and the plaintext body to a third
+// party.
+func noCrossHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+
+	if method := via[0].Method; method != http.MethodGet && method != http.MethodHead {
+		return fmt.Errorf("%w: %s to %s", ErrRedirectRefused, method, req.URL.Host)
+	}
+
+	if req.URL.Host != via[0].URL.Host {
+		return fmt.Errorf("%w: %s -> %s", ErrRedirectRefused, via[0].URL.Host, req.URL.Host)
+	}
+
+	if len(via) >= 3 {
+		return fmt.Errorf("%w: more than 3 redirects", ErrRedirectRefused)
+	}
+
+	return nil
+}
+
 // StatusError is the answer of a peer that refused the request. It carries
 // the status code, so the caller can tell a permanent rejection from a
 // failure that is worth retrying.
@@ -234,7 +266,7 @@ func (c *Client) RequestWithLimit(ctx context.Context, method, urlStr string, bo
 			req.Header.Set(httputil.RequestIDHeader, id)
 		}
 
-		resp, err := c.httpClient().Do(req)
+		resp, err := c.signedHTTPClient().Do(req)
 		if err != nil {
 			lastErr = err
 
@@ -251,24 +283,32 @@ func (c *Client) RequestWithLimit(ctx context.Context, method, urlStr string, bo
 			continue
 		}
 
-		resp.Body = http.MaxBytesReader(nil, resp.Body, limit)
-		body, readErr := io.ReadAll(resp.Body)
-
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			slog.Warn("failed to close response body", "err", closeErr)
-		}
-
 		if resp.StatusCode >= 400 {
 			// The status travels in a typed error: the caller has to tell a
 			// rejection that will repeat (the peer refuses the operation for
-			// good) from a failure that is worth retrying.
-			statusErr := &StatusError{Status: resp.StatusCode}
+			// good) from a failure that is worth retrying. A hostile peer
+			// answers with a huge body; the text ends up in the outbox row,
+			// the log and the dead-letter queue, so it is read through the
+			// status cap instead of the response cap.
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, statusErrorBodyLimit))
 
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				slog.Warn("failed to close response body", "err", closeErr)
+			}
+
+			statusErr := &StatusError{Status: resp.StatusCode}
 			if readErr == nil {
 				statusErr.Body = strings.TrimSpace(string(body))
 			}
 
 			return nil, statusErr
+		}
+
+		resp.Body = http.MaxBytesReader(nil, resp.Body, limit)
+		body, readErr := io.ReadAll(resp.Body)
+
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Warn("failed to close response body", "err", closeErr)
 		}
 
 		if readErr != nil {
@@ -282,13 +322,13 @@ func (c *Client) RequestWithLimit(ctx context.Context, method, urlStr string, bo
 }
 
 // OpenStream performs a signed request and returns the response without
-// buffering its body.
+// buffering its body. The caller must close resp.Body.
 //
-// until the response headers arrive: a body that fails mid-copy cannot be
-// replayed safely. The body is bounded by limit and responds to ctx
-// cancellation while it is copied.
+// Retries happen only until the response headers arrive: a body that fails
+// mid-copy cannot be replayed safely. The body is bounded by limit and
+// responds to ctx cancellation while it is copied.
 //
-//nolint:gocognit // mirrors RequestWithLimit with a streaming body The caller must close resp.Body. Retries happen only
+//nolint:gocognit // mirrors RequestWithLimit with a streaming body
 func (c *Client) OpenStream(
 	ctx context.Context,
 	method, urlStr string,
@@ -469,10 +509,11 @@ func (c *Client) CloseWaitContext(ctx context.Context) error {
 func (c *Client) streamHTTPClient() *http.Client {
 	base := c.httpClient()
 	if base == nil {
-		return &http.Client{}
+		return &http.Client{CheckRedirect: noCrossHostRedirect}
 	}
 	clone := *base
 	clone.Timeout = 0
+	clone.CheckRedirect = noCrossHostRedirect
 	return &clone
 }
 
@@ -485,6 +526,26 @@ func (c *Client) httpClient() *http.Client {
 	return c.http
 }
 
+// signedHTTPClient returns the client for a signed request with the redirect
+// policy enforced. An injected test client is honoured, but its redirects are
+// still vetted: a test that points at an httptest server must not silently
+// disable the delivery guarantee that the redirect guard protects.
+func (c *Client) signedHTTPClient() *http.Client {
+	base := c.httpClient()
+	if base == nil {
+		return &http.Client{CheckRedirect: noCrossHostRedirect}
+	}
+
+	if base.CheckRedirect != nil {
+		return base
+	}
+
+	clone := *base
+	clone.CheckRedirect = noCrossHostRedirect
+
+	return &clone
+}
+
 // background runs a federated request in its own goroutine with a timeout
 // decoupled from the originating HTTP request (context values survive via
 // context.WithoutCancel). The semaphore bounds concurrency; recover keeps a
@@ -494,14 +555,18 @@ func (c *Client) background(ctx context.Context, remoteServer, path, method stri
 		return
 	}
 
+	// Reserve the wait-group slot before taking the semaphore: a CloseWait
+	// that runs between the two must see this request as in flight.
+	c.wg.Add(1)
+
 	select {
 	case c.sem <- struct{}{}:
 	default:
 		slog.Warn("federation worker pool saturated, dropping request", "method", method, "path", path)
+		c.wg.Done()
+
 		return
 	}
-
-	c.wg.Add(1)
 
 	go func() {
 		defer func() {

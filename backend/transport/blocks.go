@@ -22,19 +22,8 @@ func registerUserBlocks(api huma.API, st *store.Store) {
 		if !ok {
 			return nil, errUnauthorized
 		}
-		ids, err := st.BlockedIDs(ctx, user.ID)
-		if err != nil {
-			return nil, errInternal
-		}
-		users := make([]model.PublicUser, 0, len(ids))
-		for _, id := range ids {
-			if blocked, found := st.GetUserByID(ctx, id); found {
-				users = append(users, blocked.Public())
-			}
-		}
-		var out blocksOutput
-		out.Body.Users = users
-		return &out, nil
+
+		return listBlocks(ctx, st, user.ID)
 	})
 
 	huma.Register(api, huma.Operation{
@@ -82,9 +71,7 @@ func listBlocks(ctx context.Context, st *store.Store, userID string) (*blocksOut
 	}
 	users := make([]model.PublicUser, 0, len(ids))
 	for _, id := range ids {
-		if blocked, found := st.GetUserByID(ctx, id); found {
-			users = append(users, blocked.Public())
-		}
+		users = append(users, st.PublicUserByID(ctx, id))
 	}
 	var out blocksOutput
 	out.Body.Users = users

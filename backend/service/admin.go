@@ -3,10 +3,20 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 
+	"fast_chat/internal/textutil"
 	"fast_chat/model"
 	"fast_chat/sse"
 	"fast_chat/store"
+)
+
+const (
+	// maxAuditIPLen bounds the recorded client address (an IPv6 literal is
+	// 39 bytes; the rest is headroom for a forwarded chain).
+	maxAuditIPLen = 64
+	// maxAuditUserAgentLen matches the session device column.
+	maxAuditUserAgentLen = 512
 )
 
 // Admin domain errors. The transport maps them to 403/400/404.
@@ -78,7 +88,21 @@ func (s *Service) SyncConfiguredAdmins(ctx context.Context) error {
 		if user.IsAdmin {
 			continue
 		}
-		if err := s.store.AdminSetUserAdmin(ctx, user.ID, true, nil); err != nil {
+		revoked, err := s.store.AdminRoleRevokedInPanel(ctx, user.ID)
+		if err != nil {
+			return err
+		}
+		if revoked {
+			// A demotion in /admin wins over the configuration: otherwise
+			// every restart would hand the role back to an account another
+			// administrator just removed it from.
+			log().Warn("configured administrator was demoted in the panel: not granting the role again", "email", email)
+			continue
+		}
+		// The grant is logged like a manual one, with the configuration as
+		// the actor: a silent role change cannot be audited afterwards.
+		entry := newAuditEntry("config", "user.admin", "user", user.ID, "granted from configuration")
+		if err := s.store.AdminSetUserAdmin(ctx, user.ID, true, entry); err != nil {
 			return err
 		}
 		log().Info("granted the administrator role from the configuration", "email", email)
@@ -94,8 +118,12 @@ func mapAdminStoreError(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, store.ErrUserNotFound):
+	case errors.Is(err, store.ErrUserNotFound), errors.Is(err, store.ErrBotNotFound):
 		return ErrUserNotFound
+	case errors.Is(err, store.ErrChatNotFound):
+		return ErrChatNotFound
+	case errors.Is(err, store.ErrMessageNotFound):
+		return ErrMessageNotFound
 	case errors.Is(err, store.ErrLastAdmin):
 		return ErrAdminLastAdmin
 	default:
@@ -111,6 +139,55 @@ func newAuditEntry(actorID, action, targetType, targetID, detail string) *model.
 		TargetID:   targetID,
 		Detail:     detail,
 	}
+}
+
+// AuditRequest is the request metadata recorded in the moderation log: an
+// action performed through a stolen administrator session must be
+// attributable to a device, not only to the account.
+type AuditRequest struct {
+	IP        string
+	UserAgent string
+}
+
+type auditRequestContextKey struct{}
+
+// WithAuditRequest attaches request metadata to the context. The transport
+// calls it once per request; the audit entries read it when they are written.
+func WithAuditRequest(ctx context.Context, req AuditRequest) context.Context {
+	return context.WithValue(ctx, auditRequestContextKey{}, req)
+}
+
+func auditRequestFrom(ctx context.Context) AuditRequest {
+	if req, ok := ctx.Value(auditRequestContextKey{}).(AuditRequest); ok {
+		return req
+	}
+
+	return AuditRequest{}
+}
+
+// auditEntry builds an audit row carrying the request metadata of the context.
+func auditEntry(ctx context.Context, actorID, action, targetType, targetID, detail string) *model.AdminAuditLog {
+	entry := newAuditEntry(actorID, action, targetType, targetID, detail)
+	meta := auditRequestFrom(ctx)
+
+	entry.IP = textutil.TruncateUTF8(strings.TrimSpace(meta.IP), maxAuditIPLen)
+	// The user agent is attacker-controlled: bound it so a single moderation
+	// action cannot write an arbitrarily long row.
+	entry.UserAgent = textutil.TruncateUTF8(meta.UserAgent, maxAuditUserAgentLen)
+
+	return entry
+}
+
+// chatDetail records what was deleted: the row is gone afterwards, and
+// without the type and name the audit entry cannot tell a group from a
+// moderation-deleted private chat.
+func chatDetail(chat *model.Chat) string {
+	name := chat.Name
+	if name == "" {
+		name = chat.ID
+	}
+
+	return "type=" + chat.Type + " name=" + textutil.TruncateUTF8(name, 120)
 }
 
 // AdminListUsers returns a page of accounts. The role check happens in the
@@ -145,7 +222,7 @@ func (s *Service) AdminSetUserAdmin(ctx context.Context, actorID, targetID strin
 		return ErrAdminTargetInvalid
 	}
 
-	entry := newAuditEntry(actorID, "user.admin", "user", targetID,
+	entry := auditEntry(ctx, actorID, "user.admin", "user", targetID,
 		map[bool]string{true: "granted", false: "revoked"}[admin])
 	return mapAdminStoreError(s.store.AdminSetUserAdmin(ctx, targetID, admin, entry))
 }
@@ -168,7 +245,7 @@ func (s *Service) AdminSetUserBanned(ctx context.Context, actorID, targetID stri
 		return ErrAdminTargetInvalid
 	}
 
-	entry := newAuditEntry(actorID, "user.ban", "user", targetID,
+	entry := auditEntry(ctx, actorID, "user.ban", "user", targetID,
 		map[bool]string{true: "banned", false: "unbanned"}[banned])
 	if err := s.store.AdminSetUserBanned(ctx, targetID, banned, entry); err != nil {
 		return mapAdminStoreError(err)
@@ -212,23 +289,28 @@ func (s *Service) AdminDeleteChat(ctx context.Context, actorID, chatID string) e
 	// be able to remove any chat type, so the store-level admin path is used
 	// and the federation fan-out is repeated here.
 	domains := make(map[string]struct{})
-	if chat.RemoteServer == "" && s.fed != nil {
-		for _, memberID := range chat.Members {
-			domain := s.remoteServerFromID(memberID)
-			if domain != "" && domain != s.cfg.Server.Domain {
-				domains[domain] = struct{}{}
+	if s.fed != nil {
+		if chat.RemoteServer != "" {
+			// A replica owes the owner the notification; otherwise the next
+			// catch-up would bring the chat back.
+			domains[chat.RemoteServer] = struct{}{}
+		} else {
+			for _, memberID := range chat.Members {
+				domain := s.remoteServerFromID(memberID)
+				if domain != "" && domain != s.cfg.Server.Domain {
+					domains[domain] = struct{}{}
+				}
 			}
 		}
 	}
-	entry := newAuditEntry(actorID, "chat.delete", "chat", chatID, "")
+	entry := auditEntry(ctx, actorID, "chat.delete", "chat", chatID, chatDetail(chat))
 	if err := s.store.DeleteChatAsAdmin(ctx, chatID, entry); err != nil {
 		return mapAdminStoreError(err)
 	}
 	for domain := range domains {
-		groupURL := s.fed.URL(domain, "/api/federated/groups/"+chatID)
-		if _, err := s.fed.Request(ctx, "DELETE", groupURL, nil); err != nil {
-			log().Warn("federated group delete failed", "server", domain, "err", err)
-		}
+		// Durable queue, like the owner path: a slow or disconnected peer
+		// must not lose the deletion when the admin closes the browser.
+		s.queueFederation(ctx, domain, "DELETE", "/api/federated/groups/"+chatID, nil)
 	}
 	for _, memberID := range chat.Members {
 		s.sendEvent(memberID, sse.Event{Event: eventChatDeleted, Data: map[string]string{keyChatID: chatID}})
@@ -267,7 +349,7 @@ func (s *Service) AdminDeleteMessage(ctx context.Context, actorID, chatID, messa
 	if _, err := s.store.GetMessage(ctx, chatID, messageID); err != nil {
 		return ErrMessageNotFound
 	}
-	entry := newAuditEntry(actorID, "message.delete", "message", messageID, "chat="+chatID)
+	entry := auditEntry(ctx, actorID, "message.delete", "message", messageID, "chat="+chatID)
 	if err := s.store.DeleteMessageAsAdmin(ctx, chatID, messageID, entry); err != nil {
 		return mapAdminStoreError(err)
 	}
@@ -343,9 +425,10 @@ func (s *Service) AdminSetBotActive(ctx context.Context, actorID, botUserID stri
 	if _, ok := s.store.GetBot(ctx, botUserID); !ok {
 		return ErrUserNotFound
 	}
-	entry := newAuditEntry(actorID, "bot.active", "bot", botUserID,
+	entry := auditEntry(ctx, actorID, "bot.active", "bot", botUserID,
 		map[bool]string{true: "enabled", false: "disabled"}[active])
-	return s.store.SetBotActive(ctx, botUserID, active, entry)
+
+	return mapAdminStoreError(s.store.SetBotActive(ctx, botUserID, active, entry))
 }
 
 // AdminListFederationPeers returns the peers this instance has data from.

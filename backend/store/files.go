@@ -122,12 +122,18 @@ func (s *Store) FindFileByHashAndName(ctx context.Context, hash, name, uploadedB
 }
 
 func (s *Store) GetFile(ctx context.Context, fileID string) (*model.File, error) {
-	var f model.File
-	if err := s.db.WithContext(ctx).First(&f, "id = ?", fileID).Error; err != nil {
-		return nil, ErrFileNotFound
+	var file model.File
+	if err := s.db.WithContext(ctx).First(&file, "id = ?", fileID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrFileNotFound
+		}
+
+		// A database failure is not "no such file": reporting it as 404
+		// hides the incident from the operator and the client.
+		return nil, err
 	}
 
-	return &f, nil
+	return &file, nil
 }
 
 func (s *Store) AddMessageFiles(ctx context.Context, messageID string, fileIDs []string) error {
@@ -428,6 +434,28 @@ func (s *Store) DeleteOrphanFilesBefore(ctx context.Context, before time.Time, l
 	}
 
 	return deleted, unused, nil
+}
+
+// UnattachedFileBytes sums the size of a user's uploads that no message and no
+// avatar references yet. Those files stay on disk for the whole orphan
+// retention window, so the upload path needs this number to enforce a per-user
+// quota: without it one account can fill the instance disk.
+func (s *Store) UnattachedFileBytes(ctx context.Context, userID string) (int64, error) {
+	var total int64
+
+	messageFiles := s.db.Model(&model.MessageFile{}).Select("file_id")
+	userAvatars := s.db.Model(&model.User{}).Select("avatar_file_id").Where("avatar_file_id <> ''")
+	chatAvatars := s.db.Model(&model.Chat{}).Select("avatar_file_id").Where("avatar_file_id <> ''")
+
+	err := s.db.WithContext(ctx).Model(&model.File{}).
+		Where("uploaded_by = ? AND remote_server = ''", userID).
+		Where("id NOT IN (?)", messageFiles).
+		Where("id NOT IN (?)", userAvatars).
+		Where("id NOT IN (?)", chatAvatars).
+		Select("COALESCE(SUM(size), 0)").
+		Scan(&total).Error
+
+	return total, err
 }
 
 // GetFilesByIDs loads file metadata for many ids in one query.

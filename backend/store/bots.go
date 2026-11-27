@@ -18,6 +18,10 @@ var (
 	ErrBotNotFound         = errors.New("bot not found")
 	ErrBotTokenNotFound    = errors.New("bot token not found")
 	ErrBotIdentityConflict = errors.New("bot identity already configured")
+	// ErrBotCallbackAlreadyAnswered marks a callback query that already has
+	// an answer. Bot SDKs retry after a lost response, so this is a normal
+	// conflict, not a server error.
+	ErrBotCallbackAlreadyAnswered = errors.New("bot callback query already answered")
 )
 
 func (s *Store) CreateBot(ctx context.Context, bot *model.Bot, initialChat *model.Chat) error {
@@ -43,7 +47,12 @@ func (s *Store) CreateBot(ctx context.Context, bot *model.Bot, initialChat *mode
 	})
 }
 
-const fieldIsActive = "is_active"
+const (
+	fieldIsActive = "is_active"
+	// fieldDisabledByBan marks the bots a ban switched off, so an unban
+	// restores exactly those and not the ones the owner turned off earlier.
+	fieldDisabledByBan = "disabled_by_ban"
+)
 
 func (s *Store) GetBot(ctx context.Context, userID string) (*model.Bot, bool) {
 	var bot model.Bot
@@ -98,9 +107,16 @@ func (s *Store) UpdateBotToken(ctx context.Context, userID, tokenHash, prefix st
 
 func (s *Store) SetBotActive(ctx context.Context, userID string, active bool, audit *model.AdminAuditLog) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// An explicit state change supersedes the ban marker. Without clearing
+		// it, an unban later restores a bot that an admin (or the owner) had
+		// just switched off on purpose.
 		if err := tx.Model(&model.Bot{}).
 			Where("user_id = ?", userID).
-			Updates(map[string]any{fieldIsActive: active, fieldUpdatedAt: time.Now().UTC()}).Error; err != nil {
+			Updates(map[string]any{
+				fieldIsActive:      active,
+				fieldDisabledByBan: false,
+				fieldUpdatedAt:     time.Now().UTC(),
+			}).Error; err != nil {
 			return err
 		}
 
@@ -203,7 +219,7 @@ func (s *Store) AnswerBotCallbackQuery(ctx context.Context, id, botID, text stri
 		return res.Error
 	}
 	if res.RowsAffected == 0 {
-		return ErrBotNotFound
+		return ErrBotCallbackAlreadyAnswered
 	}
 	return nil
 }

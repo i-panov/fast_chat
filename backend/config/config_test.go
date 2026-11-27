@@ -573,3 +573,100 @@ database:
 		t.Errorf("expected trimmed Domain=chat.example.org, got %q", cfg.Server.Domain)
 	}
 }
+
+// A production config must not silently accept the unsafe federation
+// switches: plain http lets an MITM impersonate any peer.
+func TestLoadRejectsUnsafeFederationOnAPublicDomain(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{
+			name: "http with a public domain",
+			yaml: `
+server:
+  host: localhost
+  port: 8080
+  public_domain: chat.example.com
+database:
+  path: /tmp/test.db
+federation:
+  scheme: http
+`,
+			want: true,
+		},
+		{
+			name: "private addresses with a public domain",
+			yaml: `
+server:
+  host: localhost
+  port: 8080
+  public_domain: chat.example.com
+database:
+  path: /tmp/test.db
+federation:
+  allow_private_addresses: true
+`,
+			want: true,
+		},
+		{
+			name: "http for the local setup",
+			yaml: `
+server:
+  host: localhost
+  port: 8080
+database:
+  path: /tmp/test.db
+federation:
+  scheme: http
+`,
+			want: false,
+		},
+		{
+			name: "https with a public domain",
+			yaml: `
+server:
+  host: localhost
+  port: 8080
+  public_domain: chat.example.com
+database:
+  path: /tmp/test.db
+federation:
+  scheme: https
+`,
+			want: false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Load(writeTestConfig(t, c.yaml))
+			if c.want && !errors.Is(err, ErrUnsafeFederation) {
+				t.Fatalf("error = %v, want ErrUnsafeFederation", err)
+			}
+			if !c.want && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// The federation key path must have a default: an empty one made the process
+// die with a cryptic mkdir error.
+func TestLoadDefaultsFederationKeyPath(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, `
+server:
+  host: localhost
+  port: 8080
+database:
+  path: /tmp/test.db
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Federation.KeyPath == "" {
+		t.Fatal("federation.key_path is empty, want the default")
+	}
+}

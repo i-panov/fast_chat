@@ -150,6 +150,14 @@ func (s *Store) EditMessage(
 		return model.Message{}, ErrMessageNotFound
 	}
 
+	// The thread preview is a snapshot taken at creation: an edited parent
+	// must not keep showing its old text in the thread list.
+	if err := s.db.WithContext(ctx).Model(&model.Thread{}).
+		Where("chat_id = ? AND parent_message_id = ?", chatID, messageID).
+		Update("parent_message_text", newText).Error; err != nil {
+		slog.Warn("failed to refresh the thread preview after an edit", "messageID", messageID, "err", err)
+	}
+
 	return msg, nil
 }
 
@@ -318,23 +326,37 @@ func (s *Store) AddMessage(
 	}
 
 	// Idempotent insert: a retry from the offline outbox hits the primary key,
-	// so the row that already exists is returned rather than the attempt.
-	result := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&msg)
-	if result.Error != nil {
-		return nil, false, result.Error
-	}
+	// so the row that already exists is returned rather than the attempt. The
+	// thread counter moves in the same transaction: a crash between the two
+	// would leave a client-visible counter that never matches the messages.
+	inserted := false
 
-	if result.RowsAffected == 0 {
-		return s.existingMessage(ctx, chatID, threadID, fromID, id)
-	}
-
-	// Only count a message that was really added: a retry would otherwise
-	// inflate the thread's client-visible counter on every replay.
-	if threadID != "" {
-		if err := s.db.WithContext(ctx).Model(&model.Thread{}).Where("id = ?", threadID).
-			UpdateColumn("message_count", gorm.Expr("message_count + 1")).Error; err != nil {
-			slog.Warn("failed to update thread message_count", "threadID", threadID, "err", err)
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&msg)
+		if result.Error != nil {
+			return result.Error
 		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+
+		inserted = true
+
+		// Only count a message that was really added: a retry would
+		// otherwise inflate the thread's counter on every replay.
+		if threadID == "" {
+			return nil
+		}
+
+		return tx.Model(&model.Thread{}).Where("id = ?", threadID).
+			UpdateColumn("message_count", gorm.Expr("message_count + 1")).Error
+	})
+	if err != nil {
+		return nil, false, err
+	}
+
+	if !inserted {
+		return s.existingMessage(ctx, chatID, threadID, fromID, id)
 	}
 
 	return &msg, true, nil
@@ -424,11 +446,32 @@ func (s *Store) AddRawMessageOnce(
 		msg.UpdatedAt = msg.CreatedAt
 	}
 
-	result := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(msg)
-	if result.Error != nil {
-		return false, result.Error
+	// Insert and the client-visible thread counter share one transaction: a
+	// crash between them would leave a counter that never matches the rows.
+	inserted := false
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(msg)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+
+		inserted = true
+
+		if msg.ThreadID == "" {
+			return nil
+		}
+
+		return adjustThreadMessageCount(tx, msg.ThreadID, 1)
+	})
+	if err != nil {
+		return false, err
 	}
-	if result.RowsAffected == 0 {
+
+	if !inserted {
 		// A replayed id is accepted only for the exact same row. An id already
 		// used by another chat/thread/author must not be reported as delivered:
 		// the sender would think its message arrived while it was dropped.
@@ -443,12 +486,6 @@ func (s *Store) AddRawMessageOnce(
 			return false, ErrMessageIDConflict
 		}
 		return false, nil
-	}
-
-	if msg.ThreadID != "" {
-		if err := adjustThreadMessageCount(s.db.WithContext(ctx), msg.ThreadID, 1); err != nil {
-			slog.Warn("failed to update thread message_count", "threadID", msg.ThreadID, "err", err)
-		}
 	}
 
 	return true, nil
@@ -519,59 +556,102 @@ func adjustThreadMessageCount(tx *gorm.DB, threadID string, delta int) error {
 
 func (s *Store) deleteMessageTx(db *gorm.DB, chatID, messageID string, audit *model.AdminAuditLog) error {
 	return db.Transaction(func(tx *gorm.DB) error {
-		var threadID string
-		if err := tx.Model(&model.Message{}).
-			Where("chat_id = ? AND id = ?", chatID, messageID).
-			Pluck("thread_id", &threadID).Error; err != nil {
+		// Deleting a parent removes its thread together with every thread
+		// message: a parent-less thread would still be listed and its
+		// ParentMessageText would keep serving the deleted content.
+		if err := s.deleteThreadOfParentTx(tx, chatID, messageID); err != nil {
 			return err
 		}
 
-		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
-			return err
-		}
-
-		if tx.Migrator().HasTable(&model.MessageReadStatus{}) {
-			if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageReadStatus{}).Error; err != nil {
-				return err
-			}
-		}
-
-		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageReaction{}).Error; err != nil {
-			return err
-		}
-		if tx.Migrator().HasTable(&model.ReactionDeletion{}) {
-			if err := tx.Where("message_id = ?", messageID).Delete(&model.ReactionDeletion{}).Error; err != nil {
-				return err
-			}
-		}
-
-		if err := tx.Where("chat_id = ? AND message_id = ?", chatID, messageID).Delete(&model.ChatPin{}).Error; err != nil {
-			return err
-		}
-
-		deleted := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
-		if deleted.Error != nil {
-			return deleted.Error
-		}
-		if deleted.RowsAffected > 0 {
-			if err := adjustThreadMessageCount(tx, threadID, -1); err != nil {
-				slog.Warn("failed to decrement thread message_count", "threadID", threadID, "err", err)
-			}
-		}
-
-		// Tombstone: lets the /api/sync delta tell offline clients
-		// that this message was removed. Upsert in case a previous
-		// delete was retried and the tombstone already exists.
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.DeletedMessage{
-			ChatID:    chatID,
-			MessageID: messageID,
-			DeletedAt: time.Now().UTC(),
-		}).Error; err != nil {
+		if err := s.deleteMessageRowsTx(tx, chatID, messageID); err != nil {
 			return err
 		}
 
 		return insertAuditTx(tx, audit)
 	})
+}
+
+// deleteThreadOfParentTx deletes the thread rooted at messageID, if any, and
+// all of its messages. Each removed message keeps its tombstone so offline
+// clients drop it from the thread view.
+func (s *Store) deleteThreadOfParentTx(tx *gorm.DB, chatID, messageID string) error {
+	var thread model.Thread
+
+	err := tx.Where("chat_id = ? AND parent_message_id = ?", chatID, messageID).First(&thread).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	var threadMessageIDs []string
+	if err := tx.Model(&model.Message{}).
+		Where("chat_id = ? AND thread_id = ?", chatID, thread.ID).
+		Pluck("id", &threadMessageIDs).Error; err != nil {
+		return err
+	}
+
+	for _, id := range threadMessageIDs {
+		if err := s.deleteMessageRowsTx(tx, chatID, id); err != nil {
+			return err
+		}
+	}
+
+	return tx.Where("id = ?", thread.ID).Delete(&model.Thread{}).Error
+}
+
+// deleteMessageRowsTx removes one message row and everything attached to it,
+// and records the tombstone the sync delta serves to offline clients.
+func (s *Store) deleteMessageRowsTx(tx *gorm.DB, chatID, messageID string) error {
+	var threadID string
+	if err := tx.Model(&model.Message{}).
+		Where("chat_id = ? AND id = ?", chatID, messageID).
+		Pluck("thread_id", &threadID).Error; err != nil {
+		return err
+	}
+
+	if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
+		return err
+	}
+
+	if tx.Migrator().HasTable(&model.MessageReadStatus{}) {
+		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageReadStatus{}).Error; err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageReaction{}).Error; err != nil {
+		return err
+	}
+	if tx.Migrator().HasTable(&model.ReactionDeletion{}) {
+		if err := tx.Where("message_id = ?", messageID).Delete(&model.ReactionDeletion{}).Error; err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Where("chat_id = ? AND message_id = ?", chatID, messageID).Delete(&model.ChatPin{}).Error; err != nil {
+		return err
+	}
+
+	deleted := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
+	if deleted.Error != nil {
+		return deleted.Error
+	}
+	if deleted.RowsAffected > 0 {
+		if err := adjustThreadMessageCount(tx, threadID, -1); err != nil {
+			slog.Warn("failed to decrement thread message_count", "threadID", threadID, "err", err)
+		}
+	}
+
+	// Tombstone: lets the /api/sync delta tell offline clients
+	// that this message was removed. Upsert in case a previous
+	// delete was retried and the tombstone already exists.
+	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.DeletedMessage{
+		ChatID:    chatID,
+		MessageID: messageID,
+		DeletedAt: time.Now().UTC(),
+	}).Error
 }
 
 func (s *Store) EditRawMessage(
@@ -619,55 +699,35 @@ func (s *Store) EditRawMessage(
 		return ErrMessageNotFound
 	}
 
+	// Keep the thread preview of an edited parent in sync, exactly like the
+	// local edit path does.
+	if err := s.db.WithContext(ctx).Model(&model.Thread{}).
+		Where("chat_id = ? AND parent_message_id = ?", chatID, messageID).
+		Update("parent_message_text", text).Error; err != nil {
+		slog.Warn("failed to refresh the thread preview after a raw edit", "messageID", messageID, "err", err)
+	}
+
 	return nil
 }
 
 func (s *Store) DeleteRawMessage(ctx context.Context, chatID, messageID string) error {
-	now := time.Now().UTC()
-
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var threadID string
-		if err := tx.Model(&model.Message{}).
-			Where("chat_id = ? AND id = ?", chatID, messageID).
-			Pluck("thread_id", &threadID).Error; err != nil {
+		var exists int64
+		if err := tx.Model(&model.Message{}).Where("chat_id = ? AND id = ?", chatID, messageID).
+			Count(&exists).Error; err != nil {
 			return err
 		}
-
-		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageFile{}).Error; err != nil {
-			return err
-		}
-
-		if tx.Migrator().HasTable(&model.MessageReadStatus{}) {
-			if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageReadStatus{}).Error; err != nil {
-				return err
-			}
-		}
-
-		if err := tx.Where("message_id = ?", messageID).Delete(&model.MessageReaction{}).Error; err != nil {
-			return err
-		}
-		if tx.Migrator().HasTable(&model.ReactionDeletion{}) {
-			if err := tx.Where("message_id = ?", messageID).Delete(&model.ReactionDeletion{}).Error; err != nil {
-				return err
-			}
-		}
-
-		result := tx.Where("chat_id = ? AND id = ?", chatID, messageID).Delete(&model.Message{})
-		if err := result.Error; err != nil {
-			return err
-		}
-		if result.RowsAffected == 0 {
+		if exists == 0 {
 			return ErrMessageNotFound
 		}
-		if err := adjustThreadMessageCount(tx, threadID, -1); err != nil {
-			slog.Warn("failed to decrement thread message_count", "threadID", threadID, "err", err)
+
+		// Same cascade as a local delete: a peer's removal of a parent also
+		// removes its thread instead of leaving the deleted text behind.
+		if err := s.deleteThreadOfParentTx(tx, chatID, messageID); err != nil {
+			return err
 		}
 
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.DeletedMessage{
-			ChatID:    chatID,
-			MessageID: messageID,
-			DeletedAt: now,
-		}).Error
+		return s.deleteMessageRowsTx(tx, chatID, messageID)
 	})
 }
 

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"testing"
 	"time"
 
@@ -223,12 +224,18 @@ func TestCatchupKeepsTheMembersOfAnEmptyReport(t *testing.T) {
 }
 
 // The catch-up asks the peer for everything that changed since the last
-// delta it took from it.
+// delta it took from it, and parks the cursor at what the peer reported.
 func TestCatchupUsesTheCursor(t *testing.T) {
 	s := newFedTestService(t)
 	ctx := context.Background()
 
-	client := &fakeFederationClient{response: SyncFederatedResponse{ServerNow: time.Now().UTC()}}
+	since := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if err := s.store.SetFederationCursor(ctx, "remote.test", since); err != nil {
+		t.Fatal(err)
+	}
+
+	serverNow := time.Now().UTC().Truncate(time.Second)
+	client := &fakeFederationClient{response: SyncFederatedResponse{ServerNow: serverNow}}
 	s.SetFederationClient(client)
 
 	s.catchupPeer(ctx, "remote.test")
@@ -237,7 +244,174 @@ func TestCatchupUsesTheCursor(t *testing.T) {
 		t.Fatalf("made %d requests, want 1", len(client.requests))
 	}
 
-	if client.requests[0] == "" {
-		t.Fatal("the catch-up did not ask for a delta")
+	parsed, err := url.Parse(client.requests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := parsed.Query().Get("since"); got != since.Format(time.RFC3339) {
+		t.Errorf("since = %q, want %q", got, since.Format(time.RFC3339))
+	}
+
+	if cursor := s.store.GetFederationCursor(ctx, "remote.test"); !cursor.Equal(serverNow) {
+		t.Errorf("cursor = %v, want %v", cursor, serverNow)
+	}
+}
+
+// An unparsable NextSince is not a reason to skip the rest of the backlog:
+// the cursor must stay where the last applied page ended.
+func TestCatchupKeepsTheCursorOnAnUnparsableNextSince(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+
+	since := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if err := s.store.SetFederationCursor(ctx, "remote.test", since); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakeFederationClient{response: SyncFederatedResponse{
+		ServerNow:   time.Now().UTC(),
+		NextSince:   "not-a-timestamp",
+		NextSinceID: "row-1",
+	}}
+	s.SetFederationClient(client)
+
+	s.catchupPeer(ctx, "remote.test")
+
+	if cursor := s.store.GetFederationCursor(ctx, "remote.test"); !cursor.Equal(since) {
+		t.Errorf("cursor = %v, want the unchanged %v", cursor, since)
+	}
+}
+
+// The participant→owner direction of a locally owned group is covered by the
+// catch-up as well: after the outbox gives up, the participant's copy is the
+// only one left.
+func TestCatchupAppliesParticipantMessageToOwnedGroup(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+
+	if _, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	chat := &model.Chat{
+		ID:        "group-1",
+		Type:      "group",
+		OwnerID:   "alice:localhost:8080",
+		Members:   []string{"alice:localhost:8080", "bob:remote.test"},
+		CreatedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now().UTC().Add(-time.Minute)
+	client := &fakeFederationClient{response: SyncFederatedResponse{
+		ServerNow: time.Now().UTC(),
+		Messages: []model.Message{{
+			ID:        "msg-1",
+			ChatID:    "group-1",
+			FromID:    "bob:remote.test",
+			FromNick:  "bob",
+			Text:      "hello from the participant",
+			CreatedAt: created,
+		}},
+	}}
+	s.SetFederationClient(client)
+
+	s.catchupPeer(ctx, "remote.test")
+
+	if _, err := s.store.GetMessage(ctx, "group-1", "msg-1"); err != nil {
+		t.Fatalf("the participant message was not applied to the owned group: %v", err)
+	}
+}
+
+// The same delta must not let the peer write for a user of another server in
+// a chat this server owns.
+func TestCatchupRejectsForeignAuthorInOwnedGroup(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+
+	if _, err := s.store.CreateUser(ctx, "alice@test.local", "alice", "localhost:8080", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	chat := &model.Chat{
+		ID:        "group-1",
+		Type:      "group",
+		OwnerID:   "alice:localhost:8080",
+		Members:   []string{"alice:localhost:8080", "bob:remote.test", "carol:evil.test"},
+		CreatedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	if err := s.store.CreateRemoteChat(ctx, chat); err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now().UTC().Add(-time.Minute)
+	client := &fakeFederationClient{response: SyncFederatedResponse{
+		ServerNow: time.Now().UTC(),
+		Messages: []model.Message{{
+			ID:        "msg-1",
+			ChatID:    "group-1",
+			FromID:    "carol:evil.test",
+			FromNick:  "carol",
+			Text:      "forged",
+			CreatedAt: created,
+		}},
+	}}
+	s.SetFederationClient(client)
+
+	s.catchupPeer(ctx, "remote.test")
+
+	if _, err := s.store.GetMessage(ctx, "group-1", "msg-1"); err == nil {
+		t.Fatal("the peer wrote a message for a user of another server")
+	}
+}
+
+// A delta row whose thread id collides with a thread of another chat fails
+// forever; it must be skipped instead of pinning the peer's cursor.
+func TestCatchupSkipsAPoisonedThreadRow(t *testing.T) {
+	s := newFedTestService(t)
+	ctx := context.Background()
+
+	// The thread exists, but belongs to another chat: the row can never be
+	// applied, no matter how often it is retried.
+	if _, err := s.store.UpsertRemoteThread(ctx, &model.Thread{
+		ID: "foreign-thread", ChatID: "another-chat", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now().UTC().Add(-time.Minute)
+	client := &fakeFederationClient{response: SyncFederatedResponse{
+		ServerNow: time.Now().UTC(),
+		Chats: []FederatedChatDTO{{
+			ID:        "chat-1",
+			Type:      "private",
+			Members:   []string{"alice:localhost:8080", "bob:remote.test"},
+			CreatedAt: created,
+		}},
+		Messages: []model.Message{{
+			ID:        "msg-1",
+			ChatID:    "chat-1",
+			ThreadID:  "foreign-thread",
+			FromID:    "bob:remote.test",
+			FromNick:  "bob",
+			Text:      "poisoned",
+			CreatedAt: created,
+		}},
+	}}
+	s.SetFederationClient(client)
+
+	s.catchupPeer(ctx, "remote.test")
+
+	// The row is skipped as permanent, so the cursor still advances and the
+	// chat of the peer keeps flowing.
+	if cursor := s.store.GetFederationCursor(ctx, "remote.test"); !cursor.After(created) {
+		t.Errorf("cursor = %v, want it past %v (the poisoned row pinned it)", cursor, created)
+	}
+
+	if _, err := s.store.GetMessage(ctx, "chat-1", "msg-1"); err == nil {
+		t.Fatal("the poisoned row was applied")
 	}
 }

@@ -253,6 +253,26 @@ func (s *Store) AdminListAudit(ctx context.Context, limit int) ([]model.AdminAud
 	return entries, nil
 }
 
+// AdminRoleRevokedInPanel reports whether the latest role change of the
+// account in /admin was a demotion. The startup sync must not silently undo a
+// manual demotion just because the e-mail is still listed in the
+// configuration.
+func (s *Store) AdminRoleRevokedInPanel(ctx context.Context, userID string) (bool, error) {
+	var last model.AdminAuditLog
+	err := s.db.WithContext(ctx).
+		Where("action = ? AND target_type = ? AND target_id = ?", "user.admin", "user", userID).
+		Order("created_at DESC").
+		First(&last).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	return last.Detail == "revoked", nil
+}
+
 // AdminGetUser is a small helper for the service's target validation.
 func (s *Store) AdminGetUser(ctx context.Context, userID string) (*model.User, error) {
 	var user model.User

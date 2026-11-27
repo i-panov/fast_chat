@@ -193,43 +193,6 @@ func TestGetMessageDeliveryStatuses(t *testing.T) {
 	}
 }
 
-func TestGetMessageReaders(t *testing.T) {
-	s := newTestStoreWithRead(t)
-	alice := createTestUser(t, s, "alice")
-	bob := createTestUser(t, s, "bob")
-	carol := createTestUser(t, s, "carol")
-
-	chat, err := s.CreateGroupChat(context.Background(), "room", alice.ID, []string{alice.ID, bob.ID, carol.ID}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	msgs := seedMessages(t, s, chat.ID, "hello")
-	id := msgs[0].ID
-
-	if err := s.MarkMessagesRead(context.Background(), []string{id}, bob.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.MarkMessagesRead(context.Background(), []string{id}, carol.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	readers, err := s.GetMessageReaders(context.Background(), id, 10)
-	if err != nil {
-		t.Fatalf("readers: %v", err)
-	}
-
-	if len(readers) != 2 {
-		t.Errorf("readers = %v, want 2 readers", readers)
-	}
-
-	// Limit applies.
-	limited, _ := s.GetMessageReaders(context.Background(), id, 1)
-	if len(limited) != 1 {
-		t.Errorf("limited readers = %v, want 1", limited)
-	}
-}
-
 func TestGetMessagesByIDs(t *testing.T) {
 	s := newTestStoreWithRead(t)
 	alice := createTestUser(t, s, "alice")

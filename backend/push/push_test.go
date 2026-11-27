@@ -7,32 +7,6 @@ import (
 	"testing"
 )
 
-func TestTruncate(t *testing.T) {
-	ascii := []struct {
-		in   string
-		max  int
-		want string
-	}{
-		{"hello", 10, "hello"},
-		{"hello", 5, "hello"},
-		{"hello world", 5, "hello..."},
-		{"hello world", 11, "hello world"},
-		{"", 5, ""},
-		{"", 0, ""},
-	}
-
-	for _, tc := range ascii {
-		if got := truncate(tc.in, tc.max); got != tc.want {
-			t.Errorf("truncate(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
-		}
-	}
-
-	// Deterministic UTF-8 case: boundaries align so no rune is split.
-	if got := truncate("привет", 4); got != "пр..." {
-		t.Errorf("truncate(привет, 4) = %q, want пр...", got)
-	}
-}
-
 func TestLoadOrGenerateVAPIDKeys(t *testing.T) {
 	t.Run("generates valid keys on first call", func(t *testing.T) {
 		keys, err := loadOrGenerateVAPIDKeys(t.TempDir())

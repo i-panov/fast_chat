@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fast_chat/model"
 	"fast_chat/sse"
@@ -107,12 +109,10 @@ func (s *Service) catchupPeer(ctx context.Context, peer string) {
 				// remainder is picked up next tick. The id tiebreaker
 				// does not persist across ticks (documented above), so
 				// only the time part carries over.
-				if next, err := time.Parse(time.RFC3339, delta.NextSince); err == nil {
+				if next, err := time.Parse(time.RFC3339, delta.NextSince); err == nil && !next.Before(cursor) {
 					cursor = next
-				} else {
-					cursor = delta.ServerNow
 				}
-			} else {
+			} else if delta.ServerNow.After(cursor) {
 				cursor = delta.ServerNow
 			}
 			break
@@ -120,8 +120,18 @@ func (s *Service) catchupPeer(ctx context.Context, peer string) {
 
 		next, err := time.Parse(time.RFC3339, delta.NextSince)
 		if err != nil {
+			// A cursor we cannot parse is not a reason to skip the rest of
+			// the backlog: keep the cursor at the last applied page and
+			// retry from there on the next tick.
 			log().Warn("federation catch-up next cursor could not be parsed", "peer", peer, "err", err)
-			cursor = delta.ServerNow
+			break
+		}
+		if next.Before(cursor) {
+			// The peer's clock stepped backwards. Moving our cursor with it
+			// would re-read the same rows at best and skip the window the
+			// peer has not re-stamped at worst: hold the cursor and say so.
+			log().Warn("federation catch-up cursor went backwards, holding the current one",
+				"peer", peer, "cursor", cursor, "next", next)
 			break
 		}
 		cursor = next
@@ -183,8 +193,21 @@ func (s *Service) applyFederatedDelta(ctx context.Context, peer string, delta *S
 
 	for _, deleted := range delta.DeletedMessages {
 		chat, ok := s.store.GetChat(ctx, deleted.ChatID)
-		if !ok || chat.RemoteServer != peer {
+		if !ok {
 			continue
+		}
+		// A replica is owned by the peer. A locally owned group has no
+		// RemoteServer: the peer may report a deletion there for its own
+		// users, and DeleteFederatedMessage checks the author. This covers
+		// the participant→owner direction that the outbox alone loses after
+		// its attempt limit.
+		if chat.RemoteServer != "" && chat.RemoteServer != peer {
+			continue
+		}
+		if chat.RemoteServer == "" {
+			clone := *chat
+			clone.FederatedPeer = peer
+			chat = &clone
 		}
 
 		// A deletion of a message that is already gone is not an error: the
@@ -226,6 +249,14 @@ func isPermanentFederationApplyError(err error) bool {
 		ErrInvalidBox,
 		ErrMissingEnvelopes,
 		ErrEmptyKeyID,
+		ErrTooManyFiles,
+		// A delta row whose thread id collides with a thread of another chat
+		// (or whose parent vanished) fails forever. Both the service and the
+		// store return their own sentinel here. Without them in this list one
+		// poisoned row would pin the peer's cursor on the same page forever
+		// and stop the whole delta stream.
+		ErrThreadNotFound,
+		store.ErrThreadNotFound,
 		store.ErrMessageIDConflict,
 	} {
 		if errors.Is(err, sentinel) {
@@ -297,6 +328,14 @@ func (s *Service) applyFederatedReactionChange(
 		return false
 	}
 
+	// A locally owned group is the hub: the live path relays a reaction to
+	// the other member servers, so the catch-up path has to do the same or
+	// the third servers never learn about a reaction restored after an
+	// offline window.
+	if chat.RemoteServer == "" {
+		s.RelayReaction(ctx, chat, messageID, userID, emoji, add, at, peer)
+	}
+
 	return true
 }
 
@@ -311,8 +350,22 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 	}
 
 	chat, ok := s.store.GetChat(ctx, msg.ChatID)
-	if !ok || chat.RemoteServer != peer {
+	if !ok {
+		log().Info("federation message skipped: unknown chat", "peer", peer, "chatID", msg.ChatID)
+		return true
+	}
+	// A replica is owned by the peer. A locally owned group has no
+	// RemoteServer: its owner is this server, and the peer may only report
+	// messages of its own users there. This is the participant→owner half of
+	// the delivery guarantee: after the outbox exhausts its attempts, the
+	// only remaining copy of the message is on the participant server.
+	if chat.RemoteServer != "" && chat.RemoteServer != peer {
 		log().Info("federation message skipped: foreign chat", "peer", peer, "chatID", msg.ChatID)
+		return true
+	}
+	if chat.RemoteServer == "" && !UserIDBelongsToServer(msg.FromID, peer) {
+		log().Info("federation message skipped: author belongs to another server",
+			"peer", peer, "chatID", msg.ChatID, "from", msg.FromID)
 		return true
 	}
 	if !containsMember(chat.Members, msg.FromID) {
@@ -330,9 +383,9 @@ func (s *Service) applyFederatedMessage(ctx context.Context, peer string, msg *m
 		replyToID = msg.ReplyTo.MessageID
 	}
 
-	// The attachments are not part of the delta: the peer does not have
-	// the file, so there is nothing to carry. The message arrives
-	// without them.
+	// The attachments travel with the delta as remote placeholders: the peer
+	// holds the bytes, so the metadata is what the members need to fetch them
+	// through the federation proxy.
 	in := &FederatedInboundMessage{
 		ID:       msg.ID,
 		FromID:   msg.FromID,
@@ -415,7 +468,7 @@ func (s *Service) ensureRemoteChat(ctx context.Context, peer string, chat *Feder
 	remote := &model.Chat{
 		ID:                chat.ID,
 		Type:              chat.Type,
-		Name:              chat.Name,
+		Name:              federatedChatName(chat.Name),
 		OwnerID:           chat.OwnerID,
 		Members:           chat.Members,
 		RemoteServer:      peer,
@@ -470,7 +523,7 @@ func (s *Service) syncRemoteChatMembers(ctx context.Context, peer string, existi
 		return true
 	}
 
-	if sameMembers(existing.Members, chat.Members) {
+	if sameMemberSet(existing.Members, chat.Members) {
 		return true
 	}
 
@@ -505,24 +558,15 @@ func (s *Service) syncRemoteChatMembers(ctx context.Context, peer string, existi
 	return true
 }
 
-// sameMembers reports whether two member lists hold the same users.
-func sameMembers(current, reported []string) bool {
-	if len(current) != len(reported) {
-		return false
+// federatedChatName bounds a peer-chosen chat name the same way a local
+// rename is bounded: the name is copied into every member's chat list.
+func federatedChatName(name string) string {
+	name = strings.TrimSpace(name)
+	if utf8.RuneCountInString(name) <= groupNameMaxLen {
+		return name
 	}
 
-	set := make(map[string]struct{}, len(current))
-	for _, id := range current {
-		set[id] = struct{}{}
-	}
-
-	for _, id := range reported {
-		if _, ok := set[id]; !ok {
-			return false
-		}
-	}
-
-	return true
+	return string([]rune(name)[:groupNameMaxLen])
 }
 
 // errorsIsMessageNotFound reports whether the error says that the message is

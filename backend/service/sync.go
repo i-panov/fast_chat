@@ -89,7 +89,7 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 	// the two queries, this delta must not contain the chat at all. The other
 	// order would return the chat together with its tombstone, and the client
 	// would recreate an empty chat whose history is no longer synced.
-	deletedChats, chatsPage, err := s.buildDeletedChats(ctx, userID, since, sinceID, limit)
+	deletedChats, deletedChatsPage, err := s.buildDeletedChats(ctx, userID, since, sinceID, limit)
 	if err != nil {
 		return SyncResponse{}, err
 	}
@@ -98,6 +98,14 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 	if err != nil {
 		return SyncResponse{}, err
 	}
+
+	// The reverse interleaving is possible too: the chat was unhidden (a new
+	// message, a reopened dialog) after the tombstone was read, so the same
+	// response could carry both. The client drops the chat on the tombstone
+	// and loses the history it already had, so a chat that is visible now
+	// wins over a tombstone of the same chat: the tombstone is already
+	// cleared in the database.
+	deletedChats = dropVisibleChatTombstones(deletedChats, chats)
 
 	chatIDs, memberIDs := collectChatAndMemberIDs(chats)
 
@@ -136,7 +144,7 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 		cursorPage{msgPage.NextSince, msgPage.NextID, msgPage.HasMore},
 		cursorPage{threadPage.NextSince, threadPage.NextID, threadPage.HasMore},
 		cursorPage{deletedPage.NextSince, deletedPage.NextID, deletedPage.HasMore},
-		cursorPage{chatsPage.NextSince, chatsPage.NextID, chatsPage.HasMore},
+		cursorPage{deletedChatsPage.NextSince, deletedChatsPage.NextID, deletedChatsPage.HasMore},
 	)
 
 	return SyncResponse{
@@ -150,6 +158,30 @@ func (s *Service) Sync(ctx context.Context, userID string, since time.Time, sinc
 		NextSince:       nextSince,
 		NextSinceID:     nextSinceID,
 	}, nil
+}
+
+// dropVisibleChatTombstones removes tombstones of chats the user can see right
+// now: the two lists are read at different instants, and a chat unhidden in
+// between must not be deleted on the client by the stale tombstone.
+func dropVisibleChatTombstones(tombs []SyncDeletedChatDTO, chats []*model.Chat) []SyncDeletedChatDTO {
+	if len(tombs) == 0 || len(chats) == 0 {
+		return tombs
+	}
+
+	visible := make(map[string]struct{}, len(chats))
+	for _, chat := range chats {
+		visible[chat.ID] = struct{}{}
+	}
+
+	out := make([]SyncDeletedChatDTO, 0, len(tombs))
+	for _, tomb := range tombs {
+		if _, ok := visible[tomb.ChatID]; ok {
+			continue
+		}
+		out = append(out, tomb)
+	}
+
+	return out
 }
 
 // cursorPage is one paged list's contribution to the combined next cursor.

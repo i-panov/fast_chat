@@ -35,9 +35,11 @@ var (
 	ErrUserBanned        = errors.New("account banned")
 	ErrInvalidSetupToken = errors.New("invalid setup token")
 	ErrNickInvalid       = errors.New("username must be 3-32 characters")
-	ErrNickColon         = errors.New("nick must not contain ':'")
 	ErrNicknameTaken     = errors.New("nickname already taken")
 	ErrEmailAlreadyTaken = errors.New("email already registered")
+	// ErrInternal reports a failure the service already logged; the transport
+	// answers a generic 500 without leaking the cause.
+	ErrInternal = errors.New("internal error")
 )
 
 // SendCodeResult carries the outcome of requesting a verification code.
@@ -133,7 +135,16 @@ func (s *Service) VerifyCode(ctx context.Context, input, code string, device Dev
 		return &VerifyCodeResult{User: user, Session: session, Token: token}, nil
 	}
 
-	setupToken := s.store.Codes().CreateSetupToken(email, emailCodeTTL)
+	setupToken, err := s.store.Codes().CreateSetupTokenE(email, emailCodeTTL)
+	if err != nil {
+		// An empty token would be answered as isNew with a blank setupToken:
+		// the client cannot complete the registration and has no way to tell
+		// why. Fail loudly instead.
+		log().Error("failed to generate a setup token", "err", err)
+
+		return nil, ErrInternal
+	}
+
 	return &VerifyCodeResult{IsNew: true, SetupToken: setupToken}, nil
 }
 

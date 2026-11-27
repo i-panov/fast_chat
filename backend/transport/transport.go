@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -87,7 +88,11 @@ func New(deps *Deps) *Transport {
 	api := humachi.New(mux, humaConfig)
 	api.UseMiddleware(AuthMiddleware(deps.Store))
 	api.UseMiddleware(FederatedAuthMiddleware(deps.FedManager))
-	api.UseMiddleware(requestStashMiddleware)
+	var ipExtractor *ratelimit.ClientIPExtractor
+	if deps.RateLimiters != nil {
+		ipExtractor = deps.RateLimiters.Extractor
+	}
+	api.UseMiddleware(requestStashMiddleware(ipExtractor))
 
 	cfg := deps.Cfg
 	apiCfg := &APIConfig{
@@ -662,10 +667,30 @@ func responseWriterFromContext(ctx context.Context) (http.ResponseWriter, bool) 
 }
 
 // requestStashMiddleware stores the raw request and writer in the context so
-// operations that need them (multipart upload) can retrieve them.
-func requestStashMiddleware(ctx huma.Context, next func(huma.Context)) {
-	r, w := humachi.Unwrap(ctx)
-	next(huma.WithValue(huma.WithValue(ctx, requestContextKey{}, r), responseWriterKey{}, w))
+// operations that need them (multipart upload) can retrieve them. It also
+// attaches the request metadata the moderation audit log records.
+func requestStashMiddleware(extractor *ratelimit.ClientIPExtractor) func(huma.Context, func(huma.Context)) {
+	return func(ctx huma.Context, next func(huma.Context)) {
+		r, w := humachi.Unwrap(ctx)
+		ctx = huma.WithValue(huma.WithValue(ctx, requestContextKey{}, r), responseWriterKey{}, w)
+		ctx = huma.WithContext(ctx, service.WithAuditRequest(ctx.Context(), auditRequest(extractor, r)))
+		next(ctx)
+	}
+}
+
+// auditRequest derives the client address and user agent for the audit log.
+// The address goes through the shared extractor, so a trusted proxy's
+// X-Forwarded-For is honored and a spoofed one is not; without an extractor
+// the raw peer address is recorded.
+func auditRequest(extractor *ratelimit.ClientIPExtractor, r *http.Request) service.AuditRequest {
+	ip := r.RemoteAddr
+	if extractor != nil {
+		ip = extractor.ClientIP(r)
+	} else if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		ip = host
+	}
+
+	return service.AuditRequest{IP: ip, UserAgent: r.UserAgent()}
 }
 
 // FederatedAuthMiddleware verifies federation signature headers on operations

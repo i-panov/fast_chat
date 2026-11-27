@@ -182,6 +182,9 @@ func requestIsHTTPS(r *http.Request, ipExtractor *ratelimit.ClientIPExtractor) b
 	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
+// rateLimitMiddleware counts every request — including CORS preflights, which
+// sit behind it in the chain — so an anonymous OPTIONS flood cannot bypass the
+// general bucket.
 func rateLimitMiddleware(rl *ratelimit.RateLimiter, ipExtractor *ratelimit.ClientIPExtractor) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +198,31 @@ func rateLimitMiddleware(rl *ratelimit.RateLimiter, ipExtractor *ratelimit.Clien
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+const (
+	// responseWriteTimeout bounds one ordinary response. The server-wide
+	// WriteTimeout has to stay 0 for the SSE stream, so without a per-response
+	// deadline a client that opens a file download and stops reading pins the
+	// goroutine and its descriptor until the process restarts.
+	responseWriteTimeout = 30 * time.Minute
+	// sseStreamPath is exempt from the write deadline: an event stream lives
+	// for hours by design.
+	sseStreamPath = "/api/events"
+)
+
+// writeDeadlineMiddleware gives every response except the SSE stream an
+// absolute write deadline (see responseWriteTimeout).
+func writeDeadlineMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, sseStreamPath) {
+			if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(responseWriteTimeout)); err != nil {
+				slog.Debug("cannot set response write deadline", "path", r.URL.Path, "err", err)
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 // errHijackNotSupported is returned when a handler behind requestLogMiddleware
@@ -369,6 +397,9 @@ func newTransport(
 // keyStatus is the shared health-probe JSON key.
 const keyStatus = "status"
 
+// dbInMemoryPath is the SQLite DSN for a throwaway in-memory database.
+const dbInMemoryPath = ":memory:"
+
 func registerRoutes(
 	mux *http.ServeMux,
 	fedManager *federation.Manager,
@@ -442,16 +473,9 @@ func main() {
 
 	// The database holds session tokens (hashed) and message history: only
 	// the owner may list the directory.
-	// nosemgrep: go.lang.correctness.permissions.incorrect-default-permission
-	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o700); err != nil {
-		slog.Error("failed to create data directory", "err", err)
+	if err := prepareDatabaseDir(cfg.Database.Path); err != nil {
+		slog.Error("failed to prepare the data directory", "err", err)
 		os.Exit(1)
-	}
-	// MkdirAll keeps the mode of an existing directory. Tighten it: the
-	// database holds message history and hashed session tokens.
-	//nolint:gosec // a directory needs the execute bit; 0700 is restrictive
-	if err := os.Chmod(filepath.Dir(cfg.Database.Path), 0o700); err != nil {
-		slog.Warn("failed to tighten data directory permissions", "err", err)
 	}
 
 	// Directory mode is deliberate least privilege: 0700/0750 gives the owner
@@ -482,7 +506,7 @@ func main() {
 
 	// Create the SQLite file with owner-only mode before the driver does:
 	// the default 0666&~umask is world-readable on a permissive system.
-	if cfg.Database.Path != "" && cfg.Database.Path != ":memory:" {
+	if cfg.Database.Path != "" && cfg.Database.Path != dbInMemoryPath {
 		dbFile, fileErr := os.OpenFile(cfg.Database.Path, os.O_CREATE|os.O_RDWR, 0o600)
 		if fileErr != nil {
 			slog.Error("failed to create database file", "err", fileErr)
@@ -511,10 +535,10 @@ func main() {
 	fedManager := federation.New(fedKey, cfg.Server.Domain, cfg.Federation.Scheme, cfg.Federation.Timeout, cfg.Federation.AllowPrivateAddresses)
 
 	st := store.New(db)
-	st.Codes().StartCleanup(context.Background(), time.Minute)
 
 	onPushExpired := func(endpoint string) {
-		slog.Info("removing expired push subscription", "endpoint", endpoint)
+		// The endpoint is a capability URL: log its hash, never the value.
+		slog.Info("removing expired push subscription", "endpoint", push.HashEndpoint(endpoint))
 
 		if err := st.DeletePushSubscriptionByEndpoint(context.Background(), endpoint); err != nil {
 			slog.Warn("failed to remove expired push subscription", "err", err)
@@ -552,6 +576,9 @@ func main() {
 	svc.SetFederationClient(fedClient)
 
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	// The in-memory verification codes are cleaned by a worker too: its loop
+	// must stop before the store is closed like every other background loop.
+	st.Codes().StartCleanup(workerCtx, time.Minute)
 	workers := startWorkers(workerCtx, fedClient, svc, callManager)
 	workers.Go(func() {
 		svc.RunBotPresence(workerCtx, time.Minute)
@@ -593,17 +620,15 @@ func main() {
 }
 
 // newHTTPServer builds the server with the middleware chain: the request id
-// and the access log on the outside, then the security headers, the CORS
-// answer, the global rate limit and the application itself.
+// and the access log on the outside, then the security headers, the global
+// rate limit, the per-response write deadline, the CORS answer and the
+// application itself.
 //
 // WriteTimeout stays 0 because the SSE stream holds its response open for
 // hours: any write deadline would kill every event stream on the first
-// timeout. The trade-off is that ordinary API handlers have no upper bound
-// from the server either; they are bounded instead by ReadTimeout,
-// per-handler body caps (MaxBytesReader/ParseMultipartForm), the Huma
-// MaxBodyBytes limits and client disconnects. If slow-loris on plain API
-// routes becomes a concern, split the SSE endpoint onto a second
-// http.Server with WriteTimeout 0 and give this one a finite WriteTimeout.
+// timeout. Ordinary responses get their bound from writeDeadlineMiddleware,
+// and bodies are additionally capped per handler (MaxBytesReader,
+// MaxBodyBytes).
 func newHTTPServer(
 	cfg *config.Config,
 	handler http.Handler,
@@ -617,9 +642,11 @@ func newHTTPServer(
 		Handler: httputil.RequestIDMiddleware(
 			requestLogMiddleware(
 				securityHeadersMiddleware(ipExtractor, cfg.CORS.Origin)(
-					corsMiddleware(cfg.CORS.Origin)(
-						rateLimitMiddleware(generalLimiter, ipExtractor)(
-							spaFallbackMiddleware(staticDir)(handler),
+					rateLimitMiddleware(generalLimiter, ipExtractor)(
+						writeDeadlineMiddleware(
+							corsMiddleware(cfg.CORS.Origin)(
+								spaFallbackMiddleware(staticDir)(handler),
+							),
 						),
 					),
 				),
@@ -629,10 +656,38 @@ func newHTTPServer(
 		// The upload limit is 50 MiB, so a 30-second body deadline rejected
 		// valid files on slow mobile links. A body deadline still matters
 		// (slowloris), hence a generous finite value rather than zero.
-		ReadTimeout:  5 * time.Minute,
+		ReadTimeout: 5 * time.Minute,
+		// Zero on purpose: the SSE stream must not be cut after a fixed
+		// interval. Every other response gets its deadline from
+		// writeDeadlineMiddleware instead.
 		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 	}
+}
+
+// prepareDatabaseDir creates the directory of the SQLite file and tightens it
+// to owner-only. An in-memory database has no directory of its own:
+// filepath.Dir(":memory:") is ".", and tightening the mode of the process
+// working directory (often $HOME) is not ours to do.
+func prepareDatabaseDir(path string) error {
+	if path == dbInMemoryPath {
+		return nil
+	}
+
+	dir := filepath.Dir(path)
+
+	// nosemgrep: go.lang.correctness.permissions.incorrect-default-permission
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create data directory: %w", err)
+	}
+	// MkdirAll keeps the mode of an existing directory. Tighten it: the
+	// database holds message history and hashed session tokens.
+	//nolint:gosec // a directory needs the execute bit; 0700 is restrictive
+	if err := os.Chmod(dir, 0o700); err != nil {
+		slog.Warn("failed to tighten data directory permissions", "err", err)
+	}
+
+	return nil
 }
 
 // sweepUploadTempFiles removes crashed-upload leftovers (.upload-*.tmp)
@@ -950,7 +1005,9 @@ func resolveStaticDir(staticDir string) string {
 func spaFallbackMiddleware(staticDir string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if staticDir == "" || r.Method != http.MethodGet {
+			// HEAD is answered like GET: browsers and availability probes use
+			// it, and a 404 for a client-side route is misleading.
+			if staticDir == "" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 				next.ServeHTTP(w, r)
 
 				return
@@ -986,6 +1043,9 @@ func spaFallbackMiddleware(staticDir string) func(http.Handler) http.Handler {
 				return
 			}
 
+			// The shell itself must not be cached blindly: after a redeploy a
+			// stale index.html points at asset files that no longer exist.
+			w.Header().Set("Cache-Control", "no-cache")
 			http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
 		})
 	}

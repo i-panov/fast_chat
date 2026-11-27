@@ -197,8 +197,10 @@ func TestRefreshTokenRotatesOnlyCurrentSession(t *testing.T) {
 		t.Errorf("sessionId = %q, want %q", resp.SessionID, deviceSession.ID)
 	}
 
-	if _, _, ok := st.GetSessionByToken(ctx, deviceToken); ok {
-		t.Error("the old token must stop working after refresh")
+	// The replaced token remains usable for the grace window, so a second tab
+	// of the same device that has not refreshed yet is not logged out.
+	if _, _, ok := st.GetSessionByToken(ctx, deviceToken); !ok {
+		t.Error("the replaced token must stay valid during the grace window")
 	}
 
 	if _, _, ok := st.GetSessionByToken(ctx, resp.Token); !ok {

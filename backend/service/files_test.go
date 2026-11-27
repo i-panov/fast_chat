@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -34,9 +37,24 @@ func newTestService(t *testing.T) *Service {
 			TokenExpiryWarning: 5 * time.Minute,
 			MaxSessionsPerUser: 50,
 		},
+		Uploads: config.UploadsConfig{Dir: t.TempDir()},
 	}
 
 	return New(store.New(db), cfg, nil, nil)
+}
+
+// storeBlob writes the physical bytes of a file record: the dedup path checks
+// that the blob is still on disk before it reuses the record.
+func storeBlob(t *testing.T, s *Service, relativePath string) {
+	t.Helper()
+
+	full := filepath.Join(s.cfg.Uploads.Dir, relativePath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestIsHexString(t *testing.T) {
@@ -68,6 +86,7 @@ func TestDedupFileByHash_ExactPairReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	storeBlob(t, s, stored.StoragePath)
 
 	check, deduped, err := s.DedupFileByHash(ctx, &FileUpload{
 		Hash:         "hash-abc",
@@ -98,9 +117,11 @@ func TestDedupFileByHash_NewNameNewRecord(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 
-	if _, err := s.store.SaveFile(ctx, "hash-abc", "image/png", 10, "a.png", "20060102/one", "alice:local"); err != nil {
+	stored, err := s.store.SaveFile(ctx, "hash-abc", "image/png", 10, "a.png", "20060102/one", "alice:local")
+	if err != nil {
 		t.Fatal(err)
 	}
+	storeBlob(t, s, stored.StoragePath)
 
 	check, deduped, err := s.DedupFileByHash(ctx, &FileUpload{
 		Hash:         "hash-abc",
@@ -137,6 +158,7 @@ func TestDedupFileByHash_OtherUserGetsOwnRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	storeBlob(t, s, first.StoragePath)
 
 	check, deduped, err := s.DedupFileByHash(ctx, &FileUpload{
 		Hash:         "hash-abc",
@@ -188,6 +210,57 @@ func TestDedupFileByHash_EncryptedNeverDeduped(t *testing.T) {
 	}
 	if check.File != nil {
 		t.Fatalf("expected nil file, got %+v", check.File)
+	}
+}
+
+// A record whose blob the GC already removed must not be reused: pointing a new
+// upload at missing bytes would answer 404 forever and block re-uploading the
+// same content.
+func TestDedupFileByHash_HealsAMissingBlob(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	// The row exists, the bytes do not: exactly the state a dedup↔GC race used
+	// to leave behind.
+	if _, err := s.store.SaveFile(ctx, "hash-abc", "image/png", 10, "a.png", "20060102/gone", "alice:local"); err != nil {
+		t.Fatal(err)
+	}
+
+	check, deduped, err := s.DedupFileByHash(ctx, &FileUpload{
+		Hash:         "hash-abc",
+		MimeType:     "image/png",
+		Size:         10,
+		OriginalName: "a.png",
+		Uploader:     "alice:local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deduped {
+		t.Fatalf("a record without bytes must not be reused, got %+v", check.File)
+	}
+}
+
+func TestEnsureUploadQuota(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+
+	if err := s.EnsureUploadQuota(ctx, "alice:local", 1<<20); err != nil {
+		t.Fatalf("a small upload must pass: %v", err)
+	}
+
+	saved, err := s.store.SaveFile(ctx, "hash-big", "video/mp4", maxUnattachedFileBytes, "big.mp4", "20060102/big", "alice:local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeBlob(t, s, saved.StoragePath)
+
+	if err := s.EnsureUploadQuota(ctx, "alice:local", 1); !errors.Is(err, ErrUploadQuotaExceeded) {
+		t.Fatalf("upload over the cap = %v, want ErrUploadQuotaExceeded", err)
+	}
+	// Another account is not affected by the first one's unattached files.
+	if err := s.EnsureUploadQuota(ctx, "bob:local", 1<<20); err != nil {
+		t.Fatalf("a different user must keep their own quota: %v", err)
 	}
 }
 
