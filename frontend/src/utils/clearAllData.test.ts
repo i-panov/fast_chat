@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { LANGUAGE_PREFERENCE_KEY } from "../languagePreference.ts";
 import { clearAllData } from "./clearAllData.ts";
 
 beforeEach(() => {
@@ -8,13 +9,15 @@ beforeEach(() => {
 
 describe("clearAllData", () => {
 	it("clears storages but preserves the language", async () => {
+		localStorage.setItem(LANGUAGE_PREFERENCE_KEY, "system");
 		localStorage.setItem("i18nextLng", "ru");
 		localStorage.setItem("other", "x");
 		sessionStorage.setItem("s", "y");
 
 		await clearAllData();
 
-		expect(localStorage.getItem("i18nextLng")).toBe("ru");
+		expect(localStorage.getItem(LANGUAGE_PREFERENCE_KEY)).toBe("system");
+		expect(localStorage.getItem("i18nextLng")).toBeNull();
 		expect(localStorage.getItem("other")).toBeNull();
 		expect(sessionStorage.getItem("s")).toBeNull();
 	});

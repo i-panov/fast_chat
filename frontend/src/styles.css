@@ -23,6 +23,18 @@ body {
 	margin: 0;
 }
 
+/* The login card may be taller than a short phone screen: it must scroll
+   instead of being clipped by a fixed-height centered container. */
+.login-shell {
+	min-height: 100vh;
+}
+
+@supports (height: 100dvh) {
+	.login-shell {
+		min-height: 100dvh;
+	}
+}
+
 .bubble-own,
 .bubble-other {
 	max-width: 70%;

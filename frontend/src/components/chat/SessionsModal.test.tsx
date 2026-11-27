@@ -1,6 +1,7 @@
 import { MantineProvider } from "@mantine/core";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import "../../i18n.ts";
 import { SessionsModal } from "./SessionsModal.tsx";
 
 vi.mock("../../api.ts", () => ({
@@ -13,6 +14,8 @@ const { getSessions, revokeDeviceSession } = await import("../../api.ts");
 const REVOKE_RE = /^(sessions\.revoke|Revoke|End session|Завершить сеанс)$/;
 const REVOKE_KEY_RE = /Revoke key/;
 const LOGOUT_ALL_RE = /sessions\.logoutAll|Sign out everywhere/;
+const CREATED_RE = /^(Created|Создано):/;
+const CLEARED_HINT_RE = /does not end server sessions|не завершает сеансы/i;
 
 const current = {
 	id: "s1",
@@ -57,6 +60,8 @@ describe("SessionsModal", () => {
 
 		expect(await screen.findByText("Chrome on Linux")).toBeTruthy();
 		expect(await screen.findByText("Phone")).toBeTruthy();
+		expect(screen.getAllByText(CREATED_RE).length).toBe(2);
+		expect(screen.getByText(CLEARED_HINT_RE)).toBeTruthy();
 
 		fireEvent.click(screen.getByRole("button", { name: REVOKE_RE }));
 

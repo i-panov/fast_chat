@@ -10,6 +10,7 @@ import {
 import { PinOff } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Message } from "../../types/api.ts";
+import { formatDateTime } from "../../utils/chat.ts";
 
 interface Props {
 	open: boolean;
@@ -72,8 +73,7 @@ export function PinnedMessagesModal({
 								>
 									<div style={{ minWidth: 0 }}>
 										<Text size="xs" c="dimmed">
-											@{message.fromNick} ·{" "}
-											{new Date(message.createdAt).toLocaleString()}
+											@{message.fromNick} · {formatDateTime(message.createdAt)}
 										</Text>
 										<Text size="sm" truncate="end">
 											{preview(message, t("pins.encrypted"))}

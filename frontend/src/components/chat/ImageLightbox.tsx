@@ -81,7 +81,7 @@ export function ImageLightbox({
 				color="gray"
 				size="xl"
 				onClick={onClose}
-				aria-label={t("media.closeMenu")}
+				aria-label={t("common.close")}
 				style={{
 					position: "absolute",
 					top: 16,

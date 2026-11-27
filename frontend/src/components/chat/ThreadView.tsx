@@ -77,7 +77,7 @@ export function ThreadView() {
 	if (activeThread === null) return null;
 
 	return (
-		<Stack h="100%" gap={0}>
+		<Stack h="100%" gap={0} style={{ minHeight: 0, overflow: "hidden" }}>
 			<Paper
 				component="header"
 				style={{

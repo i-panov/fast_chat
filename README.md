@@ -17,6 +17,8 @@ make frontend:run   # Vite dev-сервер на :5173
 
 **Фронтенд:** React 19 + Mantine v9 + TanStack Router (file-based) + Tailwind v4 + react-i18next.
 
+**Локализация.** Русский и английский. По умолчанию язык берётся из системы; переключается в меню аккаунта и на странице входа, выбор хранится в браузере. Новый язык добавляется JSON-файлом в `frontend/src/locales` и записью в `RESOURCES` в `frontend/src/i18n.ts`.
+
 ## Архитектура
 
 ### Структура бэкенда

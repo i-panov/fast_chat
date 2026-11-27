@@ -191,6 +191,7 @@ function EmptyState({ isOffline }: { isOffline?: boolean }) {
 		<div
 			style={{
 				flex: 1,
+				minHeight: 0,
 				display: "flex",
 				alignItems: "center",
 				justifyContent: "center",
@@ -443,7 +444,7 @@ export function MessageList({
 	return (
 		<Virtuoso
 			ref={virtuosoRef}
-			style={{ flex: 1 }}
+			style={{ flex: 1, minHeight: 0 }}
 			data={datedMessages}
 			itemContent={itemContent}
 			followOutput="auto"

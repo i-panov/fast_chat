@@ -2,6 +2,7 @@ import { Alert, Loader, Stack, Table, Text } from "@mantine/core";
 import type { TFunction } from "i18next";
 import { useEffect, useState } from "react";
 import { type AdminAuditEntry, adminListAudit } from "../../api.ts";
+import { formatDateTime } from "../../utils/chat.ts";
 import { errorText } from "./shared.tsx";
 
 export function AuditTab({ token, t }: { token: string; t: TFunction }) {
@@ -51,9 +52,7 @@ export function AuditTab({ token, t }: { token: string; t: TFunction }) {
 							{entries.map((entry) => (
 								<Table.Tr key={entry.id}>
 									<Table.Td>
-										<Text size="xs">
-											{new Date(entry.createdAt).toLocaleString()}
-										</Text>
+										<Text size="xs">{formatDateTime(entry.createdAt)}</Text>
 									</Table.Td>
 									<Table.Td>
 										<Text size="xs">{entry.actorId}</Text>

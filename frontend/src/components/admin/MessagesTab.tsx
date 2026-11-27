@@ -7,6 +7,7 @@ import {
 	adminListMessages,
 } from "../../api.ts";
 import type { Message } from "../../types/api.ts";
+import { formatDateTime } from "../../utils/chat.ts";
 import {
 	COLUMN_ACTIONS,
 	type ConfirmState,
@@ -125,9 +126,7 @@ export function MessagesTab({
 										</Text>
 									</Table.Td>
 									<Table.Td>
-										<Text size="xs">
-											{new Date(message.createdAt).toLocaleString()}
-										</Text>
+										<Text size="xs">{formatDateTime(message.createdAt)}</Text>
 									</Table.Td>
 									<Table.Td>
 										<Button

@@ -109,6 +109,14 @@ export function formatTime(isoStr: string, locale?: string): string {
 	});
 }
 
+// formatDateTime is for timestamps that show both parts (sessions, admin
+// audit). It follows the interface language, not the OS locale.
+export function formatDateTime(isoStr: string, locale?: string): string {
+	const d = new Date(isoStr);
+	if (Number.isNaN(d.getTime())) return isoStr;
+	return d.toLocaleString(locale ?? getCurrentLocale());
+}
+
 export function extractCodeText(children: unknown): string {
 	if (children === null || children === undefined) return "";
 	if (typeof children === "string") return children;

@@ -4,10 +4,9 @@ import {
 	resetAllDBs,
 	setActiveAccountKey,
 } from "../db/init.ts";
+import { LANGUAGE_PREFERENCE_KEY } from "../languagePreference.ts";
 import { setTokenProvider } from "../sync/syncEngine.ts";
 import { clearFileCache } from "./fileCache.ts";
-
-const LANGUAGE_KEY = "i18nextLng";
 
 async function browserUnsubscribePush(): Promise<void> {
 	try {
@@ -92,7 +91,9 @@ export async function clearAllData(): Promise<void> {
 	// to find account databases that were opened in an earlier session on a
 	// browser without indexedDB.databases().
 	const knownDBs = listKnownDatabases();
-	const lang = localStorage.getItem(LANGUAGE_KEY);
+	// The language choice is a device preference, not account data: clearing
+	// the app must not silently switch the interface.
+	const language = localStorage.getItem(LANGUAGE_PREFERENCE_KEY);
 
 	// Stop any in-flight sync before deleting: a tick that starts after the
 	// reset would recreate the database and refill it with downloaded history.
@@ -102,9 +103,8 @@ export async function clearAllData(): Promise<void> {
 	notifyServiceWorkerCaches();
 	localStorage.clear();
 	sessionStorage.clear();
-	if (lang) {
-		localStorage.setItem(LANGUAGE_KEY, lang);
-	}
+	if (language !== null)
+		localStorage.setItem(LANGUAGE_PREFERENCE_KEY, language);
 
 	await Promise.race([
 		Promise.allSettled([

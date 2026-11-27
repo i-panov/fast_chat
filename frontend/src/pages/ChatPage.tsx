@@ -312,12 +312,14 @@ function ChatSidebar({
 				width: fullWidth ? "100%" : "300px",
 				minWidth: fullWidth ? 0 : "300px",
 				flex: fullWidth ? 1 : undefined,
+				minHeight: 0,
+				overflow: "hidden",
 				borderRadius: 0,
 				borderRight: PANEL_BORDER,
 				background: PANEL_BACKGROUND,
 			}}
 		>
-			<Stack h="100%" gap={0}>
+			<Stack h="100%" gap={0} style={{ minHeight: 0 }}>
 				<SearchBox
 					query={s.searchQuery}
 					results={s.searchResults}
@@ -946,7 +948,11 @@ export function ChatPage() {
 
 	return (
 		<ChatContext.Provider value={s}>
-			<Stack h="100%" gap={0}>
+			<Stack
+				h="var(--app-height, 100dvh)"
+				gap={0}
+				style={{ minHeight: 0, overflow: "hidden" }}
+			>
 				<MultiDeviceKeyModal activeToken={s.activeAccount?.token ?? null} />
 				<MessageSearchModal
 					open={messageSearchOpen}
@@ -969,7 +975,14 @@ export function ChatPage() {
 					onOpenMessageSearch={() => setMessageSearchOpen(true)}
 				/>
 				<AudioPlayerBar />
-				<div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+				<div
+					style={{
+						display: "flex",
+						flex: 1,
+						minHeight: 0,
+						overflow: "hidden",
+					}}
+				>
 					{(!isMobile || !mobileChatOpen) && (
 						<ErrorBoundary>
 							<ChatSidebar
@@ -987,6 +1000,7 @@ export function ChatPage() {
 							style={{
 								flex: 1,
 								minHeight: 0,
+								overflow: "hidden",
 								borderRadius: 0,
 								background: "var(--mantine-color-dark-9)",
 							}}
@@ -994,7 +1008,11 @@ export function ChatPage() {
 							{s.activeThread !== null ? (
 								<ThreadView />
 							) : (
-								<Stack h="100%" gap={0}>
+								<Stack
+									h="100%"
+									gap={0}
+									style={{ minHeight: 0, overflow: "hidden" }}
+								>
 									{s.pendingChatWith !== null ? (
 										<PendingChatView
 											s={s}

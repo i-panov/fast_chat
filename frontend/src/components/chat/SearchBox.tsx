@@ -109,7 +109,7 @@ export function SearchBox({
 									color="gray"
 									size="sm"
 									onClick={() => onQueryChange("")}
-									aria-label={t("media.closeMenu")}
+									aria-label={t("search.clear")}
 								>
 									<X size={14} />
 								</ActionIcon>

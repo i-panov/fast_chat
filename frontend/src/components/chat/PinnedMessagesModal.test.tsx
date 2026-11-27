@@ -5,6 +5,8 @@ import type { Message } from "../../types/api.ts";
 import { PinnedMessagesModal } from "./PinnedMessagesModal.tsx";
 
 const UNPIN_RE = /pins\.unpin|Unpin/;
+const ENCRYPTED_RE =
+	/pins\.encrypted|Encrypted message|Зашифрованное сообщение/;
 
 function message(overrides: Partial<Message> = {}): Message {
 	return {
@@ -38,7 +40,7 @@ describe("PinnedMessagesModal", () => {
 		);
 
 		expect(screen.getByText("pinned text")).toBeTruthy();
-		expect(screen.getByText("pins.encrypted")).toBeTruthy();
+		expect(screen.getByText(ENCRYPTED_RE)).toBeTruthy();
 		const buttons = screen.getAllByRole("button", {
 			name: UNPIN_RE,
 		});

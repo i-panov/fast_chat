@@ -3,7 +3,6 @@ import {
 	Drawer,
 	Modal,
 	ScrollArea,
-	Select,
 	Text,
 	Title,
 	UnstyledButton,
@@ -17,10 +16,10 @@ import { BlockedUsersModal } from "./components/chat/BlockedUsersModal.tsx";
 import { BotsModal } from "./components/chat/BotsModal.tsx";
 import { ProfileModal } from "./components/chat/ProfileModal.tsx";
 import { SessionsModal } from "./components/chat/SessionsModal.tsx";
+import { LanguageSelect } from "./components/LanguageSelect.tsx";
 import { UserAvatar } from "./components/shared/UserAvatar.tsx";
 import type { KeyPair } from "./e2ee/crypto.ts";
 import { getMyKeyPair, hasServerKeyBackup } from "./e2ee/keys.ts";
-import i18n, { getCurrentLocale, SUPPORTED_LANGS } from "./i18n.ts";
 import type { AppConfig } from "./types/api.ts";
 import { useAuth } from "./useAuth.tsx";
 import { clearAllData } from "./utils/clearAllData.ts";
@@ -365,17 +364,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 						marginTop: "12px",
 					}}
 				>
-					<Select
-						data={SUPPORTED_LANGS.map((l) => ({
-							value: l,
-							label: t(`lang.${l}`),
-						}))}
-						value={getCurrentLocale()}
-						onChange={(val) => {
-							if (val !== null) void i18n.changeLanguage(val);
-						}}
-						size="xs"
-					/>
+					<LanguageSelect />
 					{appConfig?.version && appConfig.version !== "dev" && (
 						<Text size="xs" c="dimmed" ta="center" style={{ marginTop: "8px" }}>
 							v-{appConfig.version}-{appConfig.commit}

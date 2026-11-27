@@ -134,7 +134,7 @@ function ReplyBanner({
 					color="gray"
 					size="sm"
 					onClick={onCancel}
-					aria-label={t("media.closeMenu")}
+					aria-label={t("input.cancelReply")}
 				>
 					<X size={16} />
 				</ActionIcon>
@@ -162,7 +162,7 @@ function EditBanner({ onCancel }: { onCancel: () => void }) {
 				color="gray"
 				size="sm"
 				onClick={onCancel}
-				aria-label={t("media.closeMenu")}
+				aria-label={t("input.cancelEdit")}
 			>
 				<X size={16} />
 			</ActionIcon>
@@ -547,7 +547,7 @@ export function InputBar({
 		hasExisting || hasPending || hasExistingLocation || hasPendingLocation;
 
 	return (
-		<div>
+		<div style={{ flex: "0 0 auto" }}>
 			{replyToNick !== undefined && !editing && (
 				<ReplyBanner
 					nick={replyToNick}

@@ -136,6 +136,16 @@ test("a phone shows the list and the chat one at a time", async ({
 		data: { type: "private", withUserId: bob.user.id },
 	});
 	expect(chatResponse.ok()).toBeTruthy();
+	const { chat } = (await chatResponse.json()) as { chat: { id: string } };
+	// A full history makes the message list the only scrollable part: the
+	// document and the composer must stay put.
+	for (let index = 0; index < 30; index += 1) {
+		const sent = await request.post(`/api/chats/${chat.id}/messages`, {
+			headers: { Authorization: `Bearer ${alice.token}` },
+			data: { id: `mobile-${suffix}-${index}`, text: `Message ${index}` },
+		});
+		expect(sent.ok()).toBeTruthy();
+	}
 
 	const { page, close } = await openAs(browser, alice);
 
@@ -165,6 +175,48 @@ test("a phone shows the list and the chat one at a time", async ({
 		await expect(input).toBeVisible();
 		const box = await input.boundingBox();
 		expect(box?.width ?? 0).toBeGreaterThan(170);
+
+		// The page itself must not scroll: only the message list does. The
+		// composer stays inside the visible viewport even when it shrinks
+		// (browser toolbars, on-screen keyboard).
+		const composerBottom = async () => {
+			const rect = await input.boundingBox();
+			return rect === null ? Number.POSITIVE_INFINITY : rect.y + rect.height;
+		};
+		const pageFits = () =>
+			page.evaluate(() => ({
+				scrollY: window.scrollY,
+				overflow: document.documentElement.scrollHeight - window.innerHeight,
+			}));
+		const viewport = page.viewportSize();
+		if (viewport === null) throw new Error("no viewport");
+		// Wait until sync has rendered the whole history: the list is the
+		// only scrollable element even before the composer checks below.
+		await expect(page.getByText("Message 29")).toBeVisible({
+			timeout: 15_000,
+		});
+		await expect.poll(composerBottom).toBeLessThanOrEqual(viewport.height + 1);
+		expect((await pageFits()).scrollY).toBe(0);
+		expect((await pageFits()).overflow).toBeLessThanOrEqual(1);
+		await expect
+			.poll(() =>
+				page.evaluate(() => {
+					const scroller = document.querySelector<HTMLElement>(
+						'[data-testid="virtuoso-scroller"]',
+					);
+					return (
+						scroller !== null && scroller.scrollHeight > scroller.clientHeight
+					);
+				}),
+			)
+			.toBe(true);
+
+		const shortHeight = 500;
+		await page.setViewportSize({ width: viewport.width, height: shortHeight });
+		await expect.poll(composerBottom).toBeLessThanOrEqual(shortHeight + 1);
+		expect((await pageFits()).scrollY).toBe(0);
+		expect((await pageFits()).overflow).toBeLessThanOrEqual(1);
+		await page.setViewportSize(viewport);
 		// Empty composer: the microphone is the only right-hand action, the
 		// send button is hidden. Typing swaps them.
 		const mic = page.getByRole("button", { name: MIC_RE });
@@ -292,5 +344,46 @@ test("selects several messages and deletes them together", async ({
 			.toBe(0);
 	} finally {
 		await close();
+	}
+});
+
+test("the login card stays reachable on a short screen", async ({
+	browser,
+}) => {
+	const context = await browser.newContext({
+		locale: "en-US",
+		viewport: { width: 375, height: 280 },
+	});
+	const page = await context.newPage();
+	await page.goto("/login");
+
+	try {
+		// The card used to be centered in a fixed-height container, so its
+		// top went above the viewport and could not be scrolled to.
+		const title = page.getByRole("heading", { name: "Fast Chat" });
+		await expect(title).toBeVisible();
+		const titleTop = () =>
+			title.evaluate((element) => element.getBoundingClientRect().top);
+		expect(await titleTop()).toBeGreaterThanOrEqual(0);
+
+		await page.evaluate(() => {
+			window.scrollTo(0, document.documentElement.scrollHeight);
+		});
+		// visible alone is not enough: an element below the fold is also
+		// "visible" for Playwright.
+		expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+		const select = page.getByRole("combobox");
+		await expect(select).toBeVisible();
+		const selectBox = await select.boundingBox();
+		expect(selectBox?.y ?? Number.POSITIVE_INFINITY).toBeGreaterThanOrEqual(0);
+		expect(
+			(selectBox?.y ?? Number.POSITIVE_INFINITY) +
+				(selectBox?.height ?? Number.POSITIVE_INFINITY),
+		).toBeLessThanOrEqual(281);
+
+		await page.evaluate(() => window.scrollTo(0, 0));
+		expect(await titleTop()).toBeGreaterThanOrEqual(0);
+	} finally {
+		await context.close();
 	}
 });

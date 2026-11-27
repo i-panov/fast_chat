@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getSessions, revokeDeviceSession } from "../../api.ts";
 import type { SessionInfo } from "../../types/api.ts";
+import { formatDateTime } from "../../utils/chat.ts";
 
 interface Props {
 	open: boolean;
@@ -24,8 +25,7 @@ interface Props {
 }
 
 function formatDate(value: string): string {
-	const date = new Date(value);
-	return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+	return formatDateTime(value);
 }
 
 // The dialog lists the account's sessions. Per-device E2EE keys no longer
@@ -83,6 +83,10 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 		}
 	}
 
+	const hasOtherSessions = sessions.some(
+		(session) => !session.current && session.id !== currentSessionId,
+	);
+
 	return (
 		<Modal
 			opened={open}
@@ -96,6 +100,11 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 				<Text size="xs" c="dimmed">
 					{t("sessions.hint")}
 				</Text>
+				{hasOtherSessions && (
+					<Text size="xs" c="dimmed">
+						{t("sessions.clearedHint")}
+					</Text>
+				)}
 
 				{loading ? (
 					<Group justify="center">
@@ -132,6 +141,11 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 												<Text size="xs" c="dimmed">
 													{t("sessions.lastSeen", {
 														when: formatDate(session.lastSeenAt),
+													})}
+												</Text>
+												<Text size="xs" c="dimmed">
+													{t("sessions.created", {
+														when: formatDate(session.createdAt),
 													})}
 												</Text>
 											</Box>

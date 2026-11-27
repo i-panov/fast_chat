@@ -12,10 +12,15 @@ import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { completeRegistration, sendCode, verifyCode } from "../api.ts";
+import { LanguageSelect } from "../components/LanguageSelect.tsx";
 import { useAuth } from "../useAuth.tsx";
 import { getDeviceInfo } from "../utils/device.ts";
 
 type Step = "email" | "code" | "nick";
+
+// Known errors stay keys so switching the language re-renders them; server
+// messages are already text and cannot be translated.
+type FormError = { key: string } | { text: string };
 
 // Empty chat search: TanStack requires explicit search params on every
 // navigation once validateSearch is defined.
@@ -34,14 +39,16 @@ export function LoginPage() {
 	const [nick, setNick] = useState("");
 	const [displayName, setDisplayName] = useState("");
 	const [setupToken, setSetupToken] = useState("");
-	const [error, setError] = useState("");
+	const [error, setError] = useState<FormError | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [debugCode, setDebugCode] = useState<string | null>(null);
+	const errorText =
+		error === null ? null : "key" in error ? t(error.key) : error.text;
 	async function handleSendCode() {
 		const trimmed = email.trim().toLowerCase();
 		if (trimmed.length === 0) return;
 		setLoading(true);
-		setError("");
+		setError(null);
 		setDebugCode(null);
 		try {
 			const result = await sendCode(trimmed);
@@ -50,7 +57,11 @@ export function LoginPage() {
 			}
 			setStep("code");
 		} catch (err) {
-			setError(err instanceof Error ? err.message : t("error.sendCode"));
+			setError(
+				err instanceof Error
+					? { text: err.message }
+					: { key: "error.sendCode" },
+			);
 		} finally {
 			setLoading(false);
 		}
@@ -60,7 +71,7 @@ export function LoginPage() {
 		const trimmed = code.trim();
 		if (trimmed.length === 0) return;
 		setLoading(true);
-		setError("");
+		setError(null);
 		try {
 			const device = getDeviceInfo();
 			const result = await verifyCode(
@@ -84,7 +95,11 @@ export function LoginPage() {
 				void navigate({ to: "/chat", search: CHAT_SEARCH });
 			}
 		} catch (err) {
-			setError(err instanceof Error ? err.message : t("error.verifyCode"));
+			setError(
+				err instanceof Error
+					? { text: err.message }
+					: { key: "error.verifyCode" },
+			);
 		} finally {
 			setLoading(false);
 		}
@@ -93,11 +108,11 @@ export function LoginPage() {
 	async function handleCompleteRegistration() {
 		const trimmed = nick.trim().toLowerCase();
 		if (trimmed.length < 3 || trimmed.length > 32) {
-			setError(t("login.usernameInvalid"));
+			setError({ key: "login.usernameInvalid" });
 			return;
 		}
 		setLoading(true);
-		setError("");
+		setError(null);
 		try {
 			const device = getDeviceInfo();
 			const result = await completeRegistration(
@@ -117,20 +132,26 @@ export function LoginPage() {
 			);
 			void navigate({ to: "/chat", search: CHAT_SEARCH });
 		} catch (err) {
-			setError(err instanceof Error ? err.message : t("error.register"));
+			setError(
+				err instanceof Error
+					? { text: err.message }
+					: { key: "error.register" },
+			);
 		} finally {
 			setLoading(false);
 		}
 	}
 
 	return (
-		<Center className="h-full">
+		<Center className="login-shell" py="xl">
 			<Paper withBorder className="w-80">
 				<Stack p="xl" gap="md">
 					{activeAccount !== null && (
 						<>
 							<Text ta="center" size="sm" c="dimmed">
-								{t("login.alreadyLoggedIn", { nick: activeAccount.user.nick })}
+								{t("login.alreadyLoggedIn", {
+									nick: activeAccount.user.nick,
+								})}
 							</Text>
 							<Button
 								variant="light"
@@ -159,9 +180,9 @@ export function LoginPage() {
 								onChange={(e) => setEmail(e.target.value)}
 								autoFocus
 							/>
-							{error.length > 0 && (
+							{errorText !== null && (
 								<Text size="sm" c="red" ta="center">
-									{error}
+									{errorText}
 								</Text>
 							)}
 							<Button
@@ -193,9 +214,9 @@ export function LoginPage() {
 								onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
 								autoFocus
 							/>
-							{error.length > 0 && (
+							{errorText !== null && (
 								<Text size="sm" c="red" ta="center">
-									{error}
+									{errorText}
 								</Text>
 							)}
 							<Button
@@ -228,9 +249,9 @@ export function LoginPage() {
 								value={displayName}
 								onChange={(e) => setDisplayName(e.target.value)}
 							/>
-							{error.length > 0 && (
+							{errorText !== null && (
 								<Text size="sm" c="red" ta="center">
-									{error}
+									{errorText}
 								</Text>
 							)}
 							<Button
@@ -244,6 +265,8 @@ export function LoginPage() {
 							</Button>
 						</>
 					)}
+					<Divider />
+					<LanguageSelect size="xs" />
 				</Stack>
 			</Paper>
 		</Center>

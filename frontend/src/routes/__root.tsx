@@ -2,9 +2,11 @@ import { MantineProvider } from "@mantine/core";
 import { Notifications } from "@mantine/notifications";
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { LocalLockModal } from "../components/chat/LocalLockModal.tsx";
 import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
 import { NotificationToast } from "../components/NotificationToast.tsx";
+import { useAppViewport } from "../hooks/useAppViewport.ts";
 import i18n, { pickLang } from "../i18n.ts";
 import { AudioProvider } from "../useAudioPlayer.tsx";
 import { AuthProvider, useAuth } from "../useAuth.tsx";
@@ -18,6 +20,7 @@ function GlobalLocalLock() {
 }
 
 function RootDocument() {
+	useAppViewport();
 	useEffect(() => {
 		function updateLang() {
 			document.documentElement.lang = pickLang(i18n.language);
@@ -48,10 +51,11 @@ function RootDocument() {
 }
 
 function NotFound() {
+	const { t } = useTranslation();
 	return (
 		<div style={{ padding: 24, textAlign: "center" }}>
-			<p>Page not found.</p>
-			<Link to="/">Back to home</Link>
+			<p>{t("notFound.title")}</p>
+			<Link to="/">{t("notFound.back")}</Link>
 		</div>
 	);
 }

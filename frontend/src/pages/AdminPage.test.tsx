@@ -25,6 +25,13 @@ vi.mock("../useAuth.tsx", () => ({
 	useAuth: () => ({ activeAccount: account }),
 }));
 
+// This suite asserts translation keys: an identity t() keeps it stable
+// regardless of the interface language chosen by the test environment.
+vi.mock("../i18n.ts", () => ({
+	default: { t: (key: string) => key, language: "en" },
+	getCurrentLocale: () => "en",
+}));
+
 const { adminListUsers, adminPatchUser } = await import("../api.ts");
 
 beforeEach(() => {

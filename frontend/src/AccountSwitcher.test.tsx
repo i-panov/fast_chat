@@ -64,9 +64,9 @@ function renderSwitcher(
 	);
 }
 
-const LOGOUT_BUTTON = /Logout|accounts\.logout/;
+const LOGOUT_BUTTON = /Sign out|Logout|accounts\.logout/;
 const CANCEL_BUTTON = /^Cancel$|accounts\.cancel/;
-const CLEAR_DATA_BUTTON = /Clear cache|accounts\.clearData/;
+const CLEAR_DATA_BUTTON = /Clear app data|Clear cache|accounts\.clearData/;
 const BACKUP_BUTTON = /Key backup|backup\.open/;
 const ADD_ACCOUNT_BUTTON = /Add Account|accounts\.add/;
 
@@ -115,6 +115,12 @@ describe("account switcher", () => {
 		fireEvent.click(screen.getByText("@alice"));
 
 		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it("offers the interface language selector", async () => {
+		renderSwitcher({});
+
+		expect(await screen.findByRole("combobox")).toBeTruthy();
 	});
 
 	it("confirms logout", async () => {
