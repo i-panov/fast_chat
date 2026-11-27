@@ -1,6 +1,6 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { LoginPage } from "../pages/LoginPage.tsx";
-import { readAnyToken } from "../utils/activeToken.ts";
+import { readActiveToken } from "../utils/activeToken.ts";
 
 export const Route = createFileRoute("/login")({
 	validateSearch: (search: Record<string, unknown>) => ({
@@ -12,7 +12,7 @@ export const Route = createFileRoute("/login")({
 		// validateSearch only ever yields string|undefined, so no other
 		// truthy forms need handling here.
 		if (s.add === "1") return;
-		if (readAnyToken() !== null) {
+		if (readActiveToken() !== null) {
 			// eslint-disable-next-line @typescript-eslint/only-throw-error
 			throw redirect({
 				to: "/chat",

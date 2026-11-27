@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { getVapidPublicKey, subscribePush } from "../api.ts";
-import { readAnyToken } from "../utils/activeToken.ts";
+import { readActiveToken } from "../utils/activeToken.ts";
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
 	const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -115,7 +115,7 @@ export function usePushNotifications(token: string) {
 		// would silently disable notifications for the account that is still
 		// signed in, and its own tab would not resubscribe until a token
 		// change.
-		if (readAnyToken() !== null) return;
+		if (readActiveToken() !== null) return;
 		didUnsubscribeRef.current = true;
 
 		void (async () => {

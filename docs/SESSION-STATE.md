@@ -40,7 +40,9 @@
 Проверки: `make backend:lint` — 0 issues; `make frontend:lint` — 0 ошибок
 (39 задокументированных `set-state-in-effect`); `go test -race ./...` — все
 пакеты ok; `npx vitest run` — 985+ тестов passed; `make frontend:e2e` — 12/12
-passed.
+passed; статические анализаторы: semgrep (штатный и `analyze:deep`) — 0
+findings, CodeQL Go/JS — 0 эффективных (3 подавлены `inSource` с обоснованием),
+knip — 0, size-limit и `npm audit` — в норме.
 
 Осталось (отложено осознанно, подробно — `docs/REVIEW-BACKLOG.md`):
 

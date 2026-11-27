@@ -509,7 +509,7 @@ func (c *Client) CloseWaitContext(ctx context.Context) error {
 func (c *Client) streamHTTPClient() *http.Client {
 	base := c.httpClient()
 	if base == nil {
-		return &http.Client{CheckRedirect: noCrossHostRedirect}
+		return fallbackHTTPClient()
 	}
 	clone := *base
 	clone.Timeout = 0
@@ -533,7 +533,7 @@ func (c *Client) httpClient() *http.Client {
 func (c *Client) signedHTTPClient() *http.Client {
 	base := c.httpClient()
 	if base == nil {
-		return &http.Client{CheckRedirect: noCrossHostRedirect}
+		return fallbackHTTPClient()
 	}
 
 	if base.CheckRedirect != nil {

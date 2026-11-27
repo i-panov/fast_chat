@@ -11,7 +11,7 @@ import type { TFunction } from "i18next";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api.ts";
 
-export const PAGE_SIZE = 50;
+const PAGE_SIZE = 50;
 export const COLUMN_NAME = "admin.name";
 export const COLUMN_ACTIONS = "admin.actions";
 

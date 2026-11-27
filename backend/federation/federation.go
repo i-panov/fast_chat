@@ -157,6 +157,15 @@ func New(privateKey *rsa.PrivateKey, serverDomain, scheme string, timeoutSec int
 	return mgr
 }
 
+// fallbackHTTPClient is used only when no client was injected (tests, or a
+// zero-value struct). It still dials through the SSRF-safe transport: a nil
+// client must never mean an unrestricted one.
+func fallbackHTTPClient() *http.Client {
+	client := NewSafeHTTPClient(0, false)
+	client.CheckRedirect = noCrossHostRedirect
+	return client
+}
+
 // NewSafeHTTPClient returns an http.Client whose dialer refuses to
 // connect to loopback, private, link-local, unspecified, or multicast
 // addresses. This closes the DNS-rebinding SSRF hole: the hostname is
@@ -645,7 +654,7 @@ func (m *Manager) httpClient() *http.Client {
 func (m *Manager) redirectSafeClient() *http.Client {
 	client := m.httpClient()
 	if client == nil {
-		return &http.Client{CheckRedirect: noCrossHostRedirect}
+		return fallbackHTTPClient()
 	}
 
 	if client.CheckRedirect != nil {

@@ -9,7 +9,7 @@ import { DB_NAME } from "../db/schema.ts";
 import { LANGUAGE_PREFERENCE_KEY } from "../languagePreference.ts";
 import { deleteBackgroundSessionDB } from "../sync/backgroundSession.ts";
 import { setTokenProvider } from "../sync/syncEngine.ts";
-import { readAnyToken } from "./activeToken.ts";
+import { readActiveToken } from "./activeToken.ts";
 import { clearFileCache } from "./fileCache.ts";
 
 async function browserUnsubscribePush(): Promise<void> {
@@ -127,7 +127,7 @@ export async function clearAllData(): Promise<ClearAllDataResult> {
 	const language = localStorage.getItem(LANGUAGE_PREFERENCE_KEY);
 	// Revoke the server session before its token is erased: a token that only
 	// disappears from this browser stays usable until it expires.
-	const token = readAnyToken();
+	const token = readActiveToken();
 
 	// Stop any in-flight sync before deleting: a tick that starts after the
 	// reset would recreate the database and refill it with downloaded history.

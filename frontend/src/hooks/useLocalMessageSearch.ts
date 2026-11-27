@@ -16,7 +16,7 @@ import { useLocalLockRevision } from "./useLocalLockRevision.ts";
 const MIN_QUERY = 2;
 const MAX_RESULTS = 50;
 
-export interface MessageSearchResult {
+interface MessageSearchResult {
 	chatId: string;
 	chatTitle: string;
 	message: Message;

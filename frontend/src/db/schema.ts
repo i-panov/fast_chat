@@ -114,7 +114,7 @@ interface OutboxOpDelete {
 	threadId?: string;
 }
 
-export interface OutboxOpReaction {
+interface OutboxOpReaction {
 	kind: "reaction";
 	opId: string;
 	status?: "pending" | "failed";
@@ -140,7 +140,7 @@ export interface OutboxOpPin {
 	attempts: number;
 }
 
-export interface OutboxOpRead {
+interface OutboxOpRead {
 	kind: "read";
 	opId: string;
 	status?: "pending" | "failed";

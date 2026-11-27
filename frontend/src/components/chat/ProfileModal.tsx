@@ -138,7 +138,7 @@ export function ProfileModal({ open, onClose, token, user }: Props) {
 					>
 						{(props) => (
 							<Button
-								{...props}
+								onClick={props.onClick}
 								loading={busy === "upload"}
 								disabled={busy !== null}
 								variant="default"

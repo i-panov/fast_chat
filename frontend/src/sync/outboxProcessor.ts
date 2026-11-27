@@ -359,7 +359,7 @@ async function runDelete(
 // revertPin restores the optimistic pinned list of a chat. It is shared with
 // the delta applier: a tombstone that drops a queued pin must undo the same
 // optimistic entry.
-export async function revertPin(op: OutboxOpPin): Promise<void> {
+async function revertPin(op: OutboxOpPin): Promise<void> {
 	const chat = await chatsRepo.getById(op.chatId);
 	if (chat === undefined) return;
 

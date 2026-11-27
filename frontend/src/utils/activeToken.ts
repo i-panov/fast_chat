@@ -105,10 +105,12 @@ export function removeLastActiveToken(): void {
 	}
 }
 
-// readAnyToken returns a token of any stored account or null when there is
-// none left. It answers "is this tab logged in" for the login route: a token
-// from a dead session must not bounce the user back to an empty chat.
-export function readAnyToken(): string | null {
+// readActiveToken returns the token this tab should use right now: the
+// per-tab token when its account still exists, otherwise the last active or
+// the first stored account. It answers "is this tab logged in" for route
+// guards: a token from a dead session must not bounce the user back to an
+// empty chat.
+export function readActiveToken(): string | null {
 	const accounts = readAccounts();
 	const session = readSessionToken();
 	if (accounts.length === 0) {
@@ -154,7 +156,3 @@ export function resolveActiveToken(
 	}
 	return first;
 }
-
-// readActiveToken is the name the route guards use: the token this tab should
-// use right now, validated against the account list.
-export const readActiveToken = readAnyToken;

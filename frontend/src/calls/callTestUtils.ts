@@ -71,7 +71,7 @@ export class FakePeerConnection {
 // FakeTrack is a media track of the fake stream. The manager toggles
 // `enabled`; the tests inspect it, because a flag alone hides the
 // "muted but the microphone still transmits" bug.
-export interface FakeTrack {
+interface FakeTrack {
 	kind: "audio" | "video";
 	enabled: boolean;
 	stop: () => void;
@@ -83,7 +83,7 @@ export interface FakeStream extends MediaStream {
 }
 
 // fakeStream builds a stream with real-looking audio and video tracks.
-export function fakeStream(stop: () => void = () => {}): FakeStream {
+function fakeStream(stop: () => void = () => {}): FakeStream {
 	const audioTrack: FakeTrack = { kind: "audio", enabled: true, stop };
 	const videoTrack: FakeTrack = { kind: "video", enabled: true, stop };
 	const tracks = [audioTrack, videoTrack];

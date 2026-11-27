@@ -803,6 +803,7 @@ export function adminListUsers(
 	offset: number,
 ): Promise<AdminUserPage> {
 	return request<AdminUserPage>(
+		// nosemgrep: javascript.lang.correctness.missing-template-string-indicator -- adminQuery returns "?..." or ""
 		`/api/admin/users${adminQuery({ query, limit: 50, offset })}`,
 		token,
 	);
@@ -826,6 +827,7 @@ export function adminListChats(
 	offset: number,
 ): Promise<AdminChatPage> {
 	return request<AdminChatPage>(
+		// nosemgrep: javascript.lang.correctness.missing-template-string-indicator -- adminQuery returns "?..." or ""
 		`/api/admin/chats${adminQuery({ query, limit: 50, offset })}`,
 		token,
 	);
@@ -848,6 +850,7 @@ export function adminListMessages(
 	before?: string,
 ): Promise<{ messages: Message[]; nextCursor?: string; hasMore: boolean }> {
 	return request(
+		// nosemgrep: javascript.lang.correctness.missing-template-string-indicator -- adminQuery returns "?..." or ""
 		`/api/admin/chats/${encodeURIComponent(chatId)}/messages${adminQuery({ limit: 50, before })}`,
 		token,
 	);

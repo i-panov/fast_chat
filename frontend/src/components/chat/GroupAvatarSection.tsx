@@ -94,7 +94,12 @@ export function GroupAvatarSection({
 						accept="image/png,image/jpeg,image/gif,image/webp"
 					>
 						{(props) => (
-							<Button {...props} variant="default" size="xs" loading={busy}>
+							<Button
+								onClick={props.onClick}
+								variant="default"
+								size="xs"
+								loading={busy}
+							>
 								{t("chat.uploadAvatar")}
 							</Button>
 						)}

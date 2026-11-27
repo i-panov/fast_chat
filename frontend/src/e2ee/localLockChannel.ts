@@ -3,7 +3,7 @@ import { KEY_TAB_ID } from "./keys.ts";
 // Cross-tab channel for an explicit "lock now": auto-lock already runs in each
 // tab, but a manual lock must not leave another tab of the same account
 // unlocked in memory.
-export const LOCAL_LOCK_CHANNEL = "fastchat-local-lock";
+const LOCAL_LOCK_CHANNEL = "fastchat-local-lock";
 
 interface LockRequest {
 	scope: string;

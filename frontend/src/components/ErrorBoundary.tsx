@@ -3,7 +3,7 @@ import { AlertTriangle, RotateCcw } from "lucide-react";
 import { Component, type ReactNode } from "react";
 import i18n from "../i18n.ts";
 
-export interface ErrorDiagnostic {
+interface ErrorDiagnostic {
 	// Deliberately no message: an exception text can contain chat names,
 	// user ids or message fragments. Component stack is structural only.
 	name: string;

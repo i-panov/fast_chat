@@ -1,9 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-	readActiveToken,
-	readAnyToken,
-	resolveActiveToken,
-} from "./activeToken.ts";
+import { readActiveToken, resolveActiveToken } from "./activeToken.ts";
 
 function seedAccounts(tokens: string[]) {
 	localStorage.setItem(
@@ -30,7 +26,7 @@ describe("activeToken", () => {
 		seedAccounts(["t2"]);
 		sessionStorage.setItem("activeToken", "dead");
 
-		expect(readAnyToken()).toBe("t2");
+		expect(readActiveToken()).toBe("t2");
 		expect(readActiveToken()).toBe("t2");
 	});
 

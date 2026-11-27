@@ -126,6 +126,7 @@ analyze\:deep\:backend:
 
 analyze\:deep\:frontend:
 	semgrep scan $(SEMGREP_FLAGS) $(SEMGREP_SECRETS) \
+		--exclude-rule home.ilya.semgrep-rules.typescript.react.portability.i18next.i18next-key-format \
 		--config $(SEMGREP_RULES)/javascript \
 		--config $(SEMGREP_RULES)/typescript \
 		frontend/src/

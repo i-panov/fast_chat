@@ -24,11 +24,6 @@ import {
 	reportStaleEnvelopeVersion,
 } from "./keys.ts";
 
-export interface EncryptResult {
-	text: string; // base64 ciphertext
-	encryptedPayload: string; // JSON payload
-}
-
 const UNDECRYPTABLE_I18N_KEY = "message.undecryptable";
 
 function sanitizeLocation(value: unknown): Message["location"] {

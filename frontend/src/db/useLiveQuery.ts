@@ -7,6 +7,7 @@ import { subscribeToChanges } from "./notify.ts";
 // used via the ref, so memoization only affects *when* we re-run, never
 // *what* runs.
 export function useLiveQuery<T>(query: () => T | Promise<T>): T {
+	// nosemgrep: home.ilya.semgrep-rules.typescript.react.best-practice.react-props-in-state -- initializer from a query factory, not a prop copy
 	const [value, setValue] = useState<T>(() => {
 		const result = query();
 		// Queries that hit IDB are always async; the initial value is

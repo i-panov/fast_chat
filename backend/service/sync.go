@@ -311,6 +311,7 @@ func (s *Service) enrichSyncChat(
 		}
 		memberView := MemberView{ID: memberID, Nick: nick, Online: online}
 		if user, ok := users[memberID]; ok {
+			// nosemgrep: go.lang.correctness.eqeq-is-bad -- empty-string check, not a self-comparison
 			if nick == "" {
 				nick = user.DisplayName
 				if nick == "" {
@@ -324,7 +325,7 @@ func (s *Service) enrichSyncChat(
 			if user.AvatarFileID != "" {
 				memberView.AvatarURL = "/api/files/" + user.AvatarFileID
 			}
-		} else if nick == "" {
+		} else if nick == "" { // nosemgrep: go.lang.correctness.eqeq-is-bad -- empty-string check, not a self-comparison
 			memberView.Nick = memberID
 		}
 		view.Members = append(view.Members, memberView)

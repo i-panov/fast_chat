@@ -8,7 +8,7 @@ export interface LocalLockSettings {
 }
 
 const SETTINGS_META = "e2ee.lockSettings";
-export const LOCAL_LOCK_SETTINGS_EVENT = "fastchat-local-lock-settings";
+const LOCAL_LOCK_SETTINGS_EVENT = "fastchat-local-lock-settings";
 const SETTINGS_CHANNEL = "fastchat-lock-settings";
 
 export const DEFAULT_LOCK_SETTINGS: LocalLockSettings = {

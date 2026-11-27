@@ -49,6 +49,7 @@ async function computePeaks(url: string): Promise<number[] | null> {
 }
 
 export function useAudioWaveform(url: string | null): number[] | null {
+	// nosemgrep: home.ilya.semgrep-rules.typescript.react.best-practice.react-props-in-state -- synchronous cache seed; the effect below updates it
 	const [peaks, setPeaks] = useState<number[] | null>(() =>
 		url === null ? null : (cache.get(url) ?? null),
 	);

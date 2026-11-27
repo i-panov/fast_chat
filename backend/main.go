@@ -487,6 +487,7 @@ func main() {
 		os.Exit(1)
 	}
 	//nolint:gosec // a directory needs the execute bit; 0750 is restrictive
+	// nosemgrep: go.lang.correctness.permissions.incorrect-default-permission -- a directory needs the execute bit
 	if err := os.Chmod(cfg.Uploads.Dir, 0o750); err != nil {
 		slog.Warn("failed to tighten upload directory permissions", "err", err)
 	}
@@ -683,6 +684,7 @@ func prepareDatabaseDir(path string) error {
 	// MkdirAll keeps the mode of an existing directory. Tighten it: the
 	// database holds message history and hashed session tokens.
 	//nolint:gosec // a directory needs the execute bit; 0700 is restrictive
+	// nosemgrep: go.lang.correctness.permissions.incorrect-default-permission -- a directory needs the execute bit
 	if err := os.Chmod(dir, 0o700); err != nil {
 		slog.Warn("failed to tighten data directory permissions", "err", err)
 	}
