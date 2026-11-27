@@ -340,6 +340,72 @@ describe("useSse", () => {
 		expect(mockSseAuth()).toHaveBeenCalledTimes(1);
 	});
 
+	it("stops the stream for good on the per-account connection cap", async () => {
+		mockSseAuth().mockRejectedValue(
+			Object.assign(new Error("http 429: too many open connections"), {
+				status: 429,
+				code: "sse_limit",
+			}),
+		);
+		const onEvent = vi.fn();
+		renderHook(() => useSse("tok", onEvent));
+
+		act(() => {
+			lastSource().onopen?.();
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+		});
+
+		expect(onEvent).toHaveBeenCalledWith("sse_limit", null);
+		expect(onEvent).not.toHaveBeenCalledWith("sse_closed", null);
+
+		act(() => {
+			vi.advanceTimersByTime(120_000);
+		});
+		expect(MockEventSource.instances).toHaveLength(1);
+	});
+
+	it("reconnects with backoff on the sse-auth rate limit", async () => {
+		// 60 requests per minute per IP: transient, unlike the per-account cap.
+		mockSseAuth().mockRejectedValue(
+			Object.assign(new Error("http 429: too many requests"), { status: 429 }),
+		);
+		const onEvent = vi.fn();
+		renderHook(() => useSse("tok", onEvent));
+
+		act(() => {
+			lastSource().onopen?.();
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+		});
+
+		expect(onEvent).not.toHaveBeenCalledWith("sse_limit", null);
+		expect(onEvent).toHaveBeenCalledWith("sse_closed", null);
+
+		act(() => {
+			vi.advanceTimersByTime(31_000);
+		});
+		expect(MockEventSource.instances).toHaveLength(2);
+	});
+
+	it("drops events queued by the previous account after a token switch", async () => {
+		const onEvent = vi.fn();
+		const { rerender } = renderHook(({ token }) => useSse(token, onEvent), {
+			initialProps: { token: "t1" },
+		});
+		const previous = lastSource();
+		previous.emit("new_message", { id: "m1" });
+
+		// The new account reopens the stream: the event queued by the old
+		// socket must not run against the new account's database.
+		rerender({ token: "t2" });
+		await act(async () => {});
+
+		expect(onEvent).not.toHaveBeenCalled();
+	});
+
 	it("ignores errors after teardown", () => {
 		const onEvent = vi.fn();
 		const { unmount } = renderHook(() => useSse("tok", onEvent));

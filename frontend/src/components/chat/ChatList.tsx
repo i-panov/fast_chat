@@ -10,6 +10,7 @@ import {
 import { Star, Trash2, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
+import { useSyncStatus } from "../../hooks/useSyncStatus.ts";
 import type { Chat } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { chatTitle } from "../../utils/chat.ts";
@@ -68,6 +69,7 @@ interface Props {
 	chats: Chat[];
 	activeChatId: string | null;
 	userId: string;
+	loading?: boolean;
 	onSelectChat: (chatId: string) => void;
 	onDeleteChat?: (chat: Chat) => void;
 }
@@ -76,14 +78,29 @@ export function ChatList({
 	chats,
 	activeChatId,
 	userId,
+	loading,
 	onSelectChat,
 	onDeleteChat,
 }: Props) {
 	const { t } = useTranslation();
+	const syncState = useSyncStatus();
+	// An empty list during the first sync is not "no chats yet".
+	const showLoading =
+		chats.length === 0 && (loading === true || syncState === "syncing");
+	const titleCounts = new Map<string, number>();
+	for (const chat of chats) {
+		const title = chatTitle(chat, userId);
+		titleCounts.set(title, (titleCounts.get(title) ?? 0) + 1);
+	}
 
 	return (
 		<ScrollArea style={{ flex: 1 }}>
-			{chats.length === 0 && (
+			{showLoading && (
+				<Group justify="center" py={32}>
+					<Loader size="sm" aria-label={t("chat.loading")} />
+				</Group>
+			)}
+			{!showLoading && chats.length === 0 && (
 				<Text ta="center" c="dimmed" size="sm" py={32}>
 					{t("chat.noChats")}
 				</Text>
@@ -97,6 +114,16 @@ export function ChatList({
 						? undefined
 						: chat.members.find((m) => m.id !== userId);
 				const isOnline = otherMember?.online ?? false;
+				// Two accounts with the same nick on different servers would
+				// otherwise look identical in the list.
+				const domain =
+					!isGroup && !isSelf && (titleCounts.get(title) ?? 0) > 1
+						? otherMember?.id.split(":").slice(1).join(":")
+						: undefined;
+				const displayTitle =
+					domain !== undefined && domain !== ""
+						? `${title} · ${domain}`
+						: title;
 				// A group is removed for everyone, so only its owner may do it.
 				// Favorites are not deletable; a private chat is removed for
 				// the current user only.
@@ -125,6 +152,7 @@ export function ChatList({
 							paddingBottom: 8,
 						}}
 						onClick={() => onSelectChat(chat.id)}
+						aria-current={chat.id === activeChatId ? "true" : undefined}
 					>
 						<Group gap={8} wrap="nowrap" style={{ width: "100%" }}>
 							<ChatAvatar
@@ -136,7 +164,7 @@ export function ChatList({
 							<div style={{ minWidth: 0, flex: 1 }}>
 								<Group gap={4} wrap="nowrap">
 									<Text size="sm" truncate>
-										{title}
+										{displayTitle}
 									</Text>
 									{!isGroup && !isSelf && <OnlineDot online={isOnline} />}
 								</Group>

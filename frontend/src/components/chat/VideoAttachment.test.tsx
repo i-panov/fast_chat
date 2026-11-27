@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encryptFileStream, generateFileKey } from "../../e2ee/file-crypto.ts";
 import {
@@ -154,6 +154,34 @@ describe("VideoAttachment", () => {
 			expect(container.querySelector("video")).toBeTruthy();
 		});
 		expect(screen.queryByText(LOAD_VIDEO_FAILED)).toBeNull();
+	});
+
+	it("shows an error when the player cannot decode the source", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn((_url: string, init?: RequestInit) => {
+				if ((init?.method ?? "GET") === "HEAD") {
+					return Promise.resolve(
+						new Response(null, {
+							headers: { "Content-Length": "0", "Content-Type": "video/mp4" },
+						}),
+					);
+				}
+				return Promise.resolve(new Response(new Blob(["video"])));
+			}),
+		);
+		const { container } = renderWithAccount(
+			<VideoAttachment file={videoFile()} />,
+		);
+
+		const video = await waitFor(() => {
+			const element = container.querySelector("video");
+			if (element === null) throw new Error("no video");
+			return element;
+		});
+		fireEvent.error(video);
+
+		expect(await screen.findByText(LOAD_VIDEO_FAILED)).toBeTruthy();
 	});
 
 	it("shows an error when loading fails", async () => {

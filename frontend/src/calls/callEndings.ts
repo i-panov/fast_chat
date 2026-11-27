@@ -24,13 +24,30 @@ export function settleEnded(
 	ctx.generation += 1;
 	ctx.accepting = false;
 	releaseMedia(ctx);
+
+	// The state of the call itself goes with it: a muted microphone and a
+	// peer of the finished call must not leak into the next one.
+	ctx.muted = false;
+	ctx.cameraOn = true;
+
 	// The identifier stays with the ending: a page that learns about
 	// a missed call on start reports it once, and the identifier is
 	// what tells the same call from the next one.
-	if (ctx.callId === undefined && typeof ending.callId === "string") {
+	const adopted = ctx.callId === undefined;
+	if (adopted && typeof ending.callId === "string") {
 		ctx.callId = ending.callId;
 	}
+	if (adopted) {
+		// An ending this tab never tracked belongs to a call of another
+		// tab: its peer is known only from the ending itself.
+		ctx.peerId = undefined;
+		ctx.peerNick = undefined;
+	}
+	if (typeof ending.callId === "string") {
+		ctx.lastEndedCallId = ending.callId;
+	}
 	if (typeof ending.peerId === "string") ctx.peerId = ending.peerId;
+	if (typeof ending.peerNick === "string") ctx.peerNick = ending.peerNick;
 	if (ending.role === "caller" || ending.role === "callee") {
 		ctx.role = ending.role;
 	}

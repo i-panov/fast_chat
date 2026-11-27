@@ -275,6 +275,68 @@ describe("callManager endings", () => {
 		expect(listener).not.toHaveBeenCalled();
 	});
 
+	it("ends a ringing call by the local timeout", async () => {
+		const stop = vi.fn();
+		const stream = stubMedia(stop);
+		const api = fakeApi();
+		const manager = createCallManager(api);
+
+		await manager.start("chat-1");
+		manager.timeout();
+
+		// The terminal event can be lost: the local backstop ends the call,
+		// frees the microphone/camera and tells the server.
+		expect(api.hangupCall).toHaveBeenCalledWith("tok", "c-1", "timeout");
+		expect(manager.state().phase).toBe("ended");
+		expect(manager.state().reason).toBe("timeout");
+		expect(stream.audioTrack.stop).toHaveBeenCalled();
+		expect(stream.videoTrack.stop).toHaveBeenCalled();
+	});
+
+	it("ends the call when the answer cannot be applied", async () => {
+		const api = fakeApi();
+		const manager = createCallManager(api);
+		// eslint-disable-next-line @typescript-eslint/unbound-method -- saving the prototype method to restore it after the test
+		const original = FakePeerConnection.prototype.setRemoteDescription;
+
+		FakePeerConnection.prototype.setRemoteDescription = () =>
+			Promise.reject(new Error("bad answer"));
+
+		try {
+			await manager.start("chat-1");
+			manager.handleAccepted({ callId: "c-1", answer: "answer-sdp" });
+
+			await vi.waitFor(() => {
+				expect(manager.state().phase).toBe("ended");
+			});
+			expect(api.hangupCall).toHaveBeenCalledWith("tok", "c-1", "peer-left");
+		} finally {
+			FakePeerConnection.prototype.setRemoteDescription = original;
+		}
+	});
+
+	it("ignores the repeated ending of the same call", () => {
+		const manager = createCallManager(fakeApi());
+
+		manager.handleEnded({
+			callId: "c-9",
+			reason: "timeout",
+			peerId: "bob:test",
+			role: "callee",
+		});
+		const listener = vi.fn();
+		manager.subscribe(listener);
+
+		manager.handleEnded({
+			callId: "c-9",
+			reason: "timeout",
+			peerId: "bob:test",
+			role: "callee",
+		});
+
+		expect(listener).not.toHaveBeenCalled();
+	});
+
 	it("ends a failed connection on the server at once", async () => {
 		const api = fakeApi();
 		const manager = createCallManager(api);

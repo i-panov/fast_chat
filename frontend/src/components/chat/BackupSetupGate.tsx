@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KeyPair } from "../../e2ee/crypto.ts";
 import {
 	getMyKeyPair,
@@ -7,6 +7,24 @@ import {
 } from "../../e2ee/keys.ts";
 import { useLocalLockRevision } from "../../hooks/useLocalLockRevision.ts";
 import { BackupSettingsModal } from "./BackupSettingsModal.tsx";
+
+const DISMISSED_PREFIX = "e2ee.backupGateDismissed:";
+
+function wasDismissed(token: string): boolean {
+	try {
+		return sessionStorage.getItem(`${DISMISSED_PREFIX}${token}`) === "1";
+	} catch {
+		return false;
+	}
+}
+
+function rememberDismissed(token: string): void {
+	try {
+		sessionStorage.setItem(`${DISMISSED_PREFIX}${token}`, "1");
+	} catch {
+		// Storage blocked: the in-memory ref still covers this mount.
+	}
+}
 
 // BackupSetupGate blocks the first E2EE use until the account has a
 // password-wrapped server backup. Without it a new device could never recover
@@ -19,6 +37,10 @@ export function BackupSetupGate({
 	const [required, setRequired] = useState(false);
 	const [keyPair, setKeyPair] = useState<KeyPair | null>(null);
 	const lockRevision = useLocalLockRevision();
+	// "Continue without a backup" must survive the next online event and lock
+	// revision: the server still has no backup, so a re-check would reopen an
+	// unclosable modal and make the escape look broken.
+	const dismissedForToken = useRef<string | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -50,7 +72,8 @@ export function BackupSetupGate({
 				// failure must not lock the user in an unclosable modal.
 				if (!cancelled) {
 					setRequired(
-						state === "none" || state === "legacy" || state === "stale",
+						dismissedForToken.current !== activeToken &&
+							(state === "none" || state === "legacy" || state === "stale"),
 					);
 				}
 			})
@@ -68,6 +91,7 @@ export function BackupSetupGate({
 		if (activeToken === null) return;
 		let cancelled = false;
 		const onOnline = () => {
+			if (wasDismissed(activeToken)) return;
 			void getMyKeyPair()
 				.then(async (pair) => {
 					if (cancelled) return;
@@ -85,7 +109,8 @@ export function BackupSetupGate({
 						return;
 					}
 					setRequired(
-						state === "none" || state === "legacy" || state === "stale",
+						dismissedForToken.current !== activeToken &&
+							(state === "none" || state === "legacy" || state === "stale"),
 					);
 				})
 				.catch(() => {});
@@ -107,6 +132,8 @@ export function BackupSetupGate({
 				// The modal's only close path in required mode is the explicit
 				// "continue without a backup" escape after a failed save; do not
 				// re-open it from here or that escape would do nothing.
+				dismissedForToken.current = activeToken;
+				rememberDismissed(activeToken);
 				setRequired(false);
 			}}
 			token={activeToken}

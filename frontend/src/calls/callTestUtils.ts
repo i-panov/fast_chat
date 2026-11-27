@@ -68,6 +68,38 @@ export class FakePeerConnection {
 	}
 }
 
+// FakeTrack is a media track of the fake stream. The manager toggles
+// `enabled`; the tests inspect it, because a flag alone hides the
+// "muted but the microphone still transmits" bug.
+export interface FakeTrack {
+	kind: "audio" | "video";
+	enabled: boolean;
+	stop: () => void;
+}
+
+export interface FakeStream extends MediaStream {
+	audioTrack: FakeTrack;
+	videoTrack: FakeTrack;
+}
+
+// fakeStream builds a stream with real-looking audio and video tracks.
+export function fakeStream(stop: () => void = () => {}): FakeStream {
+	const audioTrack: FakeTrack = { kind: "audio", enabled: true, stop };
+	const videoTrack: FakeTrack = { kind: "video", enabled: true, stop };
+	const tracks = [audioTrack, videoTrack];
+	const stream = {
+		audioTrack,
+		videoTrack,
+		getTracks: () => tracks,
+		getAudioTracks: () => [audioTrack],
+		getVideoTracks: () => [videoTrack],
+		addTrack: () => {},
+		removeTrack: () => {},
+	} as unknown as FakeStream;
+
+	return stream;
+}
+
 // fakeApi is the server of the call domain: it answers without a network.
 export function fakeApi(overrides: Partial<CallApi> = {}): CallApi {
 	return {
@@ -86,14 +118,11 @@ export function fakeApi(overrides: Partial<CallApi> = {}): CallApi {
 // check it directly: a method taken from the navigator is not bound.
 export let getUserMediaMock: ReturnType<typeof vi.fn>;
 
-export function stubMedia(stop = vi.fn()) {
-	const getUserMedia = vi.fn().mockImplementation(() =>
-		Promise.resolve({
-			getTracks: () => [{ stop }],
-			getAudioTracks: () => [],
-			getVideoTracks: () => [],
-		}),
-	);
+export function stubMedia(stop = vi.fn()): FakeStream {
+	const stream = fakeStream(stop);
+	const getUserMedia = vi
+		.fn()
+		.mockImplementation(() => Promise.resolve(stream));
 
 	getUserMediaMock = getUserMedia;
 
@@ -102,6 +131,8 @@ export function stubMedia(stop = vi.fn()) {
 			getUserMedia,
 		},
 	});
+
+	return stream;
 }
 
 // incoming tells the manager that a call comes in.

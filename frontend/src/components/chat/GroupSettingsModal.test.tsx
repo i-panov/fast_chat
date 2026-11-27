@@ -5,9 +5,11 @@ import type { Chat } from "../../types/api.ts";
 import { AuthProvider } from "../../useAuth.tsx";
 import { GroupSettingsModal } from "./GroupSettingsModal.tsx";
 
-vi.mock("../../api.ts", () => ({
-	searchUsers: vi.fn(),
-}));
+vi.mock("../../api.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../api.ts")>();
+
+	return { ...actual, searchUsers: vi.fn() };
+});
 
 const { searchUsers } = await import("../../api.ts");
 
@@ -15,6 +17,7 @@ const RENAME_BUTTON = /Rename|chat\.rename/;
 const SAVE_BUTTON = /^Save$|^chat\.save$/;
 const LEAVE_BUTTON = /Leave group|chat\.leaveGroup/;
 const DELETE_BUTTON = /Delete group|chat\.deleteGroup/;
+const DELETE_CONFIRM_NAME_RE = /Delete the group "Team"|Удалить группу «Team»/;
 
 function seedAccount() {
 	localStorage.setItem(
@@ -84,7 +87,8 @@ function nameDraftInput(): HTMLInputElement {
 		(el): el is HTMLInputElement =>
 			el instanceof HTMLInputElement && el.type !== "file",
 	);
-	const draft = inputs.find((i) => i.value === "Team");
+	// The search field is empty; the rename draft is the only filled input.
+	const draft = inputs.find((i) => i.value !== "");
 	if (!draft) throw new Error("no draft input");
 
 	return draft;
@@ -176,7 +180,7 @@ describe("group settings modal", () => {
 		renderModal(nonOwner, cb);
 
 		fireEvent.click(screen.getByText(LEAVE_BUTTON));
-		fireEvent.click(screen.getByText(SAVE_BUTTON));
+		fireEvent.click(screen.getByText(LEAVE_BUTTON));
 
 		await waitFor(() => {
 			expect(cb.onRemoveMember).toHaveBeenCalledWith("alice:test");
@@ -188,7 +192,9 @@ describe("group settings modal", () => {
 		renderModal(chat(), cb);
 
 		fireEvent.click(screen.getByText(DELETE_BUTTON));
-		fireEvent.click(screen.getByText(SAVE_BUTTON));
+		// The confirmation names the group and labels the action, not "Save".
+		expect(screen.getByText(DELETE_CONFIRM_NAME_RE)).toBeTruthy();
+		fireEvent.click(screen.getByText(DELETE_BUTTON));
 
 		await waitFor(() => {
 			expect(cb.onDelete).toHaveBeenCalledTimes(1);
@@ -212,5 +218,86 @@ describe("group settings modal", () => {
 		});
 		const file = vi.mocked(cb.onUploadAvatar).mock.calls[0][0] as File;
 		expect(file.name).toBe("a.png");
+	});
+
+	it("accepts a long Cyrillic name that fits the rune limit", async () => {
+		const cb = callbacks();
+		renderModal(chat(), cb);
+
+		const name = "г".repeat(40); // 80 UTF-8 bytes, 40 runes
+		fireEvent.click(screen.getByText(RENAME_BUTTON));
+		fireEvent.change(nameDraftInput(), { target: { value: name } });
+		fireEvent.click(screen.getByText(SAVE_BUTTON));
+
+		await waitFor(() => {
+			expect(cb.onRename).toHaveBeenCalledWith(name);
+		});
+		expect(screen.queryByRole("alert")).toBeNull();
+	});
+
+	it("rejects a name longer than 60 runes before sending it", async () => {
+		const cb = callbacks();
+		renderModal(chat(), cb);
+
+		fireEvent.click(screen.getByText(RENAME_BUTTON));
+		fireEvent.change(nameDraftInput(), {
+			target: { value: "г".repeat(61) },
+		});
+		fireEvent.click(screen.getByText(SAVE_BUTTON));
+
+		expect(await screen.findByRole("alert")).toBeTruthy();
+		expect(cb.onRename).not.toHaveBeenCalled();
+	});
+
+	it("shows a rejected rename and keeps editing", async () => {
+		const cb = callbacks({
+			onRename: vi.fn().mockRejectedValue(new Error("http 403")),
+		});
+		renderModal(chat(), cb);
+
+		fireEvent.click(screen.getByText(RENAME_BUTTON));
+		fireEvent.change(nameDraftInput(), { target: { value: "Nope" } });
+		fireEvent.click(screen.getByText(SAVE_BUTTON));
+
+		expect(await screen.findByRole("alert")).toBeTruthy();
+		expect(nameDraftInput().value).toBe("Nope");
+	});
+
+	it("keeps the delete confirmation open when the server refuses", async () => {
+		const cb = callbacks({
+			onDelete: vi.fn().mockRejectedValue(new Error("http 500")),
+		});
+		renderModal(chat(), cb);
+
+		fireEvent.click(screen.getByText(DELETE_BUTTON));
+		fireEvent.click(screen.getByText(DELETE_BUTTON));
+
+		expect(await screen.findByRole("alert")).toBeTruthy();
+		expect(screen.getByText(DELETE_BUTTON)).toBeTruthy();
+	});
+
+	it("does not offer bots as group members", async () => {
+		vi.mocked(searchUsers).mockResolvedValue({
+			users: [
+				{ id: "carol:test", nick: "carol", online: false },
+				{
+					id: "helper_bot:test",
+					nick: "helper_bot",
+					online: true,
+					isBot: true,
+				},
+			],
+		});
+		const cb = callbacks();
+		renderModal(chat(), cb);
+
+		const search = [...document.querySelectorAll("input")].find(
+			(el) => el.getAttribute("placeholder") !== null,
+		);
+		if (!(search instanceof HTMLInputElement)) throw new Error("no search");
+		fireEvent.change(search, { target: { value: "he" } });
+
+		await screen.findByText("@carol");
+		expect(screen.queryByText("@helper_bot")).toBeNull();
 	});
 });

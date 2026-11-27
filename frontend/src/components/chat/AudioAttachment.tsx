@@ -11,6 +11,9 @@ import { BORDER_RADIUS_SM } from "../../utils/constants.ts";
 
 const VOICE_NAME_RE = /^voice-(\d+)s\./;
 const VOICE_PREFIX_RE = /^voice-\d+s\./;
+// The waveform is computed only for a voice message: decoding a long music
+// track on every mount is an out-of-memory risk on a phone.
+const IS_VOICE_RE = /^voice-\d+s\./;
 
 interface Props {
 	file: FileInfo;
@@ -26,7 +29,9 @@ export function AudioAttachment({ file, fileKeys }: Props) {
 		fileKeys,
 		activeAccount?.token,
 	);
-	const peaks = useAudioWaveform(blobUrl);
+	const peaks = useAudioWaveform(
+		IS_VOICE_RE.test(file.originalName) ? blobUrl : null,
+	);
 
 	if (loading) return <Loader size="sm" />;
 	if (error || !blobUrl)

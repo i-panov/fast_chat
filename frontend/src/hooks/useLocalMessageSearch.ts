@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { chatsRepo } from "../db/chatsRepo.ts";
+import { getActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import {
 	getMyKeyPair,
@@ -21,24 +22,44 @@ export interface MessageSearchResult {
 	message: Message;
 }
 
+interface ResultsSnapshot {
+	// Results belong to the account they were decrypted for. A snapshot of
+	// another account (or of a session that has ended since) is never shown:
+	// the local search reads plaintext from the whole account database.
+	userId: string | undefined;
+	results: MessageSearchResult[];
+}
+
+const EMPTY_SNAPSHOT: ResultsSnapshot = { userId: undefined, results: [] };
+
 export function useLocalMessageSearch(userId: string | undefined) {
 	const [query, setQuery] = useState("");
-	const [results, setResults] = useState<MessageSearchResult[]>([]);
+	const [snapshot, setSnapshot] = useState<ResultsSnapshot>(EMPTY_SNAPSHOT);
 	const [loading, setLoading] = useState(false);
 	const lockRevision = useLocalLockRevision();
 
-	useEffect(() => onLocalLockChanged(() => setResults([])), []);
+	useEffect(() => onLocalLockChanged(() => setSnapshot(EMPTY_SNAPSHOT)), []);
 
 	useEffect(() => {
 		// Re-run and drop results when the local lock changes.
 		void lockRevision;
 		const trimmed = query.trim().toLowerCase();
-		if (trimmed.length < MIN_QUERY || userId === undefined) {
-			setResults([]);
+		// The active account is the only database this search may read: after
+		// a switch the prop and the database key disagree for a moment.
+		const accountKey = getActiveAccountKey();
+		const forActiveAccount =
+			userId !== undefined && accountKey !== null && accountKey === userId;
+		if (
+			trimmed.length < MIN_QUERY ||
+			userId === undefined ||
+			!forActiveAccount
+		) {
+			setSnapshot(EMPTY_SNAPSHOT);
 			setLoading(false);
 			return;
 		}
 
+		const ownerId = userId;
 		let cancelled = false;
 		setLoading(true);
 		const timer = setTimeout(() => {
@@ -48,18 +69,18 @@ export function useLocalMessageSearch(userId: string | undefined) {
 						chatsRepo.getAll(),
 						messagesRepo.getAll(),
 					]);
-					if (cancelled) return;
+					if (cancelled || getActiveAccountKey() !== ownerId) return;
 					const titles = new Map(
-						chats.map((chat) => [chat.id, chatTitle(chat, userId)]),
+						chats.map((chat) => [chat.id, chatTitle(chat, ownerId)]),
 					);
 					const key = await getMyKeyPair();
-					if (cancelled) return;
+					if (cancelled || getActiveAccountKey() !== ownerId) return;
 					if ((await hasLocalLock()) && !isLocalLockUnlocked()) return;
 					const out: MessageSearchResult[] = [];
 					for (const row of stored) {
-						if (cancelled) return;
+						if (cancelled || getActiveAccountKey() !== ownerId) return;
 						if (row.status === "deleted") continue;
-						const message = await decryptMessage(row, userId, key);
+						const message = await decryptMessage(row, ownerId, key);
 						if (message.undecryptable === true) continue;
 						if (!message.text.toLowerCase().includes(trimmed)) continue;
 						out.push({
@@ -69,11 +90,11 @@ export function useLocalMessageSearch(userId: string | undefined) {
 						});
 						if (out.length >= MAX_RESULTS) break;
 					}
-					if (cancelled) return;
+					if (cancelled || getActiveAccountKey() !== ownerId) return;
 					if ((await hasLocalLock()) && !isLocalLockUnlocked()) return;
-					setResults(out);
+					setSnapshot({ userId: ownerId, results: out });
 				} catch {
-					if (!cancelled) setResults([]);
+					if (!cancelled) setSnapshot(EMPTY_SNAPSHOT);
 				} finally {
 					if (!cancelled) setLoading(false);
 				}
@@ -85,6 +106,10 @@ export function useLocalMessageSearch(userId: string | undefined) {
 			clearTimeout(timer);
 		};
 	}, [query, userId, lockRevision]);
+
+	// A snapshot of another account is not shown even before the new search
+	// finishes: the previous account's plaintext must not survive the switch.
+	const results = snapshot.userId === userId ? snapshot.results : [];
 
 	return { query, setQuery, results, loading };
 }

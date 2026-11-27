@@ -47,6 +47,53 @@ beforeEach(() => {
 });
 
 describe("processOutbox edits and deletes", () => {
+	it("waits for a failed send of the same message instead of editing", async () => {
+		// The message never reached the server: an edit would 404 and its
+		// handler would drop the edit or, worse, hide the row.
+		await messagesRepo.upsert(
+			{
+				id: "m1",
+				chatId: "chat-1",
+				fromId: "alice:test",
+				fromNick: "alice",
+				text: "a",
+				createdAt: "2026-08-30T09:00:00.000Z",
+			},
+			"failed",
+		);
+		await outboxRepo.enqueue({
+			kind: "send",
+			opId: "send-op",
+			chatId: "chat-1",
+			msgId: "m1",
+			text: "a",
+			pendingFileClientIds: [],
+			createdAt: "2026-08-30T09:00:00.000Z",
+			attempts: 1,
+			status: "failed",
+		});
+		await outboxRepo.enqueue({
+			kind: "edit",
+			opId: "edit-op",
+			chatId: "chat-1",
+			messageId: "m1",
+			text: "b",
+			pendingFileClientIds: [],
+			keptFileIds: [],
+			filesToRemove: [],
+			clientEditedAt: "2026-08-30T10:00:00.000Z",
+			createdAt: "2026-08-30T10:00:00.000Z",
+			attempts: 0,
+		});
+
+		await processOutbox("tok");
+
+		expect(editMessageMock).not.toHaveBeenCalled();
+		// The edit stays queued until the send succeeds.
+		const ops = await outboxRepo.list();
+		expect(ops.filter((o) => o.kind === "edit")).toHaveLength(1);
+	});
+
 	it("edits a message and removes the op", async () => {
 		await messagesRepo.upsert(
 			{
@@ -121,10 +168,12 @@ describe("processOutbox edits and deletes", () => {
 
 		await processOutbox("tok");
 
-		// The tombstone wins: neither the operation nor the local row or the
-		// staged blob survive a message that no longer exists.
+		// The edit is dropped and its staged blob released, but the local row
+		// stays until a server tombstone confirms the message is gone: deleting
+		// it here would hide a still-live message until the next sync.
 		expect(await outboxRepo.list()).toHaveLength(0);
-		expect(await messagesRepo.getById("chat-1", "m1")).toBeUndefined();
+		const kept = await messagesRepo.getById("chat-1", "m1");
+		expect(kept?.status).toBe("sent");
 		expect(await pendingBlobsRepo.get("blob-1")).toBeUndefined();
 	});
 

@@ -34,6 +34,17 @@ function Stream({
 
 		if (element) {
 			element.srcObject = stream ?? null;
+			if (stream) {
+				// autoPlay may be refused before a user gesture (iOS/Safari):
+				// an explicit play() keeps the remote audio going and the
+				// rejection is not an error the call can act on.
+				try {
+					const playback = element.play?.();
+					void playback?.catch(() => undefined);
+				} catch {
+					// A browser without play() on the element keeps autoPlay.
+				}
+			}
 		}
 
 		return () => {

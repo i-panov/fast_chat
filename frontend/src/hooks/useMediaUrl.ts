@@ -30,6 +30,159 @@ function findSupportedMime(mimeType: string): string | null {
 	return null;
 }
 
+// fetchMediaBlobUrl downloads the file and returns an object URL of its
+// bytes. It never creates a URL after the request was cancelled: the cleanup
+// of the hook has already revoked everything it knew about.
+async function fetchMediaBlobUrl(
+	url: string,
+	token: string,
+	signal: AbortSignal | undefined,
+	isCancelled: () => boolean,
+): Promise<string | null> {
+	const resp = await fetch(url, {
+		headers: { Authorization: `Bearer ${token}` },
+		signal,
+	});
+	if (!resp.ok) {
+		throw new Error(`Failed to load media: ${resp.status}`);
+	}
+	const blob = await resp.blob();
+	if (isCancelled()) return null;
+
+	const objectUrl = URL.createObjectURL(blob);
+	if (isCancelled()) {
+		URL.revokeObjectURL(objectUrl);
+
+		return null;
+	}
+
+	return objectUrl;
+}
+
+function isAbort(error: unknown, cancelled: boolean): boolean {
+	return (
+		cancelled || (error instanceof DOMException && error.name === "AbortError")
+	);
+}
+
+interface MseHooks {
+	isCancelled: () => boolean;
+	// onSource owns tracking and revoking of the MediaSource object URL.
+	onSource: (url: string) => void;
+	onDone: () => void;
+}
+
+async function streamMedia(
+	loadUrl: string,
+	mime: string,
+	totalBytes: number,
+	token: string,
+	signal: AbortSignal,
+	hooks: MseHooks,
+): Promise<void> {
+	const ms = new MediaSource();
+	const blobUrl = URL.createObjectURL(ms);
+	if (hooks.isCancelled()) {
+		URL.revokeObjectURL(blobUrl);
+		return;
+	}
+	hooks.onSource(blobUrl);
+
+	await new Promise<void>((resolve, reject) => {
+		ms.addEventListener(
+			"sourceopen",
+			() => {
+				if (hooks.isCancelled()) {
+					resolve();
+					return;
+				}
+
+				try {
+					const sb = ms.addSourceBuffer(mime);
+
+					let offset = 0;
+
+					const appendNext = async (): Promise<void> => {
+						try {
+							if (hooks.isCancelled()) {
+								resolve();
+								return;
+							}
+
+							if (offset >= totalBytes) {
+								if (ms.readyState === "open") {
+									try {
+										ms.endOfStream();
+									} catch {
+										/* already ended */
+									}
+								}
+								if (!hooks.isCancelled()) {
+									hooks.onDone();
+								}
+								resolve();
+								return;
+							}
+
+							const end = Math.min(offset + CHUNK_SIZE - 1, totalBytes - 1);
+							const resp = await fetch(loadUrl, {
+								headers: {
+									Authorization: `Bearer ${token}`,
+									Range: `bytes=${offset}-${end}`,
+								},
+								signal,
+							});
+
+							// A server that ignores Range answers 200 with the
+							// whole body: appending it as a chunk corrupts the
+							// stream. Fall back to a plain blob download.
+							if (resp.status !== 206) {
+								throw new Error(
+									`The server ignored the range request: ${resp.status}`,
+								);
+							}
+							const contentRange = resp.headers.get("Content-Range");
+							if (
+								contentRange !== null &&
+								!contentRange.startsWith(`bytes ${offset}-`)
+							) {
+								throw new Error(`Unexpected Content-Range: ${contentRange}`);
+							}
+							const data = await resp.arrayBuffer();
+
+							await new Promise<void>((res, rej) => {
+								const errHandler = () => rej(new Error("SourceBuffer error"));
+								sb.addEventListener("error", errHandler, {
+									once: true,
+								});
+								sb.addEventListener(
+									"updateend",
+									() => {
+										sb.removeEventListener("error", errHandler);
+										res();
+									},
+									{ once: true },
+								);
+								sb.appendBuffer(data);
+							});
+
+							offset = end + 1;
+							await appendNext();
+						} catch (err) {
+							reject(err instanceof Error ? err : new Error(String(err)));
+						}
+					};
+
+					void appendNext();
+				} catch (err) {
+					reject(err instanceof Error ? err : new Error(String(err)));
+				}
+			},
+			{ once: true },
+		);
+	});
+}
+
 export function useMediaUrl(
 	fileUrl: string | undefined,
 	token: string | undefined,
@@ -71,6 +224,7 @@ export function useMediaUrl(
 		setRequestError(null);
 
 		const url = fileUrl;
+		const authToken = token;
 
 		async function start() {
 			const ac = new AbortController();
@@ -83,24 +237,25 @@ export function useMediaUrl(
 					signal: ac.signal,
 				});
 
-				const contentLength = parseInt(
-					headResp.headers.get("Content-Length") || "0",
-					10,
-				);
-				const contentType = headResp.headers.get("Content-Type") || "";
-				const supportedMime = findSupportedMime(contentType);
-
-				if (!supportedMime || contentLength === 0) {
-					await loadAsBlob(url, ac.signal);
-					return;
+				// A 401/403/404 body is JSON or HTML, not media: wrapping it
+				// in a blob URL would hand a broken source to the player.
+				if (!headResp.ok) {
+					throw new Error(`Failed to load media: ${headResp.status}`);
 				}
 
-				await loadViaMse(url, supportedMime, contentLength, ac.signal);
+				const contentLength = Number(
+					headResp.headers.get("Content-Length") ?? "0",
+				);
+				const contentType = headResp.headers.get("Content-Type") ?? "";
+				const supportedMime = findSupportedMime(contentType);
+
+				if (supportedMime && contentLength > 0) {
+					await loadViaMse(url, supportedMime, contentLength, ac.signal);
+				} else {
+					await loadAsBlob(url, ac.signal);
+				}
 			} catch (err) {
-				if (
-					cancelledRef.current ||
-					(err instanceof DOMException && err.name === "AbortError")
-				) {
+				if (isAbort(err, cancelledRef.current)) {
 					return;
 				}
 				await loadAsBlob(url, ac.signal);
@@ -112,25 +267,19 @@ export function useMediaUrl(
 			signal?: AbortSignal,
 		): Promise<void> {
 			try {
-				const resp = await fetch(loadUrl, {
-					headers: { Authorization: `Bearer ${token}` },
+				const objectUrl = await fetchMediaBlobUrl(
+					loadUrl,
+					authToken,
 					signal,
-				});
-				const blob = await resp.blob();
-				const objectUrl = URL.createObjectURL(blob);
-				revokeRef.current.push(objectUrl);
+					() => cancelledRef.current,
+				);
+				if (objectUrl === null) return;
 
-				if (!cancelledRef.current) {
-					setMedia({ source: loadUrl, url: objectUrl });
-					setLoading(false);
-				}
+				revokeRef.current.push(objectUrl);
+				setMedia({ source: loadUrl, url: objectUrl });
+				setLoading(false);
 			} catch (err) {
-				if (
-					cancelledRef.current ||
-					(err instanceof DOMException && err.name === "AbortError")
-				) {
-					return;
-				}
+				if (isAbort(err, cancelledRef.current)) return;
 				setRequestError({
 					source: loadUrl,
 					error: err instanceof Error ? err : new Error(String(err)),
@@ -145,91 +294,10 @@ export function useMediaUrl(
 			totalBytes: number,
 			signal: AbortSignal,
 		): Promise<void> {
-			const ms = new MediaSource();
-			const blobUrl = URL.createObjectURL(ms);
-			revokeRef.current.push(blobUrl);
-
-			if (!cancelledRef.current) {
-				setMedia({ source: loadUrl, url: blobUrl });
-			}
-
-			await new Promise<void>((resolve, reject) => {
-				ms.addEventListener(
-					"sourceopen",
-					() => {
-						if (cancelledRef.current) {
-							resolve();
-							return;
-						}
-
-						try {
-							const sb = ms.addSourceBuffer(mime);
-
-							let offset = 0;
-
-							const appendNext = async (): Promise<void> => {
-								try {
-									if (cancelledRef.current) {
-										resolve();
-										return;
-									}
-
-									if (offset >= totalBytes) {
-										if (ms.readyState === "open") {
-											try {
-												ms.endOfStream();
-											} catch {
-												/* already ended */
-											}
-										}
-										if (!cancelledRef.current) {
-											setLoading(false);
-										}
-										resolve();
-										return;
-									}
-
-									const end = Math.min(offset + CHUNK_SIZE - 1, totalBytes - 1);
-									const resp = await fetch(loadUrl, {
-										headers: {
-											Authorization: `Bearer ${token}`,
-											Range: `bytes=${offset}-${end}`,
-										},
-										signal,
-									});
-									const data = await resp.arrayBuffer();
-
-									await new Promise<void>((res, rej) => {
-										const errHandler = () =>
-											rej(new Error("SourceBuffer error"));
-										sb.addEventListener("error", errHandler, {
-											once: true,
-										});
-										sb.addEventListener(
-											"updateend",
-											() => {
-												sb.removeEventListener("error", errHandler);
-												res();
-											},
-											{ once: true },
-										);
-										sb.appendBuffer(data);
-									});
-
-									offset = end + 1;
-									await appendNext();
-								} catch (err) {
-									reject(err instanceof Error ? err : new Error(String(err)));
-								}
-							};
-
-							void appendNext();
-						} catch (err) {
-							reject(err instanceof Error ? err : new Error(String(err)));
-						}
-					},
-					{ once: true },
-				);
+			await streamMedia(loadUrl, mime, totalBytes, authToken, signal, {
+				isCancelled: () => cancelledRef.current,
+				onSource: (url) => setMedia({ source: loadUrl, url }),
+				onDone: () => setLoading(false),
 			});
 		}
 
@@ -251,7 +319,14 @@ export function useMediaUrl(
 		requestError !== null && requestError.source === fileUrl
 			? requestError.error
 			: null;
-	const isIdle = mediaUrl === null && error === null;
-
-	return { mediaUrl, loading: isIdle || loading, error };
+	// Without a source there is nothing to load: a spinner that never ends
+	// is worse than an empty state.
+	return {
+		mediaUrl,
+		loading:
+			fileUrl !== undefined &&
+			token !== undefined &&
+			((mediaUrl === null && error === null) || loading),
+		error,
+	};
 }

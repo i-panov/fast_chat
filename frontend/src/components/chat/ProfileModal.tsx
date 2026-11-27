@@ -8,11 +8,14 @@ import {
 	Stack,
 	Text,
 } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { uploadFile, uploadUserAvatar } from "../../api.ts";
+import { ApiError, uploadFile, uploadUserAvatar } from "../../api.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
 import { useAuth } from "../../useAuth.tsx";
+
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 
 interface Props {
 	open: boolean;
@@ -21,16 +24,38 @@ interface Props {
 	user: { id: string; nick: string; avatarUrl?: string } | null;
 }
 
+function avatarErrorKey(error: unknown): string {
+	if (error instanceof ApiError && error.status === 413) {
+		return "error.imageTooLarge";
+	}
+	if (error instanceof ApiError && error.status === 403) {
+		return "error.forbidden";
+	}
+
+	return "error.requestFailed";
+}
+
 export function ProfileModal({ open, onClose, token, user }: Props) {
 	const { t } = useTranslation();
 	const { updateAccountUser } = useAuth();
+	const fullScreen = useMediaQuery("(max-width: 48em)") === true;
 	const { blobUrl, loading } = useFileUrl(user?.avatarUrl, token);
-	const [busy, setBusy] = useState(false);
+	const [busy, setBusy] = useState<"upload" | "remove" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	async function upload(file: File | null) {
-		if (file === null || token === undefined || user === null) return;
-		setBusy(true);
+		if (file === null || token === undefined || user === null || busy) return;
+		// The server rejects non-images after the whole file was uploaded:
+		// validate locally so nothing is stored and the error is localized.
+		if (!file.type.startsWith("image/")) {
+			setError(t("error.imageType"));
+			return;
+		}
+		if (file.size > MAX_AVATAR_BYTES) {
+			setError(t("error.imageTooLarge"));
+			return;
+		}
+		setBusy("upload");
 		setError(null);
 		try {
 			const uploaded = await uploadFile(token, file);
@@ -41,15 +66,15 @@ export function ProfileModal({ open, onClose, token, user }: Props) {
 				avatarUrl: result.user.avatarUrl,
 			});
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			setError(t(avatarErrorKey(err)));
 		} finally {
-			setBusy(false);
+			setBusy(null);
 		}
 	}
 
 	async function remove() {
-		if (token === undefined || user === null) return;
-		setBusy(true);
+		if (token === undefined || user === null || busy) return;
+		setBusy("remove");
 		setError(null);
 		try {
 			const result = await uploadUserAvatar(token, "");
@@ -59,9 +84,9 @@ export function ProfileModal({ open, onClose, token, user }: Props) {
 				avatarUrl: result.user.avatarUrl,
 			});
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			setError(t(avatarErrorKey(err)));
 		} finally {
-			setBusy(false);
+			setBusy(null);
 		}
 	}
 
@@ -71,6 +96,7 @@ export function ProfileModal({ open, onClose, token, user }: Props) {
 			onClose={onClose}
 			title={t("profile.title")}
 			size="sm"
+			fullScreen={fullScreen}
 			centered
 		>
 			<Stack gap="md">
@@ -111,7 +137,12 @@ export function ProfileModal({ open, onClose, token, user }: Props) {
 						}}
 					>
 						{(props) => (
-							<Button {...props} loading={busy} variant="default">
+							<Button
+								{...props}
+								loading={busy === "upload"}
+								disabled={busy !== null}
+								variant="default"
+							>
 								{t("profile.upload")}
 							</Button>
 						)}
@@ -120,7 +151,8 @@ export function ProfileModal({ open, onClose, token, user }: Props) {
 						<Button
 							color="red"
 							variant="outline"
-							disabled={busy}
+							loading={busy === "remove"}
+							disabled={busy !== null}
 							onClick={() => {
 								void remove();
 							}}

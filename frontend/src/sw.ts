@@ -192,22 +192,20 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
 	);
 });
 
-// Flushes the outbox. With an open window the application is asked to do it:
-// it owns the live queries and shows the result immediately. With no window
-// (the browser woke the worker after the application was closed) the worker
-// runs the queue itself from IndexedDB and the mirrored credentials.
+// Flushes the outbox. Every open window is asked first: the application owns
+// the live queries and shows the result immediately. The worker still runs the
+// queue itself, because a window can be frozen or unloading when the event
+// fires, and a resolved Background Sync event is not replayed. The shared Web
+// Lock (`fastchat-sync:<account>`) makes the worker wait for an outbox run that
+// is already in progress in a tab, so the queue is never sent twice.
 async function flushOutbox(): Promise<void> {
 	const windows = await self.clients.matchAll({
 		type: "window",
 		includeUncontrolled: true,
 	});
 
-	if (windows.length > 0) {
-		for (const client of windows) {
-			client.postMessage({ type: "FASTCHAT_SYNC" });
-		}
-
-		return;
+	for (const client of windows) {
+		client.postMessage({ type: "FASTCHAT_SYNC" });
 	}
 
 	await runBackgroundOutbox();

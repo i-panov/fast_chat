@@ -98,7 +98,7 @@ describe("master key rotation", () => {
 
 	it("is refused while a local PIN lock is enabled", async () => {
 		await createKey();
-		await enableLocalPin("123456");
+		await enableLocalPin("482913");
 
 		await expect(rotateEncryptionKey("token", "pw")).rejects.toBeInstanceOf(
 			LocalLockEnabledError,
@@ -117,7 +117,7 @@ describe("master key rotation", () => {
 
 	it("refuses to wipe a local lock from recovery decline", async () => {
 		await createKey();
-		await enableLocalPin("123456");
+		await enableLocalPin("482913");
 
 		await expect(discardRecoveryAndGenerate("token")).rejects.toBeInstanceOf(
 			LocalLockEnabledError,
@@ -186,14 +186,14 @@ describe("master key rotation", () => {
 		await uploadKeyBackup("token", "pw");
 		await rotateEncryptionKey("token", "pw");
 
-		await enableLocalPin("123456");
+		await enableLocalPin("482913");
 		expect(await metaRepo.get("e2ee.keyHistory")).toBeNull();
 		expect(await metaRepo.get("e2ee.identityChain")).toBeNull();
 
 		lockLocalKeys();
 		expect(isLocalLockUnlocked()).toBe(false);
 
-		await unlockLocalPin("123456");
+		await unlockLocalPin("482913");
 		expect(await getKeyHistory()).toHaveLength(1);
 		expect(await metaRepo.get("e2ee.keyHistory")).toBeNull();
 	});

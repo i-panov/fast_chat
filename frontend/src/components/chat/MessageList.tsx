@@ -1,5 +1,5 @@
 import { Loader, Text } from "@mantine/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useMessageReadStatuses } from "../../hooks/useMessageReadStatuses.ts";
@@ -93,9 +93,14 @@ interface Props {
 	messageToThread?: Record<string, string>;
 	threads?: Record<string, Thread>;
 	isInThread?: boolean;
+	// threadId is the thread that contains the listed messages (ThreadView).
+	// It addresses edit/reaction storage; messageToThread only links a parent
+	// message to the thread it started.
+	threadId?: string;
 	onRetry?: (chatId: string, messageId: string) => void | Promise<void>;
 	onCancelSend?: (chatId: string, messageId: string) => void;
 	scrollToMessageId?: string | null;
+	scrollToMessageNonce?: number;
 	showAuthorForGroup?: boolean;
 	isOffline?: boolean;
 }
@@ -133,9 +138,12 @@ function buildDatedMessages(
 			});
 		}
 		const prev = i > 0 ? messages[i - 1] : undefined;
+		// A date separator breaks the author run: the first message of a new
+		// day needs its nick even when the same person wrote the last one
+		// yesterday.
 		const showAuthor =
 			showAuthorForGroup === true &&
-			(prev === undefined || prev.fromId !== msg.fromId);
+			(showSeparator || prev === undefined || prev.fromId !== msg.fromId);
 		result.push({
 			type: "message",
 			key: msg.id,
@@ -146,21 +154,7 @@ function buildDatedMessages(
 	return result;
 }
 
-function scrollToMessage(
-	prevScrollToRef: { current: string | null },
-	datedMessages: DatedEntry[],
-	virtuosoRef: { current: VirtuosoHandle | null },
-	messageId: string,
-) {
-	if (messageId === prevScrollToRef.current) return;
-	const idx = datedMessages.findIndex(
-		(e) => e.type === "message" && e.msg.id === messageId,
-	);
-	// The row may not be in the loaded page yet: leave the target unmarked
-	// so a later rangeChanged can retry after a history page arrives.
-	if (idx === -1) return;
-	prevScrollToRef.current = messageId;
-	virtuosoRef.current?.scrollToIndex({ index: idx, align: "center" });
+function flashMessageElement(messageId: string) {
 	// Virtuoso mounts the row asynchronously; flash it after the jump.
 	requestAnimationFrame(() => {
 		const el = queryMessageElement(messageId);
@@ -168,21 +162,63 @@ function scrollToMessage(
 	});
 }
 
-function scrollToMessageInRange(args: {
-	datedMessages: DatedEntry[];
-	scrollToMessageId?: string | null;
-	prevScrollToRef: { current: string | null };
-	virtuosoRef: { current: VirtuosoHandle | null };
-}) {
-	const { datedMessages, scrollToMessageId, prevScrollToRef, virtuosoRef } =
-		args;
-	if (scrollToMessageId === undefined || scrollToMessageId === null) return;
-	scrollToMessage(
-		prevScrollToRef,
-		datedMessages,
-		virtuosoRef,
-		scrollToMessageId,
+// jumpToMessage scrolls to the message when its row is already loaded.
+// It returns false when the row is missing, so a request can be retried after
+// a history page arrives.
+function jumpToMessage(
+	datedMessages: DatedEntry[],
+	virtuosoRef: { current: VirtuosoHandle | null },
+	messageId: string,
+): boolean {
+	const idx = datedMessages.findIndex(
+		(e) => e.type === "message" && e.msg.id === messageId,
 	);
+	if (idx === -1) return false;
+	virtuosoRef.current?.scrollToIndex({ index: idx, align: "center" });
+	flashMessageElement(messageId);
+	return true;
+}
+
+// Virtuoso needs a decreasing firstItemIndex when a page is prepended,
+// otherwise the viewport jumps to a different message after loadMore.
+const INITIAL_ITEM_INDEX = 100_000;
+
+function useFirstItemIndex(entries: DatedEntry[]): number {
+	const [state, setState] = useState<{
+		firstMessageId: string | null;
+		length: number;
+		index: number;
+	}>({ firstMessageId: null, length: 0, index: INITIAL_ITEM_INDEX });
+
+	const firstMessage = entries.find((e) => e.type === "message");
+	if (firstMessage === undefined) {
+		if (state.firstMessageId !== null) {
+			setState({ firstMessageId: null, length: 0, index: state.index });
+		}
+		return state.index;
+	}
+	const firstId = firstMessage.msg.id;
+	// The date separator of the previous first row may be shared by the
+	// prepended page, so the shift is detected by the first message id.
+	if (
+		state.firstMessageId !== null &&
+		firstId !== state.firstMessageId &&
+		entries.some(
+			(e) => e.type === "message" && e.msg.id === state.firstMessageId,
+		)
+	) {
+		const index = state.index - (entries.length - state.length);
+		setState({ firstMessageId: firstId, length: entries.length, index });
+		return index;
+	}
+	if (firstId !== state.firstMessageId || entries.length !== state.length) {
+		setState({
+			firstMessageId: firstId,
+			length: entries.length,
+			index: state.index,
+		});
+	}
+	return state.index;
 }
 
 function EmptyState({ isOffline }: { isOffline?: boolean }) {
@@ -204,7 +240,7 @@ function EmptyState({ isOffline }: { isOffline?: boolean }) {
 	);
 }
 
-function MessageEntry(props: {
+const MessageEntry = memo(function MessageEntry(props: {
 	entry: DatedEntry;
 	userId: string;
 	locale: string;
@@ -223,6 +259,7 @@ function MessageEntry(props: {
 	messageToThread?: Record<string, string>;
 	threads?: Record<string, Thread>;
 	isInThread?: boolean;
+	threadId?: string;
 	onRetry?: Props["onRetry"];
 	onCancelSend?: Props["onCancelSend"];
 }) {
@@ -245,6 +282,7 @@ function MessageEntry(props: {
 		messageToThread,
 		threads,
 		isInThread,
+		threadId,
 		onRetry,
 		onCancelSend,
 	} = props;
@@ -257,6 +295,7 @@ function MessageEntry(props: {
 	}
 	const msg = entry.msg;
 	const isOwn = msg.fromId === userId;
+	const linkThreadId = messageToThread?.[msg.id];
 	return (
 		<div
 			style={{
@@ -292,10 +331,11 @@ function MessageEntry(props: {
 				createdAt={msg.createdAt}
 				onCreateThread={onCreateThread}
 				onOpenThread={onOpenThread}
-				threadId={messageToThread?.[msg.id]}
+				linkThreadId={linkThreadId}
+				messageThreadId={isInThread === true ? threadId : undefined}
 				threadMessageCount={
-					messageToThread?.[msg.id] !== undefined
-						? threads?.[messageToThread[msg.id]]?.messageCount
+					linkThreadId !== undefined
+						? threads?.[linkThreadId]?.messageCount
 						: undefined
 				}
 				isInThread={isInThread}
@@ -311,7 +351,7 @@ function MessageEntry(props: {
 			/>
 		</div>
 	);
-}
+});
 
 export function MessageList({
 	messages,
@@ -335,9 +375,11 @@ export function MessageList({
 	messageToThread,
 	threads,
 	isInThread,
+	threadId,
 	onRetry,
 	onCancelSend,
 	scrollToMessageId,
+	scrollToMessageNonce,
 	showAuthorForGroup,
 	isOffline,
 }: Props) {
@@ -347,7 +389,7 @@ export function MessageList({
 	useEffect(() => {
 		onLoadMoreRef.current = onLoadMore;
 	}, [onLoadMore]);
-	const prevScrollToRef = useRef<string | null>(null);
+	const handledScrollRef = useRef<string | null>(null);
 	const [visibleRange, setVisibleRange] = useState<{
 		startIndex: number;
 		endIndex: number;
@@ -363,13 +405,39 @@ export function MessageList({
 		() => buildDatedMessages(messages, locale, showAuthorForGroup),
 		[messages, locale, showAuthorForGroup],
 	);
+	const firstItemIndex = useFirstItemIndex(datedMessages);
 
 	const handleReplyClick = useCallback(
 		(messageId: string) => {
-			scrollToMessage(prevScrollToRef, datedMessages, virtuosoRef, messageId);
+			jumpToMessage(datedMessages, virtuosoRef, messageId);
 		},
 		[datedMessages],
 	);
+
+	// A nonce distinguishes two requests for the same message: the parent
+	// resets the id to null and sets it again in one batch, which would not
+	// produce a state change on its own.
+	const scrollRequestKey =
+		scrollToMessageId === undefined || scrollToMessageId === null
+			? null
+			: `${scrollToMessageNonce ?? 0}:${scrollToMessageId}`;
+
+	const tryScrollToRequest = useCallback(() => {
+		if (scrollRequestKey === null || scrollToMessageId == null) {
+			handledScrollRef.current = null;
+			return;
+		}
+		if (handledScrollRef.current === scrollRequestKey) return;
+		// The row may not be in the loaded page yet: leave the request
+		// unmarked so rangeChanged can retry after a history page arrives.
+		if (jumpToMessage(datedMessages, virtuosoRef, scrollToMessageId)) {
+			handledScrollRef.current = scrollRequestKey;
+		}
+	}, [scrollRequestKey, scrollToMessageId, datedMessages]);
+
+	useEffect(() => {
+		tryScrollToRequest();
+	}, [tryScrollToRequest]);
 
 	// Track visible messages and mark them as read. Already-read
 	// messages are skipped so the POST → local markAsRead → re-render
@@ -410,6 +478,7 @@ export function MessageList({
 				messageToThread={messageToThread}
 				threads={threads}
 				isInThread={isInThread}
+				threadId={threadId}
 				onRetry={onRetry}
 				onCancelSend={onCancelSend}
 			/>
@@ -432,6 +501,7 @@ export function MessageList({
 			messageToThread,
 			threads,
 			isInThread,
+			threadId,
 			onRetry,
 			onCancelSend,
 		],
@@ -448,7 +518,8 @@ export function MessageList({
 			data={datedMessages}
 			itemContent={itemContent}
 			followOutput="auto"
-			initialTopMostItemIndex={datedMessages.length - 1}
+			firstItemIndex={firstItemIndex}
+			initialTopMostItemIndex={firstItemIndex + datedMessages.length - 1}
 			startReached={() => {
 				if (hasMore && !isLoadingMore) {
 					onLoadMoreRef.current?.();
@@ -462,12 +533,7 @@ export function MessageList({
 					startIndex: range.startIndex,
 					endIndex: range.endIndex,
 				});
-				scrollToMessageInRange({
-					datedMessages,
-					scrollToMessageId,
-					prevScrollToRef,
-					virtuosoRef,
-				});
+				tryScrollToRequest();
 			}}
 		/>
 	);

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { getVapidPublicKey, subscribePush } from "../api.ts";
+import { readAnyToken } from "../utils/activeToken.ts";
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
 	const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -34,7 +35,9 @@ export function usePushNotifications(token: string) {
 
 			try {
 				const registration = await navigator.serviceWorker.ready;
+				if (cancelled) return;
 				const existingSub = await registration.pushManager.getSubscription();
+				if (cancelled) return;
 
 				if (Notification.permission === "granted") {
 					let endpoint: string;
@@ -77,6 +80,7 @@ export function usePushNotifications(token: string) {
 						auth = subJSON.keys.auth;
 					}
 
+					if (cancelled) return;
 					await subscribePush(token, endpoint, p256dh, auth);
 				}
 			} catch (err) {
@@ -105,6 +109,13 @@ export function usePushNotifications(token: string) {
 			return;
 		}
 		if (didUnsubscribeRef.current) return;
+		// The browser push subscription is shared by every tab of the origin.
+		// A tab that lost its session while another account is still stored
+		// (and possibly alive in another tab) must not tear it down: that
+		// would silently disable notifications for the account that is still
+		// signed in, and its own tab would not resubscribe until a token
+		// change.
+		if (readAnyToken() !== null) return;
 		didUnsubscribeRef.current = true;
 
 		void (async () => {

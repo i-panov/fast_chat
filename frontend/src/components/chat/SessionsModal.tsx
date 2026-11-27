@@ -13,7 +13,7 @@ import {
 import { useMediaQuery } from "@mantine/hooks";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { getSessions, revokeDeviceSession } from "../../api.ts";
+import { ApiError, getSessions, revokeDeviceSession } from "../../api.ts";
 import type { SessionInfo } from "../../types/api.ts";
 import { formatDateTime } from "../../utils/chat.ts";
 
@@ -21,7 +21,9 @@ interface Props {
 	open: boolean;
 	onClose: () => void;
 	token: string | undefined;
-	onLogoutAll: () => void;
+	// Returning a promise lets the dialog keep its error visible when the
+	// server rejects the global logout.
+	onLogoutAll: () => void | Promise<void>;
 }
 
 function formatDate(value: string): string {
@@ -40,7 +42,9 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 	const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [revoking, setRevoking] = useState<string | null>(null);
+	const [loggingOut, setLoggingOut] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [errorTitle, setErrorTitle] = useState("sessions.errorTitle");
 
 	useEffect(() => {
 		if (!open || token === undefined) return;
@@ -48,6 +52,7 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 		let cancelled = false;
 		setLoading(true);
 		setError(null);
+		setErrorTitle("sessions.errorTitle");
 		void getSessions(token)
 			.then((result) => {
 				if (!cancelled) {
@@ -55,10 +60,8 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 					setCurrentSessionId(result.currentSessionId);
 				}
 			})
-			.catch((err: unknown) => {
-				if (!cancelled) {
-					setError(err instanceof Error ? err.message : String(err));
-				}
+			.catch(() => {
+				if (!cancelled) setError(t("error.requestFailed"));
 			})
 			.finally(() => {
 				if (!cancelled) setLoading(false);
@@ -67,7 +70,7 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 		return () => {
 			cancelled = true;
 		};
-	}, [open, token]);
+	}, [open, token, t]);
 
 	async function handleRevoke(sessionID: string) {
 		if (token === undefined) return;
@@ -77,9 +80,31 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 			await revokeDeviceSession(token, sessionID);
 			setSessions((prev) => prev.filter((s) => s.id !== sessionID));
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			// A session that is already gone is not an error: drop the row.
+			if (err instanceof ApiError && err.status === 404) {
+				setSessions((prev) => prev.filter((s) => s.id !== sessionID));
+			} else {
+				setErrorTitle("sessions.actionErrorTitle");
+				setError(t("error.requestFailed"));
+			}
 		} finally {
 			setRevoking(null);
+		}
+	}
+
+	async function handleLogoutAll() {
+		if (loggingOut) return;
+		if (!window.confirm(t("sessions.logoutAllConfirm"))) return;
+		setLoggingOut(true);
+		setError(null);
+		try {
+			await onLogoutAll();
+			onClose();
+		} catch {
+			setErrorTitle("sessions.actionErrorTitle");
+			setError(t("sessions.logoutAllFailed"));
+		} finally {
+			setLoggingOut(false);
 		}
 	}
 
@@ -164,6 +189,7 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 													color="red"
 													variant="outline"
 													loading={revoking === session.id}
+													aria-label={`${t("sessions.revoke")}: ${session.deviceName || session.deviceId}`}
 													onClick={() => {
 														void handleRevoke(session.id);
 													}}
@@ -180,7 +206,7 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 				)}
 
 				{error !== null && (
-					<Alert color="red" title={t("sessions.errorTitle")}>
+					<Alert color="red" title={t(errorTitle)}>
 						{error}
 					</Alert>
 				)}
@@ -189,9 +215,9 @@ export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 					<Button
 						color="red"
 						variant="filled"
+						loading={loggingOut}
 						onClick={() => {
-							onLogoutAll();
-							onClose();
+							void handleLogoutAll();
 						}}
 					>
 						{t("sessions.logoutAll")}

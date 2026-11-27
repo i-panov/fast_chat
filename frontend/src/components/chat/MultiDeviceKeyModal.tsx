@@ -2,52 +2,97 @@ import { Alert, Button, Group, Modal, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { createNewKey, onNewKeyConfirmationNeeded } from "../../e2ee/keys.ts";
+import {
+	confirmIdentityReplacement,
+	createNewKey,
+	onIdentityReplacementNeeded,
+	onNewKeyConfirmationNeeded,
+} from "../../e2ee/keys.ts";
 
 interface Props {
 	activeToken: string | null;
 }
 
+type AskMode = "new" | "replace-identity";
+
 // NewKeyConfirmationModal asks before generating the first key on an account:
-// old messages cannot be read with it, so the choice must be explicit.
+// old messages cannot be read with it, so the choice must be explicit. When
+// the server still publishes an identity, a new key also replaces it and a
+// second, stronger warning is required.
 export function MultiDeviceKeyModal({ activeToken }: Props) {
 	const { t } = useTranslation();
 	const [modalToken, setModalToken] = useState<string | null>(null);
+	const [mode, setMode] = useState<AskMode>("new");
 	const [busy, setBusy] = useState(false);
 
 	useEffect(() => {
 		setModalToken(null);
+		setMode("new");
 		setBusy(false);
-		const off = onNewKeyConfirmationNeeded((token) => {
+		const offNew = onNewKeyConfirmationNeeded((token) => {
 			if (token === activeToken) setModalToken(token);
 		});
-		return off;
+		const offIdentity = onIdentityReplacementNeeded((token) => {
+			if (token === activeToken) {
+				setMode("replace-identity");
+				setModalToken(token);
+			}
+		});
+		return () => {
+			offNew();
+			offIdentity();
+		};
 	}, [activeToken]);
 
 	if (modalToken === null) return null;
+
+	const replacing = mode === "replace-identity";
 
 	return (
 		<Modal
 			opened
 			onClose={() => setModalToken(null)}
-			title={t("backup.newKeyTitle")}
+			title={t(
+				replacing ? "backup.identityReplaceTitle" : "backup.newKeyTitle",
+			)}
 			size="sm"
 			centered
 		>
 			<Stack gap="md">
-				<Alert color="orange" title={t("backup.newKeyAlertTitle")}>
-					<Text size="sm">{t("backup.newKeyPrompt")}</Text>
+				<Alert
+					color={replacing ? "red" : "orange"}
+					title={t(
+						replacing
+							? "backup.identityReplaceAlertTitle"
+							: "backup.newKeyAlertTitle",
+					)}
+				>
+					<Text size="sm">
+						{t(
+							replacing
+								? "backup.identityReplacePrompt"
+								: "backup.newKeyPrompt",
+						)}
+					</Text>
 					<Text size="sm" mt="xs">
-						{t("backup.newKeyWarning")}
+						{t(
+							replacing
+								? "backup.identityReplaceWarning"
+								: "backup.newKeyWarning",
+						)}
 					</Text>
 				</Alert>
-				<Text size="sm">{t("backup.newKeyAdvice")}</Text>
+				<Text size="sm">
+					{t(
+						replacing ? "backup.identityReplaceAdvice" : "backup.newKeyAdvice",
+					)}
+				</Text>
 				<Group justify="flex-end" gap="xs">
 					<Button variant="default" onClick={() => setModalToken(null)}>
 						{t("backup.close")}
 					</Button>
 					<Button
-						color="orange"
+						color={replacing ? "red" : "orange"}
 						loading={busy}
 						onClick={() => {
 							if (activeToken === null || modalToken !== activeToken) {
@@ -58,6 +103,7 @@ export function MultiDeviceKeyModal({ activeToken }: Props) {
 								return;
 							}
 							setBusy(true);
+							if (replacing) confirmIdentityReplacement();
 							void createNewKey(activeToken)
 								.then(() => window.location.reload())
 								.catch(() => {
@@ -69,7 +115,11 @@ export function MultiDeviceKeyModal({ activeToken }: Props) {
 								.finally(() => setBusy(false));
 						}}
 					>
-						{t("backup.newKeyConfirm")}
+						{t(
+							replacing
+								? "backup.identityReplaceConfirm"
+								: "backup.newKeyConfirm",
+						)}
 					</Button>
 				</Group>
 			</Stack>

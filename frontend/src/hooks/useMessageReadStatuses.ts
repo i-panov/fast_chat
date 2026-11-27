@@ -8,6 +8,8 @@ import { scheduleSync } from "../sync/syncEngine.ts";
 import { useAuth } from "../useAuth.tsx";
 
 const DEBOUNCE_MS = 300;
+const CLIENT_ERROR_RE = /http 4\d\d/i;
+const RATE_LIMIT_RE = /http 429/i;
 const MAX_BATCH_SIZE = 50;
 
 interface UseMessageReadStatusesParams {
@@ -73,6 +75,12 @@ export function useMessageReadStatuses({
 				scheduleFlushRef.current?.();
 			}
 		} catch (err) {
+			const message = err instanceof Error ? err.message : "";
+			// A definitive client error (400/403/404, but not 429) will not
+			// succeed on retry: drop the ids instead of hammering the server.
+			if (CLIENT_ERROR_RE.test(message) && !RATE_LIMIT_RE.test(message)) {
+				return;
+			}
 			// Re-add failed messages to pending for retry
 			for (const id of messageIds) {
 				pendingRef.current.add(id);
@@ -84,7 +92,14 @@ export function useMessageReadStatuses({
 			const retryAfterMs = extractRetryAfterMs(err);
 			if (retryAfterMs !== null) {
 				nextAllowedFlushRef.current = Date.now() + retryAfterMs;
+			} else {
+				// Transient network failure: pause before retrying instead of
+				// looping on the debounce interval.
+				nextAllowedFlushRef.current = Date.now() + 5000;
 			}
+			// Re-plan the flush: without it a "quiet" chat never retries and
+			// the read receipt is lost until the next visible range change.
+			scheduleFlushRef.current?.();
 		}
 	}, [token, chatId, userId, isInThread]);
 

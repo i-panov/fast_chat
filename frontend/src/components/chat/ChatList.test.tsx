@@ -185,3 +185,48 @@ describe("ChatList: deleting a chat", () => {
 		expect(screen.queryByText("chat.deleteChat")).toBeNull();
 	});
 });
+
+describe("ChatList: identity and state", () => {
+	it("marks the active chat for assistive technology", () => {
+		const chat = privateChat(
+			"alice-bob",
+			{ id: "alice:test", nick: "alice" },
+			{ id: "bob:test", nick: "bob" },
+		);
+		renderChatList(
+			<ChatList
+				chats={[chat]}
+				activeChatId="alice-bob"
+				userId="alice:test"
+				onSelectChat={() => {}}
+			/>,
+		);
+
+		const row = screen.getByText("bob").closest("button");
+		expect(row?.getAttribute("aria-current")).toBe("true");
+	});
+
+	it("disambiguates the same nick on different servers", () => {
+		const first = privateChat(
+			"alice-bob-1",
+			{ id: "alice:test", nick: "alice" },
+			{ id: "bob:srv1", nick: "bob" },
+		);
+		const second = privateChat(
+			"alice-bob-2",
+			{ id: "alice:test", nick: "alice" },
+			{ id: "bob:srv2", nick: "bob" },
+		);
+		renderChatList(
+			<ChatList
+				chats={[first, second]}
+				activeChatId={null}
+				userId="alice:test"
+				onSelectChat={() => {}}
+			/>,
+		);
+
+		expect(screen.getByText("bob · srv1")).toBeTruthy();
+		expect(screen.getByText("bob · srv2")).toBeTruthy();
+	});
+});

@@ -1,5 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { createElement, type ReactNode, StrictMode } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api.ts", () => ({
 	getConfig: vi.fn(),
@@ -11,6 +12,14 @@ const { useServerConfig } = await import("./useServerConfig.ts");
 function mockGetConfig() {
 	return vi.mocked(getConfig);
 }
+
+function strictWrapper({ children }: { children: ReactNode }) {
+	return createElement(StrictMode, null, children);
+}
+
+beforeEach(() => {
+	vi.resetAllMocks();
+});
 
 describe("useServerConfig", () => {
 	it("returns null without a token and never fetches", () => {
@@ -72,6 +81,48 @@ describe("useServerConfig", () => {
 
 		await waitFor(() => {
 			expect(result.current.config).toBeNull();
+		});
+	});
+
+	it("still loads under StrictMode's double mount", async () => {
+		mockGetConfig().mockResolvedValue({
+			messageEditTTL: 60,
+			messageDeleteTTL: 120,
+		});
+
+		const { result } = renderHook(() => useServerConfig("tok"), {
+			wrapper: strictWrapper,
+		});
+
+		await waitFor(() => {
+			expect(result.current.config).toEqual({
+				messageEditTTL: 60,
+				messageDeleteTTL: 120,
+			});
+		});
+	});
+
+	it("retries when the token changes after a failure", async () => {
+		mockGetConfig()
+			.mockRejectedValueOnce(new Error("down"))
+			.mockResolvedValueOnce({ messageEditTTL: 5, messageDeleteTTL: 6 });
+
+		const { result, rerender } = renderHook(
+			({ token }: { token: string }) => useServerConfig(token),
+			{ initialProps: { token: "t1" } },
+		);
+
+		await waitFor(() => {
+			expect(mockGetConfig()).toHaveBeenCalledTimes(1);
+		});
+
+		rerender({ token: "t2" });
+
+		await waitFor(() => {
+			expect(result.current.config).toEqual({
+				messageEditTTL: 5,
+				messageDeleteTTL: 6,
+			});
 		});
 	});
 });

@@ -371,4 +371,35 @@ describe("useThreads", () => {
 			"m-new",
 		);
 	});
+
+	it("hides a deleted thread message and a tombstoned parent", async () => {
+		await threadsRepo.upsert(thread("th-del", "p-del"));
+		await messagesRepo.upsert({ ...plainMsg("p-del", "parent"), chatId: "c1" });
+		await messagesRepo.applyDelete("c1", "p-del");
+		await threadMessagesRepo.upsert(plainMsg("m-alive", "alive"), "th-del");
+		await threadMessagesRepo.upsert(
+			plainMsg("m-deleted", "should stay hidden"),
+			"th-del",
+		);
+		await threadMessagesRepo.applyDelete("th-del", "m-deleted");
+
+		const { result } = renderHook(() =>
+			useThreads({ token: "tok", chatId: "c1" }),
+		);
+
+		act(() => {
+			result.current.openThread("th-del");
+		});
+
+		await waitFor(() => {
+			expect(result.current.activeThreadMessages.map((m) => m.id)).toEqual([
+				"m-alive",
+			]);
+		});
+		// The tombstone of the parent loses its preview instead of decrypting
+		// the deleted text back onto the screen.
+		await waitFor(() => {
+			expect(result.current.activeThread?.parentMessageText).toBe("");
+		});
+	});
 });

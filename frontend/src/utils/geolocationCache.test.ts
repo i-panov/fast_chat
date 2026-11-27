@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setActiveAccountKey } from "../db/init.ts";
 import {
 	clearLastCachedLocation,
 	getLastCachedLocation,
@@ -21,6 +22,7 @@ function mockPosition(lat: number, lng: number) {
 }
 
 beforeEach(() => {
+	setActiveAccountKey("alice:test");
 	clearLastCachedLocation();
 });
 
@@ -66,5 +68,23 @@ describe("geolocationCache", () => {
 		});
 
 		await expect(requestGeolocation()).rejects.toThrow("denied");
+	});
+
+	it("keeps the geolocation error code", async () => {
+		mockPositions((_ok, err) => {
+			err?.({ message: "timeout", code: 3 } as GeolocationPositionError);
+		});
+
+		await expect(requestGeolocation()).rejects.toMatchObject({ code: 3 });
+	});
+
+	it("does not leak a position across accounts", async () => {
+		mockPosition(10, 20);
+		await requestGeolocation();
+		expect(getLastCachedLocation()).toEqual({ lat: 10, lng: 20 });
+
+		setActiveAccountKey("bob:test");
+
+		expect(getLastCachedLocation()).toBeNull();
 	});
 });

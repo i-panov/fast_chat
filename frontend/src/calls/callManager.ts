@@ -1,5 +1,10 @@
 import type { CallRole, ICEConfig } from "../types/api.ts";
-import { releaseMedia, settleEnded, stopStream } from "./callEndings.ts";
+import {
+	endRemoteCall,
+	releaseMedia,
+	settleEnded,
+	stopStream,
+} from "./callEndings.ts";
 import { createPeer } from "./callPeer.ts";
 import {
 	type CallApi,
@@ -20,6 +25,10 @@ const MEDIA_CONSTRAINTS: MediaStreamConstraints = {
 
 const AUDIO_ONLY_CONSTRAINTS: MediaStreamConstraints = { audio: true };
 
+// MAX_PENDING_CANDIDATES bounds the candidates an unanswered call buffers:
+// the server validates the size of one candidate, not their number.
+const MAX_PENDING_CANDIDATES = 256;
+
 // CallManager owns the peer connection and the media of a call. The
 // interface never touches WebRTC directly: it asks the manager to start,
 // accept or end a call and reads the state it keeps.
@@ -36,6 +45,10 @@ export interface CallManager {
 	// hangup ends the call for both sides. It works while the call is still
 	// being established: the server is told as soon as it answers.
 	hangup(reason?: string): Promise<void>;
+	// timeout ends a ringing call whose answer never came, locally and on
+	// the server. It covers the lost terminal event: subscribing to the
+	// stream cannot be done here, so the call self-heals on a timer.
+	timeout(): void;
 	handleIncoming(payload: unknown): void;
 	handleAccepted(payload: unknown): void;
 	handleEnded(payload: unknown): void;
@@ -74,6 +87,9 @@ export interface CallContext {
 	// reason is why the last call ended. It survives the end of the call, so
 	// the interface can report it.
 	reason?: string;
+	// lastEndedCallId deduplicates terminal events: the server keeps an
+	// ended call for a while, and its ending is news only once.
+	lastEndedCallId?: string;
 	localStream?: MediaStream;
 	remoteStream?: MediaStream;
 	peer?: RTCPeerConnection;
@@ -147,13 +163,22 @@ export function createCallManager(
 			// that is over keeps its reason and its phase.
 			if (ctx.phase !== "incoming" || ctx.callId === undefined) return;
 
+			// accept() is already asking for the media and may have reached
+			// the server: rejecting now would cut the local side while the
+			// server keeps an active call. The answer of accept() decides.
+			if (ctx.accepting) return;
+
 			const callId = ctx.callId;
 			ctx.reason = "rejected";
 
+			// The local side ends first: a network request that hangs must
+			// not keep the media of a declined call alive.
+			endCall();
+
 			try {
 				await api.rejectCall(api.token, callId);
-			} finally {
-				endCall();
+			} catch {
+				// Best effort: the ringing window ends the call anyway.
 			}
 		},
 
@@ -176,11 +201,35 @@ export function createCallManager(
 			const callId = ctx.callId;
 			ctx.reason = reason ?? "hangup";
 
+			// The media goes down at once. The server is told best-effort:
+			// a request that hangs must not keep the camera on.
+			endCall();
+
 			try {
 				await api.hangupCall(api.token, callId, reason);
-			} finally {
-				endCall();
+			} catch {
+				// The server ends a ringing call by its own timer.
 			}
+		},
+
+		timeout() {
+			if (ctx.phase !== "outgoing" && ctx.phase !== "incoming") return;
+
+			// The answer never came and the event may have been lost: end
+			// the call locally and tell the server so the other side does
+			// not ring until its own window runs out.
+			if (ctx.callId !== undefined) {
+				void api
+					.hangupCall(api.token, ctx.callId, "timeout")
+					.catch(() => undefined);
+			}
+			settleEnded(ctx, notify, {
+				reason: "timeout",
+				callId: ctx.callId,
+				role: ctx.role,
+				peerId: ctx.peerId,
+				peerNick: ctx.peerNick,
+			});
 		},
 
 		handleIncoming(payload: unknown) {
@@ -192,6 +241,10 @@ export function createCallManager(
 			// busy, and dropping the current call without telling the server
 			// would leave the other side ringing.
 			if (ctx.phase === "outgoing" || ctx.phase === "active") return;
+
+			// A retried invite of the same ringing call must not reset the
+			// accept in flight: the server may have accepted it already.
+			if (ctx.phase === "incoming" && ctx.callId === data.callId) return;
 
 			// The new call invalidates the running operations and releases
 			// the old connection: a late answer must not touch it.
@@ -212,6 +265,10 @@ export function createCallManager(
 			ctx.role = "callee";
 			ctx.pendingCandidates = [];
 			ctx.reason = undefined;
+			// The state of the previous call must not leak into this one:
+			// the microphone and the camera of a new call start on.
+			ctx.muted = false;
+			ctx.cameraOn = true;
 			notify();
 		},
 
@@ -248,7 +305,7 @@ export function createCallManager(
 			// the identifier of the call.
 			ctx.pendingAnswer = { callId: data.callId, sdp: data.answer };
 
-			applyPendingAnswer(ctx, notify);
+			applyPendingAnswer(ctx, api, notify);
 		},
 
 		handleEnded(payload: unknown) {
@@ -262,14 +319,12 @@ export function createCallManager(
 			if (ctx.callId !== undefined && data.callId !== ctx.callId) {
 				return;
 			}
-			// A tab that never saw the call did not ring, so a normal hangup
-			// in another tab must not pop a notice here. A timeout is a missed
-			// call and remains useful after a reload.
-			if (
-				ctx.callId === undefined &&
-				ctx.role === undefined &&
-				data.reason !== "timeout"
-			) {
+			// The same ending may arrive twice: the notice is news only once.
+			if (data.callId === ctx.lastEndedCallId) return;
+			// A call this tab never tracked is only adopted when the ending
+			// names the peer (the reconcile passes it): an event of another
+			// tab carries no peer, and a stale name must not be reported.
+			if (ctx.callId === undefined && typeof data.peerId !== "string") {
 				return;
 			}
 
@@ -304,9 +359,13 @@ export function createCallManager(
 			}
 
 			// A candidate can arrive before the description it belongs to.
-			// It waits until the connection is ready.
+			// It waits until the connection is ready. The queue is bounded:
+			// a flood of candidates of an unanswered call must not grow the
+			// memory without limit.
 			if (!ctx.peer || !ctx.remoteReady) {
-				ctx.pendingCandidates.push(data.candidate);
+				if (ctx.pendingCandidates.length < MAX_PENDING_CANDIDATES) {
+					ctx.pendingCandidates.push(data.candidate);
+				}
 
 				return;
 			}
@@ -340,12 +399,17 @@ export function createCallManager(
 
 		dismiss() {
 			// Only the notice of the finished call is closed: the call
-			// itself is over.
+			// itself is over. The state of the call goes with it: the next
+			// call must not inherit the peer or the side of this one.
 			if (ctx.phase !== "ended") return;
 
 			ctx.phase = "idle";
 			ctx.reason = undefined;
 			ctx.callId = undefined;
+			ctx.chatId = undefined;
+			ctx.peerId = undefined;
+			ctx.peerNick = undefined;
+			ctx.role = undefined;
 			notify();
 		},
 
@@ -412,9 +476,15 @@ async function startCall(
 	ctx.reason = undefined;
 
 	// The state of the previous call must not leak into the new one: the
-	// identifier of the old call would send the new candidates to it.
+	// identifier of the old call would send the new candidates to it, and a
+	// muted microphone of the old call would lie about the new one.
 	ctx.callId = undefined;
+	ctx.chatId = undefined;
+	ctx.peerId = undefined;
+	ctx.peerNick = undefined;
 	ctx.remoteIce = undefined;
+	ctx.muted = false;
+	ctx.cameraOn = true;
 	releaseMedia(ctx);
 
 	// The call starts before the first wait: the interface must see that the
@@ -433,6 +503,11 @@ async function startCall(
 
 	try {
 		const localIce = await loadIceServers(api);
+
+		// The user may have ended the call while the servers were loading:
+		// the camera must not be asked for after that.
+		if (ctx.generation !== generation) return;
+
 		stream = await acquireMedia();
 
 		if (ctx.generation !== generation) {
@@ -449,6 +524,7 @@ async function startCall(
 		peer = createPeer(ctx, api, notify, generation);
 		ctx.peer = peer;
 		attachLocalTracks(peer, stream);
+		applyMediaState(ctx);
 
 		const offer = await peer.createOffer();
 		await peer.setLocalDescription(offer);
@@ -475,8 +551,10 @@ async function startCall(
 
 		ctx.callId = result.callId;
 		ctx.chatId = chatId;
+		// The answer is applied before the candidates are sent: the call
+		// becomes active without waiting for a slow /ice request.
+		applyPendingAnswer(ctx, api, notify);
 		await flushOutgoingCandidates(ctx, api);
-		applyPendingAnswer(ctx, notify);
 		notify();
 	} catch (err) {
 		if (ctx.generation !== generation) {
@@ -543,6 +621,7 @@ async function acceptIncomingCall(
 		peer = createPeer(ctx, api, notify, generation);
 		ctx.peer = peer;
 		attachLocalTracks(peer, stream);
+		applyMediaState(ctx);
 
 		await peer.setRemoteDescription({ type: "offer", sdp: offer });
 		ctx.remoteReady = true;
@@ -626,9 +705,26 @@ function attachLocalTracks(peer: RTCPeerConnection, stream: MediaStream) {
 	}
 }
 
+// applyMediaState makes the tracks match the interface: the microphone is
+// muted and the camera is off when the state says so. Without it a stream
+// captured after a muted call would transmit while the UI shows "unmute".
+function applyMediaState(ctx: CallContext) {
+	for (const track of ctx.localStream?.getAudioTracks() ?? []) {
+		track.enabled = !ctx.muted;
+	}
+
+	for (const track of ctx.localStream?.getVideoTracks() ?? []) {
+		track.enabled = ctx.cameraOn;
+	}
+}
+
 // applyPendingAnswer hands the answer to the connection of the caller. The
 // answer of a call the manager does not follow is ignored.
-function applyPendingAnswer(ctx: CallContext, notify: () => void) {
+function applyPendingAnswer(
+	ctx: CallContext,
+	api: CallApi,
+	notify: () => void,
+) {
 	const pending = ctx.pendingAnswer;
 	if (pending === undefined) return;
 	if (ctx.phase !== "outgoing" || ctx.callId !== pending.callId) return;
@@ -643,8 +739,19 @@ function applyPendingAnswer(ctx: CallContext, notify: () => void) {
 		try {
 			await peer.setRemoteDescription({ type: "answer", sdp: pending.sdp });
 		} catch {
-			// The connection refused the answer: the call cannot go on. The
-			// server ends it when the window runs out.
+			// The connection refused the answer: the call cannot go on. End
+			// it locally instead of waiting for the server window, and tell
+			// the server so the other side does not stay in a ghost call.
+			if (ctx.generation !== generation || ctx.peer !== peer) return;
+			endRemoteCall(ctx, api);
+			settleEnded(ctx, notify, {
+				reason: "peer-left",
+				callId: ctx.callId,
+				role: ctx.role,
+				peerId: ctx.peerId,
+				peerNick: ctx.peerNick,
+			});
+
 			return;
 		}
 

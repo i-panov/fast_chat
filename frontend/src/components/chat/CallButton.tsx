@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Group, Tooltip } from "@mantine/core";
+import { ActionIcon, Badge, Box, Group, Tooltip } from "@mantine/core";
 import { Phone } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -35,15 +35,19 @@ export function CallButton({ peer, localUserId, disabled, onCall }: Props) {
 				</Badge>
 			)}
 			<Tooltip label={t("call.start")} withArrow>
-				<ActionIcon
-					variant="subtle"
-					color="green"
-					disabled={disabled}
-					onClick={onCall}
-					aria-label={t("call.start")}
-				>
-					<Phone size={18} />
-				</ActionIcon>
+				{/* A disabled button does not emit the events the tooltip needs:
+				    the wrapper keeps the hint available. */}
+				<Box component="span" style={{ display: "inline-flex" }}>
+					<ActionIcon
+						variant="subtle"
+						color="green"
+						disabled={disabled}
+						onClick={onCall}
+						aria-label={t("call.start")}
+					>
+						<Phone size={18} />
+					</ActionIcon>
+				</Box>
 			</Tooltip>
 		</Group>
 	);

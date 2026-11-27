@@ -11,11 +11,13 @@ import { MessageList } from "./MessageList.tsx";
 const scrollToIndex = vi.fn(
 	(_opts: { index: number; align: string }): void => {},
 );
+const EDIT_ITEM_RE = /message\.edit|^Edit$|Редактировать/i;
 
 const virtuosoPropsHolder: {
 	current: {
 		rangeChanged?: (range: { startIndex: number; endIndex: number }) => void;
 		startReached?: () => void;
+		firstItemIndex?: number;
 	};
 } = { current: {} };
 
@@ -220,6 +222,123 @@ describe("message list scrolling", () => {
 
 		await new Promise((r) => setTimeout(r, 200));
 		expect(scrollToIndex).not.toHaveBeenCalled();
+	});
+
+	it("scrolls again when the same target is requested with a new nonce", async () => {
+		// Clearing and re-setting the same id in one event batch does not change
+		// state: without a nonce a second click on the same search result or
+		// reply was a no-op.
+		await messagesRepo.upsertMany([msg("m1"), msg("m2")]);
+		const list = (nonce: number) => (
+			<MantineProvider>
+				<MessageList
+					messages={[msg("m1"), msg("m2")]}
+					userId="alice:test"
+					chatId="chat-1"
+					token="test-token"
+					onDelete={() => {}}
+					onStartEdit={() => {}}
+					editTTL={300}
+					deleteTTL={300}
+					scrollToMessageId="m2"
+					scrollToMessageNonce={nonce}
+				/>
+			</MantineProvider>
+		);
+		const { rerender } = render(list(0));
+
+		await waitFor(() => {
+			expect(scrollToIndex).toHaveBeenCalledTimes(1);
+		});
+
+		rerender(list(1));
+
+		await waitFor(() => {
+			expect(scrollToIndex).toHaveBeenCalledTimes(2);
+		});
+		expect(scrollToIndex).toHaveBeenLastCalledWith({
+			index: 2,
+			align: "center",
+		});
+	});
+
+	it("edits inside a thread with the containing thread id", async () => {
+		const onStartEdit = vi.fn();
+		renderList({
+			messages: [
+				msg("m1", "alice:test", { createdAt: new Date().toISOString() }),
+			],
+			isInThread: true,
+			threadId: "th-container",
+			onStartEdit,
+		});
+
+		const paper = document.querySelector('[data-message-id="m1"]');
+		if (paper === null) throw new Error("bubble not rendered");
+		fireEvent.contextMenu(paper, { clientX: 10, clientY: 10 });
+		const item = await screen.findByText(EDIT_ITEM_RE);
+		fireEvent.click(item);
+
+		expect(onStartEdit).toHaveBeenCalledWith(
+			"chat-1",
+			"m1",
+			"text m1",
+			undefined,
+			"th-container",
+		);
+	});
+
+	it("edits a parent with a thread without passing the link thread", async () => {
+		// The parent lives in the main feed; the thread id is only the link.
+		const onStartEdit = vi.fn();
+		renderList({
+			messages: [
+				msg("m1", "alice:test", { createdAt: new Date().toISOString() }),
+			],
+			messageToThread: { m1: "th-link" },
+			onStartEdit,
+		});
+
+		const paper = document.querySelector('[data-message-id="m1"]');
+		if (paper === null) throw new Error("bubble not rendered");
+		fireEvent.contextMenu(paper, { clientX: 10, clientY: 10 });
+		const item = await screen.findByText(EDIT_ITEM_RE);
+		fireEvent.click(item);
+
+		expect(onStartEdit).toHaveBeenCalledWith(
+			"chat-1",
+			"m1",
+			"text m1",
+			undefined,
+			undefined,
+		);
+	});
+
+	it("decreases firstItemIndex when an older page is prepended", () => {
+		// Without firstItemIndex Virtuoso keeps the viewport anchored to the
+		// same data index, so loading history jumps the list.
+		const { rerender } = renderList({ messages: [msg("m2")] });
+		const first = virtuosoPropsHolder.current.firstItemIndex;
+		expect(first).toBeTypeOf("number");
+
+		rerender(
+			<MantineProvider>
+				<MessageList
+					messages={[msg("m1"), msg("m2")]}
+					userId="alice:test"
+					chatId="chat-1"
+					token="test-token"
+					onDelete={() => {}}
+					onStartEdit={() => {}}
+					editTTL={300}
+					deleteTTL={300}
+				/>
+			</MantineProvider>,
+		);
+
+		expect(virtuosoPropsHolder.current.firstItemIndex).toBeLessThan(
+			first as number,
+		);
 	});
 
 	it("jumps to the replied message on preview click", async () => {

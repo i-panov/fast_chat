@@ -181,7 +181,11 @@ export async function revokeSession(token: string): Promise<void> {
 }
 
 export function sseAuth(connectionId: string, token: string) {
-	return request<{ status: string }>("/api/auth/sse-auth", undefined, {
+	// The token travels in the body (the stream is bound by connectionId),
+	// but request() also needs it to apply the 401 policy: a revoked session
+	// must emit `unauthorized` and stop the reconnect loop instead of
+	// hammering the server with a dead token forever.
+	return request<{ status: string }>("/api/auth/sse-auth", token, {
 		method: "POST",
 		body: JSON.stringify({ connectionId, token }),
 	});
@@ -486,6 +490,8 @@ export interface EditMessageParams {
 	fileIDs?: string[];
 	fileHashes?: string[];
 	opts?: EditMessageOptions;
+	// Older flat shape, still accepted so an existing caller does not lose the
+	// flag. The outbox passes opts.
 	clearLocation?: boolean;
 	threadId?: string;
 	encrypted?: boolean;
@@ -496,7 +502,7 @@ function buildEditBody(params: EditMessageParams): Record<string, unknown> {
 	const body: Record<string, unknown> = { text: params.text };
 	if (params.fileIDs !== undefined) body.fileIDs = params.fileIDs;
 	if (params.fileHashes !== undefined) body.fileHashes = params.fileHashes;
-	if (params.clearLocation) {
+	if (params.opts?.clearLocation === true || params.clearLocation === true) {
 		body.clearLocation = true;
 	}
 	if (params.encrypted === true) {
@@ -574,8 +580,12 @@ export function sendTyping(token: string, chatId: string, active: boolean) {
 	});
 }
 
-export function getConfig() {
-	return request<AppConfig>("/api/config", undefined);
+export function getConfig(signal?: AbortSignal) {
+	return request<AppConfig>(
+		"/api/config",
+		undefined,
+		signal === undefined ? undefined : { signal },
+	);
 }
 
 export function getSync(

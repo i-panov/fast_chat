@@ -144,7 +144,9 @@ describe("callManager", () => {
 		manager.end();
 		manager.end();
 
-		expect(stop).toHaveBeenCalledTimes(1);
+		// The stream carries one audio and one video track: both are
+		// stopped exactly once, and the second end() has nothing to stop.
+		expect(stop).toHaveBeenCalledTimes(2);
 	});
 
 	it("releases the media when the server refuses the call", async () => {
@@ -435,6 +437,85 @@ describe("callManager", () => {
 		await manager.accept();
 
 		expect(manager.state().phase).toBe("active");
+	});
+
+	it("does not leak the muted microphone into the next call", async () => {
+		const stream = stubMedia();
+		const manager = createCallManager(fakeApi());
+
+		await manager.start("chat-1");
+		manager.toggleMute();
+		expect(stream.audioTrack.enabled).toBe(false);
+
+		manager.handleEnded({ callId: "c-1", reason: "peer-left" });
+		await manager.start("chat-2");
+
+		// The new stream is captured with the microphone enabled and the
+		// interface must say the same: otherwise "unmute" is shown while the
+		// microphone already transmits.
+		expect(manager.state().muted).toBe(false);
+		expect(stream.audioTrack.enabled).toBe(true);
+	});
+
+	it("does not leak the peer of the finished call into the next one", async () => {
+		const manager = createCallManager(fakeApi());
+
+		incoming(manager);
+		manager.dismiss();
+		manager.handleEnded({
+			callId: "c-2",
+			reason: "timeout",
+			peerId: "bob:test",
+			role: "callee",
+		});
+		manager.dismiss();
+
+		await manager.start("chat-1");
+
+		expect(manager.state().peerNick).toBeUndefined();
+		expect(manager.state().peerId).toBeUndefined();
+	});
+
+	it("blocks reject while the call is being accepted", async () => {
+		const api = fakeApi({
+			acceptCall: vi.fn(
+				() =>
+					new Promise<{ callId: string; state: string }>(() => {
+						// The answer never comes: accept() is in flight.
+					}),
+			),
+		});
+		const manager = createCallManager(api);
+
+		incoming(manager);
+		void manager.accept();
+
+		await manager.reject();
+
+		// Rejecting now would cut the local media while the server may
+		// already have accepted the call.
+		expect(api.rejectCall).not.toHaveBeenCalled();
+		expect(manager.state().phase).toBe("incoming");
+	});
+
+	it("ignores a repeated invite of the call being accepted", () => {
+		const api = fakeApi({
+			acceptCall: vi.fn(
+				() =>
+					new Promise<{ callId: string; state: string }>(() => {
+						// The answer never comes: accept() is in flight.
+					}),
+			),
+		});
+		const manager = createCallManager(api);
+
+		incoming(manager);
+		void manager.accept();
+		incoming(manager);
+
+		// The retried invite must not reset the accept in flight.
+		expect(manager.state().phase).toBe("incoming");
+		expect(manager.state().callId).toBe("c-2");
 	});
 
 	it("tolerates one broken ICE candidate", async () => {

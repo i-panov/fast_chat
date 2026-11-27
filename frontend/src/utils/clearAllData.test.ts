@@ -2,9 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LANGUAGE_PREFERENCE_KEY } from "../languagePreference.ts";
 import { clearAllData } from "./clearAllData.ts";
 
+vi.mock("../api.ts", () => ({
+	revokeSession: vi.fn(() => Promise.resolve()),
+}));
+
+const { revokeSession } = await import("../api.ts");
+
 beforeEach(() => {
 	localStorage.clear();
 	sessionStorage.clear();
+	vi.clearAllMocks();
 });
 
 describe("clearAllData", () => {
@@ -14,12 +21,45 @@ describe("clearAllData", () => {
 		localStorage.setItem("other", "x");
 		sessionStorage.setItem("s", "y");
 
-		await clearAllData();
+		const result = await clearAllData();
 
+		expect(result.ok).toBe(true);
 		expect(localStorage.getItem(LANGUAGE_PREFERENCE_KEY)).toBe("system");
 		expect(localStorage.getItem("i18nextLng")).toBeNull();
 		expect(localStorage.getItem("other")).toBeNull();
 		expect(sessionStorage.getItem("s")).toBeNull();
+	});
+
+	it("revokes the stored session before wiping the token", async () => {
+		localStorage.setItem(
+			"accounts",
+			JSON.stringify([{ token: "tok", user: { id: "a:test", nick: "a" } }]),
+		);
+
+		await clearAllData();
+
+		expect(revokeSession).toHaveBeenCalledWith("tok");
+		expect(localStorage.getItem("accounts")).toBeNull();
+	});
+
+	it("reports databases that survived the blocked delete", async () => {
+		const original = indexedDB.databases?.bind(indexedDB);
+		Object.defineProperty(indexedDB, "databases", {
+			value: () => Promise.resolve([{ name: "fast_chat_alice:test" }]),
+			configurable: true,
+		});
+
+		try {
+			const result = await clearAllData();
+
+			expect(result.ok).toBe(false);
+			expect(result.remainingDatabases).toEqual(["fast_chat_alice:test"]);
+		} finally {
+			Object.defineProperty(indexedDB, "databases", {
+				value: original,
+				configurable: true,
+			});
+		}
 	});
 
 	it("resolves without a stored language", async () => {

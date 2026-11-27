@@ -64,6 +64,20 @@ import { emitNotification } from "../utils/notify.ts";
 
 type ChatPageState = ReturnType<typeof useChatPage>;
 
+// Reading the jump target through helpers keeps the branch count of the page
+// component in check (the compiler counts optional chaining and ??).
+function scrollTargetId(
+	target: { messageId: string; nonce: number } | null,
+): string | null {
+	return target?.messageId ?? null;
+}
+
+function scrollTargetNonce(
+	target: { messageId: string; nonce: number } | null,
+): number | undefined {
+	return target?.nonce;
+}
+
 // The columns of the page share the same colors.
 const PANEL_BACKGROUND = "var(--mantine-color-dark-8)";
 const PANEL_BORDER = "1px solid var(--mantine-color-dark-4)";
@@ -426,11 +440,13 @@ function ActiveChatView({
 	userId,
 	onBack,
 	scrollToMessageId,
+	scrollToMessageNonce,
 }: {
 	s: ChatPageState;
 	userId: string;
 	onBack?: () => void;
 	scrollToMessageId?: string | null;
+	scrollToMessageNonce?: number;
 }) {
 	const { t } = useTranslation();
 	const showAuthorForGroup = s.activeChat?.type === "group";
@@ -629,6 +645,7 @@ function ActiveChatView({
 					onStartEdit={s.handleStartEdit}
 					onReply={s.handleReply}
 					scrollToMessageId={scrollToMessageId}
+					scrollToMessageNonce={scrollToMessageNonce}
 					editTTL={s.config?.messageEditTTL ?? 0}
 					deleteTTL={s.config?.messageDeleteTTL ?? 0}
 					hasMore={s.hasMore}
@@ -654,9 +671,13 @@ function ActiveChatView({
 					onCancelSend={(chatId, messageId) => {
 						void s.handleCancelSendMessage(chatId, messageId);
 					}}
-					onPin={(chatId, messageId) => {
-						void togglePin(chatId, messageId);
-					}}
+					onPin={
+						canPin
+							? (chatId, messageId) => {
+									void togglePin(chatId, messageId);
+								}
+							: undefined
+					}
 					onBlock={(fromId) => {
 						if (token !== undefined) void blockUser(token, fromId);
 					}}
@@ -710,10 +731,19 @@ function ActiveChatView({
 				userId={userId}
 				message={forwarding}
 				onForward={(targetChatId) => {
-					if (forwarding !== null) {
-						void s.handleForwardMessage(targetChatId, forwarding);
-					}
-					setForwarding(null);
+					if (forwarding === null) return;
+					// Forwarding can fail (undecryptable source, download or
+					// upload error): keep the modal open and say so instead of
+					// closing on a silent no-op.
+					void s
+						.handleForwardMessage(targetChatId, forwarding)
+						.then((ok) => {
+							if (ok) setForwarding(null);
+							else emitNotification(t("error.send"));
+						})
+						.catch(() => {
+							emitNotification(t("error.send"));
+						});
 				}}
 			/>
 			<PinnedMessagesModal
@@ -731,16 +761,21 @@ function ActiveChatView({
 	);
 }
 
-// eslint-disable-next-line max-lines-per-function -- the page owns layout, routing, calls and security gates.
+// eslint-disable-next-line max-lines-per-function, complexity -- the page owns layout, routing, calls and security gates until it is decomposed.
 export function ChatPage() {
 	const s = useChatPage();
 	const { selectChat, handleOpenThread } = s;
 	const { t } = useTranslation();
 	const isMobile = useMediaQuery("(max-width: 48em)") === true;
 	const [messageSearchOpen, setMessageSearchOpen] = useState(false);
-	const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(
-		null,
-	);
+	// A nonce distinguishes repeated jumps to the same message: openChat
+	// clears the target and the next line sets it again in one batch, which
+	// does not change MessageList's state.
+	const [scrollTarget, setScrollTarget] = useState<{
+		messageId: string;
+		nonce: number;
+	} | null>(null);
+	const scrollNonceRef = useRef(0);
 	const [chatToDelete, setChatToDelete] = useState<Chat | null>(null);
 	const [deletingChat, setDeletingChat] = useState(false);
 
@@ -836,7 +871,7 @@ export function ChatPage() {
 			selectChat(chatId);
 			// A pending jump belongs to the chat that requested it; a manual
 			// switch must not inherit a stale target.
-			setScrollToMessageId(null);
+			setScrollTarget(null);
 			const chat = s.chats.find((c) => c.id === chatId);
 			if (chat !== undefined) {
 				navigateToChat(chat);
@@ -876,25 +911,39 @@ export function ChatPage() {
 	// intentional: an unknown reference must not clear a valid selection.
 	// Going back to /chat clears the selection; the first render of /chat does
 	// not, because a selection can be set before its path is written.
+	// The effect only follows a *changed* address (or an empty selection): a
+	// chat picked by a hook (createChat/group creation) re-writes its path in
+	// the effect below, and overriding it here would bounce the selection back
+	// to the chat still named in the URL.
 	const previousPathRef = useRef(pathname);
 	useEffect(() => {
+		const pathChanged = previousPathRef.current !== pathname;
+		previousPathRef.current = pathname;
 		const chat = chatFromPath(pathname, s.chats, s.user?.id ?? "");
 		if (chat !== undefined) {
-			if (chat.id !== s.activeChatId) selectChat(chat.id);
-		} else if (pathname === "/chat" && previousPathRef.current !== "/chat") {
+			if (
+				chat.id !== s.activeChatId &&
+				(pathChanged || s.activeChatId === null)
+			) {
+				selectChat(chat.id);
+			}
+		} else if (pathname === "/chat" && pathChanged) {
 			selectChat(null);
 		}
-		previousPathRef.current = pathname;
 	}, [pathname, s.chats, s.user?.id, s.activeChatId, selectChat]);
 
 	// Selection made outside openChat (a new group, a chat started from the
-	// search) still has to appear in the address bar.
+	// search) still has to appear in the address bar. The address may still
+	// name another chat, so the comparison is against the chat the path
+	// resolves to, not against "/chat".
 	useEffect(() => {
-		if (pathname !== "/chat" || s.activeChatId === null) return;
+		if (s.activeChatId === null) return;
 		if (lastOpenedChatRef.current === s.activeChatId) return;
+		const fromPath = chatFromPath(pathname, s.chats, s.user?.id ?? "");
+		if (fromPath?.id === s.activeChatId) return;
 		const chat = s.chats.find((c) => c.id === s.activeChatId);
 		if (chat !== undefined) navigateToChat(chat, true);
-	}, [pathname, s.activeChatId, s.chats, navigateToChat]);
+	}, [pathname, s.activeChatId, s.chats, s.user?.id, navigateToChat]);
 
 	// Leaving or deleting a group clears the selection while the address still
 	// names the group; go back to the list instead of keeping a dead link.
@@ -960,7 +1009,11 @@ export function ChatPage() {
 					userId={s.user.id}
 					onSelect={(chatId, messageId) => {
 						openChat(chatId);
-						setScrollToMessageId(messageId);
+						scrollNonceRef.current += 1;
+						setScrollTarget({
+							messageId,
+							nonce: scrollNonceRef.current,
+						});
 					}}
 				/>
 				<AccountSwitcher
@@ -1030,7 +1083,8 @@ export function ChatPage() {
 										<ActiveChatView
 											s={s}
 											userId={s.user.id}
-											scrollToMessageId={scrollToMessageId}
+											scrollToMessageId={scrollTargetId(scrollTarget)}
+											scrollToMessageNonce={scrollTargetNonce(scrollTarget)}
 											onBack={isMobile ? closeMobileChat : undefined}
 										/>
 									)}

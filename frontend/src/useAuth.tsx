@@ -4,6 +4,7 @@ import {
 	useCallback,
 	useContext,
 	useEffect,
+	useRef,
 	useState,
 } from "react";
 import {
@@ -21,38 +22,33 @@ import {
 	setBackgroundSession,
 } from "./sync/backgroundSession.ts";
 import {
+	ACCOUNTS_KEY,
+	readAccounts,
+	readLastActiveToken,
+	readSessionToken,
+	removeActiveToken,
+	removeLastActiveToken,
+	resolveActiveToken,
+	type StoredAccount,
+	type StoredUser,
+	writeAccounts,
+	writeActiveToken,
+	writeLastActiveToken,
+} from "./utils/activeToken.ts";
+import {
 	broadcastTokenRotation,
 	onTokenRotation,
 } from "./utils/authChannel.ts";
 import {
 	onUnauthorized,
 	registerTokenReplacement,
+	replacementToken,
 } from "./utils/authEvents.ts";
 import {
 	clearAccountSwitchState,
 	deleteAccountDB,
 } from "./utils/clearAllData.ts";
 import { getDeviceId, getDeviceName } from "./utils/device.ts";
-
-interface StoredUser {
-	id: string;
-	nick: string;
-	avatarUrl?: string;
-	// Mirrors the public profile of the account. Older stored accounts
-	// predate the field, so it is optional and read as false.
-	isAdmin?: boolean;
-	isBot?: boolean;
-}
-
-interface StoredAccount {
-	token: string;
-	user: StoredUser;
-	email: string;
-	expiresAt: string;
-	sessionId?: string;
-	deviceId?: string;
-	deviceName?: string;
-}
 
 interface AuthContextValue {
 	accounts: StoredAccount[];
@@ -75,7 +71,7 @@ interface AuthContextValue {
 	) => void;
 	updateAccountUser: (user: StoredUser) => void;
 	logout: () => void;
-	logoutAll: () => void;
+	logoutAll: () => Promise<void>;
 	// sessionExpired drops the dead token without erasing the account's local
 	// database or E2EE key; the user can log back in and resume.
 	sessionExpired: () => void;
@@ -84,9 +80,6 @@ interface AuthContextValue {
 		oldToken: string,
 	) => Promise<{ token: string; expiresAt: string }>;
 }
-
-const ACCOUNTS_KEY = "accounts";
-const ACTIVE_TOKEN_KEY = "activeToken";
 
 // Security note: account tokens are kept in localStorage in plaintext, so
 // any XSS in this origin can steal every stored session. This is accepted
@@ -111,80 +104,16 @@ function mergeAccounts(
 	return [...byUser.values()];
 }
 
-function readAccounts(): StoredAccount[] {
-	try {
-		return JSON.parse(
-			localStorage.getItem(ACCOUNTS_KEY) ?? "[]",
-		) as StoredAccount[];
-	} catch {
-		return [];
-	}
-}
-
-function writeAccounts(accounts: StoredAccount[]) {
-	localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-}
-
-function readActiveToken(): string | null {
-	try {
-		return sessionStorage.getItem(ACTIVE_TOKEN_KEY);
-	} catch {
-		// Storage may be blocked (private mode, disabled cookies): no
-		// session token is recoverable, treat as logged out.
-		return null;
-	}
-}
-
-function writeActiveToken(token: string) {
-	sessionStorage.setItem(ACTIVE_TOKEN_KEY, token);
-}
-
-function removeActiveToken() {
-	sessionStorage.removeItem(ACTIVE_TOKEN_KEY);
-}
-
-function readLastActiveToken(): string | null {
-	return localStorage.getItem(ACTIVE_TOKEN_KEY);
-}
-
-function writeLastActiveToken(token: string) {
-	localStorage.setItem(ACTIVE_TOKEN_KEY, token);
-}
-
-function removeLastActiveToken() {
-	localStorage.removeItem(ACTIVE_TOKEN_KEY);
-}
-
-function resolveActiveToken(stored: StoredAccount[]): string | null {
-	const session = readActiveToken();
-	if (session !== null && stored.some((a) => a.token === session)) {
-		return session;
-	}
-
-	const last = readLastActiveToken();
-	if (last !== null && stored.some((a) => a.token === last)) {
-		writeActiveToken(last);
-		return last;
-	}
-
-	const first = stored[0]?.token ?? null;
-	if (first !== null) {
-		writeActiveToken(first);
-		writeLastActiveToken(first);
-	}
-	return first;
-}
-
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 // Web Locks serializes refreshes across tabs of the same origin. Without the
 // API (older webviews, tests) the caller still refreshes, just without the
 // cross-tab mutex.
-function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+function withRefreshLock<T>(fn: () => T | Promise<T>): Promise<T> {
 	const locks = (
 		navigator as Navigator & { locks?: { request: LockManager["request"] } }
 	).locks;
-	if (locks === undefined) return fn();
+	if (locks === undefined) return Promise.resolve(fn());
 	return locks.request("fastchat-token-refresh", fn);
 }
 
@@ -208,7 +137,7 @@ function useTokenRotationSync(
 				setAccounts(updated);
 			}
 			registerTokenReplacement(message.oldToken, message.token);
-			if (readActiveToken() === message.oldToken) {
+			if (readSessionToken() === message.oldToken) {
 				setActiveToken(message.token);
 				writeActiveToken(message.token);
 				if (readLastActiveToken() === message.oldToken) {
@@ -225,8 +154,34 @@ function useUnauthorizedSync(
 	setActiveToken: (token: string | null) => void,
 ) {
 	useEffect(() => {
-		return onUnauthorized((token) => {
-			const updated = readAccounts().filter((a) => a.token !== token);
+		function handleUnauthorized(token: string) {
+			const stored = readAccounts();
+			const account = stored.find((a) => a.token === token);
+			if (account === undefined) {
+				// A 401 races a token rotation: the server replaces the token
+				// hash on refresh while a request with the old token is still
+				// in flight. If another tab already stored the new token, the
+				// old one is simply gone from the list — deleting anything
+				// here would log the user out by accident.
+				if (replacementToken(token) !== undefined) return;
+				// Not stored at all: only scrub the pointers that still
+				// reference the dead session.
+				if (readLastActiveToken() === token) removeLastActiveToken();
+				if (readSessionToken() === token) {
+					const next = resolveActiveToken(stored);
+					setActiveToken(next);
+					if (next === null) {
+						removeActiveToken();
+						void getRouter().navigate({
+							to: "/login",
+							search: { add: undefined },
+						});
+					}
+				}
+				return;
+			}
+
+			const updated = stored.filter((a) => a.token !== token);
 			writeAccounts(updated);
 			setAccounts(updated);
 			if (readLastActiveToken() === token) {
@@ -235,7 +190,9 @@ function useUnauthorizedSync(
 			// An expired or rejected session is not a decision to erase local
 			// data: keeping the account database (and its E2EE key) lets the
 			// same account resume after a fresh login. explicit logout and
-			// "clear data" still delete it.
+			// "clear data" still delete it. The unlocked master key, however,
+			// must not stay in memory for a session that is dead.
+			lockLocalKeys(account.user.id);
 			clearAccountSwitchState();
 			if (activeToken === token) {
 				const next = updated[0]?.token ?? null;
@@ -250,6 +207,13 @@ function useUnauthorizedSync(
 					writeActiveToken(next);
 				}
 			}
+		}
+
+		return onUnauthorized((token) => {
+			// Take the refresh lock first: refreshAccountToken may be holding
+			// it while the server has already rotated the token, and the check
+			// above must run against the post-rotation storage.
+			void withRefreshLock(() => handleUnauthorized(token));
 		});
 	}, [activeToken, setAccounts, setActiveToken]);
 }
@@ -261,10 +225,11 @@ function useSessionHydration(
 	setAccounts: (accounts: StoredAccount[]) => void,
 ) {
 	useEffect(() => {
+		// Hydrate when the stored account has no session id yet, including the
+		// empty-string value older builds could write.
 		if (
 			activeAccount === null ||
-			activeAccount.sessionId !== undefined ||
-			activeAccount.sessionId === ""
+			(activeAccount.sessionId !== undefined && activeAccount.sessionId !== "")
 		) {
 			return;
 		}
@@ -324,21 +289,21 @@ function useAuthState() {
 
 	useEffect(() => {
 		function handleStorage(e: StorageEvent) {
-			if (e.key === ACCOUNTS_KEY) {
-				const incoming = readAccounts();
-				setAccounts((prev) => {
-					// A pure removal (incoming ⊆ prev) replaces the state so
-					// a logged-out session is not resurrected; otherwise
-					// union by user id so a concurrent add is not lost.
-					// Identity is the user id (see mergeAccounts): token
-					// rotation must not look like a new account.
-					const isPureRemoval = incoming.every((a) =>
-						prev.some((p) => p.user.id === a.user.id),
-					);
-					if (isPureRemoval) return incoming;
-					return mergeAccounts(prev, incoming);
-				});
-			}
+			// e.key === null is a full localStorage.clear() from another tab.
+			if (e.key !== ACCOUNTS_KEY && e.key !== null) return;
+			const incoming = readAccounts();
+			setAccounts((prev) => {
+				// A pure removal (incoming ⊆ prev) replaces the state so
+				// a logged-out session is not resurrected; otherwise
+				// union by user id so a concurrent add is not lost.
+				// Identity is the user id (see mergeAccounts): token
+				// rotation must not look like a new account.
+				const isPureRemoval = incoming.every((a) =>
+					prev.some((p) => p.user.id === a.user.id),
+				);
+				if (isPureRemoval) return incoming;
+				return mergeAccounts(prev, incoming);
+			});
 		}
 		window.addEventListener("storage", handleStorage);
 		return () => window.removeEventListener("storage", handleStorage);
@@ -347,9 +312,42 @@ function useAuthState() {
 	useUnauthorizedSync(activeToken, setAccounts, setActiveToken);
 	useTokenRotationSync(setAccounts, setActiveToken);
 
+	const activeAccount =
+		activeToken !== null
+			? (accounts.find((a) => a.token === activeToken) ?? null)
+			: null;
+	const activeUserIdRef = useRef<string | null>(null);
+	useEffect(() => {
+		if (activeAccount !== null) activeUserIdRef.current = activeAccount.user.id;
+	}, [activeAccount]);
+
+	// A logout or 401 in another tab only rewrites the shared account list;
+	// this tab keeps its own sessionStorage token. Reconcile the two so the
+	// tab either falls through to the next stored account or leaves for the
+	// login page instead of rendering an empty chat that /login redirects
+	// back into.
+	useEffect(() => {
+		if (activeToken === null) return;
+		if (accounts.some((a) => a.token === activeToken)) return;
+
+		const leaving = activeUserIdRef.current;
+		if (leaving !== null) lockLocalKeys(leaving);
+
+		const next = resolveActiveToken(accounts);
+		if (next !== null) {
+			setActiveToken(next);
+			return;
+		}
+		removeActiveToken();
+		removeLastActiveToken();
+		setActiveToken(null);
+		void getRouter().navigate({ to: "/login", search: { add: undefined } });
+	}, [accounts, activeToken]);
+
 	const switchAccount = useCallback((token: string) => {
 		setActiveToken(token);
 		writeActiveToken(token);
+		writeLastActiveToken(token);
 	}, []);
 
 	const addAccount = useCallback(
@@ -369,11 +367,17 @@ function useAuthState() {
 			]);
 			writeAccounts(updated);
 			setAccounts(updated);
+			// Signing in as another account must not leave the previous
+			// account's master key unlocked in memory.
+			if (activeAccount !== null && activeAccount.user.id !== user.id) {
+				lockLocalKeys(activeAccount.user.id);
+				clearAccountSwitchState();
+			}
 			setActiveToken(token);
 			writeActiveToken(token);
 			writeLastActiveToken(token);
 		},
-		[],
+		[activeAccount],
 	);
 
 	const removeAccount = useCallback(
@@ -415,7 +419,7 @@ function useAuthState() {
 			);
 			writeAccounts(updated);
 			setAccounts(updated);
-			if (readActiveToken() === oldToken) {
+			if (readSessionToken() === oldToken) {
 				setActiveToken(newToken);
 				writeActiveToken(newToken);
 				if (readLastActiveToken() === oldToken) {
@@ -497,7 +501,10 @@ function useAuthState() {
 		}
 	}, [activeToken, accounts, removeAccount]);
 
-	const logoutAll = useCallback(() => {
+	// logoutAll resolves only after the server has revoked the other devices:
+	// the local session is dropped first, and a failed request is reported to
+	// the caller so the UI does not claim that every device was signed out.
+	const logoutAll = useCallback(async () => {
 		const token = activeToken;
 		const leaving = accounts.find((a) => a.token === token) ?? null;
 		removeAccount(token ?? "");
@@ -506,24 +513,18 @@ function useAuthState() {
 			void clearLocalKeys().finally(() => deleteAccountDB(leaving.user.id));
 		}
 		if (token !== null) {
-			void logoutAllSessions(token).catch(() => {
-				// The local session is gone either way; a failed network call
-				// leaves other devices to expire normally.
-			});
+			await logoutAllSessions(token);
 		}
 	}, [activeToken, accounts, removeAccount]);
 
 	const sessionExpired = useCallback(() => {
 		const token = activeToken;
 		if (token === null) return;
+		const leaving = accounts.find((a) => a.token === token);
+		if (leaving !== undefined) lockLocalKeys(leaving.user.id);
 		removeAccount(token);
 		clearAccountSwitchState();
-	}, [activeToken, removeAccount]);
-
-	const activeAccount =
-		activeToken !== null
-			? (accounts.find((a) => a.token === activeToken) ?? null)
-			: null;
+	}, [activeToken, accounts, removeAccount]);
 
 	// Select the account database synchronously: the children's effects run
 	// before this provider's effects, and a key lookup in that window must

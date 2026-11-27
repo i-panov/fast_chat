@@ -40,7 +40,18 @@ export function clearFileCache(): void {
 		}
 	}
 	inMemoryCache.clear();
+	// The account switched or the storage was wiped: a player that holds a
+	// decrypted URL of the previous account must stop. The player listens
+	// to this event instead of the auth layer. The service worker has no
+	// window, and this function is safe there.
+	if (typeof window !== "undefined") {
+		window.dispatchEvent(new Event(FILE_CACHE_CLEARED_EVENT));
+	}
 }
+
+// FILE_CACHE_CLEARED_EVENT tells components that hold content of the leaving
+// account (the audio player) to drop it.
+export const FILE_CACHE_CLEARED_EVENT = "app:fileCacheCleared";
 
 // clearDecryptedFileCache drops plaintext attachments of one account from both
 // memory and IndexedDB. The ciphertext cache stays: it is useless without the
@@ -135,14 +146,16 @@ export async function cacheDecryptedFile(
 	cacheKey: string,
 	blob: Blob,
 	accountKey: string | null = getActiveAccountKey(),
+	bytes?: ArrayBuffer,
 ): Promise<void> {
 	// The repository applies the size and quota limits; a full disk must not
 	// break the display of a file that is already decrypted in memory. The
 	// account key is passed explicitly so the write is bound to the account
 	// that started the request, not the one that happens to be active after
-	// the decrypt.
-	const bytes = await blob.arrayBuffer();
-	await decryptedFilesRepo.put(cacheKey, bytes, blob.type, accountKey);
+	// the decrypt. The caller may already hold the bytes: copying a large
+	// plaintext into a second ArrayBuffer is a needless memory spike.
+	const data = bytes ?? (await blob.arrayBuffer());
+	await decryptedFilesRepo.put(cacheKey, data, blob.type, accountKey);
 }
 
 // saveFileOffline downloads the file even when it is above the automatic
@@ -163,7 +176,13 @@ export async function saveFileOffline(
 	if (getActiveAccountKey() !== accountKey) {
 		throw new Error("account changed while saving the file");
 	}
-	const stored = await fileCacheRepo.put(fileUrl, blob, blob.type, true);
+	const stored = await fileCacheRepo.put(
+		fileUrl,
+		blob,
+		blob.type,
+		true,
+		accountKey,
+	);
 	if (!stored) {
 		throw new Error("file is too large for the offline cache");
 	}
@@ -183,9 +202,14 @@ async function loadFile(
 	if (cached !== undefined) {
 		const blobUrl = URL.createObjectURL(cached.blob);
 		const entry = inMemoryCache.get(key);
-		if (entry) {
-			entry.blobUrl = blobUrl;
+		if (!entry) {
+			// The component released the file while the cache read was in
+			// flight: nobody owns this URL, so it must not leak the bytes.
+			URL.revokeObjectURL(blobUrl);
+			throw new Error("File request cancelled");
 		}
+		entry.blobUrl = blobUrl;
+
 		return blobUrl;
 	}
 
@@ -212,7 +236,9 @@ async function loadFile(
 	// not turn an already displayed file into an unhandled rejection. Never
 	// write one account's bytes into the database of another.
 	if (getActiveAccountKey() === accountKey) {
-		void fileCacheRepo.put(fileUrl, blob, blob.type).catch(() => {});
+		void fileCacheRepo
+			.put(fileUrl, blob, blob.type, false, accountKey)
+			.catch(() => {});
 	}
 
 	return blobUrl;

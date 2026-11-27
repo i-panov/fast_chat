@@ -10,7 +10,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setActiveAccountKey } from "../../db/init.ts";
 import { metaRepo } from "../../db/metaRepo.ts";
 import { generateKeyPair, type KeyPair } from "../../e2ee/crypto.ts";
-import { clearLocalKeys, getMyKeyPair } from "../../e2ee/keys.ts";
+import {
+	clearLocalKeys,
+	getMyKeyPair,
+	PASSKEY_LOCK_META,
+} from "../../e2ee/keys.ts";
 import { RecoveryModal } from "./RecoveryModal.tsx";
 
 let backupOnServer: string | null = null;
@@ -54,18 +58,14 @@ function passwordInput(): HTMLInputElement {
 	return input;
 }
 
-function footerButtons(): [HTMLButtonElement, HTMLButtonElement] {
-	// The modal header also renders a close button; the footer pair comes last.
-	const all = [...document.querySelectorAll("button")];
-	const decline = all[all.length - 2];
-	const recover = all[all.length - 1];
-	if (
-		!(decline instanceof HTMLButtonElement) ||
-		!(recover instanceof HTMLButtonElement)
-	) {
-		throw new Error("footer buttons not found");
+function footerButton(text: string): HTMLButtonElement {
+	const button = [...document.querySelectorAll("button")].find(
+		(item) => item.textContent === text,
+	);
+	if (!(button instanceof HTMLButtonElement)) {
+		throw new Error(`button not found: ${text}`);
 	}
-	return [decline, recover];
+	return button;
 }
 
 let scopeCounter = 0;
@@ -130,7 +130,7 @@ describe("RecoveryModal", () => {
 		});
 
 		fireEvent.change(passwordInput(), { target: { value: "right-pass" } });
-		fireEvent.click(footerButtons()[1]);
+		fireEvent.click(footerButton("backup.recoveryRecover"));
 
 		await waitFor(async () => {
 			expect(await getMyKeyPair()).toEqual(keys);
@@ -149,7 +149,7 @@ describe("RecoveryModal", () => {
 		});
 
 		fireEvent.change(passwordInput(), { target: { value: "wrong-pass" } });
-		fireEvent.click(footerButtons()[1]);
+		fireEvent.click(footerButton("backup.recoveryRecover"));
 
 		await waitFor(() => {
 			expect(screen.queryByText("backup.recoveryWrongPassword")).toBeTruthy();
@@ -187,7 +187,7 @@ describe("RecoveryModal", () => {
 			emitRecoveryNeeded("tok");
 		});
 
-		fireEvent.click(footerButtons()[0]);
+		fireEvent.click(footerButton("backup.recoveryDecline"));
 
 		await waitFor(() => {
 			expect(backupOnServer).toBeNull();
@@ -195,7 +195,37 @@ describe("RecoveryModal", () => {
 		// Let the post-recovery UI settle (key save + reload) inside the
 		// test lifetime so no setState outlives the jsdom teardown.
 		await waitFor(() => {
-			expect(footerButtons()[0].disabled).toBe(false);
+			expect(footerButton("backup.recoveryDecline").disabled).toBe(false);
+		});
+	});
+
+	it("warns that recovery removes the local PIN/passkey lock", async () => {
+		await metaRepo.setNoNotify(PASSKEY_LOCK_META, "{}");
+		render(
+			<MantineProvider>
+				<RecoveryModal activeToken="tok" />
+			</MantineProvider>,
+		);
+		act(() => {
+			emitRecoveryNeeded("tok");
+		});
+
+		expect(await screen.findByText("backup.recoveryRemovesLock")).toBeTruthy();
+	});
+
+	it("offers a safe way to postpone recovery", async () => {
+		render(
+			<MantineProvider>
+				<RecoveryModal activeToken="tok" />
+			</MantineProvider>,
+		);
+		act(() => {
+			emitRecoveryNeeded("tok");
+		});
+
+		fireEvent.click(await screen.findByText("backup.recoveryLater"));
+		await waitFor(() => {
+			expect(document.querySelectorAll("input").length).toBe(0);
 		});
 	});
 });

@@ -4,7 +4,9 @@ import { chatsRepo } from "../db/chatsRepo.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
+import type { StoredMessage, StoredThreadMessage } from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
+import { threadsRepo } from "../db/threadsRepo.ts";
 import {
 	buildFileMaps,
 	dropPreparedBlobs,
@@ -216,6 +218,7 @@ async function doSendMessage(
 		};
 		if (inThreadId !== undefined) {
 			await threadMessagesRepo.upsert(stored, inThreadId, "queued");
+			await threadsRepo.bumpMessageCount(inThreadId, 1);
 		} else {
 			await messagesRepo.upsert(stored, "queued");
 		}
@@ -300,6 +303,7 @@ async function doSendMessage(
 
 	if (inThreadId !== undefined) {
 		await threadMessagesRepo.upsert(stored, inThreadId, "queued");
+		await threadsRepo.bumpMessageCount(inThreadId, 1);
 	} else {
 		await messagesRepo.upsert(stored, "queued");
 	}
@@ -324,6 +328,35 @@ async function doSendMessage(
 	return true;
 }
 
+// resolveEditTarget finds the row an edit refers to. The caller passes the
+// thread that contains the message (undefined for the main feed): a parent
+// message that started a thread lives in messagesRepo, a reply inside a thread
+// lives in the thread store, and the edit must be written back to the store it
+// came from.
+async function resolveEditTarget(
+	chatId: string,
+	messageId: string,
+	threadId: string | undefined,
+): Promise<{
+	current: StoredMessage | StoredThreadMessage;
+	storageThreadId: string | undefined;
+} | null> {
+	if (threadId !== undefined) {
+		const inThread = await threadMessagesRepo.getById(threadId, messageId);
+		if (inThread !== undefined)
+			return { current: inThread, storageThreadId: threadId };
+	}
+	const inChat = await messagesRepo.getById(chatId, messageId);
+	if (inChat !== undefined)
+		return { current: inChat, storageThreadId: undefined };
+
+	const inAnyThread = await threadMessagesRepo.getByIdAny(messageId);
+	if (inAnyThread !== undefined && inAnyThread.chatId === chatId) {
+		return { current: inAnyThread, storageThreadId: inAnyThread.threadId };
+	}
+	return null;
+}
+
 async function doEditMessage(
 	params: EditMessageParams,
 	deps: SenderDeps,
@@ -336,15 +369,14 @@ async function doEditMessage(
 		location,
 		clearLocation,
 		filesToRemove,
-		threadId: inThreadId,
+		threadId,
 	} = params;
 	const { token, user } = deps;
 	const chat = await chatsRepo.getById(chatId);
 
-	const current = inThreadId
-		? await threadMessagesRepo.getById(inThreadId, messageId)
-		: await messagesRepo.getById(chatId, messageId);
-	if (current === undefined) return false;
+	const target = await resolveEditTarget(chatId, messageId, threadId);
+	if (target === null) return false;
+	const { current, storageThreadId } = target;
 
 	const filesForEdit =
 		chat?.isBotChat === true && chat.botEncryptionMode === "server"
@@ -416,8 +448,8 @@ async function doEditMessage(
 			location: nextLocation,
 			editedAt: now,
 		};
-		if (inThreadId !== undefined) {
-			await threadMessagesRepo.upsert(updated, inThreadId, nextStatus);
+		if (storageThreadId !== undefined) {
+			await threadMessagesRepo.upsert(updated, storageThreadId, nextStatus);
 		} else {
 			await messagesRepo.upsert(updated, nextStatus);
 		}
@@ -436,7 +468,7 @@ async function doEditMessage(
 			clientEditedAt: now,
 			createdAt: now,
 			attempts: 0,
-			threadId: inThreadId,
+			threadId: storageThreadId,
 		});
 		scheduleSync();
 		return true;
@@ -453,7 +485,7 @@ async function doEditMessage(
 		binding: {
 			messageId,
 			fromId: current.fromId,
-			threadId: inThreadId,
+			threadId: storageThreadId,
 		},
 	});
 	if (encrypted === null) {
@@ -481,8 +513,8 @@ async function doEditMessage(
 		editedAt: now,
 	};
 
-	if (inThreadId !== undefined) {
-		await threadMessagesRepo.upsert(updated, inThreadId, nextStatus);
+	if (storageThreadId !== undefined) {
+		await threadMessagesRepo.upsert(updated, storageThreadId, nextStatus);
 	} else {
 		await messagesRepo.upsert(updated, nextStatus);
 	}
@@ -503,7 +535,7 @@ async function doEditMessage(
 		clientEditedAt: now,
 		createdAt: now,
 		attempts: 0,
-		threadId: inThreadId,
+		threadId: storageThreadId,
 	});
 
 	scheduleSync();
@@ -519,10 +551,29 @@ async function doDeleteMessage(
 		? await threadMessagesRepo.getById(threadId, messageId)
 		: await messagesRepo.getById(chatId, messageId);
 
+	// A failed *edit* does not mean the message never reached the server: the
+	// row was delivered earlier and must be deleted server-side. Only a failed
+	// or queued send is still local and can be cancelled outright.
+	const ops = await outboxRepo.list();
+	const sendOp = ops.find(
+		(o) => o.kind === "send" && o.msgId === messageId && o.chatId === chatId,
+	);
+	const editOp = ops.find(
+		(o) =>
+			o.kind === "edit" && o.messageId === messageId && o.chatId === chatId,
+	);
+	const failedEditOnly =
+		current?.status === "failed" &&
+		sendOp === undefined &&
+		editOp !== undefined;
+
 	// A queued send has not left the device yet: deleting it must cancel the
 	// operation (and its staged blobs), not enqueue a delete that runs after
 	// the message has already reached every recipient.
-	if (current?.status === "queued" || current?.status === "failed") {
+	if (
+		(current?.status === "queued" || current?.status === "failed") &&
+		!failedEditOnly
+	) {
 		await removeSendOrEditOp(chatId, messageId);
 		if (threadId !== undefined) {
 			await threadMessagesRepo.remove(threadId, messageId);
@@ -530,6 +581,11 @@ async function doDeleteMessage(
 			await messagesRepo.remove(chatId, messageId);
 		}
 	} else {
+		if (failedEditOnly) {
+			// The edit is dead (its target is being deleted); drop it together
+			// with its staged blobs before queueing the real delete.
+			await removeSendOrEditOp(chatId, messageId);
+		}
 		if (current !== undefined) {
 			if (threadId !== undefined) {
 				await threadMessagesRepo.applyDelete(threadId, messageId);

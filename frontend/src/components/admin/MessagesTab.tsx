@@ -11,9 +11,11 @@ import { formatDateTime } from "../../utils/chat.ts";
 import {
 	COLUMN_ACTIONS,
 	type ConfirmState,
-	errorText,
+	errorKey,
 	useReload,
 } from "./shared.tsx";
+
+const KEY_DELETE = "admin.delete";
 
 export function MessagesTab({
 	token,
@@ -34,6 +36,7 @@ export function MessagesTab({
 	const [error, setError] = useState<string | null>(null);
 	const [version, reload] = useReload();
 	const chatIdRef = useRef(chat?.id);
+	const requestSeqRef = useRef(0);
 
 	useEffect(() => {
 		chatIdRef.current = chat?.id;
@@ -42,31 +45,40 @@ export function MessagesTab({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: version is the manual reload trigger.
 	useEffect(() => {
 		if (chat === null) return;
+		const seq = ++requestSeqRef.current;
 		let cancelled = false;
+		// Do not show the previous chat's rows (or its cursor) under the
+		// new chat's header while the request is in flight.
+		setMessages([]);
+		setCursor(undefined);
+		setHasMore(false);
 		setLoading(true);
 		setError(null);
 		void adminListMessages(token, chat.id)
 			.then((result) => {
-				if (cancelled) return;
+				if (cancelled || seq !== requestSeqRef.current) return;
 				setMessages(result.messages ?? []);
 				setCursor(result.nextCursor);
 				setHasMore(result.hasMore);
 			})
 			.catch((err: unknown) => {
-				if (!cancelled) setError(errorText(err));
+				if (cancelled || seq !== requestSeqRef.current) return;
+				setError(t(errorKey(err)));
 			})
 			.finally(() => {
-				if (!cancelled) setLoading(false);
+				if (cancelled || seq !== requestSeqRef.current) return;
+				setLoading(false);
 			});
 
 		return () => {
 			cancelled = true;
 		};
-	}, [token, chat, version]);
+	}, [token, chat, version, t]);
 
 	async function loadMore() {
 		if (chat === null || cursor === undefined || loadingMore) return;
 		const chatID = chat.id;
+		const seq = requestSeqRef.current;
 		setLoadingMore(true);
 		setError(null);
 		try {
@@ -74,14 +86,16 @@ export function MessagesTab({
 			// Another chat may have been selected while the page was in
 			// flight; appending it would mix two chats and target the wrong
 			// chat on delete.
-			if (chatIdRef.current !== chatID) return;
+			if (seq !== requestSeqRef.current || chatIdRef.current !== chatID) {
+				return;
+			}
 			// Pages walk backwards from the newest message: older ones go on
 			// top, not below the newer ones already shown.
 			setMessages((prev) => [...(result.messages ?? []), ...prev]);
 			setCursor(result.nextCursor);
 			setHasMore(result.hasMore);
 		} catch (err) {
-			setError(errorText(err));
+			if (seq === requestSeqRef.current) setError(t(errorKey(err)));
 		} finally {
 			setLoadingMore(false);
 		}
@@ -133,10 +147,12 @@ export function MessagesTab({
 											size="compact-xs"
 											color="red"
 											variant="light"
+											aria-label={`${t(KEY_DELETE)}: ${message.fromNick} ${formatDateTime(message.createdAt)}`}
 											onClick={() => {
 												ask({
 													title: t("admin.deleteMessageTitle"),
 													body: t("admin.deleteMessageConfirm"),
+													confirmLabel: t(KEY_DELETE),
 													onConfirm: async () => {
 														await adminDeleteMessage(
 															token,
@@ -148,7 +164,7 @@ export function MessagesTab({
 												});
 											}}
 										>
-											{t("admin.delete")}
+											{t(KEY_DELETE)}
 										</Button>
 									</Table.Td>
 								</Table.Tr>
@@ -157,7 +173,9 @@ export function MessagesTab({
 					</Table>
 				</Table.ScrollContainer>
 			)}
-			{hasMore && (
+			{/* A stale cursor from the previous chat must not be usable while
+			    the new chat is still loading. */}
+			{hasMore && !loading && (
 				<Button
 					variant="default"
 					loading={loadingMore}

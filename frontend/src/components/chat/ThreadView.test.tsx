@@ -187,6 +187,20 @@ describe("ThreadView", () => {
 		expect(loadMoreThreadMessages).toHaveBeenCalledTimes(1);
 	});
 
+	it("tells the list which thread contains the messages", () => {
+		// Edit/reaction storage is addressed by the containing thread, not by
+		// the thread a parent message links to: without this prop the actions
+		// inside ThreadView silently address the main feed.
+		renderView(state());
+
+		const ml = mlPropsHolder.current as unknown as {
+			threadId?: string;
+			isInThread?: boolean;
+		};
+		expect(ml.isInThread).toBe(true);
+		expect(ml.threadId).toBe("th1");
+	});
+
 	it("forwards the input bar submit", () => {
 		const handleSendThreadMessage = vi.fn(async (_e: unknown) => {});
 		renderView(state({ handleSendThreadMessage }));

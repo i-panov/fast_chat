@@ -126,11 +126,13 @@ describe("useMessages", () => {
 		expect(mockGetMessages()).toHaveBeenCalledTimes(1);
 	});
 
-	it("goes offline instead of paging", async () => {
-		mockGetMessages().mockResolvedValue({
-			messages: [msg("m1")],
-			nextCursor: "cur1",
-		});
+	it("keeps hasMore while offline and retries when the connection returns", async () => {
+		mockGetMessages()
+			.mockResolvedValueOnce({
+				messages: [msg("m1")],
+				nextCursor: "cur1",
+			})
+			.mockResolvedValueOnce({ messages: [msg("m0")], nextCursor: undefined });
 		const { result } = renderHook(() =>
 			useMessages({ token: "tok", chatId: "c1" }),
 		);
@@ -149,7 +151,9 @@ describe("useMessages", () => {
 				await result.current.loadMore();
 			});
 
-			expect(result.current.hasMore).toBe(false);
+			// The history exists; only the network is gone. Paging must stay
+			// available so the online listener can retry it.
+			expect(result.current.hasMore).toBe(true);
 			expect(mockGetMessages()).toHaveBeenCalledTimes(1);
 		} finally {
 			Object.defineProperty(window.navigator, "onLine", {
@@ -157,6 +161,19 @@ describe("useMessages", () => {
 				configurable: true,
 			});
 		}
+
+		await act(async () => {
+			window.dispatchEvent(new Event("online"));
+			await Promise.resolve();
+		});
+		await waitFor(() => {
+			expect(mockGetMessages()).toHaveBeenCalledTimes(2);
+		});
+		expect(mockGetMessages()).toHaveBeenLastCalledWith(
+			"tok",
+			"c1",
+			expect.objectContaining({ before: "cur1" }),
+		);
 	});
 
 	it("notifies when paging fails", async () => {

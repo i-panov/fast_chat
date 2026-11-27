@@ -38,6 +38,17 @@ export const threadsRepo = {
 		notify();
 	},
 
+	// bumpMessageCount keeps the "N replies" link in step with local sends and
+	// synced thread messages without refetching the whole thread list.
+	async bumpMessageCount(id: string, delta: number): Promise<void> {
+		const db = await getDB();
+		const existing = await db.get("threads", id);
+		if (existing === undefined) return;
+		const messageCount = Math.max(0, (existing.messageCount ?? 0) + delta);
+		await db.put("threads", { ...existing, messageCount });
+		notify();
+	},
+
 	async remove(id: string): Promise<void> {
 		const db = await getDB();
 		await db.delete("threads", id);

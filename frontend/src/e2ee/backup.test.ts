@@ -70,4 +70,36 @@ describe("key backup roundtrip", () => {
 		expect(blob).not.toContain(data.identityKeyPair.privateKey);
 		expect(blob).not.toContain(data.keyPair.publicKey.slice(0, 20));
 	});
+
+	it("rejects an absurd iteration count from the server instead of hanging", async () => {
+		const data = await backupData();
+		const blob = await encryptBackupData("pw", data);
+		const payload = JSON.parse(
+			new TextDecoder().decode(
+				Uint8Array.from(atob(blob), (char) => char.charCodeAt(0)),
+			),
+		) as Record<string, unknown>;
+		payload.iterations = 1e15;
+		const forged = btoa(JSON.stringify(payload));
+		await expect(decryptBackupData("pw", forged)).rejects.toThrow(
+			E2EBackupError,
+		);
+	});
+
+	it("falls back to the default cost for a too-small iteration count", async () => {
+		const data = await backupData();
+		const blob = await encryptBackupData("pw", data);
+		const payload = JSON.parse(
+			new TextDecoder().decode(
+				Uint8Array.from(atob(blob), (char) => char.charCodeAt(0)),
+			),
+		) as Record<string, unknown>;
+		payload.iterations = 1;
+		const downgraded = btoa(JSON.stringify(payload));
+		// The ciphertext still belongs to the default KDF cost: a lowered
+		// header must not change which key opens it.
+		expect((await decryptBackupData("pw", downgraded)).keyPair).toEqual(
+			data.keyPair,
+		);
+	});
 });

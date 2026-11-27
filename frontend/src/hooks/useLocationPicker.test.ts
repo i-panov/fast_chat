@@ -26,12 +26,30 @@ describe("useLocationPicker", () => {
 		expect(result.current.pendingLocation).toBeNull();
 	});
 
-	it("toggles the picker directly", () => {
+	it("replaces the pending location on a later confirmation", () => {
 		const { result } = renderHook(() => useLocationPicker());
 
 		act(() => {
-			result.current.setLocationPickerOpen(true);
+			result.current.handleLocationConfirm({ lat: 1, lng: 2 });
 		});
+		act(() => {
+			result.current.handleLocationConfirm({ lat: 3, lng: 4 });
+		});
+
+		expect(result.current.pendingLocation).toEqual({ lat: 3, lng: 4 });
+	});
+
+	it("keeps the pending location when the picker is reopened", () => {
+		const { result } = renderHook(() => useLocationPicker());
+
+		act(() => {
+			result.current.handleLocationConfirm({ lat: 1, lng: 2 });
+		});
+		act(() => {
+			result.current.openLocationPicker();
+		});
+
 		expect(result.current.locationPickerOpen).toBe(true);
+		expect(result.current.pendingLocation).toEqual({ lat: 1, lng: 2 });
 	});
 });

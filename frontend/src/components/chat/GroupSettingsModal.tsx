@@ -1,4 +1,5 @@
 import {
+	Alert,
 	Button,
 	Group,
 	Modal,
@@ -7,13 +8,31 @@ import {
 	Text,
 	TextInput,
 } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { searchUsers } from "../../api.ts";
+import { ApiError, searchUsers } from "../../api.ts";
 import type { Chat, User } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { GroupAvatarSection } from "./GroupAvatarSection.tsx";
 import { GroupMembersList } from "./GroupMembersList.tsx";
+
+// The server limit is 60 runes, not UTF-16 units: counting code units would
+// reject long Cyrillic names that the backend accepts.
+const MAX_GROUP_NAME_RUNES = 60;
+
+function runeLength(value: string): number {
+	return Array.from(value).length;
+}
+
+function actionErrorKey(error: unknown): string {
+	if (error instanceof ApiError && error.status === 403)
+		return "error.forbidden";
+	if (error instanceof ApiError && error.status === 404)
+		return "error.notFound";
+
+	return "error.requestFailed";
+}
 
 interface Props {
 	open: boolean;
@@ -69,7 +88,7 @@ function GroupNameSection({
 			<TextInput
 				value={draft}
 				onChange={(e) => onDraftChange(e.currentTarget.value)}
-				maxLength={60}
+				aria-label={t("chat.groupName")}
 				style={{ flex: 1 }}
 				autoFocus
 			/>
@@ -105,6 +124,7 @@ function AddMemberSection({
 			</Text>
 			<TextInput
 				placeholder={t("search.placeholder")}
+				aria-label={t("search.placeholder")}
 				value={query}
 				onChange={(e) => onQueryChange(e.currentTarget.value)}
 			/>
@@ -138,6 +158,7 @@ function AddMemberSection({
 
 interface DangerActionsSectionProps {
 	confirming: "leave" | "delete" | null;
+	chatName: string;
 	canLeave: boolean;
 	isOwner: boolean;
 	busy: boolean;
@@ -149,6 +170,7 @@ interface DangerActionsSectionProps {
 
 function DangerActionsSection({
 	confirming,
+	chatName,
 	canLeave,
 	isOwner,
 	busy,
@@ -160,20 +182,21 @@ function DangerActionsSection({
 	const { t } = useTranslation();
 
 	if (confirming !== null) {
+		const isDelete = confirming === "delete";
 		return (
 			<Group>
-				<Text size="sm" c={confirming === "delete" ? "red" : "orange"}>
-					{confirming === "delete"
-						? t("chat.deleteGroupConfirm")
-						: t("chat.leaveGroupConfirm")}
+				<Text size="sm" c={isDelete ? "red" : "orange"}>
+					{isDelete
+						? t("chat.deleteGroupConfirmName", { name: chatName })
+						: t("chat.leaveGroupConfirmName", { name: chatName })}
 				</Text>
 				<Button
-					color={confirming === "delete" ? "red" : "orange"}
+					color={isDelete ? "red" : "orange"}
 					size="xs"
 					loading={busy}
 					onClick={onConfirm}
 				>
-					{t("chat.save")}
+					{isDelete ? t("chat.deleteGroup") : t("chat.leaveGroup")}
 				</Button>
 				<Button variant="default" size="xs" onClick={onCancel}>
 					{t("accounts.cancel")}
@@ -200,36 +223,30 @@ function DangerActionsSection({
 	);
 }
 
-export function GroupSettingsModal({
-	open,
-	chat,
-	onClose,
-	onRename,
-	onAddMember,
-	onRemoveMember,
-	onDelete,
-	onUploadAvatar,
-}: Props) {
-	const { t } = useTranslation();
-	const { activeAccount } = useAuth();
-	const myId = activeAccount?.user.id ?? "";
-	const isOwner = chat !== null && chat.ownerId === myId;
+interface MemberSearchParams {
+	open: boolean;
+	chat: Chat | null;
+	token: string | undefined;
+	myId: string;
+}
 
-	const [editingName, setEditingName] = useState(false);
-	const [nameDraft, setNameDraft] = useState("");
+// Debounced, sequence-guarded user lookup that always filters against the
+// freshest chat and account (a late response must not add an existing member
+// or a bot after the dialog switched groups).
+function useMemberSearch({ open, chat, token, myId }: MemberSearchParams) {
 	const [query, setQuery] = useState("");
 	const [results, setResults] = useState<User[]>([]);
-	const [confirming, setConfirming] = useState<"leave" | "delete" | null>(null);
-	const [busy, setBusy] = useState(false);
 	const searchTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
 		undefined,
 	);
 	const searchSeqRef = useRef(0);
 	const chatRef = useRef(chat);
-	const accountRef = useRef(activeAccount);
+	const tokenRef = useRef(token);
+	const myIdRef = useRef(myId);
 	useEffect(() => {
 		chatRef.current = chat;
-		accountRef.current = activeAccount;
+		tokenRef.current = token;
+		myIdRef.current = myId;
 	});
 
 	useEffect(() => {
@@ -242,33 +259,15 @@ export function GroupSettingsModal({
 		if (!open) return;
 		setQuery("");
 		setResults([]);
-		setEditingName(false);
-		setNameDraft("");
-		setConfirming(null);
-		setBusy(false);
 		searchSeqRef.current++;
 		clearTimeout(searchTimerRef.current);
 	}, [chatId, open]);
 
-	function startRename() {
-		if (chat === null) return;
-		setNameDraft(chat.name);
-		setEditingName(true);
-	}
-
-	async function commitRename() {
-		const trimmed = nameDraft.trim();
-		if (trimmed.length === 0 || chat === null) {
-			setEditingName(false);
-			return;
-		}
-		setBusy(true);
-		try {
-			await onRename(trimmed);
-		} finally {
-			setBusy(false);
-			setEditingName(false);
-		}
+	function clear() {
+		setQuery("");
+		setResults([]);
+		searchSeqRef.current++;
+		clearTimeout(searchTimerRef.current);
 	}
 
 	function handleQueryChange(value: string) {
@@ -278,22 +277,24 @@ export function GroupSettingsModal({
 			setResults([]);
 			return;
 		}
-		if (activeAccount === null || chat === null) return;
+		const freshChat = chatRef.current;
+		if (tokenRef.current === undefined || freshChat === null) return;
 		const seq = ++searchSeqRef.current;
-		const token = activeAccount.token;
-		const q = value;
+		const tokenForSearch = tokenRef.current;
 		searchTimerRef.current = setTimeout(() => {
-			searchUsers(token, q)
+			searchUsers(tokenForSearch, value)
 				.then(({ users }) => {
 					if (searchSeqRef.current !== seq) return;
-					const freshChat = chatRef.current;
-					const freshAccount = accountRef.current;
-					if (freshChat === null || freshAccount === null) return;
+					const latestChat = chatRef.current;
+					if (latestChat === null) return;
 					setResults(
 						users.filter(
 							(u) =>
-								u.id !== freshAccount.user.id &&
-								!freshChat.members.some((m) => m.id === u.id),
+								u.id !== myIdRef.current &&
+								// Bots are 1-1 only: the server rejects them as
+								// group members.
+								u.isBot !== true &&
+								!latestChat.members.some((m) => m.id === u.id),
 						),
 					);
 				})
@@ -303,18 +304,107 @@ export function GroupSettingsModal({
 		}, 300);
 	}
 
+	return { query, results, handleQueryChange, clear };
+}
+
+export function GroupSettingsModal({
+	open,
+	chat,
+	onClose,
+	onRename,
+	onAddMember,
+	onRemoveMember,
+	onDelete,
+	onUploadAvatar,
+}: Props) {
+	const { t } = useTranslation();
+	const { activeAccount } = useAuth();
+	const fullScreen = useMediaQuery("(max-width: 48em)") === true;
+	const myId = activeAccount?.user.id ?? "";
+	const isOwner = chat !== null && chat.ownerId === myId;
+
+	const [editingName, setEditingName] = useState(false);
+	const [nameDraft, setNameDraft] = useState("");
+	const [confirming, setConfirming] = useState<"leave" | "delete" | null>(null);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const {
+		query,
+		results,
+		handleQueryChange,
+		clear: clearSearch,
+	} = useMemberSearch({
+		open,
+		chat,
+		token: activeAccount?.token,
+		myId,
+	});
+
+	const chatId = chat?.id;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset effect intentionally keyed by chat/open switch.
+	useEffect(() => {
+		if (!open) return;
+		setEditingName(false);
+		setNameDraft("");
+		setConfirming(null);
+		setBusy(false);
+		setError(null);
+	}, [chatId, open]);
+
+	async function runAction(action: () => void | Promise<void>) {
+		setError(null);
+		try {
+			await action();
+		} catch (err) {
+			setError(t(actionErrorKey(err)));
+		}
+	}
+
+	function startRename() {
+		if (chat === null) return;
+		setNameDraft(chat.name);
+		setError(null);
+		setEditingName(true);
+	}
+
+	async function commitRename() {
+		const trimmed = nameDraft.trim();
+		if (trimmed.length === 0 || chat === null) {
+			setEditingName(false);
+			return;
+		}
+		if (runeLength(trimmed) > MAX_GROUP_NAME_RUNES) {
+			setError(t("chat.groupNameTooLong", { max: MAX_GROUP_NAME_RUNES }));
+			return;
+		}
+		setBusy(true);
+		setError(null);
+		try {
+			await onRename(trimmed);
+			setEditingName(false);
+		} catch (err) {
+			setError(t(actionErrorKey(err)));
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	async function handleConfirm() {
 		if (confirming === null) return;
 		setBusy(true);
+		setError(null);
 		try {
 			if (confirming === "delete") {
 				await onDelete();
 			} else if (confirming === "leave") {
 				await onRemoveMember(myId);
 			}
+			setConfirming(null);
+		} catch (err) {
+			// Keep the confirmation open so the user can retry.
+			setError(t(actionErrorKey(err)));
 		} finally {
 			setBusy(false);
-			setConfirming(null);
 		}
 	}
 
@@ -329,9 +419,11 @@ export function GroupSettingsModal({
 			onClose={onClose}
 			title={t("chat.settings")}
 			size="md"
+			fullScreen={fullScreen}
 			centered
 		>
 			<Stack gap="md">
+				{error !== null && <Alert color="red">{error}</Alert>}
 				<GroupAvatarSection
 					chat={chat}
 					token={activeAccount?.token}
@@ -360,7 +452,7 @@ export function GroupSettingsModal({
 					isOwner={isOwner}
 					onRemoveMember={(id) => {
 						setConfirming(null);
-						void onRemoveMember(id);
+						void runAction(() => onRemoveMember(id));
 					}}
 				/>
 
@@ -370,9 +462,8 @@ export function GroupSettingsModal({
 						results={results}
 						onQueryChange={handleQueryChange}
 						onAddMember={(id) => {
-							setQuery("");
-							setResults([]);
-							void onAddMember(id);
+							clearSearch();
+							void runAction(() => onAddMember(id));
 						}}
 					/>
 				)}
@@ -380,6 +471,7 @@ export function GroupSettingsModal({
 				<Group justify="space-between">
 					<DangerActionsSection
 						confirming={confirming}
+						chatName={chat.name}
 						canLeave={canLeave}
 						isOwner={isOwner}
 						busy={busy}

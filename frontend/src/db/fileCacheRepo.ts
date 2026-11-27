@@ -1,4 +1,4 @@
-import { getDB } from "./init.ts";
+import { getActiveAccountKey, getDB } from "./init.ts";
 import type { CachedFile } from "./schema.ts";
 
 const MAX_CACHED_FILES = 200;
@@ -27,28 +27,41 @@ async function cacheByteLimit(): Promise<number> {
 export const fileCacheRepo = {
 	async get(url: string): Promise<CachedFile | undefined> {
 		const db = await getDB();
-		const entry = await db.get("fileCache", url);
-		if (entry === undefined) return;
-		// Touch the entry so eviction can use true LRU rather than
-		// insertion order. A failed touch must not break a successful read.
-		await db
-			.put("fileCache", { ...entry, lastAccessedAt: Date.now() })
-			.catch(() => {});
+		// The read and the LRU touch share one transaction: a concurrent
+		// clear (local lock, account switch) is serialized with them, so a
+		// touch cannot resurrect an entry that was just removed.
+		const tx = db.transaction("fileCache", "readwrite");
+		const entry = await tx.store.get(url);
+		if (entry !== undefined) {
+			try {
+				await tx.store.put({ ...entry, lastAccessedAt: Date.now() });
+			} catch {
+				// A failed touch must not break an already successful read.
+			}
+		}
+		await tx.done.catch(() => {});
+
 		return entry;
 	},
 
 	// put reports whether the file was actually stored. An explicit offline
-	// save must not claim success when the file does not fit the cache.
+	// save must not claim success when the file does not fit the cache. The
+	// account that requested the write is checked after every await: a
+	// switch in between must not store one account's bytes in another's
+	// database.
 	async put(
 		url: string,
 		blob: Blob,
 		mimeType: string,
 		force = false,
+		accountKey: string | null = getActiveAccountKey(),
 	): Promise<boolean> {
 		if (!force && blob.size > MAX_AUTO_CACHE_BYTES) return false;
 		const maxBytes = await cacheByteLimit();
 		if (blob.size > maxBytes) return false;
+		if (getActiveAccountKey() !== accountKey) return false;
 		const db = await getDB();
+		if (getActiveAccountKey() !== accountKey) return false;
 		const now = Date.now();
 		const entry: CachedFile = {
 			url,

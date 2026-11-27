@@ -37,6 +37,7 @@ export function MessageSearchModal({ open, onClose, userId, onSelect }: Props) {
 				<TextInput
 					leftSection={<Search size={16} />}
 					placeholder={t("messageSearch.placeholder")}
+					aria-label={t("messageSearch.title")}
 					value={query}
 					onChange={(event) => setQuery(event.currentTarget.value)}
 					autoFocus

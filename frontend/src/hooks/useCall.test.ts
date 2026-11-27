@@ -100,6 +100,11 @@ function stubMedia(stop = vi.fn()) {
 describe("useCall", () => {
 	beforeEach(() => {
 		sessionStorage.clear();
+		getCurrentCall.mockReset();
+		getCurrentCall.mockImplementation(() =>
+			Promise.reject(new Error("http 404: call not found")),
+		);
+		hangupCallOnLeave.mockClear();
 	});
 
 	it("follows the state of the call", () => {
@@ -438,5 +443,126 @@ describe("useCall", () => {
 		});
 
 		expect(result.current.state.phase).toBe("idle");
+	});
+
+	it("sends the hangup when the page is unmounted", async () => {
+		stubMedia();
+		hangupCallOnLeave.mockClear();
+
+		const { result, unmount } = renderHook(() => useCall("tok", "alice:test"));
+
+		await act(async () => {
+			await result.current.start("chat-1");
+		});
+
+		unmount();
+
+		// The server must not keep a ghost call of a closed page.
+		expect(hangupCallOnLeave).toHaveBeenCalledWith("tok", "c-1");
+	});
+
+	it("sends the hangup when the account changes", async () => {
+		stubMedia();
+		hangupCallOnLeave.mockClear();
+
+		const { result, rerender } = renderHook(
+			({ userId }: { userId: string }) => useCall("tok", userId),
+			{ initialProps: { userId: "alice:test" } },
+		);
+
+		await act(async () => {
+			await result.current.start("chat-1");
+		});
+
+		rerender({ userId: "bob:test" });
+
+		expect(hangupCallOnLeave).toHaveBeenCalledWith("tok", "c-1");
+	});
+
+	it("ends a ringing call whose terminal event was lost", async () => {
+		vi.useFakeTimers();
+
+		try {
+			const stop = vi.fn();
+			stubMedia(stop);
+			getCurrentCall.mockResolvedValue({
+				callId: "c-1",
+				peer: "bob:test",
+				state: "ended",
+				reason: "hangup",
+				role: "caller",
+			});
+
+			const { result } = renderHook(() => useCall("tok", "alice:test"));
+
+			await act(async () => {
+				await result.current.start("chat-1");
+			});
+
+			expect(result.current.state.phase).toBe("outgoing");
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_000);
+			});
+
+			expect(result.current.state.phase).toBe("ended");
+			expect(stop).toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not take its own outgoing ringing call for an incoming one", async () => {
+		stubMedia();
+		getCurrentCall.mockResolvedValueOnce({
+			callId: "c-9",
+			peer: "bob:test",
+			state: "ringing",
+			offer: "offer-sdp",
+			role: "caller",
+		});
+
+		const { result } = renderHook(() => useCall("tok", "alice:test"));
+
+		await waitFor(() => {
+			expect(getCurrentCall).toHaveBeenCalled();
+		});
+
+		await act(async () => {
+			await Promise.resolve();
+		});
+
+		expect(result.current.state.phase).toBe("idle");
+	});
+
+	it("ends a ringing call locally when the ringing window runs out", async () => {
+		vi.useFakeTimers();
+
+		try {
+			const stop = vi.fn();
+			stubMedia(stop);
+			getCurrentCall.mockResolvedValue({
+				callId: "c-1",
+				peer: "bob:test",
+				state: "ringing",
+				role: "caller",
+			});
+
+			const { result } = renderHook(() => useCall("tok", "alice:test"));
+
+			await act(async () => {
+				await result.current.start("chat-1");
+			});
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(60_000);
+			});
+
+			expect(result.current.state.phase).toBe("ended");
+			expect(result.current.state.reason).toBe("timeout");
+			expect(stop).toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

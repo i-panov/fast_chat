@@ -23,8 +23,18 @@ import { getMyKeyPair, hasServerKeyBackup } from "./e2ee/keys.ts";
 import type { AppConfig } from "./types/api.ts";
 import { useAuth } from "./useAuth.tsx";
 import { clearAllData } from "./utils/clearAllData.ts";
+import { emitNotification } from "./utils/notify.ts";
 
 const dividerBorder = "1px solid var(--mantine-color-dark-4)";
+
+// domainOf returns the server part of a user identifier ("nick:domain").
+// Two accounts with the same nick on different servers must be tellable
+// apart in the list.
+function domainOf(userId: string): string {
+	const index = userId.indexOf(":");
+
+	return index === -1 ? "" : userId.slice(index + 1);
+}
 
 function ConfirmModal({
 	open,
@@ -79,8 +89,10 @@ function AccountRow({
 	isActive: boolean;
 	onClick: () => void;
 }) {
+	const domain = domainOf(account.user.id);
 	return (
 		<UnstyledButton
+			aria-current={isActive ? "true" : undefined}
 			style={{
 				display: "flex",
 				alignItems: "center",
@@ -106,9 +118,16 @@ function AccountRow({
 				token={account.token}
 				size={32}
 			/>
-			<Text span style={{ flex: 1, fontSize: "14px", color: "white" }}>
-				@{account.user.nick}
-			</Text>
+			<div style={{ flex: 1, minWidth: 0 }}>
+				<Text span style={{ fontSize: "14px", color: "white" }}>
+					@{account.user.nick}
+				</Text>
+				{domain !== "" && (
+					<Text size="xs" c="dimmed" truncate>
+						{domain}
+					</Text>
+				)}
+			</div>
 			{isActive && (
 				<Text
 					span
@@ -184,7 +203,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 		const ctrl = new AbortController();
 		abortRef.current = ctrl;
 
-		getConfig()
+		getConfig(ctrl.signal)
 			.then((cfg) => {
 				if (!ctrl.signal.aborted) setAppConfig(cfg);
 			})
@@ -225,10 +244,28 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 
 	async function handleClearData() {
 		setClearDataLoading(true);
+		let ok = false;
 		try {
-			await clearAllData();
+			const result = await clearAllData();
+			ok = result.ok;
+			if (!result.ok) {
+				// A delete that is blocked by another tab reports success from
+				// the platform; the account history (and its key) may still be
+				// on disk, so the user must not be sent away believing it is
+				// gone.
+				console.error(
+					"clearAllData left databases behind",
+					result.remainingDatabases,
+				);
+			}
 		} catch (err) {
 			console.error("clearAllData failed", err);
+		}
+		if (!ok) {
+			setClearDataLoading(false);
+			setConfirmClearData(false);
+			emitNotification(t("error.boundaryMessage"));
+			return;
 		}
 		onClose();
 		window.location.replace("/login");
@@ -239,7 +276,6 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 			opened={open}
 			onClose={onClose}
 			size="280px"
-			withCloseButton={false}
 			styles={{
 				body: {
 					height: "100%",

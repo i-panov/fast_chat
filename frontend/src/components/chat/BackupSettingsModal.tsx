@@ -1,6 +1,7 @@
 import {
 	Alert,
 	Button,
+	Loader,
 	Modal,
 	PasswordInput,
 	Stack,
@@ -12,6 +13,7 @@ import type { KeyPair } from "../../e2ee/crypto.ts";
 import {
 	clearServerKeyBackup,
 	getServerBackupState,
+	notifyServerBackupChanged,
 	requestRecoveryAfterForgotPin,
 	StaleKeyStateError,
 	uploadKeyBackup,
@@ -27,6 +29,17 @@ interface Props {
 	required?: boolean;
 }
 
+// "unknown" is not "no backup": an offline/5xx check must stay neutral
+// instead of telling the user their messages are unrecoverable.
+type BackupView =
+	| "loading"
+	| "none"
+	| "backup"
+	| "legacy"
+	| "stale"
+	| "local-stale"
+	| "unknown";
+
 // eslint-disable-next-line max-lines-per-function -- backup, PIN/passkey and rotation controls share one dialog.
 export function BackupSettingsModal({
 	open,
@@ -36,8 +49,7 @@ export function BackupSettingsModal({
 	required = false,
 }: Props) {
 	const { t } = useTranslation();
-	const [exists, setExists] = useState(false);
-	const [stale, setStale] = useState(false);
+	const [view, setView] = useState<BackupView>("loading");
 	const [password, setPassword] = useState("");
 	const [confirm, setConfirm] = useState("");
 	const [saving, setSaving] = useState(false);
@@ -49,30 +61,30 @@ export function BackupSettingsModal({
 	useEffect(() => {
 		if (!open) return;
 		let cancelled = false;
-		setExists(false);
-		setStale(false);
+		setView("loading");
 		setError(null);
 		setDone(false);
 		setSaveFailed(false);
 		setCanRecover(false);
 		setPassword("");
 		setConfirm("");
-		getServerBackupState(token)
-			.then((state) => {
-				if (cancelled) return;
-				setExists(state === "backup");
-				setStale(
-					state === "legacy" || state === "stale" || state === "local-stale",
-				);
-			})
-			.catch(() => {
-				if (!cancelled) setExists(false);
-			});
+		const load = () => {
+			getServerBackupState(token)
+				.then((state) => {
+					if (!cancelled) setView(state);
+				})
+				.catch(() => {
+					if (!cancelled) setView("unknown");
+				});
+		};
+		load();
 		return () => {
 			cancelled = true;
 		};
 	}, [open, token]);
 
+	const exists = view === "backup";
+	const stale = view === "legacy" || view === "stale" || view === "local-stale";
 	const canSave = password.length >= 8 && password === confirm;
 
 	function isStaleError(err: unknown): boolean {
@@ -97,11 +109,11 @@ export function BackupSettingsModal({
 		setError(null);
 		try {
 			await uploadKeyBackup(token, password);
-			setExists(true);
-			setStale(false);
+			setView("backup");
 			setDone(true);
 			setPassword("");
 			setConfirm("");
+			notifyServerBackupChanged();
 		} catch (err) {
 			setSaveFailed(true);
 			setCanRecover(isStaleError(err));
@@ -116,8 +128,9 @@ export function BackupSettingsModal({
 		setError(null);
 		try {
 			await clearServerKeyBackup(token);
-			setExists(false);
+			setView("none");
 			setDone(true);
+			notifyServerBackupChanged();
 		} catch (err) {
 			setCanRecover(isStaleError(err));
 			setError(backupErrorText(err));
@@ -141,11 +154,32 @@ export function BackupSettingsModal({
 			<Stack gap="md">
 				{done ? (
 					<Alert color="green" title={t("backup.doneTitle")}>
-						{exists ? t("backup.doneEnabled") : t("backup.doneDisabled")}
+						{view === "backup"
+							? t("backup.doneEnabled")
+							: t("backup.doneDisabled")}
 					</Alert>
 				) : (
 					<>
-						{exists ? (
+						{view === "loading" ? (
+							<Loader size="sm" aria-label={t("backup.checking")} />
+						) : view === "unknown" ? (
+							<Alert color="yellow" title={t("backup.unknownTitle")}>
+								<Text size="sm">{t("backup.unknownHint")}</Text>
+								<Button
+									variant="subtle"
+									size="xs"
+									mt={6}
+									onClick={() => {
+										setView("loading");
+										void getServerBackupState(token)
+											.then(setView)
+											.catch(() => setView("unknown"));
+									}}
+								>
+									{t("backup.retryCheck")}
+								</Button>
+							</Alert>
+						) : exists ? (
 							<Alert color="blue" title={t("backup.enabledTitle")}>
 								<Text size="sm">{t("backup.enabledHint")}</Text>
 							</Alert>
@@ -170,12 +204,16 @@ export function BackupSettingsModal({
 
 						<PasswordInput
 							label={t("backup.password")}
+							name="backup-password"
+							autoComplete="new-password"
 							value={password}
 							onChange={(e) => setPassword(e.currentTarget.value)}
 							disabled={!hasLocalKey || saving}
 						/>
 						<PasswordInput
 							label={t("backup.confirm")}
+							name="backup-password-confirm"
+							autoComplete="new-password"
 							value={confirm}
 							onChange={(e) => setConfirm(e.currentTarget.value)}
 							disabled={!hasLocalKey || saving}

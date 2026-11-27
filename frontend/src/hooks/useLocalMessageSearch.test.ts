@@ -50,4 +50,27 @@ describe("useLocalMessageSearch", () => {
 		expect(result.current.results[0]?.message.text).toBe("hello world");
 		expect(result.current.results[0]?.chatTitle).toBe("Search chat");
 	});
+
+	it("drops the previous account's plaintext on a switch", async () => {
+		const { result, rerender } = renderHook(
+			({ userId }) => useLocalMessageSearch(userId),
+			{ initialProps: { userId: "alice:test" } },
+		);
+
+		act(() => {
+			result.current.setQuery("hello");
+		});
+		await waitFor(() => {
+			expect(result.current.results).toHaveLength(1);
+		});
+
+		act(() => {
+			setActiveAccountKey("bob:test");
+		});
+		rerender({ userId: "bob:test" });
+
+		// The previous account's decrypted results are gone immediately, not
+		// only after the new search settles.
+		expect(result.current.results).toEqual([]);
+	});
 });

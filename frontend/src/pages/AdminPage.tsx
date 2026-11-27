@@ -1,4 +1,5 @@
 import { Alert, Button, Container, Group, Tabs, Title } from "@mantine/core";
+import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AdminChat } from "../api.ts";
@@ -17,9 +18,19 @@ import { useAuth } from "../useAuth.tsx";
 export function AdminPage() {
 	const { t } = useTranslation();
 	const { activeAccount } = useAuth();
+	const navigate = useNavigate();
 	const [tab, setTab] = useState<string | null>("users");
 	const [selectedChat, setSelectedChat] = useState<AdminChat | null>(null);
 	const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+
+	const backToChats = () => {
+		// Router navigation keeps the chat page state and the unlocked local
+		// keys; a plain <a href> would reload the whole SPA.
+		void navigate({
+			to: "/chat",
+			search: { chatId: undefined, threadId: undefined },
+		});
+	};
 
 	if (activeAccount === null) {
 		return (
@@ -33,7 +44,7 @@ export function AdminPage() {
 		return (
 			<Container size="sm" py="xl">
 				<Alert color="orange" title={t("admin.forbidden")}>
-					<Button component="a" href="/chat" variant="light" mt="sm">
+					<Button onClick={backToChats} variant="light" mt="sm">
 						{t("admin.back")}
 					</Button>
 				</Alert>
@@ -47,7 +58,7 @@ export function AdminPage() {
 		<Container size="xl" py="md">
 			<Group justify="space-between" mb="md">
 				<Title order={2}>{t("admin.title")}</Title>
-				<Button component="a" href="/chat" variant="default">
+				<Button onClick={backToChats} variant="default">
 					{t("admin.back")}
 				</Button>
 			</Group>

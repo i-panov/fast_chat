@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 
 export function useVideoThumbnail(blobUrl: string | undefined): string | null {
-	const [thumb, setThumb] = useState<string | null>(null);
+	const [thumb, setThumb] = useState<{ source: string; url: string } | null>(
+		null,
+	);
 	useEffect(() => {
 		if (!blobUrl) {
 			setThumb(null);
 			return;
 		}
+		const source = blobUrl;
 		const video = document.createElement("video");
 		video.preload = "metadata";
 		video.muted = true;
@@ -25,7 +28,7 @@ export function useVideoThumbnail(blobUrl: string | undefined): string | null {
 			if (!ctx) return;
 			try {
 				ctx.drawImage(video, 0, 0, w, h);
-				setThumb(canvas.toDataURL("image/jpeg", 0.7));
+				setThumb({ source, url: canvas.toDataURL("image/jpeg", 0.7) });
 			} catch {
 				/* canvas tainted — fallback to icon */
 			}
@@ -48,5 +51,5 @@ export function useVideoThumbnail(blobUrl: string | undefined): string | null {
 			video.load();
 		};
 	}, [blobUrl]);
-	return thumb;
+	return thumb !== null && thumb.source === blobUrl ? thumb.url : null;
 }

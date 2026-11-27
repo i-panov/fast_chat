@@ -6,9 +6,29 @@ import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import type { OutboxOp, OutboxOpPin } from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
+import { threadsRepo } from "../db/threadsRepo.ts";
 import type { Message, SyncResponse } from "../types/api.ts";
 
 const DEFAULT_SINCE = "1970-01-01T00:00:00.000Z";
+
+// Ids deleted by a tombstone while a send for them was still queued. The
+// outbox consults this set so a retry after the deletion cannot resurrect the
+// message on the server (and for every other participant).
+const localTombstones = new Set<string>();
+
+export function markLocalTombstone(messageId: string): void {
+	localTombstones.add(messageId);
+}
+
+export function isLocallyTombstoned(messageId: string): boolean {
+	return localTombstones.has(messageId);
+}
+
+// Account switches must not leak tombstones into another account. The set is
+// bounded by the session's deletions, so a plain clear is enough.
+export function resetLocalTombstones(): void {
+	localTombstones.clear();
+}
 
 type EnsureAccount = () => void;
 
@@ -165,12 +185,16 @@ async function applyThreadMessages(
 	if (threadMessages.length === 0) return;
 
 	const stored: { threadId: string; msg: Message }[] = [];
+	// Ids that already existed locally: a delta replay must not count them as
+	// new replies in the thread record.
+	const localIds = new Set<string>();
 
 	for (const msg of threadMessages) {
 		if (msg.threadId === undefined) continue;
 
 		ensure();
 		const local = await threadMessagesRepo.getById(msg.threadId, msg.id);
+		if (local !== undefined) localIds.add(`${msg.threadId}:${msg.id}`);
 
 		if (local?.status === "queued" || local?.status === "failed") {
 			continue;
@@ -213,6 +237,14 @@ async function applyThreadMessages(
 		for (const [threadId, list] of byThread) {
 			ensure();
 			await threadMessagesRepo.upsertMany(list, threadId);
+			// The "N replies" link reads threads.messageCount: count a message
+			// the first time it lands. A delta replay finds the row locally and
+			// must not count it twice (see the `stored` push above).
+			const known = list.filter((m) =>
+				localIds.has(`${threadId}:${m.id}`),
+			).length;
+			const added = list.length - known;
+			if (added > 0) await threadsRepo.bumpMessageCount(threadId, added);
 		}
 	}
 }
@@ -226,13 +258,20 @@ async function applyDeletions(
 ): Promise<void> {
 	for (const d of deletedMessages) {
 		ensure();
-		// If we have a queued send-op for this id, the user's send is
-		// still pending. The server will replay the delete once the
-		// send arrives. We do not modify the local row.
+		// The tombstone wins over a queued send. Keeping the send (or merely
+		// skipping the tombstone) would replay the message after the delete and
+		// bring it back for every participant; the local tombstone also blocks
+		// the outbox from retrying this id between this tick and the next one.
+		markLocalTombstone(d.messageId);
 		const sendOp = outbox.find(
 			(o) => o.kind === "send" && o.msgId === d.messageId,
 		);
-		if (sendOp !== undefined) continue;
+		if (sendOp !== undefined && sendOp.kind === "send") {
+			if (sendOp.pendingFileClientIds.length > 0) {
+				await pendingBlobsRepo.deleteMany(sendOp.pendingFileClientIds);
+			}
+			await outboxRepo.remove(sendOp.opId);
+		}
 
 		// If we have a queued delete-op, it's now redundant — the
 		// server already removed the message, so the op is a no-op.

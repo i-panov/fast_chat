@@ -46,13 +46,25 @@ export function PhotoAttachment({ file, fileKeys, onPhotoClick }: Props) {
 				onClick={onPhotoClick}
 				style={{ display: "block", padding: 0, lineHeight: 0 }}
 			>
-				<img src={blobUrl} alt={file.originalName} style={imgStyle} />
+				<img
+					src={blobUrl}
+					alt={file.originalName}
+					loading="lazy"
+					decoding="async"
+					style={imgStyle}
+				/>
 			</UnstyledButton>
 		);
 	}
 	return (
-		<a href={blobUrl} target="_blank" rel="noopener noreferrer">
-			<img src={blobUrl} alt={file.originalName} style={imgStyle} />
+		<a href={blobUrl} download={file.originalName} rel="noopener noreferrer">
+			<img
+				src={blobUrl}
+				alt={file.originalName}
+				loading="lazy"
+				decoding="async"
+				style={imgStyle}
+			/>
 		</a>
 	);
 }

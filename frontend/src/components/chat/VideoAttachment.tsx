@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { FileKey } from "../../e2ee/file-crypto.ts";
 import { useDecryptedFileUrl } from "../../hooks/useDecryptedFileUrl.ts";
 import { useMediaUrl } from "../../hooks/useMediaUrl.ts";
+import { useVideoThumbnail } from "../../hooks/useVideoThumbnail.ts";
 import type { FileInfo } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
 import { BORDER_RADIUS_SM } from "../../utils/constants.ts";
@@ -23,6 +24,9 @@ export function VideoAttachment({ file, fileKeys }: Props) {
 	const { activeAccount } = useAuth();
 	const [cached, setCached] = useState(false);
 	const [saving, setSaving] = useState(false);
+	const [decodeErrorSource, setDecodeErrorSource] = useState<string | null>(
+		null,
+	);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -54,13 +58,22 @@ export function VideoAttachment({ file, fileKeys }: Props) {
 	const mediaUrl = decrypted.blobUrl ?? streamed.mediaUrl;
 	const loading = key !== undefined ? decrypted.loading : streamed.loading;
 	const error = key !== undefined ? decrypted.error : streamed.error;
+	// A decrypted video is a complete blob: a frame can be captured for the
+	// poster. A streamed MediaSource is left alone (seeking it would disturb
+	// the live buffering).
+	const poster = useVideoThumbnail(decrypted.blobUrl ?? undefined);
+
+	// The error belongs to the source it was raised for: a new URL may play
+	// even if the previous one did not decode.
+	const decodeError =
+		decodeErrorSource !== null && decodeErrorSource === mediaUrl;
 
 	// A MediaSource only opens once a media element is attached to its object
 	// URL. Hiding the player behind the loader therefore deadlocked streaming
 	// videos: the source never opened, the loader never ended. Render the
 	// player as soon as a URL exists and keep the loader for the empty case.
 	if (loading && mediaUrl === null) return <Loader size="sm" />;
-	if (error || !mediaUrl)
+	if (error || decodeError || !mediaUrl)
 		return (
 			<Text size="xs" c="red">
 				{t("media.loadVideoFailed")}
@@ -71,8 +84,10 @@ export function VideoAttachment({ file, fileKeys }: Props) {
 		<div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
 			<video
 				src={mediaUrl}
+				poster={poster ?? undefined}
 				controls
 				preload="metadata"
+				onError={() => setDecodeErrorSource(mediaUrl)}
 				style={{
 					maxWidth: "100%",
 					maxHeight: FILE_ATTACHMENT_MAX_SIZE,

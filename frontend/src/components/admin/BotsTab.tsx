@@ -15,9 +15,23 @@ import {
 	COLUMN_NAME,
 	ConfirmDialog,
 	type ConfirmState,
-	errorText,
+	errorKey,
 	useReload,
 } from "./shared.tsx";
+
+function encryptionLabel(mode: string, t: TFunction): string {
+	switch (mode) {
+		case "e2ee":
+			return t("admin.encryptionE2EE");
+		case "server":
+			return t("admin.encryptionPlaintext");
+		default:
+			return mode;
+	}
+}
+
+const KEY_ENABLE = "admin.enable";
+const KEY_DISABLE = "admin.disable";
 
 export function BotsTab({ token, t }: { token: string; t: TFunction }) {
 	const [bots, setBots] = useState<AdminBot[]>([]);
@@ -30,12 +44,13 @@ export function BotsTab({ token, t }: { token: string; t: TFunction }) {
 	useEffect(() => {
 		let cancelled = false;
 		setLoading(true);
+		setError(null);
 		void adminListBots(token)
 			.then((result) => {
 				if (!cancelled) setBots(result.bots);
 			})
 			.catch((err: unknown) => {
-				if (!cancelled) setError(errorText(err));
+				if (!cancelled) setError(t(errorKey(err)));
 			})
 			.finally(() => {
 				if (!cancelled) setLoading(false);
@@ -44,14 +59,14 @@ export function BotsTab({ token, t }: { token: string; t: TFunction }) {
 		return () => {
 			cancelled = true;
 		};
-	}, [token, version]);
+	}, [token, version, t]);
 
 	return (
 		<Stack gap="md">
 			{error !== null && <Alert color="red">{error}</Alert>}
 			{loading ? (
 				<Loader size="sm" />
-			) : bots.length === 0 ? (
+			) : error === null && bots.length === 0 ? (
 				<Text size="sm" c="dimmed">
 					{t("admin.empty")}
 				</Text>
@@ -80,7 +95,7 @@ export function BotsTab({ token, t }: { token: string; t: TFunction }) {
 									</Table.Td>
 									<Table.Td>
 										<Badge size="xs" variant="light">
-											{bot.encryptionMode}
+											{encryptionLabel(bot.encryptionMode, t)}
 										</Badge>
 									</Table.Td>
 									<Table.Td>
@@ -88,11 +103,16 @@ export function BotsTab({ token, t }: { token: string; t: TFunction }) {
 											size="compact-xs"
 											color={bot.isActive ? "red" : "green"}
 											variant="light"
+											aria-label={`${bot.isActive ? t(KEY_DISABLE) : t(KEY_ENABLE)}: ${bot.username}`}
 											onClick={() => {
 												const next = !bot.isActive;
 												setConfirm({
-													title: next ? t("admin.disable") : t("admin.enable"),
-													body: next ? t("admin.disableBotConfirm") : "",
+													title: next ? t(KEY_DISABLE) : t(KEY_ENABLE),
+													body: next
+														? t("admin.disableBotConfirm")
+														: t("admin.enableBotConfirm"),
+													confirmLabel: next ? t(KEY_DISABLE) : t(KEY_ENABLE),
+													danger: next,
 													onConfirm: async () => {
 														setError(null);
 														await adminPatchBot(token, bot.id, next);
@@ -101,7 +121,7 @@ export function BotsTab({ token, t }: { token: string; t: TFunction }) {
 												});
 											}}
 										>
-											{bot.isActive ? t("admin.disable") : t("admin.enable")}
+											{bot.isActive ? t(KEY_DISABLE) : t(KEY_ENABLE)}
 										</Button>
 									</Table.Td>
 								</Table.Tr>

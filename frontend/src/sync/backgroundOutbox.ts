@@ -28,6 +28,23 @@ function isUnauthorized(error: unknown): boolean {
 // so they run one after another instead of interleaving their IDB writes.
 let runQueue: Promise<void> = Promise.resolve();
 
+type LockManagerLike = {
+	request<T>(name: string, callback: (lock: unknown) => Promise<T>): Promise<T>;
+};
+
+// The worker shares the outbox with open tabs, so it must take the same Web
+// Lock the tab takes in syncEngine (`fastchat-sync:<account>`). Without it a
+// background run started by Background Sync could send the same queued ops
+// while a tab is already sending them.
+function withAccountLock<T>(
+	accountKey: string,
+	run: () => Promise<T>,
+): Promise<T> {
+	const locks = (navigator as Navigator & { locks?: LockManagerLike }).locks;
+	if (locks === undefined) return run();
+	return locks.request(`fastchat-sync:${accountKey}`, () => run());
+}
+
 export function runBackgroundOutbox(): Promise<void> {
 	const run = runQueue.then(() => runBackgroundOutboxLocked());
 	// Keep the queue alive after a rejection: the next event still runs.
@@ -42,12 +59,14 @@ async function runBackgroundOutboxLocked(): Promise<void> {
 	const previousAccount = getActiveAccountKey();
 	setActiveAccountKey(session.accountKey);
 	try {
-		const { completed } = await processOutbox(session.token);
-		if (!completed) {
-			// The browser retries a rejected sync event with its own backoff;
-			// a resolved one would drop the queue until the next launch.
-			throw new Error("background outbox paused by a transient failure");
-		}
+		await withAccountLock(session.accountKey, async () => {
+			const { completed } = await processOutbox(session.token);
+			if (!completed) {
+				// The browser retries a rejected sync event with its own backoff;
+				// a resolved one would drop the queue until the next launch.
+				throw new Error("background outbox paused by a transient failure");
+			}
+		});
 	} catch (error) {
 		if (isUnauthorized(error)) {
 			await clearBackgroundSession();

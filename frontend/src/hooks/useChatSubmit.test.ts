@@ -3,7 +3,7 @@ import type { FormEvent } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { setActiveAccountKey } from "../db/init.ts";
-import type { Chat } from "../types/api.ts";
+import type { Chat, PendingFile } from "../types/api.ts";
 
 vi.mock("../api.ts", () => ({
 	createChat: vi.fn(),
@@ -21,7 +21,7 @@ function deps(overrides: Record<string, unknown> = {}) {
 		token: "tok",
 		user: { id: "alice:test" },
 		inputText: "hello",
-		pendingFiles: [],
+		pendingFiles: [] as PendingFile[],
 		pendingLocation: null,
 		editingMessage: null,
 		pendingChatWith: null,
@@ -36,7 +36,7 @@ function deps(overrides: Record<string, unknown> = {}) {
 		),
 		selectChat: vi.fn(),
 		closeThread: vi.fn(),
-		clearAllPendingFiles: vi.fn(),
+		removePendingFiles: vi.fn(),
 		clearEditing: vi.fn(),
 		clearPendingChat: vi.fn(),
 		clearReply: vi.fn(),
@@ -88,7 +88,18 @@ describe("useChatSubmit", () => {
 	});
 
 	it("sends to the active chat and resets the form", async () => {
+		const pendingFile = {
+			id: "f1",
+			file: new File(["x"], "a.txt", { type: "text/plain" }),
+			blobUrl: "blob:x",
+			originalName: "a.txt",
+			size: 1,
+			mimeType: "text/plain",
+			fileType: "file" as const,
+			encrypted: true,
+		};
 		const d = deps({
+			pendingFiles: [pendingFile],
 			replyToMessage: {
 				chatId: "c1",
 				messageId: "m1",
@@ -104,13 +115,13 @@ describe("useChatSubmit", () => {
 		expect(d.sendMessage).toHaveBeenCalledWith({
 			chatId: "c1",
 			text: "hello",
-			pendingFiles: undefined,
+			pendingFiles: [pendingFile],
 			location: undefined,
 			replyToId: "m1",
 			threadId: "th1",
 		});
 		expect(d.setInputText).toHaveBeenCalledWith("");
-		expect(d.clearAllPendingFiles).toHaveBeenCalled();
+		expect(d.removePendingFiles).toHaveBeenCalledWith(["f1"], true);
 		expect(d.clearReply).toHaveBeenCalled();
 		expect(d.clearPendingLocation).toHaveBeenCalled();
 	});
@@ -266,7 +277,7 @@ describe("useChatSubmit", () => {
 
 		expect(d.sendMessage).toHaveBeenCalled();
 		expect(d.setInputText).not.toHaveBeenCalled();
-		expect(d.clearAllPendingFiles).not.toHaveBeenCalled();
+		expect(d.removePendingFiles).not.toHaveBeenCalled();
 		expect(d.clearReply).not.toHaveBeenCalled();
 		expect(d.clearPendingLocation).not.toHaveBeenCalled();
 	});
@@ -282,7 +293,7 @@ describe("useChatSubmit", () => {
 		await result.current(event());
 
 		expect(d.setInputText).not.toHaveBeenCalled();
-		expect(d.clearAllPendingFiles).not.toHaveBeenCalled();
+		expect(d.removePendingFiles).not.toHaveBeenCalled();
 	});
 
 	it("keeps the editor open when editing fails", async () => {
@@ -314,5 +325,91 @@ describe("useChatSubmit", () => {
 		expect(d.sendMessage).not.toHaveBeenCalled();
 		expect(d.setInputText).not.toHaveBeenCalled();
 		expect(d.clearPendingChat).not.toHaveBeenCalled();
+	});
+
+	it("sends the location picked while editing instead of dropping it", async () => {
+		const d = deps({
+			inputText: "fixed",
+			pendingLocation: { lat: 1, lng: 2 },
+			editingMessage: {
+				chatId: "c1",
+				messageId: "m1",
+				text: "old",
+				location: { lat: 9, lng: 9 },
+			},
+		});
+		const { result } = renderHook(() => useChatSubmit(d));
+
+		await result.current(event());
+
+		expect(d.editMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				location: { lat: 1, lng: 2 },
+				clearLocation: false,
+			}),
+		);
+	});
+
+	it("keeps a removed location removed when editing", async () => {
+		const d = deps({
+			inputText: "fixed",
+			editingMessage: {
+				chatId: "c1",
+				messageId: "m1",
+				text: "old",
+				location: null,
+			},
+		});
+		const { result } = renderHook(() => useChatSubmit(d));
+
+		await result.current(event());
+
+		expect(d.editMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ location: null, clearLocation: true }),
+		);
+	});
+
+	it("does not erase a draft typed while the send was in flight", async () => {
+		let resolveSend: (ok: boolean) => void = () => {};
+		const sendMessage = vi.fn(
+			(_o: unknown) =>
+				new Promise<boolean | undefined>((resolve) => {
+					resolveSend = resolve;
+				}),
+		);
+		const d = deps({ sendMessage });
+		const { result, rerender } = renderHook(
+			(props: Parameters<typeof useChatSubmit>[0]) => useChatSubmit(props),
+			{ initialProps: d },
+		);
+
+		const submit = result.current(event());
+		await vi.waitFor(() => {
+			expect(sendMessage).toHaveBeenCalledTimes(1);
+		});
+
+		// The user kept typing (and attached a file) while the first message
+		// was being encrypted/uploaded.
+		const nextFile = {
+			id: "f2",
+			file: new File(["y"], "b.txt", { type: "text/plain" }),
+			blobUrl: "blob:y",
+			originalName: "b.txt",
+			size: 1,
+			mimeType: "text/plain",
+			fileType: "file" as const,
+			encrypted: true,
+		};
+		rerender({
+			...d,
+			inputText: "next draft",
+			pendingFiles: [nextFile],
+		});
+
+		resolveSend(true);
+		await submit;
+
+		expect(d.setInputText).not.toHaveBeenCalled();
+		expect(d.removePendingFiles).not.toHaveBeenCalled();
 	});
 });

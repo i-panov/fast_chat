@@ -193,7 +193,9 @@ export function MessageBody({
 					<Markdown
 						remarkPlugins={[remarkGfm]}
 						components={{
-							p: ({ children }) => <span>{children}</span>,
+							p: ({ children }) => (
+								<p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{children}</p>
+							),
 							a: ({ href, children }) => {
 								if (!isSafeHref(href)) {
 									return <span>{children}</span>;

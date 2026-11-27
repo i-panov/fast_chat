@@ -4,6 +4,7 @@ import {
 	getThreadMessages,
 	getThreads,
 } from "../api.ts";
+import { getActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import type { StoredThread, StoredThreadMessage } from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
@@ -90,6 +91,10 @@ function useDecryptedThreadMessages(
 			// item is independent, so sequential awaits only add latency.
 			const out = await Promise.all(
 				(activeThreadMessagesStored ?? []).map(async (m) => {
+					// A tombstone is a deleted message: rendering it as a normal
+					// row keeps the deleted content on screen (and resurrects it
+					// after a reload), so it is filtered out like in the main feed.
+					if (m.status === "deleted") return null;
 					const { _updatedAt: _u, threadId: _tid, status, ...rest } = m;
 					void _u;
 					void _tid;
@@ -100,12 +105,14 @@ function useDecryptedThreadMessages(
 					// removes retry/cancel from the message menu.
 					return {
 						...message,
-						status: status === "deleted" ? "sent" : status,
+						status,
 					};
 				}),
 			);
 
-			if (alive) setDecryptedThreadMessages(out);
+			if (alive) {
+				setDecryptedThreadMessages(out.flatMap((m) => (m === null ? [] : [m])));
+			}
 		})().catch(() => {
 			// A DB reset during teardown must not become an unhandled rejection.
 		});
@@ -155,6 +162,12 @@ function useThreadParentText(
 						return [t.id, t.parentMessageText];
 					}
 
+					// A deleted parent must not be decrypted back onto the
+					// screen; the header simply loses its preview text.
+					if (parent.status === "deleted") {
+						return [t.id, ""];
+					}
+
 					if (!parent.encrypted) {
 						return [t.id, parent.text];
 					}
@@ -189,7 +202,11 @@ function useThreadParentText(
 }
 
 function fetchThreadsFromServer(token: string, chatId: string): Promise<void> {
+	const accountKey = getActiveAccountKey();
 	return getThreads(token, chatId).then(({ threads: ts }) => {
+		// The account may have switched while the request was in flight: the
+		// rows belong to the old account's cache.
+		if (getActiveAccountKey() !== accountKey) return;
 		if (ts.length > 0) {
 			void threadsRepo.upsertMany(ts);
 		}
@@ -248,6 +265,14 @@ export function useThreads({
 
 	const threadParentText = useThreadParentText(threadsMap, userId);
 
+	// The active thread as of the latest render, readable from async
+	// callbacks: a response for a thread the user already left must not
+	// overwrite the new thread's pagination state.
+	const activeThreadIdRef = useRef(activeThreadId);
+	useEffect(() => {
+		activeThreadIdRef.current = activeThreadId;
+	}, [activeThreadId]);
+
 	// Fetch threads from server on chat change
 	useEffect(() => {
 		if (!token || !chatId) return;
@@ -276,19 +301,24 @@ export function useThreads({
 		const thread = threadsMap[activeThreadId];
 		if (!thread) return;
 
-		threadInitialFetchRef.current.add(activeThreadId);
-		getThreadMessages(token, thread.chatId, activeThreadId, PAGE_SIZE)
+		const tid = activeThreadId;
+		const accountKey = getActiveAccountKey();
+		threadInitialFetchRef.current.add(tid);
+		getThreadMessages(token, thread.chatId, tid, PAGE_SIZE)
 			.then(({ messages: msgs, nextCursor }) => {
-				void threadMessagesRepo.upsertMany(msgs, activeThreadId);
+				if (getActiveAccountKey() !== accountKey) return;
+				void threadMessagesRepo.upsertMany(msgs, tid);
 				const nxt = nextCursor != null && nextCursor !== "" ? nextCursor : null;
-				threadNextCursorsRef.current[activeThreadId] = nxt;
-				setThreadHasMore(nxt !== null);
+				threadNextCursorsRef.current[tid] = nxt;
+				// A fast switch to another thread must not hand it the
+				// previous thread's hasMore.
+				if (activeThreadIdRef.current === tid) setThreadHasMore(nxt !== null);
 			})
 			.catch(() => {
 				emitNotification(i18n.t("error.loadMessages"));
 			})
 			.finally(() => {
-				threadInitialFetchRef.current.delete(activeThreadId);
+				threadInitialFetchRef.current.delete(tid);
 			});
 	}, [activeThreadId, token, threadsMap]);
 
@@ -334,29 +364,34 @@ export function useThreads({
 		if (!cursor) return;
 
 		if (typeof navigator !== "undefined" && !navigator.onLine) {
-			setThreadHasMore(false);
+			// Keep hasMore: the history exists, only the network is gone. An
+			// "online" listener below retries the page, otherwise the thread
+			// would stay truncated until it is reopened.
 			return;
 		}
 
+		const tid = activeThreadId;
+		const accountKey = getActiveAccountKey();
 		threadLoadingMoreRef.current = true;
 		setThreadIsLoadingMore(true);
 
 		try {
-			const thread = threadsMap[activeThreadId];
+			const thread = threadsMap[tid];
 			if (!thread) return;
 
 			const res = await getThreadMessages(
 				token,
 				thread.chatId,
-				activeThreadId,
+				tid,
 				PAGE_SIZE,
 				cursor,
 			);
-			await threadMessagesRepo.upsertMany(res.messages, activeThreadId);
+			if (getActiveAccountKey() !== accountKey) return;
+			await threadMessagesRepo.upsertMany(res.messages, tid);
 			const nxt =
 				res.nextCursor != null && res.nextCursor !== "" ? res.nextCursor : null;
-			threadNextCursorsRef.current[activeThreadId] = nxt;
-			setThreadHasMore(nxt !== null);
+			threadNextCursorsRef.current[tid] = nxt;
+			if (activeThreadIdRef.current === tid) setThreadHasMore(nxt !== null);
 		} catch {
 			emitNotification(i18n.t("error.loadMessages"));
 		} finally {
@@ -368,6 +403,18 @@ export function useThreads({
 	const activeThread = activeThreadId
 		? (threadsMap[activeThreadId] ?? null)
 		: null;
+
+	// Retry a page that was skipped while offline. Depends on threadHasMore so
+	// it only arms while there is history left.
+	useEffect(() => {
+		if (!threadHasMore || activeThreadId === null) return;
+		if (typeof window === "undefined") return;
+		const onOnline = () => {
+			void loadMoreThreadMessages();
+		};
+		window.addEventListener("online", onOnline);
+		return () => window.removeEventListener("online", onOnline);
+	}, [threadHasMore, activeThreadId, loadMoreThreadMessages]);
 
 	const activeThreadWithText =
 		activeThread !== null && threadParentText[activeThread.id] !== undefined

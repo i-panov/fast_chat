@@ -1,4 +1,5 @@
 import { Alert, Button, Modal, Stack, Text, TextInput } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { E2EBackupError } from "../../e2ee/backup.ts";
@@ -12,10 +13,12 @@ import {
 	KEY_MATERIAL_CHANNEL,
 	KEY_TAB_ID,
 	lockLocalKeys,
+	onRecipientKeyChanged,
 	requestRecoveryAfterForgotPin,
 } from "../../e2ee/keys.ts";
 import {
 	clearLocalLockAndKeys,
+	LocalLockThrottledError,
 	onLocalLockChanged,
 	requestLocalLock,
 	subscribeToRemoteLock,
@@ -30,6 +33,9 @@ import {
 import {
 	hasPasskeyLock,
 	hasServerPasskeyBackup,
+	PasskeyPrfMissingError,
+	PasskeyPrfUnstableError,
+	PasskeyPrfUnsupportedError,
 	unlockWithPasskey,
 } from "../../e2ee/passkeyLock.ts";
 import { clearDecryptedFileCache } from "../../utils/fileCache.ts";
@@ -95,6 +101,18 @@ export function LocalLockModal({
 		if (activeToken === null) return;
 		return subscribeToRemoteLock();
 	}, [activeToken]);
+
+	// The recipient key directory is server-supplied. A change of a pinned
+	// contact key is the visible signal of a read-MITM (or a rotation) and
+	// must not stay buried in the console.
+	useEffect(() => {
+		return onRecipientKeyChanged(() => {
+			notifications.show({
+				color: "yellow",
+				message: t("localLock.recipientKeyChanged"),
+			});
+		});
+	}, [t]);
 
 	// Rotation/creation in another tab leaves this tab with a stale in-memory
 	// key; drop it so the next read picks up the shared IndexedDB row.
@@ -241,15 +259,26 @@ export function LocalLockModal({
 			setPin("");
 			setLocked(false);
 		} catch (err) {
-			// A wrong PIN is an E2EBackupError; DB/crypto failures are not.
-			setError(
-				err instanceof E2EBackupError
-					? t("localLock.wrongPin")
-					: t("localLock.error.failed"),
-			);
+			setError(pinErrorText(err));
 		} finally {
 			setBusy(false);
 		}
+	}
+
+	function pinErrorText(err: unknown): string {
+		if (err instanceof LocalLockThrottledError) {
+			return t("localLock.error.throttled", {
+				seconds: err.retryAfterSeconds,
+			});
+		}
+		if (err instanceof E2EBackupError) {
+			// Same class is thrown for a wrong password and for a corrupted or
+			// unsupported blob; retrying the PIN cannot fix the latter.
+			return err.message === "wrong password"
+				? t("localLock.wrongPin")
+				: t("localLock.corruptPin");
+		}
+		return t("localLock.error.failed");
 	}
 
 	async function handlePasskey() {
@@ -259,8 +288,22 @@ export function LocalLockModal({
 		try {
 			await unlockWithPasskey();
 			setLocked(false);
-		} catch {
-			setError(t("localLock.passkeyFailed"));
+		} catch (err) {
+			console.error("passkey unlock failed", err);
+			if (err instanceof PasskeyPrfUnsupportedError) {
+				setError(t("localLock.error.prfUnsupported"));
+			} else if (err instanceof PasskeyPrfMissingError) {
+				setError(t("localLock.error.prfMissing"));
+			} else if (err instanceof PasskeyPrfUnstableError) {
+				setError(t("localLock.error.prfUnstable"));
+			} else if (
+				err instanceof DOMException &&
+				err.name === "NotAllowedError"
+			) {
+				setError(t("localLock.error.cancelled"));
+			} else {
+				setError(t("localLock.passkeyFailedHint"));
+			}
 		} finally {
 			setBusy(false);
 		}
@@ -339,6 +382,8 @@ export function LocalLockModal({
 				{pinEnabled && (
 					<TextInput
 						label={t("localLock.pin")}
+						name="local-lock-unlock-pin"
+						autoComplete="off"
 						value={pin}
 						inputMode="numeric"
 						maxLength={6}
@@ -372,7 +417,7 @@ export function LocalLockModal({
 					color="red"
 					onClick={() => void handleForgot()}
 				>
-					{t("localLock.forgot")}
+					{pinEnabled ? t("localLock.forgot") : t("localLock.forgotGeneric")}
 				</Button>
 			</Stack>
 		</Modal>

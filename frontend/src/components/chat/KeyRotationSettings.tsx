@@ -10,9 +10,11 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { E2EBackupError } from "../../e2ee/backup.ts";
 import {
+	hasLocalLock,
 	KeyBackupSaveError,
 	KeyPublishError,
 	LocalLockEnabledError,
+	onServerBackupChanged,
 	PasskeyBackupEnabledError,
 	rotateEncryptionKey,
 	rotateSigningKey,
@@ -29,22 +31,31 @@ export function KeyRotationSettings({ token }: { token: string }) {
 	const [busy, setBusy] = useState<"encryption" | "signing" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [done, setDone] = useState<string | null>(null);
-	const [serverPasskey, setServerPasskey] = useState(false);
+	// Unknown is a real state: the buttons must stay disabled until the
+	// server backup shape is known, otherwise a passkey-protected backup
+	// makes the first click fail with PasskeyBackupEnabledError.
+	const [serverPasskey, setServerPasskey] = useState<boolean | null>(null);
+	const [lockEnabled, setLockEnabled] = useState<boolean | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
 		const refresh = () => {
-			void hasServerPasskeyBackup(token)
-				.then((value) => {
-					if (!cancelled) setServerPasskey(value);
-				})
-				.catch(() => {});
+			void Promise.all([
+				hasServerPasskeyBackup(token).catch(() => null),
+				hasLocalLock().catch(() => null),
+			]).then(([passkey, lock]) => {
+				if (cancelled) return;
+				setServerPasskey(passkey);
+				setLockEnabled(lock);
+			});
 		};
 		refresh();
 		const off = onLocalLockChanged(refresh);
+		const offBackup = onServerBackupChanged(refresh);
 		return () => {
 			cancelled = true;
 			off();
+			offBackup();
 		};
 	}, [token]);
 
@@ -101,13 +112,20 @@ export function KeyRotationSettings({ token }: { token: string }) {
 			<Text size="xs" c="dimmed">
 				{t("rotation.hint")}
 			</Text>
-			{serverPasskey && (
+			{lockEnabled === true && (
+				<Alert color="orange" py={6}>
+					{t("rotation.error.lockActive")}
+				</Alert>
+			)}
+			{serverPasskey === true && (
 				<Alert color="orange" py={6}>
 					{t("rotation.passkeyHint")}
 				</Alert>
 			)}
 			<PasswordInput
 				label={t("backup.password")}
+				name="rotation-password"
+				autoComplete="current-password"
 				value={password}
 				onChange={(e) => setPassword(e.currentTarget.value)}
 				disabled={busy !== null}
@@ -117,7 +135,9 @@ export function KeyRotationSettings({ token }: { token: string }) {
 					size="xs"
 					variant="light"
 					loading={busy === "encryption"}
-					disabled={password === "" || serverPasskey}
+					disabled={
+						password === "" || serverPasskey !== false || lockEnabled !== false
+					}
 					onClick={() => void rotate("encryption")}
 				>
 					{t("rotation.encryption")}
@@ -127,7 +147,9 @@ export function KeyRotationSettings({ token }: { token: string }) {
 					variant="light"
 					color="orange"
 					loading={busy === "signing"}
-					disabled={password === "" || serverPasskey}
+					disabled={
+						password === "" || serverPasskey !== false || lockEnabled !== false
+					}
 					onClick={() => void rotate("signing")}
 				>
 					{t("rotation.signing")}

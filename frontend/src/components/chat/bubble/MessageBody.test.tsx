@@ -40,6 +40,19 @@ beforeEach(() => {
 });
 
 describe("message body", () => {
+	it("renders paragraphs as separate blocks", () => {
+		// A single-line-span replacement glued "first" and "second" together,
+		// because markdown paragraphs carry no separator text of their own.
+		const { container } = renderBody({ text: "first\n\nsecond" });
+		const paragraphs = [...container.querySelectorAll("p")].map(
+			(el) => el.textContent,
+		);
+		// Both paragraphs must be separate block elements: a flat span glued
+		// them into "firstsecond".
+		expect(paragraphs).toContain("first");
+		expect(paragraphs).toContain("second");
+	});
+
 	it("renders an attachment-only stub with time", () => {
 		renderBody({ text: "" });
 

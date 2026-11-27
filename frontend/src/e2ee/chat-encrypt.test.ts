@@ -27,6 +27,7 @@ import { decryptMessage } from "./message.ts";
 const keyStore = vi.hoisted(() => ({
 	alice: null as KeyPair | null,
 	bob: null as KeyPair | null,
+	carol: null as KeyPair | null,
 }));
 
 const UPLOAD_LIMIT_PATTERN = /upload limit/;
@@ -36,12 +37,16 @@ const UPLOAD_LIMIT_PATTERN = /upload limit/;
 // reports "no backup" so ensureAccountKeys generates fresh local keys.
 vi.mock("../api.ts", () => ({
 	uploadPublicKey: vi.fn(),
+	getChatInfo: vi.fn(() => Promise.reject(new Error("offline"))),
 	getPublicKey: vi.fn((_token: string, userId: string) => {
 		if (userId === "alice:test" && keyStore.alice !== null) {
 			return { publicKey: keyStore.alice.publicKey, keyVersion: "v" };
 		}
 		if (userId === "bob:test" && keyStore.bob !== null) {
 			return { publicKey: keyStore.bob.publicKey, keyVersion: "v" };
+		}
+		if (userId === "carol:test" && keyStore.carol !== null) {
+			return { publicKey: keyStore.carol.publicKey, keyVersion: "v" };
 		}
 		return { publicKey: "", keyVersion: "" };
 	}),
@@ -98,6 +103,45 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 			],
 			createdAt: "2026-01-01T00:00:00Z",
 		});
+	});
+
+	it("seals to a member the server knows but the local list does not", async () => {
+		// The local chat snapshot can lag behind the server (a member just
+		// added by another device): sealing only to the cached list makes the
+		// message unreadable for them.
+		keyStore.carol = await generateKeyPair();
+		const { getChatInfo } = await import("../api.ts");
+		vi.mocked(getChatInfo).mockResolvedValue({
+			chat: {
+				id: "chat-v2",
+				type: "group",
+				name: "v2",
+				ownerId: "alice:test",
+				members: [
+					{ id: "alice:test", nick: "alice" },
+					{ id: "bob:test", nick: "bob" },
+					{ id: "carol:test", nick: "carol" },
+				],
+				createdAt: "2026-01-01T00:00:00Z",
+			},
+		});
+
+		const encrypted = await encryptForChat(
+			"token",
+			"chat-v2",
+			{ text: "for carol too" },
+			{},
+			undefined,
+			{ messageId: "m-carol", fromId: "alice:test" },
+		);
+		if (encrypted === null) throw new Error("encryptForChat returned null");
+
+		const out = await decryptMessage(
+			toMessage("m-carol", encrypted),
+			"carol:test",
+			keyStore.carol,
+		);
+		expect(out.text).toBe("for carol too");
 	});
 
 	it("round-trips text + location + file keys to another recipient", async () => {
@@ -434,5 +478,35 @@ describe("prepareFiles upload limit", () => {
 			UPLOAD_LIMIT_PATTERN,
 		);
 		expect(arrayBuffer).not.toHaveBeenCalled();
+	});
+
+	it("stages one upload for duplicate attachment content", async () => {
+		// Two identical attachments used to abort the whole batch. They now
+		// share the first occurrence's key and upload.
+		const { MaxSendableFileSize, prepareFiles, buildFileMaps } = await import(
+			"./chat-encrypt.ts"
+		);
+		expect(MaxSendableFileSize).toBeGreaterThan(0);
+		const pending = (name: string) =>
+			({
+				id: name,
+				file: new File(["same-bytes"], name, { type: "text/plain" }),
+				blobUrl: `blob:${name}`,
+				originalName: name,
+				size: 10,
+				mimeType: "text/plain",
+				fileType: "file",
+			}) as const;
+
+		const prepared = await prepareFiles(
+			[pending("a.txt"), pending("b.txt")],
+			"tok",
+		);
+
+		expect(prepared).toHaveLength(2);
+		expect(prepared[1].duplicate).toBe(true);
+		expect(prepared[1].plaintextHash).toBe(prepared[0].plaintextHash);
+		expect(prepared[1].fileKey).toBe(prepared[0].fileKey);
+		expect(buildFileMaps(prepared).uploadClientIds).toHaveLength(1);
 	});
 });

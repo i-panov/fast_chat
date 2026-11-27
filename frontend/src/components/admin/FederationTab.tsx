@@ -2,7 +2,7 @@ import { Alert, Badge, Loader, Stack, Text } from "@mantine/core";
 import type { TFunction } from "i18next";
 import { useEffect, useState } from "react";
 import { adminListFederationPeers } from "../../api.ts";
-import { errorText } from "./shared.tsx";
+import { errorKey } from "./shared.tsx";
 
 export function FederationTab({ token, t }: { token: string; t: TFunction }) {
 	const [peers, setPeers] = useState<string[]>([]);
@@ -11,12 +11,14 @@ export function FederationTab({ token, t }: { token: string; t: TFunction }) {
 
 	useEffect(() => {
 		let cancelled = false;
+		setLoading(true);
+		setError(null);
 		void adminListFederationPeers(token)
 			.then((result) => {
 				if (!cancelled) setPeers(result.peers);
 			})
 			.catch((err: unknown) => {
-				if (!cancelled) setError(errorText(err));
+				if (!cancelled) setError(t(errorKey(err)));
 			})
 			.finally(() => {
 				if (!cancelled) setLoading(false);
@@ -25,14 +27,14 @@ export function FederationTab({ token, t }: { token: string; t: TFunction }) {
 		return () => {
 			cancelled = true;
 		};
-	}, [token]);
+	}, [token, t]);
 
 	return (
 		<Stack gap="md">
 			{error !== null && <Alert color="red">{error}</Alert>}
 			{loading ? (
 				<Loader size="sm" />
-			) : peers.length === 0 ? (
+			) : error === null && peers.length === 0 ? (
 				<Text size="sm" c="dimmed">
 					{t("admin.empty")}
 				</Text>

@@ -8,6 +8,7 @@ const audioState = {
 	behavior: "resolve" as AudioBehavior,
 	playCalls: 0,
 	pauseCalls: 0,
+	loadCalls: 0,
 	endedHandlers: [] as Array<() => void>,
 };
 
@@ -16,6 +17,7 @@ class FakeAudio {
 
 	src = "";
 	paused = true;
+	removedSrc = false;
 
 	constructor() {
 		FakeAudio.last = this;
@@ -33,6 +35,16 @@ class FakeAudio {
 	pause() {
 		audioState.pauseCalls += 1;
 		this.paused = true;
+	}
+
+	removeAttribute(name: string) {
+		if (name !== "src") return;
+		this.src = "";
+		this.removedSrc = true;
+	}
+
+	load() {
+		audioState.loadCalls += 1;
 	}
 
 	addEventListener(type: string, cb: () => void) {
@@ -68,6 +80,7 @@ beforeEach(() => {
 	audioState.behavior = "resolve";
 	audioState.playCalls = 0;
 	audioState.pauseCalls = 0;
+	audioState.loadCalls = 0;
 	audioState.endedHandlers = [];
 	vi.stubGlobal("Audio", FakeAudio);
 });
@@ -165,7 +178,26 @@ describe("useAudioPlayer", () => {
 		});
 		expect(result.current.currentTrack).toBeNull();
 		expect(result.current.isPlaying).toBe(false);
-		expect(audio().src).toBe("");
+		// An empty src points at the document URL: it must be removed instead.
+		expect(audio().removedSrc).toBe(true);
+		expect(audioState.loadCalls).toBeGreaterThan(0);
+	});
+
+	it("stops when the account storage is cleared", async () => {
+		const { result } = renderHook(() => useAudioPlayer(), { wrapper });
+
+		await act(async () => {
+			result.current.play({ fileId: "f1", url: "blob:a", name: "a" });
+			await Promise.resolve();
+		});
+		expect(result.current.currentTrack?.fileId).toBe("f1");
+
+		act(() => {
+			window.dispatchEvent(new Event("app:fileCacheCleared"));
+		});
+
+		expect(result.current.currentTrack).toBeNull();
+		expect(result.current.isPlaying).toBe(false);
 	});
 
 	it("stops on track end", async () => {

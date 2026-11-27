@@ -164,4 +164,52 @@ describe("useMessageReadStatuses", () => {
 			expect(mockMark()).toHaveBeenCalledWith("tok", "c1", ["m1"]);
 		});
 	});
+
+	it("retries a transient failure without a new visible range change", async () => {
+		// The queue used to stay stuck after a network error until something
+		// else called markVisibleAsRead.
+		vi.useFakeTimers();
+		try {
+			mockMark().mockRejectedValueOnce(new Error("network down"));
+			const { result } = renderHook(() =>
+				useMessageReadStatuses({ token: "tok", chatId: "c1" }),
+			);
+
+			act(() => {
+				result.current.markVisibleAsRead(["m1"]);
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(400);
+			});
+			expect(mockMark()).toHaveBeenCalledTimes(1);
+
+			mockMark().mockResolvedValue({ status: "ok" });
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(6000);
+			});
+			expect(mockMark()).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("drops ids after a definitive client error instead of retrying", async () => {
+		vi.useFakeTimers();
+		try {
+			mockMark().mockRejectedValue(new Error("http 403: forbidden"));
+			const { result } = renderHook(() =>
+				useMessageReadStatuses({ token: "tok", chatId: "c1" }),
+			);
+
+			act(() => {
+				result.current.markVisibleAsRead(["m1"]);
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(7000);
+			});
+			expect(mockMark()).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

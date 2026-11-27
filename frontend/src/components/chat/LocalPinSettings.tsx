@@ -11,14 +11,22 @@ import {
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+	type BackupState,
 	getServerBackupState,
 	hasPinLock,
+	hasWebLocks,
 	LocalLockRequiredError,
+	notifyServerBackupChanged,
+	onServerBackupChanged,
 } from "../../e2ee/keys.ts";
 import {
 	disableLocalPin,
 	enableLocalPin,
+	isWeakLocalPin,
+	LOCAL_PIN_PATTERN,
+	LocalLockThrottledError,
 	onLocalLockChanged,
+	WeakLocalPinError,
 } from "../../e2ee/localLock.ts";
 import {
 	DEFAULT_LOCK_SETTINGS,
@@ -39,8 +47,6 @@ import {
 	PasskeyPrfUnsupportedError,
 } from "../../e2ee/passkeyLock.ts";
 
-const PIN_PATTERN = /^\d{6}$/;
-
 // LocalPinSettings stores the local master-key wrapper. The server backup
 // password is separate and is not changed here.
 // eslint-disable-next-line max-lines-per-function -- PIN, passkey and schedule settings are one security panel.
@@ -49,7 +55,9 @@ export function LocalPinSettings({ token }: { token: string }) {
 	const [enabled, setEnabled] = useState(false);
 	const [passkeyEnabled, setPasskeyEnabled] = useState(false);
 	const [serverPasskey, setServerPasskey] = useState(false);
-	const [hasBackup, setHasBackup] = useState(false);
+	const [backupState, setBackupState] = useState<BackupState | "loading">(
+		"loading",
+	);
 	const [pin, setPin] = useState("");
 	const [confirm, setConfirm] = useState("");
 	const [busy, setBusy] = useState(false);
@@ -70,32 +78,48 @@ export function LocalPinSettings({ token }: { token: string }) {
 				hasPinLock(),
 				hasPasskeyLock(),
 				hasServerPasskeyBackup(token).catch(() => false),
-				getServerBackupState(token)
-					.then((state) => state === "backup")
-					.catch(() => false),
+				getServerBackupState(token).catch(() => "unknown" as const),
 			])
 				.then(([value, passkey, server, backup]) => {
 					if (cancelled) return;
 					setEnabled(value);
 					setPasskeyEnabled(passkey);
 					setServerPasskey(server);
-					setHasBackup(backup);
+					setBackupState(backup);
 				})
 				.catch(() => {});
 		};
 		refresh();
 		const off = onLocalLockChanged(refresh);
+		// Saving/deleting the backup in the same dialog must reveal or hide
+		// the passkey-protection button without reopening the modal.
+		const offBackup = onServerBackupChanged(refresh);
 		return () => {
 			cancelled = true;
 			off();
+			offBackup();
 		};
 	}, [token]);
 
-	const canEnable = PIN_PATTERN.test(pin) && pin === confirm;
+	// A local lock without a usable server backup means a forgotten PIN or a
+	// lost authenticator destroys the history for good.
+	const backupReady = backupState === "backup" || backupState === "local-stale";
+	const canProtectWithLock = backupReady;
+	const weakPin = pin !== "" && isWeakLocalPin(pin);
+	const canEnable =
+		LOCAL_PIN_PATTERN.test(pin) &&
+		pin === confirm &&
+		!isWeakLocalPin(pin) &&
+		canProtectWithLock;
 
 	function mapError(err: unknown): string {
 		if (err instanceof LocalLockRequiredError)
 			return t("localLock.error.locked");
+		if (err instanceof LocalLockThrottledError)
+			return t("localLock.error.throttled", {
+				seconds: err.retryAfterSeconds,
+			});
+		if (err instanceof WeakLocalPinError) return t("localLock.error.weakPin");
 		if (err instanceof PasskeyPrfUnsupportedError) {
 			return t("localLock.error.prfUnsupported");
 		}
@@ -157,6 +181,10 @@ export function LocalPinSettings({ token }: { token: string }) {
 
 	async function handlePasskeyEnable() {
 		if (busy) return;
+		if (!canProtectWithLock) {
+			setError(t("localLock.needBackup"));
+			return;
+		}
 		setBusy(true);
 		setError(null);
 		try {
@@ -176,6 +204,7 @@ export function LocalPinSettings({ token }: { token: string }) {
 		try {
 			await enableServerPasskey(token);
 			setServerPasskey(true);
+			notifyServerBackupChanged();
 		} catch (err) {
 			setError(mapError(err));
 		} finally {
@@ -190,6 +219,7 @@ export function LocalPinSettings({ token }: { token: string }) {
 		try {
 			await disableServerPasskey(token);
 			setServerPasskey(false);
+			notifyServerBackupChanged();
 		} catch (err) {
 			setError(mapError(err));
 		} finally {
@@ -212,6 +242,8 @@ export function LocalPinSettings({ token }: { token: string }) {
 
 	async function handleDisable() {
 		if (busy) return;
+		// Disabling writes the master key back in plaintext; say so first.
+		if (!window.confirm(t("localLock.disableConfirm"))) return;
 		setBusy(true);
 		setError(null);
 		try {
@@ -228,6 +260,11 @@ export function LocalPinSettings({ token }: { token: string }) {
 			<Text size="sm" fw={500}>
 				{t("localLock.title")}
 			</Text>
+			{!hasWebLocks() && (
+				<Alert color="orange" py={6}>
+					{t("localLock.webLocksMissing")}
+				</Alert>
+			)}
 			{enabled ? (
 				<>
 					<Text size="xs" c="dimmed">
@@ -247,9 +284,19 @@ export function LocalPinSettings({ token }: { token: string }) {
 					<Text size="xs" c="dimmed">
 						{t("localLock.hint")}
 					</Text>
+					<Text size="xs" c="dimmed">
+						{t("localLock.pinThreatModel")}
+					</Text>
+					{backupState === "loading" ? null : backupReady ? null : (
+						<Alert color="orange" py={6}>
+							{t("localLock.needBackup")}
+						</Alert>
+					)}
 					<Group grow align="end">
 						<TextInput
 							label={t("localLock.pin")}
+							name="local-lock-pin"
+							autoComplete="off"
 							value={pin}
 							inputMode="numeric"
 							maxLength={6}
@@ -258,9 +305,12 @@ export function LocalPinSettings({ token }: { token: string }) {
 								setPin(e.currentTarget.value.replace(/\D/g, "").slice(0, 6))
 							}
 							disabled={busy}
+							error={weakPin ? t("localLock.error.weakPin") : undefined}
 						/>
 						<TextInput
 							label={t("localLock.confirm")}
+							name="local-lock-pin-confirm"
+							autoComplete="off"
 							value={confirm}
 							inputMode="numeric"
 							maxLength={6}
@@ -269,6 +319,11 @@ export function LocalPinSettings({ token }: { token: string }) {
 								setConfirm(e.currentTarget.value.replace(/\D/g, "").slice(0, 6))
 							}
 							disabled={busy}
+							error={
+								confirm !== "" && confirm !== pin
+									? t("localLock.pinMismatch")
+									: undefined
+							}
 						/>
 					</Group>
 					<Button
@@ -341,7 +396,7 @@ export function LocalPinSettings({ token }: { token: string }) {
 					{error}
 				</Alert>
 			)}
-			{isPasskeyUnlockAvailable() && !serverPasskey && hasBackup && (
+			{isPasskeyUnlockAvailable() && !serverPasskey && backupReady && (
 				<Button
 					variant="light"
 					size="xs"
@@ -371,6 +426,7 @@ export function LocalPinSettings({ token }: { token: string }) {
 					variant={passkeyEnabled ? "default" : "light"}
 					size="xs"
 					loading={busy}
+					disabled={!passkeyEnabled && !canProtectWithLock}
 					onClick={() =>
 						void (passkeyEnabled
 							? handlePasskeyDisable()

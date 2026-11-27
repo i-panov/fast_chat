@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatsRepo } from "../db/chatsRepo.ts";
-import { setActiveAccountKey } from "../db/init.ts";
+import { getDB, setActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import type { OutboxOpSend } from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
+import { markLocalTombstone, resetLocalTombstones } from "./deltaApplier.ts";
 import { extractRetryAfterMs, processOutbox } from "./outboxProcessor.ts";
 
 vi.mock("../api.ts", () => ({
@@ -56,6 +57,7 @@ function sendOp(overrides: Partial<OutboxOpSend> = {}): OutboxOpSend {
 
 beforeEach(() => {
 	setActiveAccountKey("alice:test");
+	resetLocalTombstones();
 	vi.clearAllMocks();
 	sendMessageMock.mockResolvedValue({ message: {} });
 	editMessageMock.mockResolvedValue({ message: {} });
@@ -102,6 +104,73 @@ describe("processOutbox", () => {
 	it("no-ops on an empty outbox", async () => {
 		await processOutbox("tok");
 		expect(sendMessageMock).not.toHaveBeenCalled();
+	});
+
+	it("never sends a message the local tombstone already deleted", async () => {
+		// A tombstone applied while the send waited for the network must win:
+		// sending it recreates the message server-side and revives it for every
+		// participant.
+		await messagesRepo.upsert(
+			{
+				id: "m-tomb",
+				chatId: "chat-1",
+				fromId: "alice:test",
+				fromNick: "alice",
+				text: "hello",
+				createdAt: "2026-08-30T09:00:00.000Z",
+			},
+			"queued",
+		);
+		await outboxRepo.enqueue(sendOp({ msgId: "m-tomb", opId: "op-tomb" }));
+		markLocalTombstone("m-tomb");
+
+		await processOutbox("tok");
+
+		expect(sendMessageMock).not.toHaveBeenCalled();
+		expect(await outboxRepo.list()).toHaveLength(0);
+		const stored = await messagesRepo.getById("chat-1", "m-tomb");
+		expect(stored?.status).toBe("deleted");
+	});
+
+	it("marks a queued message without an op as failed", async () => {
+		// A crash between the row write and outboxRepo.enqueue used to leave a
+		// bubble spinning forever: no operation could ever finish it.
+		const db = await getDB();
+		await db.put("messages", {
+			id: "m-orphan",
+			chatId: "chat-1",
+			fromId: "alice:test",
+			fromNick: "alice",
+			text: "never queued",
+			createdAt: "2020-01-01T00:00:00.000Z",
+			status: "queued",
+			_updatedAt: "2020-01-01T00:00:00.000Z",
+		});
+
+		await processOutbox("tok");
+
+		const stored = await messagesRepo.getById("chat-1", "m-orphan");
+		expect(stored?.status).toBe("failed");
+		expect(sendMessageMock).not.toHaveBeenCalled();
+	});
+
+	it("leaves a fresh queued message alone while its op is being written", async () => {
+		await messagesRepo.upsert(
+			{
+				id: "m-fresh",
+				chatId: "chat-1",
+				fromId: "alice:test",
+				fromNick: "alice",
+				text: "in flight",
+				createdAt: new Date().toISOString(),
+			},
+			"queued",
+		);
+
+		await processOutbox("tok");
+
+		const stored = await messagesRepo.getById("chat-1", "m-fresh");
+		expect(stored?.status).toBe("queued");
 	});
 
 	it("sends a queued message and removes the op", async () => {

@@ -31,15 +31,21 @@ export function ReactionBar({
 	const { activeAccount } = useAuth();
 	const [items, setItems] = useState<ReactionSummary[]>(reactions ?? []);
 	const [open, setOpen] = useState(false);
+	// Two fast taps on one emoji used to compute "mine" from the same snapshot
+	// and enqueue two opposite ops. Ignore taps until the current one settles.
+	const [busy, setBusy] = useState(false);
 
 	useEffect(() => {
 		setItems(reactions ?? []);
 	}, [reactions]);
 
+	const blocked = disabled === true || busy;
+
 	async function toggle(emoji: string) {
 		const token = activeAccount?.token;
-		if (token === undefined || disabled === true) return;
+		if (token === undefined || blocked) return;
 		setOpen(false);
+		setBusy(true);
 
 		const mine = items.find((r) => r.emoji === emoji)?.me === true;
 		const optimistic = mine
@@ -98,6 +104,7 @@ export function ReactionBar({
 				await messagesRepo.updateReactions(chatId, messageId, optimistic);
 			}
 			scheduleSync();
+			setBusy(false);
 			return;
 		}
 		try {
@@ -107,6 +114,8 @@ export function ReactionBar({
 			setItems(result.reactions);
 		} catch {
 			// The server is authoritative; the next SSE/sync will repair it.
+		} finally {
+			setBusy(false);
 		}
 	}
 
@@ -117,7 +126,7 @@ export function ReactionBar({
 					key={reaction.emoji}
 					size="compact-xs"
 					variant={reaction.me === true ? "light" : "default"}
-					disabled={disabled}
+					disabled={blocked}
 					onClick={() => {
 						void toggle(reaction.emoji);
 					}}
@@ -138,7 +147,7 @@ export function ReactionBar({
 						size="sm"
 						variant="subtle"
 						color="gray"
-						disabled={disabled}
+						disabled={blocked}
 						onClick={() => setOpen((value) => !value)}
 						aria-label={t("reaction.add")}
 					>

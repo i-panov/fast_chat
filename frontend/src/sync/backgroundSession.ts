@@ -83,3 +83,24 @@ export async function closeBackgroundSessionDB(): Promise<void> {
 		// A failed open has nothing to close.
 	}
 }
+
+// deleteBackgroundSessionDB removes the mirrored credentials database
+// explicitly. "Clear all data" already deletes every `${DB_NAME}_*` database
+// when the browser supports indexedDB.databases(), but older ones do not list
+// them, and a surviving background token would outlive the wipe.
+// The promise resolves false when the database could not be removed (blocked
+// by another tab, storage unavailable), so the caller can report the truth.
+export async function deleteBackgroundSessionDB(): Promise<boolean> {
+	await closeBackgroundSessionDB();
+
+	return new Promise<boolean>((resolve) => {
+		try {
+			const request = indexedDB.deleteDatabase(BACKGROUND_DB_NAME);
+			request.onsuccess = () => resolve(true);
+			request.onerror = () => resolve(false);
+			request.onblocked = () => resolve(false);
+		} catch {
+			resolve(false);
+		}
+	});
+}

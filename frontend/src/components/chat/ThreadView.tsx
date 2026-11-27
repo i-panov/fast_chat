@@ -128,6 +128,7 @@ export function ThreadView() {
 					void loadMoreThreadMessages();
 				}}
 				isInThread
+				threadId={activeThreadId ?? undefined}
 				showAuthorForGroup={activeChat?.type === "group"}
 				onRetry={handleRetry}
 				onCancelSend={handleCancel}

@@ -33,6 +33,9 @@ export function FileDownloadAttachment({ file, fileKeys }: Props) {
 				cursor: "pointer",
 			}}
 			onClick={() => {
+				// Repeated taps must not start parallel full downloads and
+				// decryptions of the same attachment.
+				if (downloading) return;
 				setDownloading(true);
 				void downloadFile(
 					file.url,

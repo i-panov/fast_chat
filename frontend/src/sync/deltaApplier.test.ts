@@ -6,8 +6,14 @@ import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import type { OutboxOpEdit, OutboxOpSend } from "../db/schema.ts";
+import { threadsRepo } from "../db/threadsRepo.ts";
 import type { Chat, Message, SyncResponse } from "../types/api.ts";
-import { applyDelta, pullDelta } from "./deltaApplier.ts";
+import {
+	applyDelta,
+	isLocallyTombstoned,
+	pullDelta,
+	resetLocalTombstones,
+} from "./deltaApplier.ts";
 
 vi.mock("../api.ts", () => ({
 	getSync: vi.fn(),
@@ -89,6 +95,7 @@ function delta(overrides: Partial<SyncResponse> = {}): SyncResponse {
 
 beforeEach(() => {
 	setActiveAccountKey("alice:test");
+	resetLocalTombstones();
 });
 
 describe("applyDelta", () => {
@@ -167,6 +174,29 @@ describe("applyDelta", () => {
 
 		const threadMessage = await threadMessagesRepo.getById("th1", "tm1");
 		expect(threadMessage?.text).toBe("in the thread");
+	});
+
+	it("counts a synced thread reply once in the thread record", async () => {
+		// The "N replies" link reads threads.messageCount; nothing bumped it for
+		// synced messages, and a delta replay must not count the same row twice.
+		await threadsRepo.upsert({
+			id: "th1",
+			chatId: "chat-1",
+			parentMessageId: "parent",
+			parentMessageText: "",
+			parentMessageFrom: "bob",
+			createdAt: "2026-08-30T09:00:00.000Z",
+			messageCount: 0,
+		});
+		const payload = delta({
+			threadMessages: [{ ...msg("tm1", "reply"), threadId: "th1" }],
+		});
+
+		await applyDelta(payload);
+		expect((await threadsRepo.getById("th1"))?.messageCount).toBe(1);
+
+		await applyDelta(payload);
+		expect((await threadsRepo.getById("th1"))?.messageCount).toBe(1);
 	});
 
 	it("patches online status of chat members", async () => {
@@ -259,9 +289,19 @@ describe("applyDelta", () => {
 		expect(stored?.text).toBe("local edit");
 	});
 
-	it("does not delete a message that has a queued send op", async () => {
+	it("applies a tombstone over a queued send and drops the send op", async () => {
+		// A delete for a message whose send is still queued used to be skipped
+		// ("the server will replay it"), which resurrected the message for every
+		// participant once the send arrived. The tombstone wins now.
 		await messagesRepo.upsert({ ...msg("m1", "hello") }, "queued");
-		await outboxRepo.enqueue(sendOp());
+		await pendingBlobsRepo.put({
+			id: "blob-1",
+			blob: new Blob(["x"]),
+			name: "a.txt",
+			mimeType: "text/plain",
+			size: 1,
+		});
+		await outboxRepo.enqueue(sendOp({ pendingFileClientIds: ["blob-1"] }));
 
 		await applyDelta(
 			delta({
@@ -276,9 +316,32 @@ describe("applyDelta", () => {
 		);
 
 		const stored = await messagesRepo.getById("chat-1", "m1");
-		expect(stored).toBeDefined();
-		expect(stored?.status).toBe("queued");
-		expect(await outboxRepo.list()).toHaveLength(1);
+		expect(stored?.status).toBe("deleted");
+		expect(await outboxRepo.list()).toHaveLength(0);
+		expect(await pendingBlobsRepo.get("blob-1")).toBeUndefined();
+		expect(isLocallyTombstoned("m1")).toBe(true);
+	});
+
+	it("applies a tombstone that arrives after the send already left", async () => {
+		// Reverse order: the send op is gone (it succeeded), only the row is
+		// left. The tombstone must still hide it.
+		await messagesRepo.upsert({ ...msg("m2", "hello") }, "sent");
+
+		await applyDelta(
+			delta({
+				deletedMessages: [
+					{
+						chatId: "chat-1",
+						messageId: "m2",
+						deletedAt: "2026-08-30T10:00:00Z",
+					},
+				],
+			}),
+		);
+
+		const stored = await messagesRepo.getById("chat-1", "m2");
+		expect(stored?.status).toBe("deleted");
+		expect(isLocallyTombstoned("m2")).toBe(true);
 	});
 
 	it("drops a queued edit and its staged blob when the message is deleted", async () => {

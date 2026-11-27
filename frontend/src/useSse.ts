@@ -25,11 +25,20 @@ function isClosed(source: EventSource): boolean {
 	}
 }
 
-function isTooManyConnections(error: unknown): boolean {
+function isRateLimited(error: unknown): boolean {
 	return (
 		error instanceof Error &&
 		"status" in error &&
 		(error as { status?: number }).status === 429
+	);
+}
+
+// Only the per-account stream cap is terminal: any other 429 (the sse-auth
+// rate limit is 60/min per IP) clears on its own, and a reconnect with
+// backoff succeeds later.
+function isStreamLimit(error: unknown): boolean {
+	return (
+		error instanceof Error && (error as { code?: unknown }).code === "sse_limit"
 	);
 }
 
@@ -130,6 +139,10 @@ export function useSse(token: string, onEvent: EventHandler) {
 				source.addEventListener(event, (e: MessageEvent) => {
 					try {
 						handler(JSON.parse(e.data as string) as Record<string, unknown>);
+						// A delivered data event proves the stream is both up
+						// and authenticated: only now is the backoff earned.
+						noteActivity();
+						reconnectAttempt = 0;
 					} catch {
 						/* ignore */
 					}
@@ -172,7 +185,13 @@ export function useSse(token: string, onEvent: EventHandler) {
 			for (const event of jsonEvents) {
 				addJSONListener(event, (data) => {
 					eventChain = eventChain
-						.then(() => onEventRef.current(event, data))
+						.then(() => {
+							// The stream is torn down on account switch: events
+							// queued by the previous account must not run against
+							// the new account's database.
+							if (closed || source !== currentSource) return;
+							return onEventRef.current(event, data);
+						})
 						.then(
 							() => undefined,
 							() => undefined,
@@ -186,10 +205,10 @@ export function useSse(token: string, onEvent: EventHandler) {
 				// being delivered).
 				if (source !== currentSource) return;
 				noteActivity();
-				// The server sends "connected" as soon as the stream is
-				// registered, before the authentication request is answered.
-				// The backoff is reset anyway: the stream itself is up.
-				reconnectAttempt = 0;
+				// The server sends "connected" before the authentication
+				// request is answered, so the backoff is not reset here: a
+				// stream that never authenticates would otherwise reconnect
+				// every few seconds instead of backing off.
 				void onEventRef.current("connected", null);
 			});
 
@@ -215,6 +234,7 @@ export function useSse(token: string, onEvent: EventHandler) {
 
 					try {
 						await sseAuth(connectionId, token);
+						reconnectAttempt = 0;
 						return;
 					} catch (err) {
 						if (err instanceof Error && err.message === "unauthorized") {
@@ -222,12 +242,18 @@ export function useSse(token: string, onEvent: EventHandler) {
 							// unauthorized event, retrying would not help.
 							break;
 						}
-						if (isTooManyConnections(err)) {
+						if (isStreamLimit(err)) {
 							// Per-account stream cap: reconnecting would only
 							// hammer the same limit. Stop this tab until reload.
 							teardown();
 							void onEventRef.current("sse_limit", null);
 							return;
+						}
+						if (isRateLimited(err)) {
+							// The sse-auth rate limit (per IP) is transient:
+							// stop retrying this stream and reconnect with the
+							// exponential backoff instead of dying until reload.
+							break;
 						}
 					}
 				}

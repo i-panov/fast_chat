@@ -33,9 +33,11 @@ export function IncomingCallOverlay({
 			centered
 		>
 			<Stack>
-				<Text fw={600}>{t("call.incomingFrom", { nick: peerNick })}</Text>
+				<Text fw={600} aria-live="assertive">
+					{t("call.incomingFrom", { nick: peerNick })}
+				</Text>
 				<Group>
-					<Button color="green" onClick={onAccept}>
+					<Button color="green" onClick={onAccept} data-autofocus>
 						{t("call.accept")}
 					</Button>
 					<Button color="red" variant="light" onClick={onReject}>

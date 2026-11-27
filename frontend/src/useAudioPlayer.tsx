@@ -13,6 +13,7 @@ import {
 	LOCAL_LOCK_CHANGED_EVENT,
 } from "./e2ee/keys.ts";
 import { releaseBlobUrl, retainBlobUrl } from "./utils/blobUrlRefs.ts";
+import { FILE_CACHE_CLEARED_EVENT } from "./utils/fileCache.ts";
 
 export interface AudioTrack {
 	fileId: string;
@@ -63,7 +64,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
 		if (currentTrack === null) {
 			audio.pause();
-			audio.src = "";
+			audio.removeAttribute("src");
+			audio.load();
 			setIsPlaying(false);
 
 			return;
@@ -171,7 +173,13 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 	const stop = useCallback(() => {
 		generationRef.current += 1;
 		audioRef.current?.pause();
-		if (audioRef.current) audioRef.current.src = "";
+		if (audioRef.current) {
+			// An empty src points at the document URL: the browser may try to
+			// load the page HTML as media. Removing the attribute and calling
+			// load() releases the resource without that request.
+			audioRef.current.removeAttribute("src");
+			audioRef.current.load();
+		}
 		if (ownedUrlRef.current !== null) {
 			releaseBlobUrl(ownedUrlRef.current);
 			ownedUrlRef.current = null;
@@ -194,6 +202,17 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 		};
 		window.addEventListener(LOCAL_LOCK_CHANGED_EVENT, onLock);
 		return () => window.removeEventListener(LOCAL_LOCK_CHANGED_EVENT, onLock);
+	}, [stop]);
+
+	// The account switched or the storage was wiped: the decrypted track of
+	// the previous account must not keep playing. The auth layer clears the
+	// file cache on switch/logout, and the player reacts to that instead of
+	// depending on the auth context it sits above.
+	useEffect(() => {
+		const onCleared = () => stop();
+		window.addEventListener(FILE_CACHE_CLEARED_EVENT, onCleared);
+		return () =>
+			window.removeEventListener(FILE_CACHE_CLEARED_EVENT, onCleared);
 	}, [stop]);
 
 	const toggle = useCallback(() => {

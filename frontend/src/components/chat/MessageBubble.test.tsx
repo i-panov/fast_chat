@@ -115,6 +115,44 @@ beforeEach(() => {
 });
 
 describe("message bubble", () => {
+	it("opens the menu with a touch long-press", async () => {
+		// iOS Safari does not fire contextmenu for a long tap on a plain div:
+		// without a pointer long-press the actions are unreachable there.
+		renderBubble(bubbleProps({ onStartEdit: vi.fn() }));
+		const paper = document.querySelector('[data-message-id="m1"]');
+		if (paper === null) throw new Error("bubble not rendered");
+
+		fireEvent.pointerDown(paper, {
+			pointerType: "touch",
+			clientX: 10,
+			clientY: 12,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 600));
+
+		await screen.findByText(EDIT_TEXT);
+		fireEvent.pointerUp(paper);
+	});
+
+	it("cancels a touch long-press when the finger moves", async () => {
+		renderBubble(bubbleProps({ onStartEdit: vi.fn() }));
+		const paper = document.querySelector('[data-message-id="m1"]');
+		if (paper === null) throw new Error("bubble not rendered");
+
+		fireEvent.pointerDown(paper, {
+			pointerType: "touch",
+			clientX: 10,
+			clientY: 12,
+		});
+		fireEvent.pointerMove(paper, {
+			pointerType: "touch",
+			clientX: 80,
+			clientY: 90,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 600));
+
+		expect(screen.queryByText(EDIT_TEXT)).toBeNull();
+	});
+
 	it("renders the author, text and message id", () => {
 		renderBubble(bubbleProps({ isOwn: false, showAuthorNick: true }));
 
@@ -274,7 +312,7 @@ describe("message bubble", () => {
 	it("opens the thread on link click", () => {
 		const onOpenThread = vi.fn();
 		renderBubble(
-			bubbleProps({ threadId: "th1", threadMessageCount: 3, onOpenThread }),
+			bubbleProps({ linkThreadId: "th1", threadMessageCount: 3, onOpenThread }),
 		);
 
 		const threadLink = [...document.querySelectorAll("button")].find(

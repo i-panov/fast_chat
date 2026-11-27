@@ -17,6 +17,7 @@ import {
 	getIdentityHistory,
 	getIdentityKeyPair,
 	getKeyHistory,
+	getLockEpoch,
 	getMyKeyPair,
 	getMyKeyVersion,
 	hasPinLock,
@@ -178,15 +179,18 @@ async function enablePasskeyLocked(scope: string): Promise<void> {
 	if (!isPasskeyUnlockAvailable()) {
 		throw new Error("passkeys are not available in this browser");
 	}
-	const salt = randomBytes(32);
-	const created = await createPasskey(salt);
-	const credentialId = created.credentialId;
-	const prf = created.prf ?? (await assertPasskey(credentialId, salt));
+	// Check the keys before the WebAuthn prompt: without local keys the user
+	// would get an extra prompt and an orphaned credential in the manager.
 	const keyPair = await getMyKeyPair(scope);
 	const identityKeyPair = await getIdentityKeyPair(scope);
 	if (keyPair === null || identityKeyPair === null) {
 		throw new Error("no local keys to protect");
 	}
+	const previousRaw = await metaRepo.getFor(scope, PASSKEY_LOCK_META);
+	const salt = randomBytes(32);
+	const created = await createPasskey(salt);
+	const credentialId = created.credentialId;
+	const prf = created.prf ?? (await assertPasskey(credentialId, salt));
 	const passkeyPassword = toBase64Url(new Uint8Array(prf));
 	const blob = await encryptBackupData(passkeyPassword, {
 		keyPair,
@@ -229,7 +233,15 @@ async function enablePasskeyLocked(scope: string): Promise<void> {
 			throw new PasskeyPrfUnstableError();
 		}
 	} catch (err) {
-		await metaRepo.setNoNotifyFor(scope, PASSKEY_LOCK_META, null);
+		// Restore a previous wrapper instead of erasing it: a failed
+		// re-enable must not leave the account with no local factor.
+		await metaRepo.setNoNotifyFor(
+			scope,
+			PASSKEY_LOCK_META,
+			typeof previousRaw === "string" && previousRaw !== ""
+				? previousRaw
+				: null,
+		);
 		throw err instanceof E2EBackupError ? new PasskeyPrfUnstableError() : err;
 	}
 	await Promise.all([
@@ -263,6 +275,9 @@ async function unlockWithPasskeyLocked(scope: string): Promise<void> {
 		throw new Error("passkey lock is not configured");
 	}
 	const record = JSON.parse(raw) as PasskeyRecord;
+	// A remote lock during the WebAuthn prompt must win: install the keys
+	// only if the epoch is still the one we started with.
+	const epoch = getLockEpoch(scope);
 	const prf = await assertPasskey(
 		fromBase64Url(record.credentialId),
 		fromBase64Url(record.salt),
@@ -271,7 +286,7 @@ async function unlockWithPasskeyLocked(scope: string): Promise<void> {
 		toBase64Url(new Uint8Array(prf)),
 		record.blob,
 	);
-	await setUnlockedMasterKeys(data, scope);
+	await setUnlockedMasterKeys(data, scope, epoch);
 	notifyKeyMaterialChanged(scope);
 }
 
@@ -333,10 +348,18 @@ async function enableServerPasskeyLocked(
 	) {
 		throw new PasskeyPrfUnstableError();
 	}
+	// Re-read the container right before writing: a password change from
+	// another device at the same version must not be overwritten with the
+	// wrapper read before the WebAuthn prompt.
+	const latest = decodeServerBackup((await getKeyBackup(token)).backup);
+	if (latest?.password === undefined) {
+		throw new Error("set the backup password first");
+	}
+	if (getAccountScope() !== scope) throw new Error(ACCOUNT_CHANGED);
 	await setKeyBackup(
 		token,
 		encodeServerBackup({
-			...container,
+			...latest,
 			masterKeyVersion: version,
 			passkey: {
 				credentialId: toBase64Url(credentialId),
@@ -423,6 +446,10 @@ async function disablePasskeyLocked(scope: string): Promise<void> {
 		if (!isLocalLockUnlocked(scope)) throw new LocalLockRequiredError();
 		const keyPair = await getMyKeyPair(scope);
 		const identityKeyPair = await getIdentityKeyPair(scope);
+		// An auto-lock or a remote "lock now" during the reads above clears
+		// the in-memory keys. Removing the last wrapper then would leave the
+		// account with no local factor and no plaintext copy: stop instead.
+		if (!isLocalLockUnlocked(scope)) throw new LocalLockRequiredError();
 		if (keyPair !== null && identityKeyPair !== null) {
 			await metaRepo.setNoNotifyFor(scope, PUBLIC_KEY_META, keyPair.publicKey);
 			await metaRepo.setNoNotifyFor(

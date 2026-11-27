@@ -26,13 +26,25 @@ async function byteLimit(): Promise<number> {
 export const decryptedFilesRepo = {
 	async get(key: string): Promise<DecryptedFile | undefined> {
 		const db = await getDB();
-		const entry = await db.get("decryptedFiles", key);
-		if (entry === undefined) return;
-		// Touch for LRU eviction; the copy given to the caller stays as read.
-		// A failed touch must not break an already successful read.
-		await db
-			.put("decryptedFiles", { ...entry, lastAccessedAt: Date.now() })
-			.catch(() => {});
+		// The read and the LRU touch share one transaction: a concurrent
+		// clear (local lock, account switch) is serialized with them, so a
+		// touch cannot restore plaintext after the lock removed it.
+		const tx = db.transaction("decryptedFiles", "readwrite");
+		const entry = await tx.store.get(key);
+		if (entry !== undefined) {
+			try {
+				// The copy given to the caller stays as read. A failed touch
+				// must not break an already successful read.
+				await tx.store.put({
+					...entry,
+					lastAccessedAt: Date.now(),
+				});
+			} catch {
+				// A failed touch must not break an already successful read.
+			}
+		}
+		await tx.done.catch(() => {});
+
 		return entry;
 	},
 
@@ -66,6 +78,23 @@ export const decryptedFilesRepo = {
 	async remove(key: string): Promise<void> {
 		const db = await getDB();
 		await db.delete("decryptedFiles", key);
+	},
+
+	// removeByFileUrl drops every decrypted copy of one attachment. Keys embed
+	// the file key version, so all versions must go when the message that owned
+	// the file is deleted; otherwise the plaintext outlives the message.
+	async removeByFileUrl(fileUrl: string): Promise<void> {
+		const db = await getDB();
+		const prefix = `decrypted:${fileUrl}:`;
+		const tx = db.transaction("decryptedFiles", "readwrite");
+		let cursor = await tx.store.openCursor();
+		while (cursor !== null) {
+			if (String(cursor.key).startsWith(prefix)) {
+				await cursor.delete();
+			}
+			cursor = await cursor.continue();
+		}
+		await tx.done;
 	},
 
 	async isCached(key: string): Promise<boolean> {

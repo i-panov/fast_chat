@@ -1,4 +1,5 @@
 import { Button, Group, Modal, NumberInput, Stack, Text } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import { Crosshair, Loader, MapPin } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -70,17 +71,6 @@ function geolocationErrorKey(err: unknown): string {
 	return code === 3 ? "error.geolocationTimeout" : "error.geolocationDenied";
 }
 
-function hasValidCoords(position: Location): boolean {
-	return (
-		!Number.isNaN(position.lat) &&
-		!Number.isNaN(position.lng) &&
-		position.lat >= -90 &&
-		position.lat <= 90 &&
-		position.lng >= -180 &&
-		position.lng <= 180
-	);
-}
-
 export function LocationPickerModal({
 	open,
 	initial,
@@ -88,6 +78,7 @@ export function LocationPickerModal({
 	onConfirm,
 }: Props) {
 	const { t } = useTranslation();
+	const fullScreen = useMediaQuery("(max-width: 48em)") === true;
 	const [position, setPosition] = useState<Location>(
 		() =>
 			initial ?? {
@@ -184,7 +175,7 @@ export function LocationPickerModal({
 	}
 
 	function handleConfirm() {
-		if (!hasValidCoords(position)) {
+		if (!isValidLocation(position)) {
 			setErrorKey("error.invalidCoords");
 			return;
 		}
@@ -202,6 +193,7 @@ export function LocationPickerModal({
 				</Group>
 			}
 			size="lg"
+			fullScreen={fullScreen}
 			centered
 		>
 			<Stack gap="sm">
@@ -238,7 +230,7 @@ export function LocationPickerModal({
 				</div>
 				<Group grow>
 					<NumberInput
-						label={t("input.locationCoords")}
+						label={t("input.locationLat")}
 						value={Number.isFinite(position.lat) ? position.lat : ""}
 						onChange={(value) => handleCoordChange("lat", value)}
 						decimalScale={6}
@@ -247,7 +239,7 @@ export function LocationPickerModal({
 						step={0.0001}
 					/>
 					<NumberInput
-						label="Lng"
+						label={t("input.locationLng")}
 						value={Number.isFinite(position.lng) ? position.lng : ""}
 						onChange={(value) => handleCoordChange("lng", value)}
 						decimalScale={6}

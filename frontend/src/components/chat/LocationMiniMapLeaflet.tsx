@@ -26,14 +26,16 @@ export function LocationMiniMapLeaflet({ location, onReady }: Props) {
 			scrollWheelZoom={false}
 			doubleClickZoom={false}
 			zoomControl={false}
-			attributionControl={false}
 			className="leaflet-dark"
 			whenReady={() => {
 				onReady?.();
 			}}
 		>
 			<MapAutoSize />
-			<TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+			<TileLayer
+				attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+				url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+			/>
 			<Marker position={[location.lat, location.lng]} interactive={false} />
 		</MapContainer>
 	);

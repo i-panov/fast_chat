@@ -7,19 +7,24 @@ import {
 	Stack,
 	Table,
 	Text,
-	TextInput,
 } from "@mantine/core";
 import type { TFunction } from "i18next";
 import { useEffect, useState } from "react";
 import { type AdminUser, adminListUsers, adminPatchUser } from "../../api.ts";
 import {
+	AdminPagination,
+	AdminSearchForm,
 	COLUMN_ACTIONS,
 	COLUMN_NAME,
 	type ConfirmState,
-	errorText,
-	PAGE_SIZE,
+	errorKey,
 	useReload,
 } from "./shared.tsx";
+
+const KEY_GRANT_ADMIN = "admin.grantAdmin";
+const KEY_REVOKE_ADMIN = "admin.revokeAdmin";
+const KEY_BAN = "admin.ban";
+const KEY_UNBAN = "admin.unban";
 
 export function UsersTab({
 	token,
@@ -53,7 +58,7 @@ export function UsersTab({
 				setTotal(page.total);
 			})
 			.catch((err: unknown) => {
-				if (!cancelled) setError(errorText(err));
+				if (!cancelled) setError(t(errorKey(err)));
 			})
 			.finally(() => {
 				if (!cancelled) setLoading(false);
@@ -62,7 +67,7 @@ export function UsersTab({
 		return () => {
 			cancelled = true;
 		};
-	}, [token, submitted, offset, version]);
+	}, [token, submitted, offset, version, t]);
 
 	async function patch(
 		user: AdminUser,
@@ -74,34 +79,34 @@ export function UsersTab({
 		} catch (err) {
 			// A rejected role/ban change must be visible: the dialog that
 			// triggered it is already closed.
-			setError(errorText(err));
+			setError(t(errorKey(err)));
 		}
 	}
 
 	return (
 		<Stack gap="md">
-			<form
-				onSubmit={(event) => {
-					event.preventDefault();
-					setOffset(0);
-					setSubmitted(query.trim());
+			<AdminSearchForm
+				value={query}
+				onChange={setQuery}
+				placeholder={t("admin.searchUsers")}
+				onSubmit={() => {
+					const next = query.trim();
+					// Re-submitting the same query on the first page must
+					// refresh the list instead of doing nothing.
+					if (next === submitted && offset === 0) {
+						reload();
+					} else {
+						setOffset(0);
+						setSubmitted(next);
+					}
 				}}
-			>
-				<Group>
-					<TextInput
-						placeholder={t("admin.searchUsers")}
-						value={query}
-						onChange={(event) => setQuery(event.currentTarget.value)}
-						style={{ flex: 1 }}
-					/>
-					<Button type="submit">{t("admin.search")}</Button>
-				</Group>
-			</form>
+				t={t}
+			/>
 
 			{error !== null && <Alert color="red">{error}</Alert>}
 			{loading ? (
 				<Loader size="sm" />
-			) : users.length === 0 ? (
+			) : error === null && users.length === 0 ? (
 				<Text size="sm" c="dimmed">
 					{t("admin.empty")}
 				</Text>
@@ -155,40 +160,48 @@ export function UsersTab({
 												size="compact-xs"
 												variant="light"
 												disabled={user.id === selfID || user.isBot}
+												aria-label={`${user.isAdmin ? t(KEY_REVOKE_ADMIN) : t(KEY_GRANT_ADMIN)}: ${user.username}`}
 												onClick={() => {
 													const next = !user.isAdmin;
 													ask({
 														title: next
-															? t("admin.grantAdmin")
-															: t("admin.revokeAdmin"),
+															? t(KEY_GRANT_ADMIN)
+															: t(KEY_REVOKE_ADMIN),
 														body: next
 															? t("admin.grantAdminConfirm")
 															: t("admin.revokeAdminConfirm"),
+														confirmLabel: next
+															? t(KEY_GRANT_ADMIN)
+															: t(KEY_REVOKE_ADMIN),
+														danger: !next,
 														onConfirm: () => patch(user, { isAdmin: next }),
 													});
 												}}
 											>
 												{user.isAdmin
-													? t("admin.revokeAdmin")
-													: t("admin.grantAdmin")}
+													? t(KEY_REVOKE_ADMIN)
+													: t(KEY_GRANT_ADMIN)}
 											</Button>
 											<Button
 												size="compact-xs"
 												color="red"
 												variant="light"
 												disabled={user.id === selfID || user.isBot}
+												aria-label={`${user.banned ? t(KEY_UNBAN) : t(KEY_BAN)}: ${user.username}`}
 												onClick={() => {
 													const next = !user.banned;
 													ask({
-														title: next ? t("admin.ban") : t("admin.unban"),
+														title: next ? t(KEY_BAN) : t(KEY_UNBAN),
 														body: next
 															? t("admin.banConfirm")
 															: t("admin.unbanConfirm"),
+														confirmLabel: next ? t(KEY_BAN) : t(KEY_UNBAN),
+														danger: next,
 														onConfirm: () => patch(user, { banned: next }),
 													});
 												}}
 											>
-												{user.banned ? t("admin.unban") : t("admin.ban")}
+												{user.banned ? t(KEY_UNBAN) : t(KEY_BAN)}
 											</Button>
 										</Group>
 									</Table.Td>
@@ -199,29 +212,12 @@ export function UsersTab({
 				</Table.ScrollContainer>
 			)}
 
-			<Group justify="space-between">
-				<Text size="xs" c="dimmed">
-					{t("admin.total", { count: total })}
-				</Text>
-				<Group gap="xs">
-					<Button
-						size="xs"
-						variant="default"
-						disabled={offset === 0}
-						onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-					>
-						{t("admin.prev")}
-					</Button>
-					<Button
-						size="xs"
-						variant="default"
-						disabled={offset + PAGE_SIZE >= total}
-						onClick={() => setOffset(offset + PAGE_SIZE)}
-					>
-						{t("admin.next")}
-					</Button>
-				</Group>
-			</Group>
+			<AdminPagination
+				offset={offset}
+				total={total}
+				onChange={setOffset}
+				t={t}
+			/>
 		</Stack>
 	);
 }

@@ -10,16 +10,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MultiDeviceKeyModal } from "./MultiDeviceKeyModal.tsx";
 
 const createNewKey = vi.fn();
+const confirmIdentityReplacement = vi.fn();
 const showNotification = vi.fn();
 let newKeyHandler: ((token: string) => void) | null = null;
+let identityHandler: ((token: string) => void) | null = null;
 
 vi.mock("../../e2ee/keys.ts", () => ({
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-return
 	createNewKey: (...args: unknown[]) => createNewKey(...args),
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-return
+	confirmIdentityReplacement: () => confirmIdentityReplacement(),
 	onNewKeyConfirmationNeeded: (fn: (token: string) => void) => {
 		newKeyHandler = fn;
 		return () => {
 			newKeyHandler = null;
+		};
+	},
+	onIdentityReplacementNeeded: (fn: (token: string) => void) => {
+		identityHandler = fn;
+		return () => {
+			identityHandler = null;
 		};
 	},
 }));
@@ -33,6 +43,7 @@ describe("MultiDeviceKeyModal", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		newKeyHandler = null;
+		identityHandler = null;
 	});
 
 	it("calls createNewKey once for the active token", async () => {
@@ -75,5 +86,25 @@ describe("MultiDeviceKeyModal", () => {
 		fireEvent.click(buttons[buttons.length - 1]);
 		await waitFor(() => expect(showNotification).toHaveBeenCalled());
 		expect(createNewKey).toHaveBeenCalledTimes(1);
+	});
+
+	it("requires the identity replacement confirmation before creating the key", async () => {
+		createNewKey.mockResolvedValue({ publicKey: "p", privateKey: "s" });
+		render(
+			<MantineProvider>
+				<MultiDeviceKeyModal activeToken="token-a" />
+			</MantineProvider>,
+		);
+		act(() => identityHandler?.("token-a"));
+		await screen.findByRole("dialog");
+		// The stronger warning must be the visible one.
+		expect(screen.queryByText("backup.identityReplaceAlertTitle")).toBeTruthy();
+		const buttons = await screen.findAllByRole("button");
+		fireEvent.click(buttons[buttons.length - 1]);
+		await waitFor(() => expect(createNewKey).toHaveBeenCalledTimes(1));
+		expect(confirmIdentityReplacement).toHaveBeenCalledTimes(1);
+		expect(confirmIdentityReplacement.mock.invocationCallOrder[0]).toBeLessThan(
+			createNewKey.mock.invocationCallOrder[0],
+		);
 	});
 });

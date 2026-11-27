@@ -3,7 +3,12 @@ import { messagesRepo } from "../db/messagesRepo.ts";
 import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
-import { applyDelta, maxSyncRounds, pullDelta } from "./deltaApplier.ts";
+import {
+	applyDelta,
+	maxSyncRounds,
+	pullDelta,
+	resetLocalTombstones,
+} from "./deltaApplier.ts";
 import {
 	extractRetryAfterMs,
 	type OutboxResult,
@@ -37,6 +42,11 @@ const RETRY_JITTER_MS = 1000;
 
 // In-flight delta fetch, abortable when the account changes mid-flight.
 let inFlightController: AbortController | null = null;
+
+// Parked continuation of a tick that hit maxSyncRounds. The keyset cursor is
+// (updated_at, id); without the id a group of rows sharing one timestamp is
+// re-read from its start on every tick.
+let parkedCursor: { since: string; sinceId: string } | null = null;
 
 function clearRetryTimer(): void {
 	if (retryTimer !== null) {
@@ -182,6 +192,10 @@ export async function runSync(): Promise<void> {
 		retryAttempt = 0;
 		clearRetryTimer();
 		setState("idle");
+		// The delta was parked at the continuation (maxSyncRounds): schedule
+		// the next tick now, otherwise history stops silently until some
+		// unrelated event (SSE, online transition) triggers a sync.
+		if (outbox.hasMore === true) scheduleSync();
 	} catch (err) {
 		if (isTransientSyncError(err)) {
 			// Transient failures (429 rate limiting, 5xx, network) must
@@ -221,14 +235,17 @@ function isTransientSyncError(err: unknown): boolean {
 	return true;
 }
 
+// SyncTickResult extends the outbox outcome with the delta continuation flag.
+type SyncTickResult = OutboxResult & { hasMore?: boolean };
+
 type LockManagerLike = {
 	request(
 		name: string,
-		callback: (lock: unknown) => Promise<OutboxResult>,
-	): Promise<OutboxResult>;
+		callback: (lock: unknown) => Promise<SyncTickResult>,
+	): Promise<SyncTickResult>;
 };
 
-function processOutboxAndPull(): Promise<OutboxResult> {
+function processOutboxAndPull(): Promise<SyncTickResult> {
 	const locks = (navigator as Navigator & { locks?: LockManagerLike }).locks;
 	if (locks !== undefined) {
 		const accountKey = getActiveAccountKey();
@@ -239,7 +256,7 @@ function processOutboxAndPull(): Promise<OutboxResult> {
 	return processOutboxAndPullUnlocked();
 }
 
-async function processOutboxAndPullUnlocked(): Promise<OutboxResult> {
+async function processOutboxAndPullUnlocked(): Promise<SyncTickResult> {
 	const token = currentToken();
 	if (token === null) return { completed: true, retryAfterMs: null };
 	// Capture the account up front: getDB() resolves the database lazily,
@@ -284,7 +301,10 @@ async function processOutboxAndPullUnlocked(): Promise<OutboxResult> {
 	const controller = new AbortController();
 	inFlightController = controller;
 	let cursor: string | null = since;
-	let cursorID = "";
+	let cursorID =
+		parkedCursor !== null && parkedCursor.since === since
+			? parkedCursor.sinceId
+			: "";
 	try {
 		for (let round = 0; ; round++) {
 			const delta = await pullDelta(
@@ -305,14 +325,20 @@ async function processOutboxAndPullUnlocked(): Promise<OutboxResult> {
 			if (next === null) {
 				// A complete drain may advance to serverNow. Page-level
 				// serverNow would skip the unapplied continuation.
+				parkedCursor = null;
 				await metaRepo.setLastSyncedAt(delta.serverNow);
 				break;
 			}
 			if (round + 1 >= maxSyncRounds) {
-				// Park at the continuation (time-only across ticks;
-				// the boundary tail redelivers idempotently).
+				// Park at the continuation and let the caller schedule the next
+				// tick immediately; the boundary tail redelivers idempotently.
+				parkedCursor = { since: next, sinceId: delta.nextSinceId ?? "" };
 				await metaRepo.setLastSyncedAt(next);
-				break;
+				return {
+					completed: outbox.completed,
+					retryAfterMs: outbox.retryAfterMs,
+					hasMore: true,
+				};
 			}
 			cursor = next;
 			cursorID = delta.nextSinceId ?? "";
@@ -335,6 +361,9 @@ export function setTokenProvider(fn: () => string | null): void {
 	inFlightController = null;
 	clearRetryTimer();
 	retryAttempt = 0;
+	// Cursors and tombstones are account-scoped state.
+	parkedCursor = null;
+	resetLocalTombstones();
 	tokenProvider = fn;
 }
 

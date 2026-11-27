@@ -8,6 +8,7 @@ import {
 	getIdentityHistory,
 	getIdentityKeyPair,
 	getKeyHistory,
+	getLockEpoch,
 	getMyKeyPair,
 	getMyKeyVersion,
 	IDENTITY_CHAIN_META,
@@ -32,7 +33,106 @@ import {
 import { listenForLockRequests, postLockRequest } from "./localLockChannel.ts";
 import { hasPasskeyLock } from "./passkeyLock.ts";
 
-const PIN_PATTERN = /^\d{6}$/;
+// The PIN length is part of the crypto contract; the settings UI imports
+// this validator so the two cannot drift apart.
+export const LOCAL_PIN_PATTERN = /^\d{6}$/;
+const PIN_PATTERN = LOCAL_PIN_PATTERN;
+
+// A 6-digit PIN carries ~20 bits, so an obvious one is guessable even
+// without the offline KDF. Reject the blocklist before wrapping a key.
+const WEAK_PINS = new Set([
+	"000000",
+	"111111",
+	"123123",
+	"121212",
+	"112233",
+	"147258",
+	"159753",
+	"654321",
+	"696969",
+	"777777",
+	"987654",
+]);
+
+export function isWeakLocalPin(pin: string): boolean {
+	if (!PIN_PATTERN.test(pin)) return true;
+	if (WEAK_PINS.has(pin)) return true;
+	const digits = [...pin].map(Number);
+	if (new Set(digits).size === 1) return true;
+	const ascending = digits.every(
+		(digit, index) => index === 0 || digit === digits[index - 1] + 1,
+	);
+	const descending = digits.every(
+		(digit, index) => index === 0 || digit === digits[index - 1] - 1,
+	);
+	return ascending || descending;
+}
+
+export class WeakLocalPinError extends Error {
+	constructor() {
+		super("local PIN is too weak");
+	}
+}
+
+// Repeated wrong PINs are throttled in the local store. This cannot stop an
+// attacker who copies IndexedDB, but it stops guessing at a borrowed device.
+const LOCK_FAILURES_META = "e2ee.localLockFailures";
+const THROTTLE_AFTER_FAILURES = 3;
+const THROTTLE_STEP_MS = 5_000;
+const THROTTLE_MAX_MS = 5 * 60_000;
+
+interface LockFailures {
+	count: number;
+	lastFailedAt: number;
+}
+
+export class LocalLockThrottledError extends Error {
+	readonly retryAfterSeconds: number;
+
+	constructor(retryAfterSeconds: number) {
+		super("too many wrong PIN attempts");
+		this.retryAfterSeconds = retryAfterSeconds;
+	}
+}
+
+async function readLockFailures(scope: string): Promise<LockFailures> {
+	const raw = await metaRepo.getFor(scope, LOCK_FAILURES_META);
+	if (typeof raw !== "object" || raw === null)
+		return { count: 0, lastFailedAt: 0 };
+	const value = raw as Partial<LockFailures>;
+	return {
+		count: typeof value.count === "number" && value.count > 0 ? value.count : 0,
+		lastFailedAt:
+			typeof value.lastFailedAt === "number" ? value.lastFailedAt : 0,
+	};
+}
+
+async function assertNotThrottled(scope: string): Promise<void> {
+	const failures = await readLockFailures(scope);
+	if (failures.count < THROTTLE_AFTER_FAILURES) return;
+	const waitMs = Math.min(
+		THROTTLE_MAX_MS,
+		THROTTLE_STEP_MS * 2 ** (failures.count - THROTTLE_AFTER_FAILURES),
+	);
+	const elapsed = Date.now() - failures.lastFailedAt;
+	if (elapsed < waitMs) {
+		throw new LocalLockThrottledError(
+			Math.max(1, Math.ceil((waitMs - elapsed) / 1000)),
+		);
+	}
+}
+
+async function recordLockFailure(scope: string): Promise<void> {
+	const failures = await readLockFailures(scope);
+	await metaRepo.setNoNotifyFor(scope, LOCK_FAILURES_META, {
+		count: failures.count + 1,
+		lastFailedAt: Date.now(),
+	});
+}
+
+async function clearLockFailures(scope: string): Promise<void> {
+	await metaRepo.setNoNotifyFor(scope, LOCK_FAILURES_META, null);
+}
 
 async function removePlaintextKeys(scope: string): Promise<void> {
 	await Promise.all([
@@ -50,11 +150,13 @@ export function enableLocalPin(pin: string): Promise<void> {
 
 async function enableLocalPinLocked(scope: string, pin: string): Promise<void> {
 	if (!PIN_PATTERN.test(pin)) throw new Error("PIN must be 6 digits");
+	if (isWeakLocalPin(pin)) throw new WeakLocalPinError();
 	const keyPair = await getMyKeyPair(scope);
 	const identityKeyPair = await getIdentityKeyPair(scope);
 	if (keyPair === null || identityKeyPair === null) {
 		throw new Error("no local keys to protect");
 	}
+	const previousBlob = await metaRepo.getFor(scope, LOCAL_LOCK_META);
 	const blob = await encryptBackupData(pin, {
 		keyPair,
 		identityKeyPair,
@@ -82,9 +184,18 @@ async function enableLocalPinLocked(scope: string, pin: string): Promise<void> {
 		}
 	} catch (err) {
 		// Never leave a lock blob that does not open next to plaintext keys.
-		await metaRepo.setNoNotifyFor(scope, LOCAL_LOCK_META, null);
+		// A previous working wrapper (change-PIN flow) must survive the
+		// failure instead of being erased with the new one.
+		await metaRepo.setNoNotifyFor(
+			scope,
+			LOCAL_LOCK_META,
+			typeof previousBlob === "string" && previousBlob !== ""
+				? previousBlob
+				: null,
+		);
 		throw err;
 	}
+	await clearLockFailures(scope);
 	await Promise.all([
 		removePlaintextKeys(scope),
 		metaRepo.setNoNotifyFor(scope, KEY_HISTORY_META, null),
@@ -105,8 +216,19 @@ async function unlockLocalPinLocked(scope: string, pin: string): Promise<void> {
 	if (typeof blob !== "string" || blob === "") {
 		throw new Error("local lock is not configured");
 	}
-	const data = await decryptBackupData(pin, blob);
-	await setUnlockedMasterKeys(data, scope);
+	await assertNotThrottled(scope);
+	// Capture the epoch before the slow KDF: a remote lock or "lock now"
+	// during it must win over the decrypted key.
+	const epoch = getLockEpoch(scope);
+	let data: Awaited<ReturnType<typeof decryptBackupData>>;
+	try {
+		data = await decryptBackupData(pin, blob);
+	} catch (err) {
+		await recordLockFailure(scope);
+		throw err;
+	}
+	await setUnlockedMasterKeys(data, scope, epoch);
+	await clearLockFailures(scope);
 	notifyKeyMaterialChanged(scope);
 }
 
@@ -138,6 +260,7 @@ async function disableLocalPinLocked(scope: string): Promise<void> {
 		await persistUnlockedHistory(scope);
 	}
 	await metaRepo.setNoNotifyFor(scope, LOCAL_LOCK_META, null);
+	await clearLockFailures(scope);
 	notifyKeyMaterialChanged(scope);
 }
 
@@ -149,6 +272,7 @@ export function clearLocalLockAndKeys(): Promise<void> {
 async function clearLocalLockAndKeysLocked(scope: string): Promise<void> {
 	await metaRepo.setNoNotifyFor(scope, LOCAL_LOCK_META, null);
 	await metaRepo.setNoNotifyFor(scope, PASSKEY_LOCK_META, null);
+	await clearLockFailures(scope);
 	await removePlaintextKeys(scope);
 	await clearDecryptedFileCache(scope === "" ? null : scope);
 	await Promise.all([

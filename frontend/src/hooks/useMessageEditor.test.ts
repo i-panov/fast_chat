@@ -127,6 +127,30 @@ describe("useMessageEditor", () => {
 		expect(result.current.replyToMessage).toBeNull();
 	});
 
+	it("replies to a message inside a thread", () => {
+		// ThreadView passes only its own list; the reply target used to be
+		// resolved from the main feed, so "Reply" did nothing in a thread.
+		const { result } = renderHook(() => useMessageEditor([], [msg("tm1")]));
+
+		act(() => {
+			result.current.handleReply("c1", "tm1");
+		});
+
+		expect(result.current.replyToMessage?.messageId).toBe("tm1");
+		expect(result.current.replyToMessage?.text).toBe("text tm1");
+	});
+
+	it("starts editing a thread message and keeps its location", () => {
+		const { result } = renderHook(() => useMessageEditor([], [msg("tm1")]));
+
+		act(() => {
+			result.current.handleStartEdit("c1", "tm1", "new", undefined, "th1");
+		});
+
+		expect(result.current.editingMessage?.threadId).toBe("th1");
+		expect(result.current.editingMessage?.location).toEqual({ lat: 1, lng: 2 });
+	});
+
 	it("ignores replies to unknown messages", () => {
 		const { result } = renderHook(() => useMessageEditor([]));
 

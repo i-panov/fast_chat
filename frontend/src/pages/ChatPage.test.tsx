@@ -20,6 +20,7 @@ import { ChatPage } from "./ChatPage.tsx";
 
 const navigate = vi.hoisted(() => vi.fn());
 const media = vi.hoisted(() => ({ mobile: false }));
+const route = vi.hoisted(() => ({ pathname: "/chat" }));
 
 vi.mock("@mantine/hooks", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@mantine/hooks")>();
@@ -36,7 +37,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 	return {
 		...actual,
 		useNavigate: () => navigate,
-		useRouterState: () => "/chat",
+		useRouterState: () => route.pathname,
 		useSearch: () => undefined,
 	};
 });
@@ -149,6 +150,8 @@ const DIALOG_SELECTOR = '[role="dialog"]';
 const CALL_BUTTON_RE = /call\.start|Call/;
 const FIND_OPTIONS = { timeout: 5000 };
 const MEMBER_COUNT = /chat\.membersCount|member/;
+const CREATE_GROUP_RE = /chat\.createGroup|Create group/i;
+const GROUP_NAME_RE = /chat\.groupName|Group name/i;
 const SETTINGS_LABEL = /Settings|chat\.settings/;
 const CALL_LABEL = /call\.start|Call/;
 const ACCEPT_LABEL = /call\.accept|Accept/;
@@ -298,6 +301,7 @@ beforeEach(() => {
 	localStorage.clear();
 	sessionStorage.clear();
 	swListeners.length = 0;
+	route.pathname = "/chat";
 	vi.clearAllMocks();
 	stubServiceWorker();
 	// jsdom has no FontFaceSet; Mantine's autosize Textarea needs it.
@@ -542,6 +546,59 @@ describe("chat page", () => {
 		await waitFor(() => {
 			expect(deleteChat).toHaveBeenCalledWith("tok", "c2");
 		});
+	});
+
+	it("moves the address to a group created while another chat is open", async () => {
+		// A selection made outside openChat (group creation) must win over the
+		// chat the address still names; otherwise the user bounces back to the
+		// previous chat and the next message goes to the wrong recipient.
+		seedAccount();
+		await chatsRepo.upsert(privateChat());
+		route.pathname = "/chat/bob:test";
+		window.history.replaceState({}, "", "/chat/bob:test");
+		const created: Chat = {
+			id: "g-new",
+			type: "group",
+			name: "New group",
+			ownerId: "alice:test",
+			members: [{ id: "alice:test", nick: "alice" }],
+			createdAt: "2026-01-01T00:00:00Z",
+		};
+		const { createChat } = await import("../api.ts");
+		vi.mocked(createChat).mockResolvedValue({ chat: created });
+		try {
+			renderPage();
+
+			fireEvent.click(screen.getByLabelText(CREATE_GROUP_RE));
+			const nameInput = await screen.findByLabelText(GROUP_NAME_RE);
+			fireEvent.change(nameInput, { target: { value: "New group" } });
+			// The backup gate can open its own dialog at the same time, so the
+			// group modal is located through its name field rather than "the"
+			// dialog on screen.
+			const dialog = screen
+				.getAllByRole("dialog")
+				.find((element) => element.contains(nameInput));
+			if (dialog === undefined) throw new Error("group dialog is not open");
+			const submit = within(dialog)
+				.getAllByRole("button")
+				.find((b) => CREATE_GROUP_RE.test(b.textContent ?? ""));
+			if (submit === undefined) throw new Error("no submit button");
+			fireEvent.click(submit);
+
+			await waitFor(() => {
+				expect(createChat).toHaveBeenCalled();
+			});
+			await waitFor(() => {
+				expect(navigate).toHaveBeenCalledWith(
+					expect.objectContaining({
+						to: "/group/$groupId",
+						params: { groupId: "g-new" },
+					}),
+				);
+			});
+		} finally {
+			window.history.replaceState({}, "", "/");
+		}
 	});
 
 	it("picks a chat from URL params once", async () => {

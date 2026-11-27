@@ -331,14 +331,14 @@ describe("key server backup integration", () => {
 		setActiveAccountKey(`alice-pin-${Date.now()}:test`);
 		confirmNewKey();
 		const keys = await ensureAccountKeys("token");
-		await enableLocalPin("123456");
+		await enableLocalPin("482913");
 		expect(await hasLocalLock()).toBe(true);
 
 		lockLocalKeys();
 		expect(isLocalLockUnlocked()).toBe(false);
 		expect(await getMyKeyPair()).toBeNull();
 		await expect(unlockLocalPin("000000")).rejects.toThrow();
-		await unlockLocalPin("123456");
+		await unlockLocalPin("482913");
 		expect(isLocalLockUnlocked()).toBe(true);
 		expect((await getMyKeyPair())?.publicKey).toBe(keys.publicKey);
 	});

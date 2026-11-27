@@ -11,6 +11,11 @@ import {
 // PBKDF2 instead. The derived key still feeds libsodium's XChaCha20-Poly1305
 // AEAD, so encryption/decryption stay on the existing crypto stack.
 const PBKDF2_ITERATIONS = 310_000; // OWASP 2023 recommendation for PBKDF2-SHA256
+// Blobs arrive from the server, so the iteration count is attacker-controlled.
+// Values below the floor are treated as absent; a value above the ceiling is
+// rejected instead of parking the tab in deriveBits for minutes/hours.
+const MIN_PBKDF2_ITERATIONS = 100_000;
+const MAX_PBKDF2_ITERATIONS = 2_000_000;
 const PBKDF2_HASH = "SHA-256";
 const SALT_BYTES = 16;
 const KEY_BYTES = 32; // XChaCha20-Poly1305 key length
@@ -61,6 +66,19 @@ interface BlobPayload {
 	salt: string; // base64 PBKDF2 salt
 	nonce: string; // base64 XChaCha20 nonce
 	ct: string; // base64 ciphertext of PlainBackup JSON
+}
+
+// resolveIterations bounds the KDF cost read from an untrusted blob.
+function resolveIterations(value: unknown): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return PBKDF2_ITERATIONS;
+	}
+	const iterations = Math.floor(value);
+	if (iterations < MIN_PBKDF2_ITERATIONS) return PBKDF2_ITERATIONS;
+	if (iterations > MAX_PBKDF2_ITERATIONS) {
+		throw new E2EBackupError("unsupported backup format");
+	}
+	return iterations;
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -206,12 +224,7 @@ export async function decryptBackupData(
 		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}
 
-	const iterations =
-		typeof payload.iterations === "number" &&
-		Number.isFinite(payload.iterations) &&
-		payload.iterations >= 100_000
-			? payload.iterations
-			: PBKDF2_ITERATIONS;
+	const iterations = resolveIterations(payload.iterations);
 	const key = await deriveKey(password, salt, iterations);
 
 	let plain: Uint8Array;

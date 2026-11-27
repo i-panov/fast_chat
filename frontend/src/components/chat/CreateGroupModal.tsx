@@ -1,5 +1,6 @@
 import {
 	ActionIcon,
+	Alert,
 	Button,
 	Group,
 	Modal,
@@ -8,12 +9,20 @@ import {
 	Text,
 	TextInput,
 } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import { Plus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { searchUsers } from "../../api.ts";
+import { ApiError, searchUsers } from "../../api.ts";
 import type { User } from "../../types/api.ts";
 import { useAuth } from "../../useAuth.tsx";
+
+// Mirrors the server limit in runes, not UTF-16 units.
+const MAX_GROUP_NAME_RUNES = 60;
+
+function runeLength(value: string): number {
+	return Array.from(value).length;
+}
 
 interface Props {
 	open: boolean;
@@ -21,14 +30,60 @@ interface Props {
 	onCreate: (name: string, memberIds: string[]) => void | Promise<void>;
 }
 
+function PickedMembers({
+	picked,
+	onUnpick,
+}: {
+	picked: User[];
+	onUnpick: (id: string) => void;
+}) {
+	const { t } = useTranslation();
+
+	if (picked.length === 0) return null;
+
+	return (
+		<div>
+			<Text size="sm" fw={500} mb={4}>
+				{t("chat.members")} ({picked.length})
+			</Text>
+			<Stack gap={4}>
+				{picked.map((u) => (
+					<Group
+						key={u.id}
+						justify="space-between"
+						style={{
+							padding: "4px 8px",
+							background: "var(--mantine-color-dark-6)",
+							borderRadius: 4,
+						}}
+					>
+						<Text size="sm">@{u.nick}</Text>
+						<ActionIcon
+							variant="transparent"
+							color="gray"
+							size="sm"
+							onClick={() => onUnpick(u.id)}
+							aria-label={t("chat.deselectUser")}
+						>
+							<X size={14} />
+						</ActionIcon>
+					</Group>
+				))}
+			</Stack>
+		</div>
+	);
+}
+
 export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 	const { t } = useTranslation();
 	const { activeAccount } = useAuth();
+	const fullScreen = useMediaQuery("(max-width: 48em)") === true;
 	const [name, setName] = useState("");
 	const [query, setQuery] = useState("");
 	const [results, setResults] = useState<User[]>([]);
 	const [picked, setPicked] = useState<User[]>([]);
 	const [submitting, setSubmitting] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 	const searchTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
 		undefined,
 	);
@@ -51,6 +106,7 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 		setName("");
 		setPicked([]);
 		setSubmitting(false);
+		setError(null);
 		searchSeqRef.current++;
 		clearTimeout(searchTimerRef.current);
 	}, [open]);
@@ -77,6 +133,9 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 						users.filter(
 							(u) =>
 								u.id !== freshAccount.user.id &&
+								// Bots are 1-1 only: the server rejects them as
+								// group members.
+								u.isBot !== true &&
 								!freshPicked.some((p) => p.id === u.id),
 						),
 					);
@@ -98,21 +157,38 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 	}
 
 	async function handleCreate() {
-		if (name.trim().length === 0 || submitting) return;
+		if (submitting) return;
+		const trimmed = name.trim();
+		if (trimmed.length === 0) return;
+		if (runeLength(trimmed) > MAX_GROUP_NAME_RUNES) {
+			setError(t("chat.groupNameTooLong", { max: MAX_GROUP_NAME_RUNES }));
+			return;
+		}
 		setSubmitting(true);
+		setError(null);
 		try {
 			await onCreate(
-				name.trim(),
+				trimmed,
 				picked.map((p) => p.id),
 			);
 			setName("");
 			setPicked([]);
 			setQuery("");
 			setResults([]);
+		} catch (err) {
+			setError(
+				t(
+					err instanceof ApiError && err.status === 403
+						? "error.forbidden"
+						: "error.requestFailed",
+				),
+			);
 		} finally {
 			setSubmitting(false);
 		}
 	}
+
+	const nameTooLong = runeLength(name.trim()) > MAX_GROUP_NAME_RUNES;
 
 	return (
 		<Modal
@@ -120,14 +196,20 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 			onClose={onClose}
 			title={t("chat.createGroup")}
 			size="md"
+			fullScreen={fullScreen}
 			centered
 		>
 			<Stack gap="md">
+				{error !== null && <Alert color="red">{error}</Alert>}
 				<TextInput
 					label={t("chat.groupName")}
 					value={name}
 					onChange={(e) => setName(e.currentTarget.value)}
-					maxLength={60}
+					error={
+						nameTooLong
+							? t("chat.groupNameTooLong", { max: MAX_GROUP_NAME_RUNES })
+							: undefined
+					}
 					required
 				/>
 				<Text size="xs" c="dimmed">
@@ -139,6 +221,7 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 					</Text>
 					<TextInput
 						placeholder={t("search.placeholder")}
+						aria-label={t("search.placeholder")}
 						value={query}
 						onChange={(e) => handleQueryChange(e.currentTarget.value)}
 					/>
@@ -168,37 +251,7 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 						</ScrollArea>
 					)}
 				</div>
-				{picked.length > 0 && (
-					<div>
-						<Text size="sm" fw={500} mb={4}>
-							{t("chat.members")} ({picked.length})
-						</Text>
-						<Stack gap={4}>
-							{picked.map((u) => (
-								<Group
-									key={u.id}
-									justify="space-between"
-									style={{
-										padding: "4px 8px",
-										background: "var(--mantine-color-dark-6)",
-										borderRadius: 4,
-									}}
-								>
-									<Text size="sm">@{u.nick}</Text>
-									<ActionIcon
-										variant="transparent"
-										color="gray"
-										size="sm"
-										onClick={() => unpick(u.id)}
-										aria-label={t("chat.deselectUser")}
-									>
-										<X size={14} />
-									</ActionIcon>
-								</Group>
-							))}
-						</Stack>
-					</div>
-				)}
+				<PickedMembers picked={picked} onUnpick={unpick} />
 				<Group justify="flex-end" gap="xs">
 					<Button variant="default" onClick={onClose}>
 						{t("accounts.cancel")}
@@ -207,7 +260,7 @@ export function CreateGroupModal({ open, onClose, onCreate }: Props) {
 						onClick={() => {
 							void handleCreate();
 						}}
-						disabled={name.trim().length === 0}
+						disabled={name.trim().length === 0 || nameTooLong}
 						loading={submitting}
 					>
 						{t("chat.createGroup")}

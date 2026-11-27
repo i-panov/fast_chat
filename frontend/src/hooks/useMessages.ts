@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getMessages } from "../api.ts";
+import { getActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import type { StoredMessage } from "../db/schema.ts";
 import { useLiveQuery } from "../db/useLiveQuery.ts";
@@ -124,7 +125,7 @@ export function useMessages({
 				return;
 			}
 
-			const signature = `${lockRevision}|${(stored ?? [])
+			const signature = `${chatId ?? "none"}|${lockRevision}|${(stored ?? [])
 				.map((s) => `${s.id}:${s.status}:${s._updatedAt}`)
 				.join("|")}`;
 			const prev = lastVisibleRef.current;
@@ -141,6 +142,10 @@ export function useMessages({
 				// the previous loop is still decrypting.
 				if (!alive) return;
 				if (sm.status === "deleted") continue;
+				// The live query still holds the previous chat's array until the
+				// new IDB read lands: never render one chat's decrypted text
+				// under another chat's header.
+				if (chatId !== null && sm.chatId !== chatId) continue;
 
 				const cacheKey = `${sm.id}:${sm._updatedAt}:${sm.status}`;
 				const cached = decryptCacheRef.current.get(cacheKey);
@@ -186,7 +191,7 @@ export function useMessages({
 		return () => {
 			alive = false;
 		};
-	}, [stored, userId, lockRevision]);
+	}, [stored, userId, lockRevision, chatId]);
 	const loadMore = useCallback(async () => {
 		if (chatId === null || token === undefined) return;
 		const cursorKey = `${userId ?? ""}:${chatId}`;
@@ -197,10 +202,14 @@ export function useMessages({
 			return;
 
 		if (typeof navigator !== "undefined" && !navigator.onLine) {
-			setHasMore(false);
+			// The history exists; only the network is gone. Keep hasMore so the
+			// list can retry once the connection returns (see the online
+			// listener below) instead of disabling pagination for the session.
+			setHasMore(true);
 			return;
 		}
 
+		const accountKey = getActiveAccountKey();
 		loadingMoreRef.current.add(cursorKey);
 		setIsLoadingMore(true);
 
@@ -214,6 +223,9 @@ export function useMessages({
 				before: cursor === null ? undefined : cursor,
 			});
 
+			// The account may have switched while the request was in flight:
+			// history of the old account must not land in the new account's DB.
+			if (getActiveAccountKey() !== accountKey) return;
 			await messagesRepo.upsertMany(res.messages);
 
 			const nxt =
@@ -240,6 +252,18 @@ export function useMessages({
 			setHasMore(nextCursorsRef.current[cursorKey] !== null);
 		}
 	}, [chatId, token, userId, loadMore]);
+
+	// A page skipped while offline is retried when the connection returns:
+	// the effect above does not re-run on a network transition.
+	useEffect(() => {
+		if (!hasMore || chatId === null) return;
+		if (typeof window === "undefined") return;
+		const onOnline = () => {
+			void loadMore();
+		};
+		window.addEventListener("online", onOnline);
+		return () => window.removeEventListener("online", onOnline);
+	}, [hasMore, chatId, loadMore]);
 
 	return {
 		messages: visible,

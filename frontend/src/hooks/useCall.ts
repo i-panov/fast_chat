@@ -61,6 +61,16 @@ const CALL_PENDING_KEY = "fastchat.callPending";
 // same missed call again.
 const CALL_NOTICE_KEY = "fastchat.callNotice";
 
+// RING_TIMEOUT_MS is the local backstop of a ringing call. The server ends
+// the call after 45 s; the client ends it slightly later, so a lost
+// "call_ended" does not leave the microphone and the camera on.
+const RING_TIMEOUT_MS = 60_000;
+
+// RING_RECONCILE_MS is how often a ringing call asks the server whether it
+// is still there. A break in the event stream can lose the terminal event
+// and the client cannot subscribe to "connected"/"sse_closed" here.
+const RING_RECONCILE_MS = 5_000;
+
 // FEDERATION_UNAVAILABLE_CODE is the reason the server names when it cannot
 // reach the other server: only then a 403 means "another server".
 const FEDERATION_UNAVAILABLE_CODE = "federation-unavailable";
@@ -98,9 +108,10 @@ function isCallGone(error: unknown): boolean {
 }
 
 // reconcileCall asks the server what call the user has: the events may have
-// been lost while the user was away or the stream was broken. A call the
-// client already tracks is left alone: the client knows more than the
-// server does.
+// been lost while the user was away or the stream was broken. A call that is
+// going on is left alone: the client knows more than the server does. A
+// ringing call, on the other hand, is reconciled: a lost "call_ended" there
+// keeps the microphone and the camera on.
 async function reconcileCall(
 	manager: CallManager,
 	token: string,
@@ -109,20 +120,48 @@ async function reconcileCall(
 ): Promise<void> {
 	const current = await getCurrentCall(token).catch(() => null);
 
-	if (isCancelled() || current === null) return;
+	if (isCancelled()) return;
 
-	// The client is already in a call: it knows more than the
-	// server does.
-	if (manager.state().callId !== undefined) return;
+	const local = manager.state();
+	const ringing = local.phase === "outgoing" || local.phase === "incoming";
 
-	// This tab reloaded while it waited for the identifier: the call
-	// the server created for it must not ring until the window runs
-	// out. Only the own outgoing call is cancelled: a ringing call
-	// of another tab is left alone.
+	// The call the client is in is gone on the server: the terminal event
+	// was lost. End it locally and release the media.
+	if (local.callId !== undefined && ringing) {
+		if (current === null || current.callId !== local.callId) {
+			endLocalRinging(manager, local);
+
+			return;
+		}
+
+		if (current.state === "ended") {
+			manager.handleEnded({
+				callId: current.callId,
+				reason: current.reason,
+				peerId: current.peer,
+				peerNick: nickOf(current.peer),
+				role: current.role,
+			});
+
+			return;
+		}
+
+		return;
+	}
+
+	if (current === null) return;
+
+	// The client is already in a call: it knows more than the server does.
+	if (local.callId !== undefined) return;
+
+	// This tab reloaded while it waited for the identifier: the call the
+	// server created for it must not ring until the window runs out. Only
+	// the own ringing outgoing call is cancelled: an active call of another
+	// device or tab is left alone (an active call has no offer).
 	if (
 		pendingReloadRef.current &&
-		(current.state === "ringing" || current.state === "active") &&
-		(current.role === "caller" || current.offer === undefined)
+		current.state === "ringing" &&
+		current.role === "caller"
 	) {
 		pendingReloadRef.current = false;
 
@@ -135,10 +174,15 @@ async function reconcileCall(
 		return;
 	}
 
-	// The call waits for an answer and the user was away: it can be
-	// taken again. A call that is going on is not touched: another
-	// tab or another device may be in it.
-	if (current.state === "ringing" && current.offer !== undefined) {
+	// The call waits for an answer and the user was away: it can be taken
+	// again. Only a call of the other side is incoming: the caller sees the
+	// same ringing state with its own offer, and must not take it for an
+	// incoming call.
+	if (
+		current.state === "ringing" &&
+		current.offer !== undefined &&
+		current.role === "callee"
+	) {
 		const extra = current as unknown as {
 			chatId?: unknown;
 			chat?: unknown;
@@ -156,7 +200,7 @@ async function reconcileCall(
 				? extra.peerNick
 				: typeof extra.nick === "string" && extra.nick !== ""
 					? extra.nick
-					: (current.peer.split(":")[0] ?? "");
+					: nickOf(current.peer);
 
 		manager.handleIncoming({
 			callId: current.callId,
@@ -181,9 +225,28 @@ async function reconcileCall(
 			callId: current.callId,
 			reason: current.reason,
 			peerId: current.peer,
+			peerNick: nickOf(current.peer),
 			role: current.role,
 		});
 	}
+}
+
+// nickOf takes the nick of the server identifier ("nick:domain").
+function nickOf(peer: string): string {
+	return peer.split(":")[0] ?? "";
+}
+
+// endLocalRinging ends a ringing call the server no longer has (or has
+// replaced). The reason depends on the side: the caller waits for an answer,
+// the callee was ringing.
+function endLocalRinging(manager: CallManager, local: CallView): void {
+	manager.handleEnded({
+		callId: local.callId,
+		reason: local.phase === "incoming" ? "taken-elsewhere" : "hangup",
+		peerId: local.peerId,
+		peerNick: local.peerNick,
+		role: local.role,
+	});
 }
 
 export interface UseCall {
@@ -241,13 +304,6 @@ export function useCall(
 
 		return createCallManager(api);
 	}, [userId]);
-
-	useEffect(() => {
-		// The manager owns the media and the connection of the call. An
-		// account switch replaces it; the old one must release both instead
-		// of keeping the camera busy in the background.
-		return () => manager?.end();
-	}, [manager]);
 
 	const store = useMemo(
 		() => (manager === null ? null : createCallStore(manager)),
@@ -309,6 +365,11 @@ export function useCall(
 
 	// The camera of a call must not outlive the account it belongs to, and
 	// the server must not keep a call of a page that goes away.
+	//
+	// This is the single cleanup of the manager: leave() reads the call
+	// before end() resets it. A separate effect that called end() first
+	// would clear the identifier, and the server would never hear the
+	// hangup on unmount or on an account switch.
 	useEffect(() => {
 		if (manager === null) return;
 
@@ -348,27 +409,59 @@ export function useCall(
 		reconcile();
 
 		// A break in the stream may have lost the events: reconcile again
-		// when the network is back.
+		// when the network is back or the tab returns to the foreground.
+		const onVisible = () => {
+			if (document.visibilityState === "visible") reconcile();
+		};
+
 		window.addEventListener("online", reconcile);
+		document.addEventListener("visibilitychange", onVisible);
 
 		return () => {
 			cancelled = true;
 			window.removeEventListener("online", reconcile);
+			document.removeEventListener("visibilitychange", onVisible);
 		};
 	}, [manager, token]);
 
-	// The incoming call rings until it is taken or declined.
-	const ringing = state.phase === "incoming";
+	// A ringing call has no media state of the connection to rely on: the
+	// caller waits for the answer with a connection in "new". If the
+	// terminal event is lost, nothing else would end it. Ask the server
+	// periodically and keep a local backstop for the ringing window.
+	const ringing = state.phase === "outgoing" || state.phase === "incoming";
 
 	useEffect(() => {
-		if (!ringing) return;
+		if (manager === null || token === undefined || !ringing) return;
+
+		let cancelled = false;
+
+		const interval = setInterval(() => {
+			void reconcileCall(manager, token, pendingReloadRef, () => cancelled);
+		}, RING_RECONCILE_MS);
+
+		const timeout = setTimeout(() => {
+			manager.timeout();
+		}, RING_TIMEOUT_MS);
+
+		return () => {
+			cancelled = true;
+			clearInterval(interval);
+			clearTimeout(timeout);
+		};
+	}, [manager, token, ringing]);
+
+	// The incoming call rings until it is taken or declined.
+	const incomingRinging = state.phase === "incoming";
+
+	useEffect(() => {
+		if (!incomingRinging) return;
 
 		const ringtone = startRingtone();
 
 		return () => {
 			ringtone.stop();
 		};
-	}, [ringing]);
+	}, [incomingRinging]);
 
 	// reportActionFailure reports an action that did not go through. A call
 	// that is already over is not an error: the ringing window ran out, or

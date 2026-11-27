@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	type Mock,
+	vi,
+} from "vitest";
 import { sendMessage } from "../api.ts";
 import { setActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
@@ -62,6 +70,10 @@ beforeEach(async () => {
 	sendMessageMock.mockResolvedValue({ message: {} });
 });
 
+afterEach(() => {
+	Reflect.deleteProperty(navigator, "locks");
+});
+
 describe("runBackgroundOutbox", () => {
 	it("does nothing without mirrored credentials", async () => {
 		await runBackgroundOutbox();
@@ -106,5 +118,25 @@ describe("runBackgroundOutbox", () => {
 
 		setActiveAccountKey("alice:test");
 		expect(await outboxRepo.list()).toHaveLength(1);
+	});
+
+	it("takes the same account lock as an open tab", async () => {
+		await seedQueuedMessage();
+		await setBackgroundSession({ token: "tok", accountKey: "alice:test" });
+		const request = vi.fn(
+			(name: string, callback: (lock: unknown) => Promise<unknown>) => {
+				expect(name).toBe("fastchat-sync:alice:test");
+				return callback(null);
+			},
+		);
+		Object.defineProperty(navigator, "locks", {
+			configurable: true,
+			value: { request },
+		});
+
+		await runBackgroundOutbox();
+
+		expect(request).toHaveBeenCalledTimes(1);
+		expect(sendMessageMock).toHaveBeenCalled();
 	});
 });

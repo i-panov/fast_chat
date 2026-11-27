@@ -115,6 +115,16 @@ export class NewKeyConfirmationRequiredError extends Error {
 	}
 }
 
+// Raised when generating a key would replace the identity the server still
+// publishes. Contacts pin that identity, so without an explicit confirmation
+// they would reject every future message from this account while the user
+// keeps reading their own messages without noticing.
+export class IdentityReplacementRequiredError extends Error {
+	constructor() {
+		super("creating a new key would replace the account identity");
+	}
+}
+
 // Raised before any key access when the account has a local PIN lock and the
 // keys have not been unlocked in this session.
 export class LocalLockRequiredError extends Error {
@@ -189,6 +199,12 @@ const MAX_IDENTITY_HISTORY_LENGTH = 64;
 
 function pubKeyCacheKey(userId: string): string {
 	return `e2ee.pubkey.${userId}`;
+}
+
+// First-seen encryption key of a contact (TOFU). Separate from the TTL cache
+// so an expiring cache entry does not erase the pin.
+function recipientKeyPinKey(userId: string): string {
+	return `e2ee.pinnedRecipientKey.${userId}`;
 }
 
 // Cached recipient public keys live at most this long before they are
@@ -275,12 +291,124 @@ type KeyLockManager = {
 	request<T>(name: string, callback: () => Promise<T>): Promise<T>;
 };
 
+// Web Locks is the only browser-level cross-tab serializer. Older iOS/WebView
+// builds lack it, and silently running the callback unserialized split the
+// account identity between tabs. The fallback below is a least-effort lease:
+// it serializes within the tab and best-effort across tabs through
+// localStorage, and it says out loud that the guarantee is weaker.
+const FALLBACK_LOCK_LEASE_MS = 10_000;
+const FALLBACK_LOCK_POLL_MS = 25;
+const fallbackLockQueues = new Map<string, Promise<void>>();
+let webLocksWarned = false;
+
+export function hasWebLocks(): boolean {
+	const locks = (navigator as Navigator & { locks?: KeyLockManager }).locks;
+	return typeof locks?.request === "function";
+}
+
+function warnWebLocksMissing(): void {
+	if (webLocksWarned) return;
+	webLocksWarned = true;
+	console.warn(
+		"Web Locks API is unavailable: cross-tab key operations fall back to a weaker localStorage lease. Keep a single tab open while creating, rotating or restoring keys.",
+	);
+	try {
+		window.dispatchEvent(new Event("fastchat-key-serialization-degraded"));
+	} catch {
+		// Non-browser environment (tests).
+	}
+}
+
+interface FallbackLockRecord {
+	owner?: string;
+	expiresAt?: number;
+}
+
+function readFallbackLock(key: string): FallbackLockRecord | null {
+	try {
+		const raw = localStorage.getItem(key);
+		if (raw === null) return null;
+		const parsed = JSON.parse(raw) as unknown;
+		return typeof parsed === "object" && parsed !== null ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+function removeFallbackLock(key: string, owner: string): void {
+	try {
+		if (readFallbackLock(key)?.owner === owner) localStorage.removeItem(key);
+	} catch {
+		// Storage blocked: the lease expires on its own.
+	}
+}
+
+async function acquireFallbackLock(name: string): Promise<() => void> {
+	warnWebLocksMissing();
+	const key = `fastchat.lock.${name}`;
+	const owner = `${KEY_TAB_ID}:${crypto.randomUUID()}`;
+	const deadline = Date.now() + FALLBACK_LOCK_LEASE_MS * 3;
+	for (;;) {
+		const held = readFallbackLock(key);
+		const free =
+			held === null ||
+			typeof held.expiresAt !== "number" ||
+			held.expiresAt <= Date.now() ||
+			held.owner === owner;
+		if (free) {
+			try {
+				localStorage.setItem(
+					key,
+					JSON.stringify({
+						owner,
+						expiresAt: Date.now() + FALLBACK_LOCK_LEASE_MS,
+					}),
+				);
+			} catch {
+				// Storage unavailable: in-tab serialization still applies.
+			}
+			if (readFallbackLock(key)?.owner === owner) {
+				return () => removeFallbackLock(key, owner);
+			}
+		}
+		// A broken storage backend must not dead-lock the app; proceed
+		// degraded after the lease window and keep the warning visible.
+		if (Date.now() >= deadline) return () => {};
+		await new Promise<void>((resolve) => {
+			setTimeout(resolve, FALLBACK_LOCK_POLL_MS);
+		});
+	}
+}
+
+function withFallbackLock<T>(
+	name: string,
+	callback: () => Promise<T>,
+): Promise<T> {
+	const previous = fallbackLockQueues.get(name) ?? Promise.resolve();
+	const run = previous.then(async () => {
+		const release = await acquireFallbackLock(name);
+		try {
+			return await callback();
+		} finally {
+			release();
+		}
+	});
+	fallbackLockQueues.set(
+		name,
+		run.then(
+			() => undefined,
+			() => undefined,
+		),
+	);
+	return run;
+}
+
 function withNamedLock<T>(
 	name: string,
 	callback: () => Promise<T>,
 ): Promise<T> {
 	const locks = (navigator as Navigator & { locks?: KeyLockManager }).locks;
-	if (locks === undefined) return callback();
+	if (locks === undefined) return withFallbackLock(name, callback);
 	return locks.request(name, callback);
 }
 
@@ -412,13 +540,17 @@ async function storeIdentityKeyPair(
 
 // --- Server key backup (recovery) ---------------------------------------
 
-type BackupState =
+export type BackupState =
 	| "none"
 	| "backup"
 	| "legacy"
 	| "stale"
 	| "local-stale"
 	| "unknown";
+
+// Used in several state comparisons; a shared literal keeps sonarjs from
+// flagging the repeated string.
+const LOCAL_STALE_STATE: BackupState = "local-stale";
 
 // serverBackupState asks whether this account has a backup blob on the
 // server. Distinguishes 404 (no backup) from other failures (unknown,
@@ -444,7 +576,7 @@ export async function getServerBackupState(
 		if (container.masterKeyVersion !== undefined) {
 			const localVersion = await getMyKeyVersion(scope);
 			if (container.masterKeyVersion < localVersion) return "stale";
-			if (container.masterKeyVersion > localVersion) return "local-stale";
+			if (container.masterKeyVersion > localVersion) return LOCAL_STALE_STATE;
 		}
 		return "backup";
 	} catch (err) {
@@ -457,7 +589,14 @@ export async function getServerBackupState(
 
 const RECOVERY_NEEDED_EVENT = "e2ee:recovery-needed";
 const NEW_KEY_EVENT = "e2ee:new-key-confirmation-needed";
+const IDENTITY_REPLACEMENT_EVENT = "e2ee:identity-replacement-needed";
+const SERVER_BACKUP_CHANGED_EVENT = "e2ee:server-backup-changed";
+const RECIPIENT_KEY_CHANGED_EVENT = "e2ee:recipient-key-changed";
 const confirmedNewKey = new Set<string>();
+const confirmedIdentityReplacement = new Set<string>();
+// Scopes where the user explicitly declined the existing backup: the
+// generation path must not mistake that backup for a reason to stop.
+const discardingRecovery = new Set<string>();
 
 // Emitted when the active account has no local keys but a backup exists on
 // the server. The UI listens and shows a recovery prompt.
@@ -495,6 +634,55 @@ export function onNewKeyConfirmationNeeded(
 // The next ensureAccountKeys call may generate the pair.
 export function confirmNewKey() {
 	confirmedNewKey.add(accountScope());
+}
+
+// confirmIdentityReplacement records a second, explicit confirmation for the
+// destructive case where a new key also replaces the published identity.
+export function confirmIdentityReplacement() {
+	confirmedIdentityReplacement.add(accountScope());
+}
+
+export function onIdentityReplacementNeeded(
+	fn: (token: string) => void,
+): () => void {
+	const handler = (e: Event) => {
+		fn((e as CustomEvent<string>).detail);
+	};
+	window.addEventListener(IDENTITY_REPLACEMENT_EVENT, handler);
+	return () => window.removeEventListener(IDENTITY_REPLACEMENT_EVENT, handler);
+}
+
+function emitIdentityReplacementNeeded(token: string) {
+	window.dispatchEvent(
+		new CustomEvent<string>(IDENTITY_REPLACEMENT_EVENT, { detail: token }),
+	);
+}
+
+// Server-backup state changes (saved, deleted, passkey wrapper added or
+// removed) are separate from key-material changes: they must refresh the
+// settings panels without dropping the in-memory master key.
+export function notifyServerBackupChanged(): void {
+	window.dispatchEvent(new Event(SERVER_BACKUP_CHANGED_EVENT));
+}
+
+export function onServerBackupChanged(listener: () => void): () => void {
+	window.addEventListener(SERVER_BACKUP_CHANGED_EVENT, listener);
+	return () =>
+		window.removeEventListener(SERVER_BACKUP_CHANGED_EVENT, listener);
+}
+
+export interface RecipientKeyChange {
+	userId: string;
+}
+
+export function onRecipientKeyChanged(
+	fn: (change: RecipientKeyChange) => void,
+): () => void {
+	const handler = (e: Event) => {
+		fn((e as CustomEvent<RecipientKeyChange>).detail);
+	};
+	window.addEventListener(RECIPIENT_KEY_CHANGED_EVENT, handler);
+	return () => window.removeEventListener(RECIPIENT_KEY_CHANGED_EVENT, handler);
 }
 
 // createNewKey performs the explicit "create a new key" action as one
@@ -622,8 +810,9 @@ async function readServerKeyState(
 		const { publicKey, identityPublicKey, masterKeyVersion } =
 			await getPublicKey(token, userId);
 		return {
-			publicKey,
-			identityPublicKey,
+			publicKey: typeof publicKey === "string" ? publicKey : "",
+			identityPublicKey:
+				typeof identityPublicKey === "string" ? identityPublicKey : "",
 			version: masterKeyVersion >= 1 ? masterKeyVersion : 1,
 		};
 	} catch (err) {
@@ -874,9 +1063,33 @@ export async function clearServerKeyBackup(
 // serverBackupState is the internal name kept for older callers.
 const serverBackupState = getServerBackupState;
 
+// checkIdentityForDiscard lets the recovery dialog choose the explicit
+// "contacts will stop trusting you" warning for the cases where discarding
+// would actually replace the published identity.
+export type DiscardIdentityCheck = "ok" | "missing" | "mismatch" | "unknown";
+
+export async function checkIdentityForDiscard(
+	token: string,
+	scope: string = accountScope(),
+): Promise<DiscardIdentityCheck> {
+	const local = await getIdentityKeyPair(scope);
+	try {
+		const server = await readServerKeyState(token, scope);
+		if (server.identityPublicKey === "") return "ok";
+		if (local === null) return "missing";
+		return samePublicKey(local.publicKey, server.identityPublicKey)
+			? "ok"
+			: "mismatch";
+	} catch {
+		return "unknown";
+	}
+}
+
 export async function hasServerKeyBackup(token: string): Promise<boolean> {
 	const state = await serverBackupState(token);
-	return state !== "none" && state !== "unknown";
+	// "stale"/"legacy" blobs cannot restore the current key, so they must not
+	// be advertised as a usable backup (the caller shows its own badge).
+	return state === "backup" || state === LOCAL_STALE_STATE;
 }
 
 // discardRecoveryAndGenerate is chosen when the user declines to recover
@@ -937,14 +1150,14 @@ export async function discardRecoveryAndGenerate(
 		}
 	}
 	// Start over means a full local reset: keeping an old local key would
-	// make ensureAccountKeys return it unchanged after the backup and
-	// identity were already destroyed. Lock wrappers are reset too, because
-	// they wrap the discarded key.
-	await clearLocalKeys(scope);
+	// make ensureAccountKeys return it unchanged. Lock wrappers are reset too,
+	// because they wrap the discarded key. The old server backup is deleted
+	// only after the replacement has been generated and published, so a
+	// failure halfway through leaves a usable recovery source behind.
+	await clearLocalKeys(scope, { strict: true });
 	if (previousIdentity !== null) {
 		await storeIdentityKeyPair(previousIdentity, scope);
 	}
-	await clearServerKeyBackup(token, Math.max(1, nextVersion - 1));
 	if (accountScope() !== scope) throw new Error(ACCOUNT_CHANGED);
 	await metaRepo.setNoNotifyFor(scope, KEY_HISTORY_META, []);
 	await metaRepo.setNoNotifyFor(scope, IDENTITY_HISTORY_META, []);
@@ -953,8 +1166,10 @@ export async function discardRecoveryAndGenerate(
 	identityHistoryByAccount.set(scope, []);
 	identityChainByAccount.set(scope, []);
 	forcedVersionByAccount.set(scope, nextVersion);
+	discardingRecovery.add(scope);
 	if (accountScope() !== scope) {
 		forcedVersionByAccount.delete(scope);
+		discardingRecovery.delete(scope);
 		throw new Error(ACCOUNT_CHANGED);
 	}
 	confirmNewKey();
@@ -966,9 +1181,18 @@ export async function discardRecoveryAndGenerate(
 		) {
 			throw new KeyPublishError();
 		}
+		// The replacement is live; a failed delete only leaves a stale blob
+		// behind (settings shows it as stale), so it must not push the user
+		// into repeating the destructive "start fresh" flow.
+		try {
+			await clearServerKeyBackup(token, Math.max(1, nextVersion - 1));
+		} catch (err) {
+			console.warn("old key backup could not be removed after discard", err);
+		}
 		return fresh;
 	} finally {
 		forcedVersionByAccount.delete(scope);
+		discardingRecovery.delete(scope);
 	}
 }
 
@@ -1359,25 +1583,31 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 			// No local key pair. Before generating a brand-new pair, check
 			// whether the server holds a backup for this account. If it
 			// does, ask the user to recover instead of silently creating
-			// divergent keys.
-			const backupState = await serverBackupState(token, scope);
-			if (backupState === "unknown") {
-				throw new KeyBackupCheckFailedError();
-			}
-			if (backupState === "backup" || backupState === "local-stale") {
-				// On a fresh device localVersion is 1 while the server backup
-				// is already at N>1; that is normal recovery, not a reason to
-				// create (and later overwrite) a new key.
-				emitRecoveryNeeded(token);
-				throw new RecoveryRequiredError();
+			// divergent keys. The check is skipped only while the user is
+			// explicitly discarding that very backup.
+			const discarding = discardingRecovery.has(scope);
+			if (!discarding) {
+				const backupState = await serverBackupState(token, scope);
+				if (backupState === "unknown") {
+					throw new KeyBackupCheckFailedError();
+				}
+				if (backupState === "backup" || backupState === LOCAL_STALE_STATE) {
+					// On a fresh device localVersion is 1 while the server backup
+					// is already at N>1; that is normal recovery, not a reason to
+					// create (and later overwrite) a new key.
+					emitRecoveryNeeded(token);
+					throw new RecoveryRequiredError();
+				}
 			}
 			// The server may still publish an older key without a backup
 			// (a failed upload or a deleted backup). A version-1 replacement
 			// would be rejected as a rollback, so start above it.
-			if (!forcedVersionByAccount.has(scope)) {
+			let serverIdentity = "";
+			if (!discarding) {
 				try {
 					const server = await readServerKeyState(token, scope);
-					if (server.publicKey !== "") {
+					serverIdentity = server.identityPublicKey;
+					if (server.publicKey !== "" && !forcedVersionByAccount.has(scope)) {
 						forcedVersionByAccount.set(scope, server.version + 1);
 					}
 				} catch {
@@ -1393,6 +1623,20 @@ export function ensureAccountKeys(token: string | undefined): Promise<KeyPair> {
 				emitNewKeyConfirmation(token);
 				throw new NewKeyConfirmationRequiredError();
 			}
+
+			// Replacing a published identity is a second, separate decision:
+			// contacts pinned it and would reject every future message while
+			// this device looks perfectly healthy to its owner.
+			if (
+				!discarding &&
+				serverIdentity !== "" &&
+				(await getIdentityKeyPair(scope)) === null &&
+				!confirmedIdentityReplacement.has(scope)
+			) {
+				emitIdentityReplacementNeeded(token);
+				throw new IdentityReplacementRequiredError();
+			}
+			confirmedIdentityReplacement.delete(scope);
 			confirmedNewKey.delete(scope);
 			if (accountScope() !== scope) {
 				throw new Error(ACCOUNT_CHANGED);
@@ -1495,6 +1739,27 @@ async function getRecipientPublicKey(
 		throw err;
 	}
 	const keyVersion = masterKeyVersion >= 1 ? masterKeyVersion : 1;
+	// The directory is served by the same server that could swap the key, so
+	// pin the first key seen for this contact. A later change is exactly the
+	// signature of a one-sided read-MITM (or a legitimate rotation the UI
+	// cannot tell apart), and must be visible instead of silently trusted.
+	const pinKey = recipientKeyPinKey(userId);
+	const pinned = await metaRepo.getFor(scope, pinKey);
+	if (
+		typeof pinned === "string" &&
+		pinned !== "" &&
+		!samePublicKey(pinned, publicKey)
+	) {
+		console.warn("recipient encryption key changed", userId);
+		window.dispatchEvent(
+			new CustomEvent<RecipientKeyChange>(RECIPIENT_KEY_CHANGED_EVENT, {
+				detail: { userId },
+			}),
+		);
+	}
+	if (typeof pinned !== "string" || !samePublicKey(pinned, publicKey)) {
+		await metaRepo.setNoNotifyFor(scope, pinKey, publicKey);
+	}
 	await metaRepo.setNoNotifyFor(scope, pubKeyCacheKey(userId), {
 		publicKey,
 		keyVersion,
@@ -1535,14 +1800,19 @@ export async function hasLocalLock(
 }
 
 // setUnlockedMasterKeys installs keys decrypted from the local lock. They
-// stay in memory only; nothing is written back to IndexedDB.
+// stay in memory only; nothing is written back to IndexedDB. expectedEpoch
+// makes a slow decrypt that finished after a remote/"lock now" request lose
+// to the lock instead of silently reopening the session.
 export async function setUnlockedMasterKeys(
 	data: BackupData,
 	scope: string = accountScope(),
+	expectedEpoch?: number,
 ): Promise<void> {
+	if (expectedEpoch !== undefined) assertLockEpoch(scope, expectedEpoch);
 	if (data.keyVersion < (await getMyKeyVersion(scope))) {
 		throw new StaleKeyStateError();
 	}
+	if (expectedEpoch !== undefined) assertLockEpoch(scope, expectedEpoch);
 	keyCacheByAccount.set(scope, data.keyPair);
 	identityCacheByAccount.set(scope, data.identityKeyPair);
 	keyHistoryByAccount.set(scope, data.keyHistory ?? []);
@@ -1585,12 +1855,19 @@ export function requestRecoveryAfterForgotPin(token: string): void {
 // clearLocalKeys drops the cached key pair and removes both halves from the
 // active account's IndexedDB. Call it on logout / account removal so the next
 // user of the device cannot recover the previous account's private key from
-// the local database.
-export function clearLocalKeys(scope: string = accountScope()): Promise<void> {
-	return withKeyLock(scope, () => clearLocalKeysLocked(scope));
+// the local database. strict makes a failed delete fatal: destructive paths
+// (discard recovery) must not continue with a half-wiped account.
+export function clearLocalKeys(
+	scope: string = accountScope(),
+	options?: { strict?: boolean },
+): Promise<void> {
+	return withKeyLock(scope, () => clearLocalKeysLocked(scope, options));
 }
 
-async function clearLocalKeysLocked(scope: string): Promise<void> {
+async function clearLocalKeysLocked(
+	scope: string,
+	options?: { strict?: boolean },
+): Promise<void> {
 	lockEpochByAccount.set(scope, lockEpoch(scope) + 1);
 	keyCacheByAccount.delete(scope);
 	keyVersionCache.delete(scope);
@@ -1601,8 +1878,10 @@ async function clearLocalKeysLocked(scope: string): Promise<void> {
 	inFlightByAccount.delete(scope);
 	inFlightIdByAccount.delete(scope);
 	confirmedNewKey.delete(scope);
+	confirmedIdentityReplacement.delete(scope);
+	discardingRecovery.delete(scope);
 	const db = await getDBFor(scope);
-	await Promise.all([
+	const wipe = Promise.all([
 		db.delete("meta", PUBLIC_KEY_META),
 		db.delete("meta", PRIVATE_KEY_META),
 		db.delete("meta", PUBLIC_KEY_UPLOADED_META),
@@ -1614,7 +1893,12 @@ async function clearLocalKeysLocked(scope: string): Promise<void> {
 		db.delete("meta", KEY_HISTORY_META),
 		db.delete("meta", IDENTITY_HISTORY_META),
 		db.delete("meta", IDENTITY_CHAIN_META),
-	]).catch(() => {});
+	]);
+	// Logout is best-effort (the account database is deleted right after);
+	// a destructive reset must report a failed wipe instead of leaving
+	// wrappers around keys that are already gone.
+	if (options?.strict === true) await wipe;
+	else await wipe.catch(() => {});
 	identityCacheByAccount.delete(scope);
 }
 

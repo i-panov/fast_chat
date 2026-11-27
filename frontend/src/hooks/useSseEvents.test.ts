@@ -1,3 +1,4 @@
+import { notifications } from "@mantine/notifications";
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatsRepo } from "../db/chatsRepo.ts";
@@ -15,8 +16,20 @@ vi.mock("../sync/syncEngine.ts", () => ({
 	scheduleSync: vi.fn(),
 }));
 
+// The local-lock state is the only part of the key module the notification
+// path consults; everything else stays real.
+vi.mock("../e2ee/keys.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../e2ee/keys.ts")>();
+	return {
+		...actual,
+		hasLocalLock: vi.fn(() => Promise.resolve(false)),
+		isLocalLockUnlocked: vi.fn(() => false),
+	};
+});
+
 const { useSse } = await import("../useSse.ts");
 const { scheduleSync } = await import("../sync/syncEngine.ts");
+const { hasLocalLock, isLocalLockUnlocked } = await import("../e2ee/keys.ts");
 const { useSseEvents } = await import("./useSseEvents.ts");
 
 type Handler = (event: string, data: unknown) => Promise<void>;
@@ -31,6 +44,7 @@ function handler(): Handler {
 function baseParams(overrides: Record<string, unknown> = {}) {
 	return {
 		token: "tok",
+		userId: "alice:test",
 		addTypingUser: vi.fn(),
 		clearTyping: vi.fn(),
 		onTokenExpiring: vi.fn(async (_t: string) => {}),
@@ -362,6 +376,82 @@ describe("useSseEvents", () => {
 		await h("sse_closed", {});
 
 		expect(vi.mocked(scheduleSync)).toHaveBeenCalledTimes(1);
+	});
+
+	it("catches up with a sync after a silent reconnect", async () => {
+		renderHook(() => useSseEvents(baseParams()));
+		const h = handler();
+
+		// The first connection belongs to the login: its sync already ran.
+		await h("connected", null);
+		expect(vi.mocked(scheduleSync)).not.toHaveBeenCalled();
+
+		// A reconnect within the same EventSource effect delivered nothing
+		// while the socket was down.
+		await h("connected", null);
+		expect(vi.mocked(scheduleSync)).toHaveBeenCalledTimes(1);
+	});
+
+	it("counts thread messages once in the thread record", async () => {
+		await threadsRepo.upsert({
+			id: "th1",
+			chatId: "c1",
+			parentMessageId: "p1",
+			parentMessageText: "p",
+			parentMessageFrom: "bob",
+			createdAt: "2026-01-01T00:00:00Z",
+			messageCount: 0,
+		});
+		renderHook(() => useSseEvents(baseParams()));
+		const h = handler();
+
+		await h("thread_message_new", { threadId: "th1", message: msg("tm1") });
+		// A replayed event must not inflate the counter.
+		await h("thread_message_new", { threadId: "th1", message: msg("tm1") });
+
+		await waitFor(async () => {
+			expect((await threadsRepo.getById("th1"))?.messageCount).toBe(1);
+		});
+	});
+
+	it("drops events of a previous account after a switch", async () => {
+		renderHook(() => useSseEvents(baseParams()));
+		const h = handler();
+
+		// The tab switched to another account while the event was queued.
+		setActiveAccountKey("bob:test");
+		await h("new_message", msg("m1"));
+
+		expect(await messagesRepo.getById("c1", "m1")).toBeUndefined();
+	});
+
+	it("shows a bot answer notification when the local lock is open", async () => {
+		const show = vi.spyOn(notifications, "show");
+		renderHook(() => useSseEvents(baseParams()));
+		const h = handler();
+
+		await h("bot_callback_answer", { text: "answer", showAlert: false });
+		await waitFor(() => {
+			expect(show).toHaveBeenCalledWith(
+				expect.objectContaining({ message: "answer" }),
+			);
+		});
+		show.mockRestore();
+	});
+
+	it("suppresses bot answer notifications while the local lock is closed", async () => {
+		vi.mocked(hasLocalLock).mockResolvedValueOnce(true);
+		vi.mocked(isLocalLockUnlocked).mockReturnValueOnce(false);
+		const show = vi.spyOn(notifications, "show");
+		renderHook(() => useSseEvents(baseParams()));
+		const h = handler();
+
+		await h("bot_callback_answer", { text: "secret", showAlert: false });
+		// The handler is fire-and-forget; give it a turn to settle.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(show).not.toHaveBeenCalled();
+		show.mockRestore();
 	});
 
 	it("ignores unknown events", async () => {

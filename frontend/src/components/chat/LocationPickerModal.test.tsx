@@ -30,6 +30,10 @@ vi.mock("react-leaflet", () => ({
 const SEND_BUTTON = /Send location|input\.locationSend/;
 const CANCEL_BUTTON = /^(Cancel|input\.locationCancel)$/;
 const LOCATE_BUTTON = /Use my location|input\.locationGetCurrent/;
+const TIMEOUT_RE =
+	/Could not get the location in time|Не удалось получить геопозицию вовремя/;
+const LATITUDE_RE = /Latitude|Широта/;
+const LONGITUDE_RE = /Longitude|Долгота/;
 
 function mockGeolocation(
 	getCurrentPosition: Geolocation["getCurrentPosition"],
@@ -171,6 +175,25 @@ describe("location picker modal", () => {
 
 		await screen.findByRole("alert");
 		expect(onConfirm).not.toHaveBeenCalled();
+	});
+
+	it("tells a timeout apart from a refusal", async () => {
+		mockGeolocation((_ok, err) => {
+			err?.({ message: "timeout", code: 3 } as GeolocationPositionError);
+		});
+		renderModal({});
+
+		fireEvent.click(screen.getByText(LOCATE_BUTTON));
+
+		const alert = await screen.findByRole("alert");
+		expect(alert.textContent).toMatch(TIMEOUT_RE);
+	});
+
+	it("labels the coordinate fields", () => {
+		renderModal({});
+
+		expect(screen.getByLabelText(LATITUDE_RE)).toBeTruthy();
+		expect(screen.getByLabelText(LONGITUDE_RE)).toBeTruthy();
 	});
 
 	it("closes without confirming", () => {

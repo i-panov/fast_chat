@@ -49,6 +49,21 @@ describe("usePendingFiles", () => {
 		expect(result.current.pendingFiles[1].fileType).toBe("photo");
 	});
 
+	it("attaches at most ten files", async () => {
+		// The server rejects more than ten attachments per message; encrypting
+		// and uploading the extras first only produces a terminal 400 and
+		// orphaned blobs.
+		const { result } = renderHook(() => usePendingFiles());
+
+		await act(async () => {
+			await result.current.handleAttachFiles(
+				Array.from({ length: 12 }, (_, i) => smallFile(`f${i}.txt`)),
+			);
+		});
+
+		expect(result.current.pendingFiles).toHaveLength(10);
+	});
+
 	it("encrypts large files by default", async () => {
 		const { result } = renderHook(() => usePendingFiles());
 

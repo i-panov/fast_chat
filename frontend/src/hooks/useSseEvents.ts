@@ -3,12 +3,16 @@ import { useCallback, useEffect, useRef } from "react";
 import type { CallManager } from "../calls/callManager.ts";
 import { handleCallEvent } from "../calls/handleCallEvent.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
-import { getDB } from "../db/init.ts";
+import { getActiveAccountKey, getDB } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { notify } from "../db/notify.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
-import { getMyKeyPair } from "../e2ee/keys.ts";
+import {
+	getMyKeyPair,
+	hasLocalLock,
+	isLocalLockUnlocked,
+} from "../e2ee/keys.ts";
 import { decryptMessageContent } from "../e2ee/message.ts";
 import { scheduleSync } from "../sync/syncEngine.ts";
 import type {
@@ -148,6 +152,26 @@ function chatFromEvent(data: unknown): Chat | null {
 	return null;
 }
 
+// upsertThreadMessage stores a thread message and keeps the thread's counter
+// in step. MessageList renders links from threadsRepo only, so without the
+// counter update a reply after the first one still shows 0 (or the stale
+// count) until the next full getThreads.
+async function upsertThreadMessage(
+	message: Message,
+	threadId: string,
+): Promise<void> {
+	const existing = await threadMessagesRepo.getByIdAny(message.id);
+	await threadMessagesRepo.upsert(message, threadId);
+	if (existing !== undefined) return;
+
+	const thread = await threadsRepo.getById(threadId);
+	if (thread === undefined) return;
+	await threadsRepo.upsert({
+		...thread,
+		messageCount: (thread.messageCount ?? 0) + 1,
+	});
+}
+
 async function showBotCallbackAnswer(
 	data: unknown,
 	userId: string | undefined,
@@ -162,6 +186,9 @@ async function showBotCallbackAnswer(
 		messageId?: string;
 	};
 	if (answer.text === undefined || answer.text === "") return;
+	// The local lock hides message content: a notification with the text of
+	// an unencrypted bot answer would bypass it.
+	if ((await hasLocalLock()) && !isLocalLockUnlocked()) return;
 	let text = answer.text;
 	if (answer.encrypted === true && answer.encryptedPayload !== undefined) {
 		if (
@@ -209,8 +236,13 @@ export function useSseEvents({
 }: UseSseEventsParams) {
 	const tokenRef = useRef(token);
 	const userIdRef = useRef(userId);
+	// The first "connected" belongs to the connection the login already
+	// scheduled a sync for; every later one follows a silent EventSource
+	// reconnect that delivered nothing, so the gap has to be caught up.
+	const connectedRef = useRef(false);
 	useEffect(() => {
 		tokenRef.current = token;
+		connectedRef.current = false;
 	}, [token]);
 	useEffect(() => {
 		userIdRef.current = userId;
@@ -219,6 +251,29 @@ export function useSseEvents({
 	const handler = useCallback(
 		// eslint-disable-next-line max-statements
 		async (event: string, data: unknown) => {
+			if (event === "connected") {
+				if (connectedRef.current) {
+					scheduleSync();
+				} else {
+					connectedRef.current = true;
+				}
+				return;
+			}
+			if (event === "sse_closed") {
+				scheduleSync();
+				return;
+			}
+
+			// A queued event of the previous account must not be written into
+			// the new account's database: the repositories resolve getDB()
+			// from the account active at the moment of the write.
+			if (
+				userIdRef.current !== undefined &&
+				getActiveAccountKey() !== userIdRef.current
+			) {
+				return;
+			}
+
 			if (isCallEvent(event)) {
 				routeCallEvent(callManager, event, data);
 				return;
@@ -240,7 +295,7 @@ export function useSseEvents({
 					threadId: string;
 					message: Message;
 				};
-				await threadMessagesRepo.upsert(message, threadId);
+				await upsertThreadMessage(message, threadId);
 				return;
 			}
 			if (event === "message_reactions_updated") {
@@ -312,7 +367,7 @@ export function useSseEvents({
 					threadId: string;
 					message: Message;
 				};
-				await threadMessagesRepo.upsert(message, threadId);
+				await upsertThreadMessage(message, threadId);
 				return;
 			}
 			if (event === "user_status_changed") {
@@ -343,9 +398,6 @@ export function useSseEvents({
 			if (event === "token_expired") {
 				onTokenExpired();
 				return;
-			}
-			if (event === "sse_closed") {
-				scheduleSync();
 			}
 		},
 		[addTypingUser, clearTyping, onTokenExpiring, onTokenExpired, callManager],

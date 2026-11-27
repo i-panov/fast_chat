@@ -23,6 +23,7 @@ vi.mock("./api.ts", () => ({
 	setKeyBackup: vi.fn(),
 	deleteKeyBackup: vi.fn(),
 	uploadPublicKey: vi.fn(),
+	revokeSession: vi.fn(() => Promise.resolve()),
 }));
 
 const { getConfig } = await import("./api.ts");

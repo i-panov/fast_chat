@@ -51,7 +51,16 @@ export function EndedCallNotice({
 	if (message === undefined) return null;
 
 	return (
-		<Paper p="sm" withBorder>
+		<Paper
+			p="sm"
+			withBorder
+			style={{
+				// The notice is pinned to the bottom of the mobile chat: keep
+				// the close button above the home indicator.
+				paddingBottom:
+					"calc(var(--mantine-spacing-sm) + env(safe-area-inset-bottom, 0px))",
+			}}
+		>
 			<Group justify="space-between" wrap="nowrap">
 				<Text size="sm">{message}</Text>
 				<Button variant="subtle" size="compact-xs" onClick={onDismiss}>

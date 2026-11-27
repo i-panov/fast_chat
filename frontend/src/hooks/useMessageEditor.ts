@@ -26,6 +26,7 @@ export interface UseMessageEditorReturn {
 
 export function useMessageEditor(
 	activeMessages: Message[],
+	activeThreadMessages: Message[] = [],
 ): UseMessageEditorReturn {
 	const [editingMessage, setEditingMessage] = useState<EditingMessage | null>(
 		null,
@@ -37,6 +38,20 @@ export function useMessageEditor(
 	useEffect(() => {
 		activeMessagesRef.current = activeMessages;
 	}, [activeMessages]);
+	// Thread rows live in a different store and a different list: reply and
+	// edit must resolve them too, otherwise the menu items silently no-op
+	// inside ThreadView.
+	const activeThreadMessagesRef = useRef(activeThreadMessages);
+	useEffect(() => {
+		activeThreadMessagesRef.current = activeThreadMessages;
+	}, [activeThreadMessages]);
+
+	const findMessage = useCallback(
+		(messageId: string) =>
+			activeMessagesRef.current.find((m) => m.id === messageId) ??
+			activeThreadMessagesRef.current.find((m) => m.id === messageId),
+		[],
+	);
 
 	const handleStartEdit = useCallback(
 		(
@@ -46,7 +61,7 @@ export function useMessageEditor(
 			files?: FileInfo[],
 			threadId?: string,
 		) => {
-			const msg = activeMessagesRef.current.find((m) => m.id === messageId);
+			const msg = findMessage(messageId);
 			setEditingMessage({
 				chatId,
 				messageId,
@@ -57,7 +72,7 @@ export function useMessageEditor(
 				location: msg?.location ?? null,
 			});
 		},
-		[],
+		[findMessage],
 	);
 
 	const handleRemoveExistingFile = useCallback((fileId: string) => {
@@ -81,17 +96,20 @@ export function useMessageEditor(
 		});
 	}, []);
 
-	const handleReply = useCallback((chatId: string, messageId: string) => {
-		const msg = activeMessagesRef.current.find((m) => m.id === messageId);
-		if (!msg) return;
-		setReplyToMessage({
-			chatId,
-			messageId,
-			fromNick: msg.fromNick,
-			text: msg.text,
-			files: msg.files,
-		});
-	}, []);
+	const handleReply = useCallback(
+		(chatId: string, messageId: string) => {
+			const msg = findMessage(messageId);
+			if (!msg) return;
+			setReplyToMessage({
+				chatId,
+				messageId,
+				fromNick: msg.fromNick,
+				text: msg.text,
+				files: msg.files,
+			});
+		},
+		[findMessage],
+	);
 
 	const cancelReply = useCallback(() => {
 		setReplyToMessage(null);

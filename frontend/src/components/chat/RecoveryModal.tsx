@@ -10,8 +10,8 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { E2EBackupError } from "../../e2ee/backup.ts";
 import {
+	checkIdentityForDiscard,
 	discardRecoveryAndGenerate,
-	getIdentityKeyPair,
 	hasLocalLock,
 	KeyPublishError,
 	onRecoveryNeeded,
@@ -31,6 +31,7 @@ interface Props {
 	activeToken: string | null;
 }
 
+// eslint-disable-next-line max-lines-per-function -- recovery, passkey and the destructive "start fresh" path share one decision surface.
 export function RecoveryModal({ activeToken }: Props) {
 	const { t } = useTranslation();
 	const [open, setOpen] = useState(false);
@@ -40,6 +41,7 @@ export function RecoveryModal({ activeToken }: Props) {
 	const [working, setWorking] = useState<"recover" | "decline" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [passkeyAvailable, setPasskeyAvailable] = useState(false);
+	const [lockEnabled, setLockEnabled] = useState(false);
 
 	useEffect(() => {
 		return onRecoveryNeeded((evtToken) => {
@@ -51,6 +53,9 @@ export function RecoveryModal({ activeToken }: Props) {
 				void hasServerPasskeyBackup(evtToken)
 					.then(setPasskeyAvailable)
 					.catch(() => setPasskeyAvailable(false));
+				void hasLocalLock()
+					.then(setLockEnabled)
+					.catch(() => setLockEnabled(false));
 			}
 		});
 	}, [activeToken]);
@@ -65,12 +70,23 @@ export function RecoveryModal({ activeToken }: Props) {
 		setError(null);
 	}, [activeToken]);
 
+	// Restoring a server backup drops the local PIN/passkey wrapper: the
+	// restored key no longer matches it. That is unavoidable, but it must be
+	// acknowledged instead of happening silently. Re-check the lock here
+	// rather than trusting the state captured when the dialog opened.
+	async function confirmLockRemoval(): Promise<boolean> {
+		if (!(await hasLocalLock())) return true;
+		return window.confirm(t("backup.recoveryRemovesLock"));
+	}
+
 	async function handleRecover() {
+		if (loading) return;
 		if (token === null || token !== activeToken || password === "") return;
 		setLoading(true);
 		setWorking("recover");
 		setError(null);
 		try {
+			if (!(await confirmLockRemoval())) return;
 			await restoreKeyPairFromBackup(token, password);
 			window.location.reload();
 		} catch (err) {
@@ -88,11 +104,13 @@ export function RecoveryModal({ activeToken }: Props) {
 	}
 
 	async function handlePasskeyRecover() {
+		if (loading) return;
 		if (token === null || token !== activeToken) return;
 		setLoading(true);
 		setWorking("recover");
 		setError(null);
 		try {
+			if (!(await confirmLockRemoval())) return;
 			await restoreWithServerPasskey(token);
 			window.location.reload();
 		} catch (err) {
@@ -108,16 +126,20 @@ export function RecoveryModal({ activeToken }: Props) {
 	}
 
 	async function handleDecline() {
+		if (loading) return;
 		if (token === null || token !== activeToken) return;
 		setLoading(true);
 		setWorking("decline");
 		setError(null);
 		try {
 			const locked = await hasLocalLock();
-			const identity = await getIdentityKeyPair();
+			// Replacing an identity the server still publishes makes contacts
+			// reject this account; that case needs the explicit warning too,
+			// not only a missing local identity.
+			const identityCheck = await checkIdentityForDiscard(token);
 			const warning = locked
 				? t("backup.recoveryDeclineLock")
-				: identity === null
+				: identityCheck !== "ok"
 					? t("backup.recoveryDeclineIdentity")
 					: t("backup.recoveryDeclineConfirm");
 			if (!window.confirm(warning)) {
@@ -125,7 +147,7 @@ export function RecoveryModal({ activeToken }: Props) {
 			}
 			await discardRecoveryAndGenerate(token, {
 				resetLocalLock: locked,
-				allowIdentityRollback: true,
+				allowIdentityRollback: identityCheck !== "ok",
 			});
 			window.location.reload();
 		} catch (err) {
@@ -171,8 +193,16 @@ export function RecoveryModal({ activeToken }: Props) {
 					</Text>
 				</Alert>
 
+				{lockEnabled && (
+					<Alert color="orange" py={6}>
+						{t("backup.recoveryRemovesLock")}
+					</Alert>
+				)}
+
 				<PasswordInput
 					label={t("backup.password")}
+					name="recovery-password"
+					autoComplete="current-password"
 					value={password}
 					onChange={(e) => setPassword(e.currentTarget.value)}
 					disabled={loading}
@@ -204,6 +234,13 @@ export function RecoveryModal({ activeToken }: Props) {
 					style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}
 				>
 					<Button
+						variant="subtle"
+						disabled={loading}
+						onClick={() => setOpen(false)}
+					>
+						{t("backup.recoveryLater")}
+					</Button>
+					<Button
 						variant="default"
 						loading={working === "decline"}
 						disabled={loading}
@@ -215,23 +252,13 @@ export function RecoveryModal({ activeToken }: Props) {
 					</Button>
 					<Button
 						loading={working === "recover"}
-						disabled={password === ""}
+						disabled={password === "" || loading}
 						onClick={() => {
 							void handleRecover();
 						}}
 					>
 						{t("backup.recoveryRecover")}
 					</Button>
-					{error !== null && (
-						<Button
-							variant="subtle"
-							onClick={() => {
-								setOpen(false);
-							}}
-						>
-							{t("backup.close")}
-						</Button>
-					)}
 				</div>
 			</Stack>
 		</Modal>

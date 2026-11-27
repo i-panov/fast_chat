@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../types/api.ts";
-import { setActiveAccountKey } from "./init.ts";
+import { decryptedFilesRepo } from "./decryptedFilesRepo.ts";
+import { getActiveAccountKey, setActiveAccountKey } from "./init.ts";
 import { messagesRepo } from "./messagesRepo.ts";
 
 function msg(id: string, createdAt: string, text: string): Message {
@@ -314,5 +315,35 @@ describe("messagesRepo local previews", () => {
 		await messagesRepo.upsert({ ...local, text: "edited" });
 
 		expect(mockRevokeObjectURL).not.toHaveBeenCalledWith("blob:local-2");
+	});
+});
+
+describe("messagesRepo decrypted attachment cleanup", () => {
+	it("drops decrypted copies when the message is deleted", async () => {
+		const withFile = msg("m-file", "2026-08-26T14:45:09Z", "");
+		withFile.files = [
+			{
+				id: "f1",
+				mimeType: "image/png",
+				size: 4,
+				originalName: "a.png",
+				fileType: "photo",
+				url: "https://srv/f1",
+			},
+		];
+		await messagesRepo.upsert(withFile, "sent");
+		const key = "decrypted:https://srv/f1:f1:keyA";
+		await decryptedFilesRepo.put(
+			key,
+			new ArrayBuffer(4),
+			"image/png",
+			getActiveAccountKey(),
+		);
+		expect(await decryptedFilesRepo.isCached(key)).toBe(true);
+
+		await messagesRepo.applyDelete("chat-1", "m-file");
+
+		// The plaintext of an E2EE file must not outlive a deleted message.
+		expect(await decryptedFilesRepo.isCached(key)).toBe(false);
 	});
 });

@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- the page hook composes chat list, composer, threads and calls; decomposition is a tracked follow-up. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CallManager } from "../calls/callManager.ts";
 import { decryptFileStream } from "../e2ee/file-crypto.ts";
@@ -128,11 +129,7 @@ function useChatLifecycle({
 interface ChatActionsDeps {
 	activeChatId: string | null;
 	removeFile: (id: string) => void;
-	clearEditing: () => void;
-	setInputText: (text: string) => void;
-	clearAllPendingFiles: (keepObjectUrls?: boolean) => void;
-	clearPendingLocation: () => void;
-	clearReply: () => void;
+	cancelEdit: () => void;
 	deleteMessage: (
 		chatId: string,
 		messageId: string,
@@ -148,11 +145,7 @@ interface ChatActionsDeps {
 function useChatActions({
 	activeChatId,
 	removeFile,
-	clearEditing,
-	setInputText,
-	clearAllPendingFiles,
-	clearPendingLocation,
-	clearReply,
+	cancelEdit,
 	deleteMessage,
 	retryMessage,
 }: ChatActionsDeps) {
@@ -164,18 +157,8 @@ function useChatActions({
 	);
 
 	const handleCancelEdit = useCallback(() => {
-		clearEditing();
-		setInputText("");
-		clearAllPendingFiles();
-		clearPendingLocation();
-		clearReply();
-	}, [
-		clearEditing,
-		setInputText,
-		clearAllPendingFiles,
-		clearPendingLocation,
-		clearReply,
-	]);
+		cancelEdit();
+	}, [cancelEdit]);
 
 	const handleDeleteThreadMessage = useCallback(
 		(threadId: string, messageId: string) => {
@@ -319,7 +302,11 @@ function buildChatPageState(parts: ChatPageStateParts): ChatPageState {
 		handleDeleteMessage: parts.sender.deleteMessage,
 		handleForwardMessage: async (targetChatId, message) => {
 			if (message.undecryptable === true) return false;
-			if (message.text.trim() === "" && (message.files ?? []).length === 0) {
+			if (
+				message.text.trim() === "" &&
+				(message.files ?? []).length === 0 &&
+				message.location === undefined
+			) {
 				return false;
 			}
 			const token = parts.account.activeAccount?.token;
@@ -388,6 +375,9 @@ export function useChatPage(): ChatPageState {
 	// neither loses text nor leaks it into another conversation. Every
 	// keystroke is written through to the map, so switching only loads.
 	const [drafts, setDrafts] = useState<Record<string, string>>({});
+	// User search feeds the composer key (pending chat): the draft of an
+	// active conversation must not leak into a new private chat.
+	const search = useMessageSearch(token);
 
 	const chatList = useChatList({ token });
 	const messages = useMessages({ token, chatId: chatList.activeChatId });
@@ -400,7 +390,7 @@ export function useChatPage(): ChatPageState {
 		threads.activeThread.chatId === chatList.activeChatId
 			? threads.activeThreadId
 			: null;
-	const draftKey = `${user?.id ?? "anon"}::${chatList.activeChatId ?? "none"}::${activeThreadId ?? "main"}`;
+	const draftKey = `${user?.id ?? "anon"}::${chatList.activeChatId ?? "none"}::${activeThreadId ?? "main"}::${search.pendingChatWith ?? ""}`;
 	// Load the stored draft only when switching conversations. Keystrokes go
 	// through setInputText (which writes both the field and the map), so
 	// re-running on every drafts change would redo the same setState on
@@ -433,8 +423,10 @@ export function useChatPage(): ChatPageState {
 	const pendingFiles = usePendingFiles();
 	const sender = useMessageSender({ token });
 	const location = useLocationPicker();
-	const search = useMessageSearch(token);
-	const editor = useMessageEditor(messages.messages);
+	const editor = useMessageEditor(
+		messages.messages,
+		threads.activeThreadMessages,
+	);
 	const groups = useGroupSettings({
 		token,
 		userId: user?.id,
@@ -456,21 +448,64 @@ export function useChatPage(): ChatPageState {
 		editor.clearReply();
 		pendingFiles.clearAllPendingFiles();
 		location.clearPendingLocation();
-		search.clearPendingChat();
 	});
 
-	// Starting an edit must put the current text into the composer: the input
-	// is the only value the submit path reads.
+	// Entering edit mode replaces the composer draft with the message text.
+	// The draft (text and reply target) is kept so cancelling the edit brings
+	// it back instead of wiping what the user was writing.
+	const editDraft = useRef<{
+		text: string;
+		reply: typeof editor.replyToMessage;
+	} | null>(null);
 	const { handleStartEdit: startEditingMessage, clearReply: clearReplyTarget } =
 		editor;
 	const startEdit = useCallback(
 		(...args: Parameters<typeof startEditingMessage>) => {
-			const [, , text] = args;
+			const text = args[2];
+			if (editor.editingMessage === null) {
+				editDraft.current = {
+					text: inputText,
+					reply: editor.replyToMessage,
+				};
+			}
 			startEditingMessage(...args);
 			clearReplyTarget();
 			setInputText(text);
 		},
-		[startEditingMessage, clearReplyTarget, setInputText],
+		[
+			editor.editingMessage,
+			editor.replyToMessage,
+			inputText,
+			startEditingMessage,
+			clearReplyTarget,
+			setInputText,
+		],
+	);
+
+	const restoreEditDraft = useCallback(() => {
+		const draft = editDraft.current;
+		editDraft.current = null;
+		editor.clearEditing();
+		setInputText(draft?.text ?? "");
+		if (draft?.reply !== null && draft?.reply !== undefined) {
+			editor.setReplyToMessage(draft.reply);
+		}
+		// Attachments and the picked location belong to the draft, not to the
+		// edit: they stay attached while the edit text is discarded.
+	}, [editor, setInputText]);
+
+	// A user picked from the search becomes a pending chat. It owns the
+	// composer from now on: an open thread or an edit of the current chat must
+	// not receive (or silently swallow) the first message meant for the new
+	// contact.
+	const selectPendingChat = useCallback(
+		(...args: Parameters<typeof search.selectPendingChat>) => {
+			search.selectPendingChat(...args);
+			threads.closeThread();
+			editor.clearEditing();
+			editor.clearReply();
+		},
+		[search, threads, editor],
 	);
 
 	const isOnline = useNetworkStatus();
@@ -495,11 +530,7 @@ export function useChatPage(): ChatPageState {
 	} = useChatActions({
 		activeChatId: chatList.activeChatId,
 		removeFile: pendingFiles.handleRemoveFile,
-		clearEditing: editor.clearEditing,
-		setInputText,
-		clearAllPendingFiles: pendingFiles.clearAllPendingFiles,
-		clearPendingLocation: location.clearPendingLocation,
-		clearReply: editor.clearReply,
+		cancelEdit: restoreEditDraft,
 		deleteMessage: sender.deleteMessage,
 		retryMessage: sender.retryMessage,
 	});
@@ -526,7 +557,7 @@ export function useChatPage(): ChatPageState {
 		editMessage: sender.editMessage,
 		selectChat: chatList.selectChat,
 		closeThread: threads.closeThread,
-		clearAllPendingFiles: pendingFiles.clearAllPendingFiles,
+		removePendingFiles: pendingFiles.removePendingFiles,
 		clearEditing: editor.clearEditing,
 		clearPendingChat: search.clearPendingChat,
 		clearReply: editor.clearReply,
@@ -534,6 +565,9 @@ export function useChatPage(): ChatPageState {
 		setInputText,
 	});
 
+	// The returned handlers read the edit-draft ref only from event handlers;
+	// the compiler cannot prove that across the state object boundary.
+	// eslint-disable-next-line react-hooks/refs
 	return buildChatPageState({
 		account: { activeAccount: activeAccount ?? null, user, logout },
 		ui: {
@@ -552,7 +586,7 @@ export function useChatPage(): ChatPageState {
 		pendingFiles,
 		sender,
 		location,
-		search,
+		search: { ...search, selectPendingChat },
 		editor: { ...editor, handleStartEdit: startEdit },
 		groups,
 		actions,

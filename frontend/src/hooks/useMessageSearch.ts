@@ -36,6 +36,13 @@ export function useMessageSearch(
 			setSearchQuery(value);
 
 			if (!value.trim()) {
+				// Bump the sequence so a request already in flight cannot
+				// reopen the dropdown with stale results after clearing.
+				searchSeqRef.current += 1;
+				if (searchTimerRef.current) {
+					clearTimeout(searchTimerRef.current);
+					searchTimerRef.current = null;
+				}
 				setSearchResults([]);
 				setShowSearchResults(false);
 				return;
@@ -74,6 +81,19 @@ export function useMessageSearch(
 			}
 		};
 	}, []);
+
+	// Results and a pending private chat belong to the account that searched:
+	// a token/account change must not leave another user's list on screen.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: token is the reset trigger, not a value read here
+	useEffect(() => {
+		searchSeqRef.current += 1;
+		setSearchQuery("");
+		setSearchResults([]);
+		setShowSearchResults(false);
+		setPendingChatWith(null);
+		setPendingChatNick(null);
+		setPendingChatIsBot(false);
+	}, [token]);
 
 	const selectPendingChat = useCallback(
 		(withUserId: string, withUserNick: string, isBot = false) => {

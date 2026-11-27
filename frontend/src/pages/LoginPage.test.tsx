@@ -9,6 +9,11 @@ const navigate = vi.hoisted(() => vi.fn());
 const DEBUG_CODE_TEXT = /123456/;
 const BACK_TO_CHAT = /backToChat|Back to chat/;
 const NICK_PLACEHOLDER = /Nickname|Никнейм/;
+const LOCALIZED_CODE_ERROR =
+	/Invalid or expired code|Неверный или истёкший код/;
+const RESEND_WITH_COOLDOWN = /Send Code \(\d+\)/;
+const EMAIL_LABEL = /Email|Эл\. почта/;
+const RAW_HTTP_ERROR = /http 401/;
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual =
@@ -171,6 +176,55 @@ describe("login page", () => {
 		fireEvent.click(submit());
 
 		expect(await screen.findByText("bad code")).toBeTruthy();
+	});
+
+	it("localizes a rejected code instead of showing the raw server text", async () => {
+		vi.mocked(sendCode).mockResolvedValue({ status: "ok" });
+		// The 401 of verify-code carries only an English body.
+		vi.mocked(verifyCode).mockRejectedValueOnce(
+			Object.assign(new Error("http 401: invalid code"), { status: 401 }),
+		);
+		renderPage();
+
+		fireEvent.change(input(), { target: { value: "a@example.com" } });
+		fireEvent.click(submit());
+
+		const code = await screen.findByDisplayValue("");
+		fireEvent.change(code, { target: { value: "000000" } });
+		fireEvent.click(submit());
+
+		expect(await screen.findByText(LOCALIZED_CODE_ERROR)).toBeTruthy();
+		expect(screen.queryByText(RAW_HTTP_ERROR)).toBeNull();
+	});
+
+	it("offers resend and going back to the email step", async () => {
+		vi.mocked(sendCode).mockResolvedValue({ status: "ok" });
+		renderPage();
+
+		fireEvent.change(input(), { target: { value: "a@example.com" } });
+		fireEvent.click(submit());
+
+		// The resend is disabled during its cooldown.
+		const resend = await screen.findByRole("button", {
+			name: RESEND_WITH_COOLDOWN,
+		});
+		expect(resend).toHaveProperty("disabled", true);
+
+		fireEvent.click(screen.getByRole("button", { name: EMAIL_LABEL }));
+
+		expect(await screen.findByPlaceholderText(EMAIL_LABEL)).toBeTruthy();
+	});
+
+	it("marks the code field as a one-time code", async () => {
+		vi.mocked(sendCode).mockResolvedValue({ status: "ok" });
+		renderPage();
+
+		fireEvent.change(input(), { target: { value: "a@example.com" } });
+		fireEvent.click(submit());
+
+		const code = await screen.findByDisplayValue("");
+		expect(code.getAttribute("inputmode")).toBe("numeric");
+		expect(code.getAttribute("autocomplete")).toBe("one-time-code");
 	});
 
 	it("offers a way back when already logged in", async () => {

@@ -4,6 +4,7 @@ import type {
 	MessageStatus,
 } from "../types/api.ts";
 import { compareByCreatedAt } from "../utils/ordering.ts";
+import { decryptedFilesRepo } from "./decryptedFilesRepo.ts";
 import { getDB } from "./init.ts";
 import {
 	dropReplacedLocalFileUrls,
@@ -16,6 +17,17 @@ export type StoredStatus = MessageStatus | "deleted";
 
 function stamp(message: Message, status: StoredStatus): StoredMessage {
 	return { ...message, status, _updatedAt: new Date().toISOString() };
+}
+
+// A deleted message must not leave its decrypted attachments on disk: the
+// bytes are the plaintext of an E2EE file, and "delete" is expected to remove
+// them. The cache key embeds the file key, so removal is by URL prefix.
+async function dropDecryptedFiles(
+	files: StoredMessage["files"],
+): Promise<void> {
+	for (const file of files ?? []) {
+		await decryptedFilesRepo.removeByFileUrl(file.url).catch(() => {});
+	}
 }
 
 export const messagesRepo = {
@@ -166,6 +178,7 @@ export const messagesRepo = {
 			files: undefined,
 		});
 		releaseLocalFileUrls(existing.files);
+		await dropDecryptedFiles(existing.files);
 		notify();
 	},
 
@@ -175,6 +188,7 @@ export const messagesRepo = {
 		if (existing !== undefined && existing.chatId === chatId) {
 			await db.delete("messages", messageId);
 			releaseLocalFileUrls(existing.files);
+			await dropDecryptedFiles(existing.files);
 			notify();
 		}
 	},
@@ -194,13 +208,18 @@ export const messagesRepo = {
 	async removeByChat(chatId: string): Promise<void> {
 		const db = await getDB();
 		const tx = db.transaction("messages", "readwrite");
+		const files: StoredMessage["files"][] = [];
 		let cursor = await tx.store.index("chatId").openCursor(chatId);
 		while (cursor !== null) {
+			files.push(cursor.value.files);
 			releaseLocalFileUrls(cursor.value.files);
 			await cursor.delete();
 			cursor = await cursor.continue();
 		}
 		await tx.done;
+		for (const messageFiles of files) {
+			await dropDecryptedFiles(messageFiles);
+		}
 		notify();
 	},
 

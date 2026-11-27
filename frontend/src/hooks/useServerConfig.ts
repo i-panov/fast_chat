@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { getConfig } from "../api.ts";
 
 interface ServerConfig {
@@ -10,26 +10,24 @@ export function useServerConfig(token: string | null | undefined): {
 	config: ServerConfig | null;
 } {
 	const [config, setConfig] = useState<ServerConfig | null>(null);
-	const abortRef = useRef<AbortController | null>(null);
-	// getConfig is a public endpoint: the token only gates whether the page
-	// needs the config, it is never sent with the request. Fetch once per
-	// session; the AbortController flag guards the late response because the
-	// API layer takes no signal.
-	const fetchedRef = useRef(false);
 
+	// getConfig is a public endpoint: the token only gates whether the page
+	// needs the config, it is never sent with the request. There is
+	// deliberately no "already fetched" ref: StrictMode mounts the effect
+	// twice and a ref set before the response would make the second mount
+	// skip the request, leaving config null forever (TTL 0, no editing).
+	// Each run is identified by its own AbortController: a token change or an
+	// unmount cancels the request, and the next run fetches again.
 	useEffect(() => {
 		if (!token) return;
-		if (fetchedRef.current) return;
-		fetchedRef.current = true;
-		abortRef.current?.abort();
 		const ctrl = new AbortController();
-		abortRef.current = ctrl;
-		getConfig()
+		getConfig(ctrl.signal)
 			.then((cfg) => {
 				if (!ctrl.signal.aborted) setConfig(cfg);
 			})
 			.catch(() => {
-				fetchedRef.current = false;
+				// The hook falls back to a null config; the next token change
+				// retries.
 			});
 		return () => ctrl.abort();
 	}, [token]);

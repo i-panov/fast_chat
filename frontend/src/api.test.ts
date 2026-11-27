@@ -145,6 +145,16 @@ describe("request()", () => {
 		off();
 	});
 
+	it("ends the session when sse-auth rejects a revoked token", async () => {
+		const unauthSpy = vi.fn();
+		const off = onUnauthorized(unauthSpy);
+		fetchMock.mockResolvedValue(jsonResponse(401, {}));
+
+		await expect(sseAuth("conn-1", "revoked")).rejects.toThrow("unauthorized");
+		expect(unauthSpy).toHaveBeenCalledWith("revoked");
+		off();
+	});
+
 	it("forwards an abort signal to fetch", async () => {
 		fetchMock.mockResolvedValue(
 			jsonResponse(200, {
@@ -245,6 +255,20 @@ describe("endpoint helpers", () => {
 		const body = parseBody(init);
 		expect(body.clearLocation).toBe(true);
 		expect(body.text).toBe("edited");
+	});
+
+	it("editMessage reads clearLocation from opts (the outbox shape)", async () => {
+		fetchMock.mockResolvedValue(jsonResponse(200, { message: {} }));
+
+		await editMessage("tok", {
+			chatId: "chat-1",
+			messageId: "m1",
+			text: "edited",
+			opts: { clearLocation: true },
+		});
+
+		const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(parseBody(init).clearLocation).toBe(true);
 	});
 
 	it("editMessage passes encrypted flag and payload", async () => {

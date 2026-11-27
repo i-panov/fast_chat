@@ -10,6 +10,7 @@ import {
 	uploadFile,
 } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
+import { getActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
@@ -20,6 +21,7 @@ import type {
 	OutboxOpSend,
 } from "../db/schema.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
+import { isLocallyTombstoned } from "./deltaApplier.ts";
 
 const RETRY_AFTER_REGEX = /retry-after:(.+)/;
 
@@ -34,13 +36,22 @@ export interface OutboxResult {
 }
 
 export async function processOutbox(token: string): Promise<OutboxResult> {
+	// Every write below resolves the active database lazily. Pin the account
+	// for this run and abort before a store call once it changes, so ops,
+	// statuses and uploadedFileIds never land in another account's DB.
+	const accountKey = getActiveAccountKey();
+	ensureAccount(accountKey);
+	await reconcileOrphanedSends(accountKey);
 	const ops = await outboxRepo.list();
+	ensureAccount(accountKey);
 
 	for (const op of ops) {
 		if (op.status === "failed") continue;
 
 		try {
-			await runOp(op, token);
+			ensureAccount(accountKey);
+			await runOp(op, token, accountKey);
+			ensureAccount(accountKey);
 		} catch (err) {
 			// An expired session is not a property of the queued operation:
 			// fail it only if the server rejected the operation itself. The
@@ -52,11 +63,45 @@ export async function processOutbox(token: string): Promise<OutboxResult> {
 					retryAfterMs: extractRetryAfterMs(err),
 				};
 			}
+			ensureAccount(accountKey);
 			await failOp(op, err);
 		}
 	}
 
 	return { completed: true, retryAfterMs: null };
+}
+
+function ensureAccount(accountKey: string | null): void {
+	if (getActiveAccountKey() !== accountKey) {
+		throw new Error("sync account changed");
+	}
+}
+
+// A crash between the local row write and outboxRepo.enqueue leaves a bubble
+// stuck in "sending" with no operation that could ever finish it. Rows older
+// than the grace period (the write and the enqueue are milliseconds apart) are
+// marked failed so the UI offers retry/cancel instead of spinning forever.
+const ORPHAN_SEND_GRACE_MS = 30_000;
+
+async function reconcileOrphanedSends(
+	accountKey: string | null,
+): Promise<void> {
+	const queued = await messagesRepo.getPending();
+	if (queued.length === 0) return;
+	const ops = await outboxRepo.list();
+	const pendingSendIds = new Set(
+		ops.flatMap((o) => (o.kind === "send" ? [o.msgId] : [])),
+	);
+	const cutoff = Date.now() - ORPHAN_SEND_GRACE_MS;
+	for (const message of queued) {
+		if (pendingSendIds.has(message.id)) continue;
+		const updatedAt = new Date(
+			message._updatedAt ?? message.createdAt,
+		).getTime();
+		if (Number.isNaN(updatedAt) || updatedAt > cutoff) continue;
+		ensureAccount(accountKey);
+		await messagesRepo.markStatus(message.chatId, message.id, "failed");
+	}
 }
 
 export function extractRetryAfterMs(err: unknown): number | null {
@@ -84,16 +129,20 @@ export function extractRetryAfterMs(err: unknown): number | null {
 	return null;
 }
 
-async function runOp(op: OutboxOp, token: string): Promise<void> {
+async function runOp(
+	op: OutboxOp,
+	token: string,
+	accountKey: string | null,
+): Promise<void> {
 	switch (op.kind) {
 		case "send":
-			await runSend(op, token);
+			await runSend(op, token, accountKey);
 			return;
 		case "edit":
-			await runEdit(op, token);
+			await runEdit(op, token, accountKey);
 			return;
 		case "delete":
-			await runDelete(op, token);
+			await runDelete(op, token, accountKey);
 			return;
 		case "reaction":
 			if (op.action === "add") {
@@ -115,11 +164,31 @@ async function runOp(op: OutboxOp, token: string): Promise<void> {
 	}
 }
 
-async function runSend(op: OutboxOpSend, token: string): Promise<void> {
+async function runSend(
+	op: OutboxOpSend,
+	token: string,
+	accountKey: string | null,
+): Promise<void> {
+	// A tombstone applied while this send waited in the queue deletes the
+	// message; sending it now would recreate it server-side and revive it for
+	// everyone. Drop the operation together with its staged blobs.
+	if (isLocallyTombstoned(op.msgId)) {
+		if (op.pendingFileClientIds.length > 0) {
+			await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
+		}
+		if (op.threadId !== undefined) {
+			await threadMessagesRepo.applyDelete(op.threadId, op.msgId);
+		} else {
+			await messagesRepo.applyDelete(op.chatId, op.msgId);
+		}
+		await outboxRepo.remove(op.opId);
+		return;
+	}
 	const uploadedIDs = await uploadPendingFiles(
 		op.pendingFileClientIds,
 		token,
 		op,
+		accountKey,
 	);
 
 	// fileHashes are files already on the server (matched by plaintext hash).
@@ -137,6 +206,7 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 			encrypted: op.encrypted,
 			encryptedPayload: op.encryptedPayload,
 		});
+		ensureAccount(accountKey);
 		await threadMessagesRepo.markStatus(op.threadId, op.msgId, "sent");
 	} else {
 		await sendMessage(token, {
@@ -150,6 +220,7 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 			encrypted: op.encrypted,
 			encryptedPayload: op.encryptedPayload,
 		});
+		ensureAccount(accountKey);
 		await messagesRepo.markStatus(op.chatId, op.msgId, "sent");
 	}
 
@@ -159,9 +230,21 @@ async function runSend(op: OutboxOpSend, token: string): Promise<void> {
 	await outboxRepo.remove(op.opId);
 }
 
-async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
+async function runEdit(
+	op: OutboxOpEdit,
+	token: string,
+	accountKey: string | null,
+): Promise<void> {
+	// An edit of a message whose send is still queued or failed cannot
+	// succeed: the server has no row to edit and would 404. Leave the edit
+	// queued — a later tick runs it after a successful send — instead of
+	// dropping it or deleting the delivered message.
+	const pending = await outboxRepo.list();
+	if (pending.some((o) => o.kind === "send" && o.msgId === op.messageId)) {
+		return;
+	}
 	try {
-		await pushEdit(op, token);
+		await pushEdit(op, token, accountKey);
 	} catch (err) {
 		if (!isNotFound(err)) throw err;
 		await dropEditOfDeletedMessage(op);
@@ -169,22 +252,33 @@ async function runEdit(op: OutboxOpEdit, token: string): Promise<void> {
 }
 
 // The message was deleted on another device while this edit waited in the
-// queue. The edit can never be applied, and a retry would only create a
-// "failed" ghost of a message that no longer exists.
+// queue, so the edit can never be applied. The row itself is left alone: the
+// server tombstone (delta or SSE) is the only confirmation that the message is
+// gone, and removing it locally here would hide a live message until the next
+// sync.
 async function dropEditOfDeletedMessage(op: OutboxOpEdit): Promise<void> {
 	if (op.pendingFileClientIds.length > 0) {
 		await pendingBlobsRepo.deleteMany(op.pendingFileClientIds);
 	}
 	if (op.threadId !== undefined) {
-		await threadMessagesRepo.remove(op.threadId, op.messageId);
+		await threadMessagesRepo.markStatus(op.threadId, op.messageId, "sent");
 	} else {
-		await messagesRepo.remove(op.chatId, op.messageId);
+		await messagesRepo.markStatus(op.chatId, op.messageId, "sent");
 	}
 	await outboxRepo.remove(op.opId);
 }
 
-async function pushEdit(op: OutboxOpEdit, token: string): Promise<void> {
-	const uploaded = await uploadPendingFiles(op.pendingFileClientIds, token, op);
+async function pushEdit(
+	op: OutboxOpEdit,
+	token: string,
+	accountKey: string | null,
+): Promise<void> {
+	const uploaded = await uploadPendingFiles(
+		op.pendingFileClientIds,
+		token,
+		op,
+		accountKey,
+	);
 
 	let fileIDs: string[] | undefined;
 	if (
@@ -207,6 +301,7 @@ async function pushEdit(op: OutboxOpEdit, token: string): Promise<void> {
 			encrypted: op.encrypted,
 			encryptedPayload: op.encryptedPayload,
 		});
+		ensureAccount(accountKey);
 		await threadMessagesRepo.markStatus(op.threadId, op.messageId, "sent");
 	} else {
 		await editMessage(token, {
@@ -219,6 +314,7 @@ async function pushEdit(op: OutboxOpEdit, token: string): Promise<void> {
 			encrypted: op.encrypted,
 			encryptedPayload: op.encryptedPayload,
 		});
+		ensureAccount(accountKey);
 		await messagesRepo.markStatus(op.chatId, op.messageId, "sent");
 	}
 
@@ -231,6 +327,7 @@ async function pushEdit(op: OutboxOpEdit, token: string): Promise<void> {
 async function runDelete(
 	op: Extract<OutboxOp, { kind: "delete" }>,
 	token: string,
+	accountKey: string | null,
 ): Promise<void> {
 	try {
 		// Thread messages are addressed by their real chat too: the server
@@ -239,6 +336,7 @@ async function runDelete(
 		await deleteMessage(token, op.chatId, op.messageId);
 	} catch (err) {
 		if (isNotFound(err)) {
+			ensureAccount(accountKey);
 			if (op.threadId !== undefined) {
 				await threadMessagesRepo.remove(op.threadId, op.messageId);
 			} else {
@@ -249,6 +347,7 @@ async function runDelete(
 		}
 		throw err;
 	}
+	ensureAccount(accountKey);
 	if (op.threadId !== undefined) {
 		await threadMessagesRepo.remove(op.threadId, op.messageId);
 	} else {
@@ -317,6 +416,7 @@ async function uploadPendingFiles(
 	clientIds: string[],
 	token: string,
 	op: OutboxOpSend | OutboxOpEdit,
+	accountKey: string | null,
 ): Promise<string[]> {
 	// Resume from previously persisted uploads so a retry after a crash
 	// does not re-upload the same blobs and orphan them on the server.
@@ -352,6 +452,7 @@ async function uploadPendingFiles(
 		out.push(uploaded.id);
 		// Persist after every upload so a crash between uploads resumes
 		// instead of re-uploading.
+		ensureAccount(accountKey);
 		await outboxRepo.update({ ...op, uploadedFileIds: [...out] });
 	}
 

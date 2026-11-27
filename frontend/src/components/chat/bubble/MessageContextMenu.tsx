@@ -48,6 +48,53 @@ interface Props {
 	firstMenuItemRef: React.RefObject<HTMLButtonElement | null>;
 }
 
+function DeleteMessageDialog({
+	opened,
+	deleting,
+	error,
+	onCancel,
+	onDelete,
+}: {
+	opened: boolean;
+	deleting: boolean;
+	error: string | null;
+	onCancel: () => void;
+	onDelete: () => Promise<void> | void;
+}) {
+	const { t } = useTranslation();
+	return (
+		<Modal
+			opened={opened}
+			onClose={onCancel}
+			title={t("message.deleteTitle")}
+			centered
+			size="sm"
+		>
+			<Stack gap="md">
+				<Text size="sm">{t("message.deleteConfirm")}</Text>
+				{error !== null && <Alert color="red">{error}</Alert>}
+				<Group justify="flex-end">
+					<Button variant="default" disabled={deleting} onClick={onCancel}>
+						{t("input.cancel")}
+					</Button>
+					<Button
+						color="red"
+						loading={deleting}
+						onClick={() => {
+							void Promise.resolve(onDelete()).finally(() => {});
+						}}
+					>
+						{t("message.delete")}
+					</Button>
+				</Group>
+			</Stack>
+		</Modal>
+	);
+}
+
+// The menu keeps the item order and the focus wiring in one place; the
+// extracted dialog already carries the delete flow.
+// eslint-disable-next-line max-lines-per-function -- one menu with its item conditions
 export function MessageContextMenu({
 	opened,
 	position,
@@ -84,6 +131,25 @@ export function MessageContextMenu({
 	const [deleting, setDeleting] = useState(false);
 	const [deleteError, setDeleteError] = useState<string | null>(null);
 
+	// The focus target must be the first item that is actually rendered: a
+	// message without text or an image used to render no "Copy" item and the
+	// menu opened without focus, so arrow keys did nothing until Tab.
+	const firstShownIndex = [
+		hasText || hasImage,
+		canEdit,
+		canCancelSend,
+		status === "failed",
+		canReply,
+		canCreateThread,
+		canForward,
+		canBlock,
+		canPin,
+		canSelect,
+		canDelete,
+	].indexOf(true);
+	const firstRef = (index: number) =>
+		index === firstShownIndex ? firstMenuItemRef : undefined;
+
 	return (
 		<>
 			<Menu
@@ -107,7 +173,7 @@ export function MessageContextMenu({
 				<Menu.Dropdown>
 					{(hasText || hasImage) && (
 						<Menu.Item
-							ref={firstMenuItemRef}
+							ref={firstRef(0)}
 							leftSection={<Copy size={14} />}
 							onClick={onCopy}
 						>
@@ -115,12 +181,17 @@ export function MessageContextMenu({
 						</Menu.Item>
 					)}
 					{canEdit && (
-						<Menu.Item leftSection={<Pencil size={14} />} onClick={onEdit}>
+						<Menu.Item
+							ref={firstRef(1)}
+							leftSection={<Pencil size={14} />}
+							onClick={onEdit}
+						>
 							{t("message.edit")}
 						</Menu.Item>
 					)}
 					{canCancelSend && (
 						<Menu.Item
+							ref={firstRef(2)}
 							leftSection={<SquareX size={14} />}
 							onClick={onCancelSend}
 						>
@@ -129,6 +200,7 @@ export function MessageContextMenu({
 					)}
 					{status === "failed" && (
 						<Menu.Item
+							ref={firstRef(3)}
 							leftSection={<RotateCcw size={14} />}
 							onClick={() => {
 								void onRetry();
@@ -139,6 +211,7 @@ export function MessageContextMenu({
 					)}
 					{canReply && (
 						<Menu.Item
+							ref={firstRef(4)}
 							leftSection={<CornerUpLeft size={14} />}
 							onClick={onReply}
 						>
@@ -147,6 +220,7 @@ export function MessageContextMenu({
 					)}
 					{canCreateThread && (
 						<Menu.Item
+							ref={firstRef(5)}
 							leftSection={<MessageCircle size={14} />}
 							onClick={onCreateThread}
 						>
@@ -154,17 +228,26 @@ export function MessageContextMenu({
 						</Menu.Item>
 					)}
 					{canForward && (
-						<Menu.Item leftSection={<Forward size={14} />} onClick={onForward}>
+						<Menu.Item
+							ref={firstRef(6)}
+							leftSection={<Forward size={14} />}
+							onClick={onForward}
+						>
 							{t("message.forward")}
 						</Menu.Item>
 					)}
 					{canBlock && (
-						<Menu.Item leftSection={<Ban size={14} />} onClick={onBlock}>
+						<Menu.Item
+							ref={firstRef(7)}
+							leftSection={<Ban size={14} />}
+							onClick={onBlock}
+						>
 							{t("message.block")}
 						</Menu.Item>
 					)}
 					{canPin && (
 						<Menu.Item
+							ref={firstRef(8)}
 							leftSection={isPinned ? <PinOff size={14} /> : <Pin size={14} />}
 							onClick={onPin}
 						>
@@ -173,6 +256,7 @@ export function MessageContextMenu({
 					)}
 					{canSelect && (
 						<Menu.Item
+							ref={firstRef(9)}
 							leftSection={<SquareDashedMousePointer size={14} />}
 							onClick={() => {
 								onClose();
@@ -184,6 +268,7 @@ export function MessageContextMenu({
 					)}
 					{canDelete && (
 						<Menu.Item
+							ref={firstRef(10)}
 							leftSection={<Trash2 size={14} />}
 							onClick={() => {
 								onClose();
@@ -196,47 +281,26 @@ export function MessageContextMenu({
 					)}
 				</Menu.Dropdown>
 			</Menu>
-			<Modal
+			<DeleteMessageDialog
 				opened={confirmingDelete}
-				onClose={() => {
+				deleting={deleting}
+				error={deleteError}
+				onCancel={() => {
 					if (!deleting) setConfirmingDelete(false);
 				}}
-				title={t("message.deleteTitle")}
-				centered
-				size="sm"
-			>
-				<Stack gap="md">
-					<Text size="sm">{t("message.deleteConfirm")}</Text>
-					{deleteError !== null && <Alert color="red">{deleteError}</Alert>}
-					<Group justify="flex-end">
-						<Button
-							variant="default"
-							disabled={deleting}
-							onClick={() => setConfirmingDelete(false)}
-						>
-							{t("input.cancel")}
-						</Button>
-						<Button
-							color="red"
-							loading={deleting}
-							onClick={() => {
-								setDeleting(true);
-								setDeleteError(null);
-								void Promise.resolve(onDelete())
-									.then(() => setConfirmingDelete(false))
-									.catch((err: unknown) => {
-										setDeleteError(
-											err instanceof Error ? err.message : String(err),
-										);
-									})
-									.finally(() => setDeleting(false));
-							}}
-						>
-							{t("message.delete")}
-						</Button>
-					</Group>
-				</Stack>
-			</Modal>
+				onDelete={async () => {
+					setDeleting(true);
+					setDeleteError(null);
+					try {
+						await Promise.resolve(onDelete());
+						setConfirmingDelete(false);
+					} catch (err) {
+						setDeleteError(err instanceof Error ? err.message : String(err));
+					} finally {
+						setDeleting(false);
+					}
+				}}
+			/>
 		</>
 	);
 }

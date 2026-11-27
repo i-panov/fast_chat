@@ -37,6 +37,23 @@ describe("fileCacheRepo", () => {
 		expect(await fileCacheRepo.get("https://srv/a")).toBeUndefined();
 	});
 
+	it("does not store a file of another account", async () => {
+		setActiveAccountKey("alice:test");
+
+		const stored = await fileCacheRepo.put(
+			"https://srv/foreign",
+			blob("abc"),
+			"text/plain",
+			false,
+			"bob:test",
+		);
+
+		// A switch between the size check and the write must not leave one
+		// account's bytes in another account's database.
+		expect(stored).toBe(false);
+		expect(await fileCacheRepo.isCached("https://srv/foreign")).toBe(false);
+	});
+
 	it("evicts the oldest entries past the limit", async () => {
 		for (let i = 0; i < 201; i++) {
 			await fileCacheRepo.put(`https://srv/f-${i}`, blob("x"), "text/plain");

@@ -9,6 +9,9 @@ interface UsePendingFilesReturn {
 	handleAttachFiles: (files: File[]) => Promise<void>;
 	handleRemoveFile: (fileId: string) => void;
 	clearAllPendingFiles: (keepObjectUrls?: boolean) => void;
+	// removePendingFiles drops specific attachments (the ones a submit took a
+	// snapshot of) so files attached while the send was in flight survive.
+	removePendingFiles: (fileIds: string[], keepObjectUrls?: boolean) => void;
 }
 
 // onLargeFile is invoked when a file exceeds LargeFileThreshold. The callback
@@ -19,6 +22,8 @@ export type LargeFileHandler = (
 	file: File,
 	resolve: (encrypt: boolean) => void,
 ) => Promise<void> | void;
+
+const MAX_PENDING_FILES = 10;
 
 function revokeIfTracked(
 	cleanupRef: React.MutableRefObject<Set<string>>,
@@ -67,6 +72,12 @@ export function usePendingFiles(
 			const newEntries: PendingFile[] = [];
 
 			for (const file of files) {
+				// The server accepts at most 10 attachments per message. Failing
+				// at attach time beats encrypting and uploading 11+ files only to
+				// get a terminal 400 with orphaned blobs.
+				if (filesRef.current.length + newEntries.length >= MAX_PENDING_FILES) {
+					break;
+				}
 				const exceedsThreshold = file.size > LargeFileThreshold;
 				let encrypt = true;
 
@@ -123,6 +134,24 @@ export function usePendingFiles(
 		setPendingFilesState([]);
 	}, []);
 
+	// removePendingFiles drops specific attachments (the ones a submit took a
+	// snapshot of) so files attached while the send was in flight survive.
+	const removePendingFiles = useCallback(
+		(fileIds: string[], keepObjectUrls = false) => {
+			const ids = new Set(fileIds);
+			for (const f of filesRef.current) {
+				if (!ids.has(f.id)) continue;
+				if (keepObjectUrls) {
+					cleanupRef.current.delete(f.blobUrl);
+				} else {
+					revokeIfTracked(cleanupRef, f.blobUrl);
+				}
+			}
+			setPendingFilesState((prev) => prev.filter((f) => !ids.has(f.id)));
+		},
+		[],
+	);
+
 	// Tracked setter: keeps cleanupRef in sync so direct state updates cannot
 	// leak blob URLs (missing revoke) or double-revoke URLs created elsewhere.
 	// The diff is computed from the snapshot before setState, never inside
@@ -153,5 +182,6 @@ export function usePendingFiles(
 		handleAttachFiles,
 		handleRemoveFile,
 		clearAllPendingFiles,
+		removePendingFiles,
 	};
 }

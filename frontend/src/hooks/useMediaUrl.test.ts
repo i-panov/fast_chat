@@ -94,12 +94,15 @@ class StubMediaSource {
 
 let urlCounter = 0;
 const revokeObjectURL = vi.fn();
+const createObjectURL = vi.fn(() => `blob:mock-${urlCounter++}`);
 const RANGE_PATTERN = /bytes=(\d+)-(\d+)/;
 
 const requests: Array<{ method: string; headers: Headers }> = [];
 let headHeaders = { "Content-Length": "100", "Content-Type": "video/mp4" };
 let headFails = false;
 let getFails = false;
+let headStatus = 200;
+let ignoreRange = false;
 
 function mockFetch() {
 	return vi.fn((_url: string, init?: RequestInit) => {
@@ -107,10 +110,18 @@ function mockFetch() {
 		requests.push({ method: init?.method ?? "GET", headers });
 		if ((init?.method ?? "GET") === "HEAD") {
 			if (headFails) return Promise.reject(new Error("head down"));
-			return Promise.resolve(new Response(null, { headers: headHeaders }));
+			return Promise.resolve(
+				new Response(headStatus === 200 ? null : "{}", {
+					status: headStatus,
+					headers: headHeaders,
+				}),
+			);
 		}
 		if (getFails) return Promise.reject(new Error("get down"));
 		const range = headers.get("range");
+		if (range && ignoreRange) {
+			return Promise.resolve(new Response(new Blob([MEDIA_BYTES])));
+		}
 		if (range) {
 			const m = RANGE_PATTERN.exec(range);
 			const start = Number(m?.[1] ?? 0);
@@ -128,12 +139,15 @@ beforeEach(() => {
 	headHeaders = { "Content-Length": "100", "Content-Type": "video/mp4" };
 	headFails = false;
 	getFails = false;
+	headStatus = 200;
+	ignoreRange = false;
 	StubMediaSource.instances = [];
 	StubMediaSource.isTypeSupported = () => false;
 	StubMediaSource.failNextAppend = false;
 	vi.stubGlobal("MediaSource", StubMediaSource);
 	vi.stubGlobal("fetch", mockFetch());
-	URL.createObjectURL = vi.fn(() => `blob:mock-${urlCounter++}`);
+	URL.createObjectURL = createObjectURL;
+	createObjectURL.mockClear();
 	revokeObjectURL.mockClear();
 	URL.revokeObjectURL = revokeObjectURL;
 });
@@ -147,7 +161,7 @@ describe("useMediaUrl", () => {
 		const { result: noUrl } = renderHook(() => useMediaUrl(undefined, "tok"));
 		expect(noUrl.current).toEqual({
 			mediaUrl: null,
-			loading: true,
+			loading: false,
 			error: null,
 		});
 
@@ -184,6 +198,36 @@ describe("useMediaUrl", () => {
 		await waitFor(() => {
 			expect(result.current.mediaUrl).toBe("blob:mock-0");
 		});
+	});
+
+	it("reports an error for a missing media file", async () => {
+		headStatus = 404;
+		getFails = true;
+		const { result } = renderHook(() => useMediaUrl("https://srv/v", "tok"));
+
+		await waitFor(() => {
+			expect(result.current.error).toBeTruthy();
+		});
+		expect(result.current.mediaUrl).toBeNull();
+		expect(result.current.loading).toBe(false);
+	});
+
+	it("falls back to a blob when the server ignores the range request", async () => {
+		StubMediaSource.isTypeSupported = () => true;
+		ignoreRange = true;
+		const { result } = renderHook(() => useMediaUrl("https://srv/v", "tok"));
+
+		await waitFor(() => {
+			expect(result.current.mediaUrl).toBe("blob:mock-0");
+		});
+		act(() => {
+			StubMediaSource.instances[0].emit("sourceopen");
+		});
+
+		await waitFor(() => {
+			expect(result.current.mediaUrl).toBe("blob:mock-1");
+		});
+		expect(result.current.loading).toBe(false);
 	});
 
 	it("reports an error when the download fails", async () => {
@@ -291,5 +335,7 @@ describe("useMediaUrl", () => {
 
 		await Promise.resolve();
 		expect(result.current.mediaUrl).toBeNull();
+		// The late answer must not create (and leak) an object URL.
+		expect(createObjectURL).not.toHaveBeenCalled();
 	});
 });

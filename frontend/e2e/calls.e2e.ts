@@ -271,11 +271,18 @@ async function expectMedia(page: Page): Promise<void> {
 // hangup ends the call of the page when it is still going on: the next test
 // must not find the call of this one.
 async function hangup(page: Page): Promise<void> {
+	if (page.isClosed()) return;
 	const button = page.getByRole("button", { name: "End call" });
 
-	if (await button.isVisible()) {
-		await button.click();
+	try {
+		// The page may still be navigating (the reload test) or the call may
+		// already be over: neither is a reason to fail the teardown.
+		await button.waitFor({ state: "visible", timeout: 2000 });
+	} catch {
+		return;
 	}
+
+	await button.click({ timeout: 5000 }).catch(() => undefined);
 }
 
 // closePair ends the call of the test and releases the browsers: only the

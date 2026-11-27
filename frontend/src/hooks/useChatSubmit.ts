@@ -1,8 +1,12 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { createChat } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
+import i18n from "../i18n.ts";
 import type { Location, PendingFile } from "../types/api.ts";
 import type { EditingMessage, ReplyTarget } from "../types/chat.ts";
+import { emitNotification } from "../utils/notify.ts";
+
+const SEND_FAILED_KEY = "error.send";
 
 interface ChatSubmitDeps {
 	token: string | undefined;
@@ -36,12 +40,36 @@ interface ChatSubmitDeps {
 	}) => Promise<boolean | undefined>;
 	selectChat: (id: string) => void;
 	closeThread: () => void;
-	clearAllPendingFiles: (keepObjectUrls?: boolean) => void;
+	removePendingFiles: (fileIds: string[], keepObjectUrls?: boolean) => void;
 	clearEditing: () => void;
 	clearPendingChat: () => void;
 	clearReply: () => void;
 	clearPendingLocation: () => void;
 	setInputText: (text: string) => void;
+}
+
+// ComposerSnapshot is what the submit actually took: text, the exact
+// attachments and the reply/location it consumed. Cleanup after the await
+// must not touch anything the user added while the send was in flight.
+interface ComposerSnapshot {
+	text: string;
+	fileIds: string[];
+	location: Location | null;
+	replyId: string | null;
+}
+
+function snapshotComposer(deps: {
+	inputText: string;
+	pendingFiles: PendingFile[];
+	pendingLocation: Location | null;
+	replyToMessage: ReplyTarget | null;
+}): ComposerSnapshot {
+	return {
+		text: deps.inputText,
+		fileIds: deps.pendingFiles.map((f) => f.id),
+		location: deps.pendingLocation,
+		replyId: deps.replyToMessage?.messageId ?? null,
+	};
 }
 
 /**
@@ -52,97 +80,35 @@ interface ChatSubmitDeps {
 export function useChatSubmit(
 	deps: ChatSubmitDeps,
 ): (e: React.FormEvent<HTMLFormElement>) => Promise<void> {
-	const {
-		token,
-		user,
-		inputText,
-		pendingFiles,
-		pendingLocation,
-		editingMessage,
-		pendingChatWith,
-		pendingChatIsBot,
-		activeChatId,
-		activeThreadId,
-		replyToMessage,
-		sendMessage,
-		editMessage,
-		selectChat,
-		closeThread,
-		clearAllPendingFiles,
-		clearEditing,
-		clearPendingChat,
-		clearReply,
-		clearPendingLocation,
-		setInputText,
-	} = deps;
+	// The composer values as of the latest render: the send awaits encryption
+	// and network work, and cleanup may only clear what the submit consumed.
+	const latestRef = useRef(deps);
+	useEffect(() => {
+		latestRef.current = deps;
+	});
 
 	// A second submit before the first one clears the composer would reuse the
 	// same pending files: two rows would reference one preview URL and the
 	// second outbox operation would find its staged blob already consumed.
 	const sendingRef = useRef(false);
 
-	return useCallback(
-		async (e: React.FormEvent<HTMLFormElement>) => {
-			e.preventDefault();
-			if (!token || !user) return;
-			if (sendingRef.current) return;
-			sendingRef.current = true;
-			try {
-				await sendFromComposer({
-					token,
-					user,
-					inputText,
-					pendingFiles,
-					pendingLocation,
-					editingMessage,
-					pendingChatWith,
-					pendingChatIsBot,
-					activeChatId,
-					activeThreadId,
-					replyToMessage,
-					sendMessage,
-					editMessage,
-					selectChat,
-					closeThread,
-					clearAllPendingFiles,
-					clearEditing,
-					clearPendingChat,
-					clearReply,
-					clearPendingLocation,
-					setInputText,
-				});
-			} finally {
-				sendingRef.current = false;
-			}
-		},
-		[
-			token,
-			user,
-			inputText,
-			pendingFiles,
-			pendingLocation,
-			editingMessage,
-			pendingChatWith,
-			pendingChatIsBot,
-			activeChatId,
-			activeThreadId,
-			replyToMessage,
-			sendMessage,
-			editMessage,
-			selectChat,
-			closeThread,
-			clearAllPendingFiles,
-			clearEditing,
-			clearPendingChat,
-			clearReply,
-			clearPendingLocation,
-			setInputText,
-		],
-	);
+	return useCallback(async (e: React.FormEvent<HTMLFormElement>) => {
+		e.preventDefault();
+		const current = latestRef.current;
+		if (!current.token || !current.user) return;
+		if (sendingRef.current) return;
+		sendingRef.current = true;
+		try {
+			await sendFromComposer(current, () => latestRef.current);
+		} finally {
+			sendingRef.current = false;
+		}
+	}, []);
 }
 
 async function sendFromComposer(
-	ctx: ChatSubmitDeps & { token: string; user: { id: string } },
+	ctx: ChatSubmitDeps,
+	getLatest: () => ChatSubmitDeps,
 ): Promise<void> {
 	const {
 		token,
@@ -159,7 +125,7 @@ async function sendFromComposer(
 		editMessage,
 		selectChat,
 		closeThread,
-		clearAllPendingFiles,
+		removePendingFiles,
 		clearEditing,
 		clearPendingChat,
 		clearReply,
@@ -168,6 +134,7 @@ async function sendFromComposer(
 	} = ctx;
 
 	const text = inputText.trim();
+	if (token === undefined) return;
 	const hasExistingEditContent =
 		editingMessage !== null &&
 		((editingMessage.files?.length ?? 0) > 0 ||
@@ -181,11 +148,39 @@ async function sendFromComposer(
 		return;
 	}
 
+	const snapshot = snapshotComposer({
+		inputText,
+		pendingFiles,
+		pendingLocation,
+		replyToMessage,
+	});
+
+	// Clears only the consumed values. Text and attachments that appeared
+	// while sendMessage was awaiting stay in the composer.
+	const clearSent = () => {
+		const latest = getLatest();
+		if (latest.inputText === snapshot.text) setInputText("");
+		if (latest.pendingLocation === snapshot.location) clearPendingLocation();
+		if ((latest.replyToMessage?.messageId ?? null) === snapshot.replyId) {
+			clearReply();
+		}
+		const stillPending = new Set(latest.pendingFiles.map((f) => f.id));
+		const sentIds = snapshot.fileIds.filter((id) => stillPending.has(id));
+		if (sentIds.length > 0) {
+			// Ownership of the preview URL moved to the optimistic message row.
+			removePendingFiles(sentIds, true);
+		}
+	};
+
 	if (editingMessage !== null) {
+		// A location picked while editing wins over the one stored on the
+		// message: the picker stays available in edit mode, so dropping the
+		// pick would silently discard it.
 		const nextLocation =
-			editingMessage.location === undefined
+			pendingLocation ??
+			(editingMessage.location === undefined
 				? undefined
-				: editingMessage.location;
+				: editingMessage.location);
 
 		try {
 			const ok = await editMessage({
@@ -200,13 +195,11 @@ async function sendFromComposer(
 			});
 			if (ok === false) return;
 		} catch {
+			emitNotification(i18n.t(SEND_FAILED_KEY));
 			return;
 		}
 		clearEditing();
-		setInputText("");
-		clearAllPendingFiles(true);
-		clearReply();
-		clearPendingLocation();
+		clearSent();
 	} else if (pendingChatWith !== null) {
 		try {
 			const { chat } = await createChat(token, {
@@ -230,12 +223,10 @@ async function sendFromComposer(
 			});
 			if (ok === false) return;
 		} catch {
+			emitNotification(i18n.t(SEND_FAILED_KEY));
 			return;
 		}
-		setInputText("");
-		clearAllPendingFiles(true);
-		clearReply();
-		clearPendingLocation();
+		clearSent();
 	} else if (activeThreadId !== null && activeChatId === null) {
 		return;
 	} else if (activeChatId !== null) {
@@ -250,11 +241,9 @@ async function sendFromComposer(
 			});
 			if (ok === false) return;
 		} catch {
+			emitNotification(i18n.t(SEND_FAILED_KEY));
 			return;
 		}
-		setInputText("");
-		clearAllPendingFiles(true);
-		clearReply();
-		clearPendingLocation();
+		clearSent();
 	}
 }

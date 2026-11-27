@@ -1,5 +1,5 @@
 import sodium from "libsodium-wrappers";
-import { fileExistsByHash } from "../api.ts";
+import { fileExistsByHash, getChatInfo } from "../api.ts";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import i18n from "../i18n.ts";
@@ -78,7 +78,18 @@ export async function encryptForChat(
 		const chat = await chatsRepo.getById(chatId);
 		if (chat === undefined || token === undefined) return null;
 
-		const memberIds = chat.members.map((m) => m.id);
+		// The local member list can lag behind the server (a member just added
+		// by another device): sealing only to the local list would make the
+		// message unreadable for the new participant. Merge in the current
+		// server list; offline, the cached list is the best available.
+		const members = new Map(chat.members.map((m) => [m.id, m]));
+		try {
+			const { chat: fresh } = await getChatInfo(token, chatId);
+			for (const m of fresh.members) members.set(m.id, m);
+		} catch {
+			// Offline or transient failure: keep the local snapshot.
+		}
+		const memberIds = [...members.keys()];
 		if (memberIds.length === 0) {
 			throw new Error("chat has no members");
 		}
@@ -105,9 +116,15 @@ export async function encryptForChat(
 			}
 		}
 
-		if (binding !== undefined) {
-			// The public-key cache may still hold this device's pre-rotation
-			// key. The sender always knows its own current key.
+		// v3 has no unbound format: fail with the real reason before the
+		// own-key check below reports a "missing key" for a caller bug.
+		if (binding === undefined) {
+			throw new Error("v3 encryption requires a message binding");
+		}
+
+		// The public-key cache may still hold this device's pre-rotation
+		// key. The sender always knows its own current key.
+		{
 			const ownVersion = await getMyKeyVersion();
 			const own = {
 				keyId: binding.fromId,
@@ -137,9 +154,11 @@ export async function encryptForChat(
 			throw new Error("own device key is missing from recipients");
 		}
 
-		if (missing.length > 0) {
-			const nicks = chat.members
-				.filter((m) => missing.includes(m.id))
+		const missingUnique = [...new Set(missing)];
+		if (missingUnique.length > 0) {
+			const nicks = missingUnique
+				.map((id) => members.get(id))
+				.filter((m) => m !== undefined)
 				.map((m) => `@${m.nick}`)
 				.join(", ");
 			emitNotification(
@@ -160,9 +179,6 @@ export async function encryptForChat(
 			fileKeys,
 			fileMeta,
 		};
-		if (binding === undefined) {
-			throw new Error("v3 encryption requires a message binding");
-		}
 		const aad = messageAAD({
 			chatId,
 			messageId: binding.messageId,
@@ -205,6 +221,9 @@ export interface PreparedFile {
 	// the server (matched by plaintext hash). No upload is needed; the message
 	// only needs the hash.
 	onServer?: boolean;
+	// duplicate marks a repeated content in the same batch: it reuses the first
+	// occurrence's key and upload instead of staging (and uploading) again.
+	duplicate?: boolean;
 	// fileMeta carries the client-side metadata of the file. It travels inside
 	// the encrypted message content, because the server cannot know the type
 	// of a file whose content it never sees.
@@ -230,7 +249,7 @@ export async function prepareFiles(
 ): Promise<PreparedFile[]> {
 	const out: PreparedFile[] = [];
 
-	const seenHashes = new Set<string>();
+	const seenHashes = new Map<string, PreparedFile>();
 
 	try {
 		for (const pf of pending) {
@@ -244,10 +263,27 @@ export async function prepareFiles(
 			// Single read of the file bytes for both hashing and encryption.
 			const raw = new Uint8Array(await pf.file.arrayBuffer());
 			const plaintextHash = await hashBytes(raw);
-			if (seenHashes.has(plaintextHash)) {
-				throw new Error(`duplicate attachment content: ${pf.originalName}`);
+			const previous = seenHashes.get(plaintextHash);
+			if (previous !== undefined) {
+				// Two identical attachments (a screenshot pasted twice, a file
+				// copied under another name) used to abort the whole batch.
+				// Reuse the first occurrence's key/upload: one upload, one key,
+				// two attachments that both decrypt.
+				out.push({
+					clientId,
+					plaintextHash,
+					fileKey: previous.fileKey,
+					onServer: previous.onServer,
+					duplicate: true,
+					fileMeta: {
+						mimeType: pf.mimeType,
+						name: pf.originalName,
+						size: pf.size,
+					},
+				});
+				continue;
 			}
-			seenHashes.add(plaintextHash);
+
 			const fileMeta: FileMeta = {
 				mimeType: pf.mimeType,
 				name: pf.originalName,
@@ -262,7 +298,14 @@ export async function prepareFiles(
 			if (pf.encrypted === false && token !== undefined) {
 				try {
 					if (await fileExistsByHash(token, plaintextHash)) {
-						out.push({ clientId, plaintextHash, onServer: true, fileMeta });
+						const prepared: PreparedFile = {
+							clientId,
+							plaintextHash,
+							onServer: true,
+							fileMeta,
+						};
+						out.push(prepared);
+						seenHashes.set(plaintextHash, prepared);
 						continue;
 					}
 				} catch {
@@ -281,7 +324,9 @@ export async function prepareFiles(
 					plaintextHash,
 					encrypted: false,
 				});
-				out.push({ clientId, plaintextHash, fileMeta });
+				const prepared: PreparedFile = { clientId, plaintextHash, fileMeta };
+				out.push(prepared);
+				seenHashes.set(plaintextHash, prepared);
 				continue;
 			}
 
@@ -302,7 +347,14 @@ export async function prepareFiles(
 				plaintextHash,
 				encrypted: true,
 			});
-			out.push({ clientId, fileKey, plaintextHash, fileMeta });
+			const prepared: PreparedFile = {
+				clientId,
+				fileKey,
+				plaintextHash,
+				fileMeta,
+			};
+			out.push(prepared);
+			seenHashes.set(plaintextHash, prepared);
 		}
 	} catch (err) {
 		// A late file (e.g. over the size limit) must not orphan the blobs
@@ -333,7 +385,9 @@ export function buildFileMaps(prepared: PreparedFile[]): {
 		fileKeys,
 		fileMeta,
 		fileHashes: prepared.filter((p) => p.onServer).map((p) => p.plaintextHash),
-		uploadClientIds: prepared.filter((p) => !p.onServer).map((p) => p.clientId),
+		uploadClientIds: prepared
+			.filter((p) => !p.onServer && p.duplicate !== true)
+			.map((p) => p.clientId),
 	};
 }
 
@@ -342,7 +396,9 @@ export function buildFileMaps(prepared: PreparedFile[]): {
 export async function dropPreparedBlobs(
 	prepared: PreparedFile[],
 ): Promise<void> {
-	const ids = prepared.filter((p) => !p.onServer).map((p) => p.clientId);
+	const ids = prepared
+		.filter((p) => !p.onServer && p.duplicate !== true)
+		.map((p) => p.clientId);
 	if (ids.length > 0) {
 		await pendingBlobsRepo.deleteMany(ids);
 	}

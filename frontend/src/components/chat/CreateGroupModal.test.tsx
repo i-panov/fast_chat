@@ -4,9 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "../../useAuth.tsx";
 import { CreateGroupModal } from "./CreateGroupModal.tsx";
 
-vi.mock("../../api.ts", () => ({
-	searchUsers: vi.fn(),
-}));
+vi.mock("../../api.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../api.ts")>();
+
+	return { ...actual, searchUsers: vi.fn() };
+});
 
 const { searchUsers } = await import("../../api.ts");
 
@@ -72,6 +74,7 @@ function createButton(): HTMLButtonElement {
 const BOB = { id: "bob:test", nick: "bob", online: true };
 
 const CREATE_BUTTON_TEXT = /Create group|chat\.createGroup/;
+const TOO_LONG_RE = /60/;
 
 beforeEach(() => {
 	localStorage.clear();
@@ -155,5 +158,60 @@ describe("CreateGroupModal", () => {
 
 		await new Promise((r) => setTimeout(r, 500));
 		expect(searchUsers).not.toHaveBeenCalled();
+	});
+
+	it("accepts a long Cyrillic name within 60 runes", async () => {
+		const onCreate = vi.fn();
+		renderModal({ onCreate });
+
+		const name = "г".repeat(40); // 80 UTF-8 bytes, 40 runes
+		fireEvent.change(nameInput(), { target: { value: name } });
+		fireEvent.click(createButton());
+
+		await waitFor(() => {
+			expect(onCreate).toHaveBeenCalledWith(name, []);
+		});
+	});
+
+	it("rejects a name longer than 60 runes", async () => {
+		const onCreate = vi.fn();
+		renderModal({ onCreate });
+
+		fireEvent.change(nameInput(), { target: { value: "г".repeat(61) } });
+		fireEvent.click(createButton());
+
+		expect(await screen.findByText(TOO_LONG_RE)).toBeTruthy();
+		expect(onCreate).not.toHaveBeenCalled();
+	});
+
+	it("does not offer bots as members", async () => {
+		vi.mocked(searchUsers).mockResolvedValue({
+			users: [
+				BOB,
+				{
+					id: "helper_bot:test",
+					nick: "helper_bot",
+					online: true,
+					isBot: true,
+				},
+			],
+		});
+		renderModal({});
+
+		fireEvent.change(searchInput(), { target: { value: "bo" } });
+
+		await screen.findByText("@bob");
+		expect(screen.queryByText("@helper_bot")).toBeNull();
+	});
+
+	it("shows a create failure and keeps the form", async () => {
+		const onCreate = vi.fn().mockRejectedValue(new Error("http 500"));
+		renderModal({ onCreate });
+
+		fireEvent.change(nameInput(), { target: { value: "Team" } });
+		fireEvent.click(createButton());
+
+		expect(await screen.findByRole("alert")).toBeTruthy();
+		expect(nameInput().value).toBe("Team");
 	});
 });

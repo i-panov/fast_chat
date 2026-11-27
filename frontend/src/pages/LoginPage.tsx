@@ -2,6 +2,7 @@ import {
 	Button,
 	Center,
 	Divider,
+	Group,
 	Paper,
 	Stack,
 	Text,
@@ -9,7 +10,7 @@ import {
 	Title,
 } from "@mantine/core";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { completeRegistration, sendCode, verifyCode } from "../api.ts";
 import { LanguageSelect } from "../components/LanguageSelect.tsx";
@@ -21,6 +22,30 @@ type Step = "email" | "code" | "nick";
 // Known errors stay keys so switching the language re-renders them; server
 // messages are already text and cannot be translated.
 type FormError = { key: string } | { text: string };
+
+// loginError maps the API failure to a stable i18n key. Auth errors carry no
+// machine-readable code, only an English message and a status: showing the
+// raw text would leave the user with "unauthorized" or "TypeError: Failed to
+// fetch" in a localized interface.
+function loginError(err: unknown, fallbackKey: string): FormError {
+	if (err instanceof Error) {
+		const status = (err as { status?: unknown }).status;
+		if (typeof status === "number") {
+			if (status === 401) return { key: "error.verifyCode" };
+			return { key: fallbackKey };
+		}
+		if (err.name === "TypeError") return { key: fallbackKey };
+		return { text: err.message };
+	}
+	return { key: fallbackKey };
+}
+
+// Resend cooldown: the server rate-limits codes, and a second click before the
+// mail arrives only burns the limit.
+const RESEND_COOLDOWN_SECONDS = 30;
+
+const EMAIL_LABEL_KEY = "login.email";
+const SEND_CODE_KEY = "login.sendCode";
 
 // Empty chat search: TanStack requires explicit search params on every
 // navigation once validateSearch is defined.
@@ -42,8 +67,16 @@ export function LoginPage() {
 	const [error, setError] = useState<FormError | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [debugCode, setDebugCode] = useState<string | null>(null);
+	const [resendIn, setResendIn] = useState(0);
 	const errorText =
 		error === null ? null : "key" in error ? t(error.key) : error.text;
+
+	useEffect(() => {
+		if (resendIn === 0) return;
+		const timer = setTimeout(() => setResendIn(resendIn - 1), 1000);
+		return () => clearTimeout(timer);
+	}, [resendIn]);
+
 	async function handleSendCode() {
 		const trimmed = email.trim().toLowerCase();
 		if (trimmed.length === 0) return;
@@ -52,16 +85,15 @@ export function LoginPage() {
 		setDebugCode(null);
 		try {
 			const result = await sendCode(trimmed);
-			if (result.debugCode !== undefined) {
+			// The code is a debug convenience of a local server; a production
+			// build must not render it even if the server has debug_email on.
+			if (result.debugCode !== undefined && import.meta.env.DEV) {
 				setDebugCode(result.debugCode);
 			}
+			setResendIn(RESEND_COOLDOWN_SECONDS);
 			setStep("code");
 		} catch (err) {
-			setError(
-				err instanceof Error
-					? { text: err.message }
-					: { key: "error.sendCode" },
-			);
+			setError(loginError(err, "error.sendCode"));
 		} finally {
 			setLoading(false);
 		}
@@ -95,11 +127,7 @@ export function LoginPage() {
 				void navigate({ to: "/chat", search: CHAT_SEARCH });
 			}
 		} catch (err) {
-			setError(
-				err instanceof Error
-					? { text: err.message }
-					: { key: "error.verifyCode" },
-			);
+			setError(loginError(err, "error.verifyCode"));
 		} finally {
 			setLoading(false);
 		}
@@ -132,11 +160,7 @@ export function LoginPage() {
 			);
 			void navigate({ to: "/chat", search: CHAT_SEARCH });
 		} catch (err) {
-			setError(
-				err instanceof Error
-					? { text: err.message }
-					: { key: "error.register" },
-			);
+			setError(loginError(err, "error.register"));
 		} finally {
 			setLoading(false);
 		}
@@ -174,14 +198,22 @@ export function LoginPage() {
 					{step === "email" && (
 						<>
 							<TextInput
-								placeholder={t("login.email")}
+								placeholder={t(EMAIL_LABEL_KEY)}
+								aria-label={t(EMAIL_LABEL_KEY)}
 								type="email"
+								inputMode="email"
+								autoComplete="email"
 								value={email}
 								onChange={(e) => setEmail(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key !== "Enter") return;
+									e.preventDefault();
+									void handleSendCode();
+								}}
 								autoFocus
 							/>
 							{errorText !== null && (
-								<Text size="sm" c="red" ta="center">
+								<Text size="sm" c="red" ta="center" role="alert">
 									{errorText}
 								</Text>
 							)}
@@ -192,7 +224,7 @@ export function LoginPage() {
 									void handleSendCode();
 								}}
 							>
-								{t("login.sendCode")}
+								{t(SEND_CODE_KEY)}
 							</Button>
 						</>
 					)}
@@ -209,16 +241,49 @@ export function LoginPage() {
 							)}
 							<TextInput
 								placeholder={t("login.code")}
+								aria-label={t("login.code")}
+								inputMode="numeric"
+								autoComplete="one-time-code"
 								maxLength={6}
 								value={code}
 								onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+								onKeyDown={(e) => {
+									if (e.key !== "Enter") return;
+									e.preventDefault();
+									void handleVerifyCode();
+								}}
 								autoFocus
 							/>
 							{errorText !== null && (
-								<Text size="sm" c="red" ta="center">
+								<Text size="sm" c="red" ta="center" role="alert">
 									{errorText}
 								</Text>
 							)}
+							<Group justify="space-between" gap="xs">
+								<Button
+									variant="subtle"
+									size="xs"
+									onClick={() => {
+										setStep("email");
+										setCode("");
+										setError(null);
+									}}
+								>
+									{t(EMAIL_LABEL_KEY)}
+								</Button>
+								<Button
+									variant="subtle"
+									size="xs"
+									disabled={loading || resendIn > 0}
+									onClick={() => {
+										void handleSendCode();
+									}}
+								>
+									{resendIn > 0
+										? `${t(SEND_CODE_KEY)} (${resendIn})`
+										: t(SEND_CODE_KEY)}
+								</Button>
+							</Group>
 							<Button
 								disabled={loading || code.trim().length < 6}
 								loading={loading}
@@ -238,19 +303,28 @@ export function LoginPage() {
 							</Text>
 							<TextInput
 								placeholder={t("login.nick")}
+								aria-label={t("login.nick")}
+								autoComplete="username"
 								maxLength={32}
 								value={nick}
 								onChange={(e) => setNick(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key !== "Enter") return;
+									e.preventDefault();
+									void handleCompleteRegistration();
+								}}
 								autoFocus
 							/>
 							<TextInput
 								placeholder={t("login.displayName")}
+								aria-label={t("login.displayName")}
+								autoComplete="name"
 								maxLength={64}
 								value={displayName}
 								onChange={(e) => setDisplayName(e.target.value)}
 							/>
 							{errorText !== null && (
-								<Text size="sm" c="red" ta="center">
+								<Text size="sm" c="red" ta="center" role="alert">
 									{errorText}
 								</Text>
 							)}

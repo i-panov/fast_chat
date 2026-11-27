@@ -1,11 +1,15 @@
+import { revokeSession } from "../api.ts";
 import {
 	closeAndDeleteAccountDB,
 	listKnownDatabases,
 	resetAllDBs,
 	setActiveAccountKey,
 } from "../db/init.ts";
+import { DB_NAME } from "../db/schema.ts";
 import { LANGUAGE_PREFERENCE_KEY } from "../languagePreference.ts";
+import { deleteBackgroundSessionDB } from "../sync/backgroundSession.ts";
 import { setTokenProvider } from "../sync/syncEngine.ts";
+import { readAnyToken } from "./activeToken.ts";
 import { clearFileCache } from "./fileCache.ts";
 
 async function browserUnsubscribePush(): Promise<void> {
@@ -86,7 +90,34 @@ export function clearAccountSwitchState(): void {
 	notifyServiceWorkerCaches();
 }
 
-export async function clearAllData(): Promise<void> {
+export interface ClearAllDataResult {
+	ok: boolean;
+	// Databases the browser still reports after the wipe. Non-empty means the
+	// delete was blocked (another tab holds the database open) and the
+	// account history or its E2EE key may still be on disk.
+	remainingDatabases: string[];
+}
+
+async function listRemainingDatabases(): Promise<string[]> {
+	try {
+		const list = await (
+			indexedDB as IDBFactory & {
+				databases?: () => Promise<{ name?: string }[]>;
+			}
+		).databases?.();
+		return (list ?? [])
+			.map((entry) => entry.name)
+			.filter(
+				(name): name is string =>
+					typeof name === "string" &&
+					(name === DB_NAME || name.startsWith(`${DB_NAME}_`)),
+			);
+	} catch {
+		return [];
+	}
+}
+
+export async function clearAllData(): Promise<ClearAllDataResult> {
 	// Capture the registry before localStorage is wiped: it is the only way
 	// to find account databases that were opened in an earlier session on a
 	// browser without indexedDB.databases().
@@ -94,6 +125,9 @@ export async function clearAllData(): Promise<void> {
 	// The language choice is a device preference, not account data: clearing
 	// the app must not silently switch the interface.
 	const language = localStorage.getItem(LANGUAGE_PREFERENCE_KEY);
+	// Revoke the server session before its token is erased: a token that only
+	// disappears from this browser stays usable until it expires.
+	const token = readAnyToken();
 
 	// Stop any in-flight sync before deleting: a tick that starts after the
 	// reset would recreate the database and refill it with downloaded history.
@@ -107,12 +141,22 @@ export async function clearAllData(): Promise<void> {
 		localStorage.setItem(LANGUAGE_PREFERENCE_KEY, language);
 
 	await Promise.race([
-		Promise.allSettled([
-			browserUnsubscribePush(),
-			resetAllDBs(knownDBs),
-			clearAllCaches(),
-			unregisterServiceWorker(),
-		]),
+		(async () => {
+			// The mirrored background credentials are not an account database:
+			// remove them explicitly, before the account databases so the two
+			// deletes do not race.
+			await deleteBackgroundSessionDB();
+			await Promise.allSettled([
+				token === null ? Promise.resolve() : revokeSession(token),
+				browserUnsubscribePush(),
+				resetAllDBs(knownDBs),
+				clearAllCaches(),
+				unregisterServiceWorker(),
+			]);
+		})(),
 		new Promise<void>((resolve) => setTimeout(resolve, 4000)),
 	]);
+
+	const remainingDatabases = await listRemainingDatabases();
+	return { ok: remainingDatabases.length === 0, remainingDatabases };
 }

@@ -44,6 +44,18 @@ function params(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function deferred<T>(): {
+	promise: Promise<T>;
+	resolve: (value: T) => void;
+} {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((r) => {
+		resolve = r;
+	});
+
+	return { promise, resolve };
+}
+
 beforeEach(() => {
 	setActiveAccountKey("alice:test");
 	vi.clearAllMocks();
@@ -198,6 +210,61 @@ describe("useGroupSettings", () => {
 
 		expect(result.current.groupSettingsChatId).toBeNull();
 		expect(p.selectChat).toHaveBeenCalledWith(null);
+		// The server view no longer has us: keeping it would leave a ghost
+		// group in the list after the user has left.
+		expect(await chatsRepo.getById("c1")).toBeUndefined();
+		expect(vi.mocked(scheduleSync)).toHaveBeenCalled();
+	});
+
+	it("ignores a late response from a previously opened group", async () => {
+		const first = deferred<{ chat: Chat }>();
+		const second = deferred<{ chat: Chat }>();
+		vi.mocked(api.getChatInfo)
+			.mockReturnValueOnce(first.promise)
+			.mockReturnValueOnce(second.promise);
+		const { result } = renderHook(() => useGroupSettings(params()));
+
+		act(() => {
+			void result.current.openGroupSettings("c1");
+		});
+		act(() => {
+			void result.current.openGroupSettings("c2");
+		});
+
+		await act(async () => {
+			second.resolve({ chat: chat("c2", "Second") });
+			await second.promise;
+		});
+		await act(async () => {
+			first.resolve({ chat: chat("c1", "First") });
+			await first.promise;
+		});
+
+		await waitFor(() => {
+			expect(result.current.groupSettings?.id).toBe("c2");
+		});
+		expect(result.current.groupSettings?.name).toBe("Second");
+		expect(result.current.groupSettingsChatId).toBe("c2");
+	});
+
+	it("ignores a late response after the dialog was closed", async () => {
+		const pending = deferred<{ chat: Chat }>();
+		vi.mocked(api.getChatInfo).mockReturnValueOnce(pending.promise);
+		const { result } = renderHook(() => useGroupSettings(params()));
+
+		act(() => {
+			void result.current.openGroupSettings("c1");
+		});
+		act(() => {
+			result.current.closeGroupSettings();
+		});
+		await act(async () => {
+			pending.resolve({ chat: chat("c1", "Late") });
+			await pending.promise;
+		});
+
+		expect(result.current.groupSettings).toBeNull();
+		expect(result.current.groupSettingsChatId).toBeNull();
 	});
 
 	it("deletes the group and syncs", async () => {

@@ -2,14 +2,7 @@
 /* eslint-disable max-lines */
 import { Paper } from "@mantine/core";
 import { CheckCircle2, Circle } from "lucide-react";
-import {
-	memo,
-	useCallback,
-	useEffect,
-	useLayoutEffect,
-	useRef,
-	useState,
-} from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useMessageSelection } from "../../context/MessageSelectionContext.tsx";
 import type { FileKey } from "../../e2ee/file-crypto.ts";
 import { useFileUrl } from "../../hooks/useFileUrl.ts";
@@ -67,7 +60,11 @@ export interface MessageBubbleProps {
 	isPinned?: boolean;
 	onBlock?: (fromId: string) => void;
 	onForward?: (chatId: string, messageId: string) => void;
-	threadId?: string;
+	// linkThreadId points at the thread started by this message (the "N replies"
+	// link); messageThreadId is the thread that contains the message itself and
+	// addresses edit/reaction storage.
+	linkThreadId?: string;
+	messageThreadId?: string;
 	threadMessageCount?: number;
 	isInThread?: boolean;
 	status?: "sent" | "queued" | "failed";
@@ -83,10 +80,14 @@ export interface MessageBubbleProps {
 	replyMarkup?: InlineKeyboardMarkup;
 }
 
-function isWithinTTL(createdAt: string, ttl: number): boolean {
+function isWithinTTL(
+	createdAt: string,
+	ttl: number,
+	now = Date.now(),
+): boolean {
 	if (ttl === 0) return true;
 	if (ttl < 0) return false;
-	return (Date.now() - new Date(createdAt).getTime()) / 1000 <= ttl;
+	return (now - new Date(createdAt).getTime()) / 1000 <= ttl;
 }
 
 function deepEq(a: unknown, b: unknown): boolean {
@@ -118,6 +119,7 @@ function primitivePropsEqual(
 		prev.text === next.text &&
 		prev.isOwn === next.isOwn &&
 		prev.fromNick === next.fromNick &&
+		prev.fromId === next.fromId &&
 		prev.time === next.time &&
 		prev.chatId === next.chatId &&
 		prev.msgId === next.msgId &&
@@ -125,7 +127,8 @@ function primitivePropsEqual(
 		prev.editTTL === next.editTTL &&
 		prev.deleteTTL === next.deleteTTL &&
 		prev.createdAt === next.createdAt &&
-		prev.threadId === next.threadId &&
+		prev.linkThreadId === next.linkThreadId &&
+		prev.messageThreadId === next.messageThreadId &&
 		prev.threadMessageCount === next.threadMessageCount &&
 		prev.isInThread === next.isInThread &&
 		prev.status === next.status &&
@@ -151,13 +154,38 @@ function deepPropsEqual(
 	);
 }
 
-// Callbacks (onReply/onDelete/...) are intentionally excluded: parents pass
-// stable useCallback handlers, and comparing by reference would defeat the
-// memo on every render. fileKeys must stay in the comparison so a message
-// stuck in failed/encrypted state re-renders once keys arrive.
+// fileKeys must stay in the comparison so a message stuck in
+// failed/encrypted state re-renders once keys arrive.
+
+// Callbacks are compared by reference: a parent that closes over stale data
+// (MessageList.handleReplyClick over datedMessages) must be able to update the
+// bubble after history arrives. The other handlers are stable useCallbacks, so
+// the reference check does not defeat memo.
+function callbacksEqual(
+	prev: MessageBubbleProps,
+	next: MessageBubbleProps,
+): boolean {
+	return (
+		prev.onReplyClick === next.onReplyClick &&
+		prev.onStartEdit === next.onStartEdit &&
+		prev.onDelete === next.onDelete &&
+		prev.onReply === next.onReply &&
+		prev.onCreateThread === next.onCreateThread &&
+		prev.onOpenThread === next.onOpenThread &&
+		prev.onPin === next.onPin &&
+		prev.onBlock === next.onBlock &&
+		prev.onForward === next.onForward &&
+		prev.onRetry === next.onRetry &&
+		prev.onCancelSend === next.onCancelSend
+	);
+}
 
 function areEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
-	return primitivePropsEqual(prev, next) && deepPropsEqual(prev, next);
+	return (
+		primitivePropsEqual(prev, next) &&
+		deepPropsEqual(prev, next) &&
+		callbacksEqual(prev, next)
+	);
 }
 
 function BubbleAuthor({
@@ -307,7 +335,8 @@ export const MessageBubble = memo(function MessageBubble({
 	onBlock,
 	onForward,
 	fromId = "",
-	threadId,
+	linkThreadId,
+	messageThreadId,
 	threadMessageCount,
 	isInThread,
 	status,
@@ -322,8 +351,18 @@ export const MessageBubble = memo(function MessageBubble({
 	replyMarkup,
 }: MessageBubbleProps) {
 	const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+	// TTL gates (edit/delete) are evaluated when the menu opens: the bubble memo
+	// blocks a re-render on a timer, so a stale render would keep offering
+	// actions after the window expired.
+	const [menuOpenedAt, setMenuOpenedAt] = useState<number | null>(null);
+	// A component that mounts later than the render (memo hit) still needs a
+	// "now" for the TTL gate; the value is fixed once per mount.
+	const [mountedAt] = useState(() => Date.now());
 	const bubbleRef = useRef<HTMLDivElement>(null);
 	const menuOpenedByKeyboardRef = useRef(false);
+	const longPressTimerRef = useRef<number | null>(null);
+	const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
+	const longPressFiredRef = useRef(false);
 	const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
 	const [locationLightboxOpen, setLocationLightboxOpen] = useState(false);
 	const menuRef = useRef<HTMLDivElement>(null);
@@ -340,16 +379,17 @@ export const MessageBubble = memo(function MessageBubble({
 		activeAccount?.token,
 	);
 
+	const ttlNow = menuOpenedAt ?? mountedAt;
 	const canEdit =
 		isOwn &&
-		isWithinTTL(createdAt, editTTL) &&
+		isWithinTTL(createdAt, editTTL, ttlNow) &&
 		status !== "queued" &&
 		status !== "failed";
 	const canDelete =
 		isOwn &&
 		(status === "queued" ||
 			status === "failed" ||
-			isWithinTTL(createdAt, deleteTTL));
+			isWithinTTL(createdAt, deleteTTL, ttlNow));
 	const canCancelSend = onCancelSend !== undefined && status === "queued";
 	const canReply =
 		onReply !== undefined && status !== "queued" && status !== "failed";
@@ -384,7 +424,7 @@ export const MessageBubble = memo(function MessageBubble({
 		status !== "failed";
 	const canCreateThread =
 		onCreateThread !== undefined &&
-		threadId === undefined &&
+		linkThreadId === undefined &&
 		!isInThread &&
 		status !== "queued" &&
 		status !== "failed";
@@ -400,25 +440,24 @@ export const MessageBubble = memo(function MessageBubble({
 		canBlock ||
 		canForward;
 
-	useLayoutEffect(() => {
-		if (!menuPos || !menuRef.current) return;
-		const el = menuRef.current;
-		const rect = el.getBoundingClientRect();
-		if (rect.right > window.innerWidth) {
-			el.style.left = `${window.innerWidth - rect.width - 8}px`;
-		}
-		if (rect.bottom > window.innerHeight) {
-			el.style.top = `${window.innerHeight - rect.height - 8}px`;
-		}
-	}, [menuPos]);
-
 	useEffect(() => {
 		if (!menuPos) return;
 		firstMenuItemRef.current?.focus();
 	}, [menuPos]);
 
+	const clearLongPress = useCallback(() => {
+		if (longPressTimerRef.current !== null) {
+			window.clearTimeout(longPressTimerRef.current);
+			longPressTimerRef.current = null;
+		}
+		longPressStartRef.current = null;
+	}, []);
+
+	useEffect(() => clearLongPress, [clearLongPress]);
+
 	const closeMenu = useCallback(() => {
 		setMenuPos(null);
+		setMenuOpenedAt(null);
 		if (menuOpenedByKeyboardRef.current) {
 			menuOpenedByKeyboardRef.current = false;
 			// The trigger is the bubble itself: the opened menu took focus,
@@ -440,7 +479,37 @@ export const MessageBubble = memo(function MessageBubble({
 	}, [menuPos, closeMenu]);
 
 	function openMenuAt(x: number, y: number) {
+		setMenuOpenedAt(Date.now());
 		setMenuPos({ x, y });
+	}
+
+	// iOS Safari does not emit contextmenu for a long tap on a plain div, so
+	// touch users get the same menu through a pointer long-press. Scrolling
+	// (movement) or releasing early cancels it instead of opening the menu.
+	function startLongPress(e: React.PointerEvent<HTMLDivElement>) {
+		if (selection?.mode) return;
+		if (e.pointerType === "mouse") return;
+		clearLongPress();
+		longPressFiredRef.current = false;
+		longPressStartRef.current = { x: e.clientX, y: e.clientY };
+		const { clientX, clientY } = e;
+		longPressTimerRef.current = window.setTimeout(() => {
+			longPressTimerRef.current = null;
+			longPressFiredRef.current = true;
+			menuOpenedByKeyboardRef.current = false;
+			openMenuAt(clientX, clientY);
+		}, 500);
+	}
+
+	function moveLongPress(e: React.PointerEvent<HTMLDivElement>) {
+		const start = longPressStartRef.current;
+		if (start === null) return;
+		if (
+			Math.abs(e.clientX - start.x) > 10 ||
+			Math.abs(e.clientY - start.y) > 10
+		) {
+			clearLongPress();
+		}
 	}
 
 	return (
@@ -471,9 +540,16 @@ export const MessageBubble = memo(function MessageBubble({
 					onContextMenu={(e) => {
 						e.preventDefault();
 						if (selection?.mode) return;
+						clearLongPress();
 						menuOpenedByKeyboardRef.current = false;
 						openMenuAt(e.clientX, e.clientY);
 					}}
+					onPointerDown={startLongPress}
+					onPointerMove={moveLongPress}
+					onPointerUp={clearLongPress}
+					onPointerCancel={clearLongPress}
+					onPointerLeave={clearLongPress}
+					aria-haspopup={hasMenuActions ? "menu" : undefined}
 					tabIndex={hasMenuActions || selectable ? 0 : undefined}
 					onKeyDown={(e) => {
 						if (selection?.mode) {
@@ -569,11 +645,11 @@ export const MessageBubble = memo(function MessageBubble({
 				chatId={chatId}
 				messageId={msgId}
 				reactions={reactions}
-				threadId={threadId}
+				threadId={messageThreadId}
 				disabled={status === "queued" || status === "failed"}
 			/>
 			<BubbleThreadLink
-				threadId={threadId}
+				threadId={linkThreadId}
 				threadMessageCount={threadMessageCount}
 				isOwn={isOwn}
 				onOpenThread={onOpenThread}
@@ -598,7 +674,7 @@ export const MessageBubble = memo(function MessageBubble({
 				msgId={msgId}
 				fromId={fromId}
 				files={files}
-				threadId={threadId}
+				threadId={messageThreadId}
 				onStartEdit={onStartEdit}
 				onRetry={onRetry}
 				onCancelSend={onCancelSend}

@@ -207,4 +207,30 @@ describe("usePushNotifications", () => {
 			expect(unsubscribeSpy).toHaveBeenCalledTimes(1);
 		});
 	});
+
+	it("keeps the shared subscription while another account is stored", async () => {
+		// Another tab is still signed in with a different account: the push
+		// subscription is shared by the whole origin, not per tab.
+		localStorage.setItem(
+			"accounts",
+			JSON.stringify([{ token: "other-account", user: { id: "b:test" } }]),
+		);
+		const unsubscribeSpy = vi.fn(() => Promise.resolve(true));
+		installServiceWorker(() =>
+			Promise.resolve({
+				unsubscribe: unsubscribeSpy,
+			} as unknown as PushSubscription),
+		);
+		setPermission("denied");
+
+		const { rerender } = renderHook(
+			({ token }) => usePushNotifications(token),
+			{ initialProps: { token: "tok" } },
+		);
+		rerender({ token: "" });
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(unsubscribeSpy).not.toHaveBeenCalled();
+		localStorage.clear();
+	});
 });

@@ -1,4 +1,11 @@
-import { Anchor, Group, Skeleton, Stack, Text } from "@mantine/core";
+import {
+	Anchor,
+	Group,
+	Skeleton,
+	Stack,
+	Text,
+	UnstyledButton,
+} from "@mantine/core";
 import { MapPin } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -19,10 +26,15 @@ interface Props {
 function MiniMapBody({ location }: Props) {
 	const { t } = useTranslation();
 	const [loaded, setLoaded] = useState(false);
+	// The tiles of OpenStreetMap are requested only after the user asks for
+	// the map: a message of an E2EE location must not reveal its coordinates
+	// (and the reader's IP) to a third party just by scrolling past.
+	const [showMap, setShowMap] = useState(false);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset effect intentionally re-runs when the location changes.
 	useEffect(() => {
 		setLoaded(false);
+		setShowMap(false);
 	}, [location.lat, location.lng]);
 
 	return (
@@ -38,17 +50,45 @@ function MiniMapBody({ location }: Props) {
 					cursor: "pointer",
 				}}
 			>
-				{!loaded && (
-					<Skeleton
-						height={160}
-						width={240}
-						radius="sm"
-						style={{ position: "absolute", inset: 0 }}
-					/>
+				{!showMap && (
+					<UnstyledButton
+						onClick={() => setShowMap(true)}
+						aria-label={t("message.location")}
+						style={{
+							position: "absolute",
+							inset: 0,
+							display: "flex",
+							alignItems: "center",
+							justifyContent: "center",
+							background: "var(--mantine-color-dark-6)",
+						}}
+					>
+						<Stack align="center" gap={4}>
+							<MapPin size={22} />
+							<Text size="xs" c="dimmed">
+								{t("message.location")}
+							</Text>
+						</Stack>
+					</UnstyledButton>
 				)}
-				<Suspense fallback={null}>
-					<LeafletMiniMap location={location} onReady={() => setLoaded(true)} />
-				</Suspense>
+				{showMap && (
+					<>
+						{!loaded && (
+							<Skeleton
+								height={160}
+								width={240}
+								radius="sm"
+								style={{ position: "absolute", inset: 0 }}
+							/>
+						)}
+						<Suspense fallback={null}>
+							<LeafletMiniMap
+								location={location}
+								onReady={() => setLoaded(true)}
+							/>
+						</Suspense>
+					</>
+				)}
 			</div>
 			<Group gap={6} wrap="nowrap">
 				<MapPin
@@ -78,7 +118,16 @@ export function LocationMiniMap({ location }: Props) {
 		<ErrorBoundary
 			fallback={
 				<Text size="xs" c="dimmed">
-					{formatCoords(location)} — {t("message.openInMap")}
+					{formatCoords(location)} —{" "}
+					<Anchor
+						href={openStreetMapURL(location)}
+						target="_blank"
+						rel="noopener noreferrer"
+						size="xs"
+						onClick={(e) => e.stopPropagation()}
+					>
+						{t("message.openInMap")}
+					</Anchor>
 				</Text>
 			}
 		>

@@ -73,6 +73,59 @@ describe("useMessageSearch", () => {
 		expect(result.current.showSearchResults).toBe(true);
 	});
 
+	it("does not reopen stale results after the field is cleared", async () => {
+		// A request that was already in flight passed the sequence check after
+		// clearing and opened the dropdown with the old list.
+		let resolveUsers: (v: {
+			users: Array<{ id: string; nick: string; online: boolean }>;
+		}) => void = () => {};
+		mockSearchUsers().mockReturnValue(
+			new Promise((resolve) => {
+				resolveUsers = resolve;
+			}),
+		);
+		const { result } = renderHook(() => useMessageSearch("tok"));
+
+		act(() => {
+			result.current.handleSearchChange("bob");
+		});
+		act(() => {
+			vi.advanceTimersByTime(300);
+		});
+
+		act(() => {
+			result.current.handleSearchChange("");
+		});
+		await act(async () => {
+			resolveUsers({ users: [{ id: "b:test", nick: "bob", online: true }] });
+			await Promise.resolve();
+		});
+
+		expect(result.current.searchResults).toEqual([]);
+		expect(result.current.showSearchResults).toBe(false);
+	});
+
+	it("clears results when the account token changes", () => {
+		const users = [{ id: "b:test", nick: "bob", online: true }];
+		mockSearchUsers().mockResolvedValue({ users });
+		const { result, rerender } = renderHook(
+			({ token }: { token: string | undefined }) => useMessageSearch(token),
+			{ initialProps: { token: "tok" } },
+		);
+
+		act(() => {
+			result.current.handleSearchChange("bob");
+		});
+		act(() => {
+			vi.advanceTimersByTime(300);
+		});
+
+		rerender({ token: "tok2" });
+
+		expect(result.current.searchResults).toEqual([]);
+		expect(result.current.searchQuery).toBe("");
+	});
+
 	it("hides results on lookup failure", async () => {
 		mockSearchUsers().mockRejectedValueOnce(new Error("down"));
 		const { result } = renderHook(() => useMessageSearch("tok"));

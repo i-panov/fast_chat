@@ -7,6 +7,7 @@ import { metaRepo } from "../db/metaRepo.ts";
 import { outboxRepo } from "../db/outboxRepo.ts";
 import { pendingBlobsRepo } from "../db/pendingBlobsRepo.ts";
 import type { StoredMessage } from "../db/schema.ts";
+import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import type { KeyPair } from "../e2ee/crypto.ts";
 import { generateKeyPair } from "../e2ee/crypto.ts";
 import {
@@ -24,6 +25,7 @@ const keyStore = vi.hoisted(() => ({
 
 vi.mock("../api.ts", () => ({
 	fileExistsByHash: vi.fn(() => Promise.resolve(false)),
+	getChatInfo: vi.fn(() => Promise.reject(new Error("offline"))),
 	uploadPublicKey: vi.fn(),
 	getPublicKey: vi.fn((_token: string, userId: string) => {
 		if (userId === "alice:test" && keyStore.alice !== null) {
@@ -172,6 +174,95 @@ describe("useMessageSender", () => {
 
 		const ops = await outboxRepo.list();
 		expect(ops.map((o) => o.kind)).toContain("edit");
+	});
+
+	it("edits a message that started a thread (parent lives in the main feed)", async () => {
+		// The bubble passes the thread it links to, not the store the row lives
+		// in: an edit used to look only in the thread store and silently fail.
+		const { result } = renderHook(() => useMessageSender({ token: "tok" }));
+
+		await result.current.sendMessage({ chatId: "c1", text: "parent v1" });
+		const [parent] = await messagesRepo.getByChat("c1");
+
+		const ok = await result.current.editMessage({
+			chatId: "c1",
+			messageId: parent.id,
+			text: "parent v2",
+			threadId: "th-of-parent",
+		});
+
+		expect(ok).toBe(true);
+		const [stored] = await messagesRepo.getByChat("c1");
+		expect((await decryptAsBob(stored)).text).toBe("parent v2");
+		const ops = await outboxRepo.list();
+		// The edit must be addressed to the chat, not to the link thread.
+		const edit = ops.find((o) => o.kind === "edit");
+		expect(edit).toBeDefined();
+		expect(edit?.kind === "edit" ? edit.threadId : "x").toBeUndefined();
+	});
+
+	it("edits a message inside a thread", async () => {
+		const { result } = renderHook(() => useMessageSender({ token: "tok" }));
+
+		await result.current.sendMessage({
+			chatId: "c1",
+			text: "reply v1",
+			threadId: "t1",
+		});
+		const [reply] = await threadMessagesRepo.getByThread("t1");
+
+		const ok = await result.current.editMessage({
+			chatId: "c1",
+			messageId: reply.id,
+			text: "reply v2",
+			threadId: "t1",
+		});
+
+		expect(ok).toBe(true);
+		const [stored] = await threadMessagesRepo.getByThread("t1");
+		expect((await decryptAsBob(stored)).text).toBe("reply v2");
+		const ops = await outboxRepo.list();
+		const edit = ops.find((o) => o.kind === "edit");
+		expect(edit?.kind === "edit" ? edit.threadId : undefined).toBe("t1");
+	});
+
+	it("deletes a delivered message whose edit failed with a server delete", async () => {
+		const { result } = renderHook(() => useMessageSender({ token: "tok" }));
+
+		await result.current.sendMessage({ chatId: "c1", text: "delivered" });
+		const [message] = await messagesRepo.getByChat("c1");
+		// The send op is gone: the message reached the server (processOutbox
+		// removes it on success). Only a failed edit is left in the queue.
+		for (const op of await outboxRepo.list()) {
+			await outboxRepo.remove(op.opId);
+		}
+		// Simulate an edit that was terminally rejected: the row is still on the
+		// server, so deletion must go through the server, not just locally.
+		await outboxRepo.enqueue({
+			kind: "edit",
+			opId: "failed-edit",
+			chatId: "c1",
+			messageId: message.id,
+			text: "edited",
+			pendingFileClientIds: [],
+			keptFileIds: [],
+			filesToRemove: [],
+			clientEditedAt: "2026-08-30T10:00:00.000Z",
+			createdAt: "2026-08-30T10:00:00.000Z",
+			attempts: 1,
+			status: "failed",
+		});
+		await messagesRepo.markStatus("c1", message.id, "failed");
+
+		await result.current.deleteMessage("c1", message.id);
+
+		const ops = await outboxRepo.list();
+		expect(
+			ops.some((o) => o.kind === "delete" && o.messageId === message.id),
+		).toBe(true);
+		expect(ops.some((o) => o.kind === "edit")).toBe(false);
+		const stored = await messagesRepo.getById("c1", message.id);
+		expect(stored?.status).toBe("deleted");
 	});
 
 	it("cancels a queued send instead of delivering and deleting it", async () => {

@@ -235,6 +235,19 @@ describe("useAuth", () => {
 		expect(result.current.activeAccount?.deviceId).toBeTruthy();
 	});
 
+	it("hydrates an account whose stored session id is empty", async () => {
+		localStorage.setItem(
+			"accounts",
+			JSON.stringify([{ ...account("t1", "a"), sessionId: "" }]),
+		);
+
+		const { result } = renderHook(() => useAuth(), { wrapper });
+
+		await waitFor(() => {
+			expect(result.current.activeAccount?.sessionId).toBe("s1");
+		});
+	});
+
 	it("refreshes the account token and activates the rotated one", async () => {
 		localStorage.setItem("accounts", JSON.stringify([account("t1", "a")]));
 		sessionStorage.setItem("activeToken", "t1");
@@ -419,5 +432,115 @@ describe("useAuth", () => {
 			"t1",
 			"t9",
 		]);
+	});
+
+	it("follows a logout made in another tab", () => {
+		const { result } = renderHook(() => useAuth(), { wrapper });
+
+		act(() => {
+			result.current.addAccount(
+				"t1",
+				{ id: "a:test", nick: "a" },
+				"a@x",
+				"2027",
+			);
+		});
+		act(() => {
+			result.current.addAccount(
+				"t2",
+				{ id: "b:test", nick: "b" },
+				"b@x",
+				"2027",
+			);
+		});
+		act(() => {
+			result.current.switchAccount("t1");
+		});
+		expect(sessionStorage.getItem("activeToken")).toBe("t1");
+
+		// Another tab signs the first account out: the shared list loses t1,
+		// while this tab still holds its own per-tab token.
+		act(() => {
+			localStorage.setItem("accounts", JSON.stringify([account("t2", "b")]));
+			window.dispatchEvent(new StorageEvent("storage", { key: "accounts" }));
+		});
+
+		expect(result.current.activeAccount?.token).toBe("t2");
+		expect(sessionStorage.getItem("activeToken")).toBe("t2");
+		expect(navigate).not.toHaveBeenCalled();
+	});
+
+	it("leaves its dead session for the login page when another tab logs out the last account", () => {
+		const { result } = renderHook(() => useAuth(), { wrapper });
+
+		act(() => {
+			result.current.addAccount(
+				"t1",
+				{ id: "a:test", nick: "a" },
+				"a@x",
+				"2027",
+			);
+		});
+
+		act(() => {
+			localStorage.setItem("accounts", "[]");
+			window.dispatchEvent(new StorageEvent("storage", { key: "accounts" }));
+		});
+
+		expect(result.current.activeAccount).toBeNull();
+		expect(sessionStorage.getItem("activeToken")).toBeNull();
+		expect(localStorage.getItem("activeToken")).toBeNull();
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/login",
+			search: { add: undefined },
+		});
+	});
+
+	it("keeps the account when a 401 races a token rotation", () => {
+		const { result } = renderHook(() => useAuth(), { wrapper });
+
+		act(() => {
+			result.current.addAccount(
+				"t1",
+				{ id: "a:test", nick: "a" },
+				"a@x",
+				"2027",
+			);
+			result.current.updateAccountToken("t1", "t2", "2028");
+		});
+
+		// A request with the rotated-away token answers 401 after the new
+		// token is already stored: the account must survive.
+		act(() => {
+			emitUnauthorized("t1");
+		});
+
+		expect(result.current.activeAccount?.token).toBe("t2");
+		expect(navigate).not.toHaveBeenCalled();
+	});
+
+	it("reports a failed logout-all after dropping the local account", async () => {
+		api.logoutAllSessions.mockRejectedValueOnce(
+			new Error("http 503: unavailable"),
+		);
+		const { result } = renderHook(() => useAuth(), { wrapper });
+
+		act(() => {
+			result.current.addAccount(
+				"t1",
+				{ id: "a:test", nick: "a" },
+				"a@x",
+				"2027",
+			);
+		});
+
+		// The local session is gone either way, but the modal must not claim
+		// that every other device was signed out when the request failed.
+		await act(async () => {
+			await expect(result.current.logoutAll()).rejects.toThrow("503");
+		});
+
+		expect(result.current.activeAccount).toBeNull();
+		expect(api.logoutAllSessions).toHaveBeenCalledWith("t1");
 	});
 });
