@@ -325,7 +325,7 @@ func (s *Store) AddMessage(
 	}
 
 	if result.RowsAffected == 0 {
-		return s.existingMessage(ctx, chatID, threadID, id)
+		return s.existingMessage(ctx, chatID, threadID, fromID, id)
 	}
 
 	// Only count a message that was really added: a retry would otherwise
@@ -343,7 +343,11 @@ func (s *Store) AddMessage(
 // existingMessage resolves a message id that is already taken. The id is
 // unique across the whole table, so it has to be checked against the container
 // it was addressed to before it can be returned.
-func (s *Store) existingMessage(ctx context.Context, chatID, threadID, messageID string) (*model.Message, bool, error) {
+func (s *Store) existingMessage(
+	ctx context.Context,
+	chatID, threadID, fromID, messageID string,
+) (*model.Message, bool, error) {
+
 	var stored model.Message
 
 	if err := s.db.WithContext(ctx).First(&stored, "id = ?", messageID).Error; err != nil {
@@ -354,7 +358,10 @@ func (s *Store) existingMessage(ctx context.Context, chatID, threadID, messageID
 		return nil, false, err
 	}
 
-	if stored.ChatID != chatID || stored.ThreadID != threadID {
+	if stored.ChatID != chatID ||
+		stored.ThreadID != threadID ||
+		(fromID != "" && stored.FromID != fromID) {
+
 		return nil, false, ErrMessageIDConflict
 	}
 
@@ -367,13 +374,24 @@ func (s *Store) existingMessage(ctx context.Context, chatID, threadID, messageID
 // owns, so the chat and the thread are validated here rather than trusted.
 // A non-empty ThreadID must exist and belong to ChatID.
 func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
+	_, err := s.AddRawMessageOnce(ctx, msg)
+	return err
+}
+
+// AddRawMessageOnce reports whether the row was actually inserted. The
+// federation path uses it to avoid re-fanning out a replayed message.
+func (s *Store) AddRawMessageOnce(
+	ctx context.Context,
+	msg *model.Message,
+) (bool, error) {
+
 	var count int64
 	if err := s.db.WithContext(ctx).Model(&model.Chat{}).Where("id = ?", msg.ChatID).Count(&count).Error; err != nil {
-		return err
+		return false, err
 	}
 
 	if count == 0 {
-		return ErrChatNotFound
+		return false, ErrChatNotFound
 	}
 
 	if msg.ThreadID != "" {
@@ -381,14 +399,14 @@ func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
 
 		if err := s.db.WithContext(ctx).First(&thread, "id = ?", msg.ThreadID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrThreadNotFound
+				return false, ErrThreadNotFound
 			}
 
-			return err
+			return false, err
 		}
 
 		if thread.ChatID != msg.ChatID {
-			return ErrThreadNotFound
+			return false, ErrThreadNotFound
 		}
 	}
 
@@ -406,21 +424,34 @@ func (s *Store) AddRawMessage(ctx context.Context, msg *model.Message) error {
 		msg.UpdatedAt = msg.CreatedAt
 	}
 
-	// Idempotent insert: if a row with the same primary key already
-	// exists (e.g. a federated message replayed by a retrying client),
-	// silently succeed rather than failing the whole request.
 	result := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(msg)
 	if result.Error != nil {
-		return result.Error
+		return false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		// A replayed id is accepted only for the exact same row. An id already
+		// used by another chat/thread/author must not be reported as delivered:
+		// the sender would think its message arrived while it was dropped.
+		var existing model.Message
+		if err := s.db.WithContext(ctx).First(&existing, "id = ?", msg.ID).Error; err != nil {
+			return false, err
+		}
+		if existing.ChatID != msg.ChatID ||
+			existing.ThreadID != msg.ThreadID ||
+			existing.FromID != msg.FromID {
+
+			return false, ErrMessageIDConflict
+		}
+		return false, nil
 	}
 
-	if result.RowsAffected > 0 && msg.ThreadID != "" {
+	if msg.ThreadID != "" {
 		if err := adjustThreadMessageCount(s.db.WithContext(ctx), msg.ThreadID, 1); err != nil {
 			slog.Warn("failed to update thread message_count", "threadID", msg.ThreadID, "err", err)
 		}
 	}
 
-	return nil
+	return true, nil
 }
 
 func (s *Store) GetMessagesPaginated(ctx context.Context, chatID string, limit int, before string) ([]model.Message, string, bool) {

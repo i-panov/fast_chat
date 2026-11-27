@@ -15,18 +15,17 @@ import (
 // revoked_at is deliberately not updated here: a revoked key must stay revoked
 // even when the device re-registers on the next page load. Un-revoking is an
 // explicit recovery action, not a side effect of an upsert.
-func (s *Store) UpsertUserDevice(ctx context.Context, userID, deviceID, publicKey string, protocolVersion int) error {
+func (s *Store) UpsertUserDevice(ctx context.Context, userID, deviceID, publicKey string) error {
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{colUserID, "public_key", "protocol_version", fieldLastSeenAt}),
+		DoUpdates: clause.AssignmentColumns([]string{colUserID, fieldPublicKey, fieldLastSeenAt}),
 	}).Create(&model.UserDevice{
-		ID:              deviceID,
-		UserID:          userID,
-		PublicKey:       publicKey,
-		ProtocolVersion: protocolVersion,
-		CreatedAt:       now,
-		LastSeenAt:      now,
+		ID:         deviceID,
+		UserID:     userID,
+		PublicKey:  publicKey,
+		CreatedAt:  now,
+		LastSeenAt: now,
 	}).Error
 }
 
@@ -44,25 +43,4 @@ func (s *Store) RevokeUserDevice(ctx context.Context, userID, deviceID string) e
 	return s.db.WithContext(ctx).Model(&model.UserDevice{}).
 		Where("id = ? AND user_id = ?", deviceID, userID).
 		Updates(map[string]any{"revoked_at": now, fieldKeyBackup: "", fieldKeyBackupAt: nil}).Error
-}
-
-func (s *Store) SetUserDeviceBackup(ctx context.Context, userID, deviceID, blob string) error {
-	now := time.Now().UTC()
-	return s.db.WithContext(ctx).Model(&model.UserDevice{}).
-		Where("id = ? AND user_id = ?", deviceID, userID).
-		Updates(map[string]any{fieldKeyBackup: blob, fieldKeyBackupAt: now}).Error
-}
-
-func (s *Store) GetUserDeviceBackup(ctx context.Context, userID, deviceID string) (string, bool) {
-	var blob string
-	err := s.db.WithContext(ctx).Model(&model.UserDevice{}).
-		Where("id = ? AND user_id = ? AND revoked_at IS NULL", deviceID, userID).
-		Pluck(fieldKeyBackup, &blob).Error
-	return blob, err == nil && blob != ""
-}
-
-func (s *Store) DeleteUserDeviceBackup(ctx context.Context, userID, deviceID string) error {
-	return s.db.WithContext(ctx).Model(&model.UserDevice{}).
-		Where("id = ? AND user_id = ?", deviceID, userID).
-		Updates(map[string]any{fieldKeyBackup: "", fieldKeyBackupAt: nil}).Error
 }

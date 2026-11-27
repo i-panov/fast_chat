@@ -6,36 +6,68 @@ import {
 	encryptBotReply,
 	encryptCallbackData,
 	generateEncryptionKeyPair,
+	generateSigningKeyPair,
 } from "../src/crypto.js";
 
-test("encrypted bot reply can be opened by the device key", async () => {
-	const key = await generateEncryptionKeyPair();
-	const encrypted = await encryptBotReply("secret", [
-		{ id: "user:test", publicKey: key.publicKey },
-	]);
+const BINDING = { chatId: "chat-1", messageId: "m-1", fromId: "bot:test" };
+
+async function encryptedReply(text: string) {
+	const bot = await generateEncryptionKeyPair();
+	const identity = await generateSigningKeyPair();
+	const user = await generateEncryptionKeyPair();
+	const encrypted = await encryptBotReply(
+		text,
+		[{ id: "user:test", publicKey: user.publicKey, keyVersion: 1 }],
+		undefined,
+		undefined,
+		{ binding: BINDING, encryptionKey: bot, identityKey: identity },
+	);
+	return { encrypted, user };
+}
+
+test("encrypted bot reply can be opened by the user's master key", async () => {
+	const { encrypted, user } = await encryptedReply("secret");
 	const opened = await decryptBotMessage(
 		encrypted.text,
 		encrypted.payload,
 		"user:test",
-		key,
+		user,
+		BINDING,
 	);
 	assert.equal(opened.text, "secret");
 });
 
+test("a moved message fails the binding check", async () => {
+	const { encrypted, user } = await encryptedReply("secret");
+	await assert.rejects(() =>
+		decryptBotMessage(
+			encrypted.text,
+			encrypted.payload,
+			"user:test",
+			user,
+			{ ...BINDING, chatId: "chat-other" },
+		),
+	);
+});
+
 test("encrypted buttons and callback data round-trip", async () => {
 	const bot = await generateEncryptionKeyPair();
+	const identity = await generateSigningKeyPair();
 	const user = await generateEncryptionKeyPair();
 	const callback = await encryptCallbackData("yes", bot.publicKey);
 	const encrypted = await encryptBotReply(
 		"choose",
-		[{ id: "user:test", publicKey: user.publicKey }],
+		[{ id: "user:test", publicKey: user.publicKey, keyVersion: 1 }],
 		[[{ text: "Yes", callbackData: callback }]],
+		undefined,
+		{ binding: BINDING, encryptionKey: bot, identityKey: identity },
 	);
 	const opened = await decryptBotMessage(
 		encrypted.text,
 		encrypted.payload,
 		"user:test",
 		user,
+		BINDING,
 	);
 	assert.equal(opened.text, "choose");
 	assert.deepEqual(opened.replyMarkup, {
@@ -55,68 +87,4 @@ test("file bytes round-trip", async () => {
 	const encrypted = await encryptFileBytes(plaintext, key);
 	assert.notDeepEqual(encrypted, plaintext);
 	assert.deepEqual(await decryptFileBytes(encrypted, key), plaintext);
-});
-
-test("v2 message with identity signature is decrypted", async () => {
-	const sodium = (await import("libsodium-wrappers")).default;
-	await sodium.ready;
-	const bot = await generateEncryptionKeyPair();
-	const sender = await generateEncryptionKeyPair();
-	const identity = sodium.crypto_sign_keypair();
-
-	const binding = {
-		chatId: "chat-1",
-		messageId: "m-1",
-		fromId: "user:test",
-	};
-	const aad = `chat-1|m-1|user:test|`;
-	const nonce = sodium.randombytes_buf(24);
-	const msgKey = sodium.randombytes_buf(32);
-	const ciphertext = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
-		new TextEncoder().encode(JSON.stringify({ text: "v2 secret" })),
-		new TextEncoder().encode(aad),
-		null,
-		nonce,
-		msgKey,
-	);
-	const box = sodium.crypto_box_easy(
-		msgKey,
-		nonce,
-		sodium.from_base64(bot.publicKey),
-		sodium.from_base64(sender.privateKey),
-	);
-	const payload = JSON.stringify({
-		v: 2,
-		nonce: sodium.to_base64(nonce),
-		senderKey: sender.publicKey,
-		identityKey: sodium.to_base64(identity.publicKey),
-		identitySig: sodium.to_base64(
-			sodium.crypto_sign_detached(
-				new TextEncoder().encode(`${aad}|${sender.publicKey}`),
-				identity.privateKey,
-			),
-		),
-		envelopes: [
-			{ keyId: "user:test", box: sodium.to_base64(box), nonce: sodium.to_base64(nonce) },
-		],
-	});
-
-	const opened = await decryptBotMessage(
-		sodium.to_base64(ciphertext),
-		payload,
-		"user:test",
-		bot,
-		binding,
-	);
-	assert.equal(opened.text, "v2 secret");
-
-	await assert.rejects(() =>
-		decryptBotMessage(
-			sodium.to_base64(ciphertext),
-			payload,
-			"user:test",
-			bot,
-			{ ...binding, chatId: "chat-other" },
-		),
-	);
 });

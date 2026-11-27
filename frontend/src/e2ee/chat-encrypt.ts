@@ -6,6 +6,7 @@ import i18n from "../i18n.ts";
 import type { Location, PendingFile } from "../types/api.ts";
 import { emitNotification } from "../utils/notify.ts";
 import {
+	type Envelope,
 	encryptContent,
 	ensureSodium,
 	type FileMeta,
@@ -18,6 +19,8 @@ import { encryptBytes, generateFileKey, hashBytes } from "./file-crypto.ts";
 import {
 	ensureAccountKeys,
 	ensureIdentityKeys,
+	getIdentityChain,
+	getMyKeyVersion,
 	getRecipientDeviceKeys,
 	RecoveryRequiredError,
 } from "./keys.ts";
@@ -25,12 +28,13 @@ import {
 export interface EncryptResult {
 	ciphertext: string;
 	nonce: string;
-	envelopes: Array<{ keyId: string; box: string; nonce?: string }>;
-	// v2: authenticated envelopes, sender key and identity signature.
-	version: 1 | 2;
-	senderKey?: string;
-	identityKey?: string;
-	identitySig?: string;
+	envelopes: Envelope[];
+	// v3: account-key envelopes and the identity signature.
+	version: 3;
+	senderKey: string;
+	identityKey: string;
+	identitySig: string;
+	identityChain?: Array<{ from: string; to: string; signature: string }>;
 }
 
 // Message binding authenticated as AEAD associated data. The server may
@@ -84,7 +88,7 @@ export async function encryptForChat(
 		const recipients: Array<{
 			keyId: string;
 			publicKey: string;
-			protocolVersion: number;
+			keyVersion: number;
 		}> = [];
 		const missing: string[] = [];
 
@@ -101,6 +105,23 @@ export async function encryptForChat(
 			}
 		}
 
+		if (binding !== undefined) {
+			// The public-key cache may still hold this device's pre-rotation
+			// key. The sender always knows its own current key.
+			const ownVersion = await getMyKeyVersion();
+			const own = {
+				keyId: binding.fromId,
+				publicKey: myKeys.publicKey,
+				keyVersion: ownVersion,
+			};
+			const idx = recipients.findIndex((r) => r.keyId === binding.fromId);
+			if (idx === -1) recipients.push(own);
+			else recipients.splice(idx, 1, own);
+			// The own key is known locally even if the server did not return
+			// it (deleted row, offline, failed upload).
+			const ownMissing = missing.indexOf(binding.fromId);
+			if (ownMissing !== -1) missing.splice(ownMissing, 1);
+		}
 		if (recipients.length === 0) {
 			throw new Error("no recipient keys available");
 		}
@@ -139,46 +160,34 @@ export async function encryptForChat(
 			fileKeys,
 			fileMeta,
 		};
-		// v2 is readable only by clients that announced it. A mixed chat
-		// falls back to v1 so an old tab does not see every new message as
-		// undecryptable.
-		const useV2 =
-			binding !== undefined &&
-			recipients.every((recipient) => recipient.protocolVersion >= 2);
-		const aad = useV2
-			? messageAAD({
-					chatId,
-					messageId: binding.messageId,
-					fromId: binding.fromId,
-					threadId: binding.threadId,
-				})
-			: undefined;
-		const identity = useV2 ? await ensureIdentityKeys() : undefined;
+		if (binding === undefined) {
+			throw new Error("v3 encryption requires a message binding");
+		}
+		const aad = messageAAD({
+			chatId,
+			messageId: binding.messageId,
+			fromId: binding.fromId,
+			threadId: binding.threadId,
+		});
+		const identity = await ensureIdentityKeys();
 		const encrypted = await encryptContent(contentBlob, msgKey, aad);
-		// A binding turns the anonymous sealed envelope into an authenticated
-		// one: the recipient verifies it with the sender's public key.
-		const envelopes = await sealMessageKey(
-			msgKey,
-			recipients,
-			useV2 ? myKeys : undefined,
-		);
+		const envelopes = await sealMessageKey(msgKey, recipients, myKeys);
 
-		return {
+		const result: EncryptResult = {
 			ciphertext: encrypted.ciphertext,
 			nonce: encrypted.nonce,
-			envelopes: envelopes.map((e) => ({
-				keyId: e.keyId,
-				box: e.box,
-				...(e.nonce !== undefined ? { nonce: e.nonce } : {}),
-			})),
-			version: useV2 ? 2 : 1,
-			senderKey: useV2 ? myKeys.publicKey : undefined,
-			identityKey: identity?.publicKey,
-			identitySig:
-				aad === undefined || identity === undefined
-					? undefined
-					: await signSenderBinding(identity, aad, myKeys.publicKey),
+			envelopes,
+			version: 3,
+			senderKey: myKeys.publicKey,
+			identityKey: identity.publicKey,
+			identitySig: await signSenderBinding(identity, aad, myKeys.publicKey),
+			identityChain: await getIdentityChain(),
 		};
+		if (new TextEncoder().encode(JSON.stringify(result)).length > 60000) {
+			emitNotification(i18n.t("error.groupTooLarge"));
+			return null;
+		}
+		return result;
 	} catch (err) {
 		// Recovery must surface to the UI, not hide behind a generic notice.
 		if (err instanceof RecoveryRequiredError) throw err;

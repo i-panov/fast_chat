@@ -23,6 +23,7 @@ from .crypto import (
     encrypt_reply_markup,
     generate_file_key,
     generate_key_pair,
+    generate_signing_key_pair,
 )
 from .types import (
     BotCallbackQuery,
@@ -44,6 +45,37 @@ class BotAPIError(RuntimeError):
         self.status = status
 
 
+class E2EEKeys(tuple):
+    """Unpacks as (encryption_key, identity_key).
+
+    Also exposes the encryption pair as public_key/private_key so code written
+    before the identity key existed keeps working.
+    """
+
+    def __new__(
+        cls,
+        encryption_key: EncryptionKeyPair,
+        identity_key: EncryptionKeyPair,
+    ) -> E2EEKeys:
+        return super().__new__(cls, (encryption_key, identity_key))
+
+    @property
+    def encryption_key(self) -> EncryptionKeyPair:
+        return self[0]
+
+    @property
+    def identity_key(self) -> EncryptionKeyPair:
+        return self[1]
+
+    @property
+    def public_key(self) -> str:
+        return self[0].public_key
+
+    @property
+    def private_key(self) -> str:
+        return self[0].private_key
+
+
 class BotClient:
     """Fast Chat Bot API client with optional E2EE support."""
 
@@ -54,6 +86,7 @@ class BotClient:
         *,
         timeout: float = 30.0,
         encryption_key: EncryptionKeyPair | None = None,
+        identity_key: EncryptionKeyPair | None = None,
     ) -> None:
         if not token:
             raise ValueError("bot token is required")
@@ -61,10 +94,12 @@ class BotClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.encryption_key = encryption_key
+        self.identity_key = identity_key
+        self._pending_e2ee: E2EEKeys | None = None
         self._mode: str | None = None
         self._bot_id: str | None = None
         self._chat_users: dict[str, str] = {}
-        self._callback_users: dict[str, str] = {}
+        self._callback_contexts: dict[str, tuple[str, str, str]] = {}
 
     def get_me(self) -> BotUser:
         me = BotUser.from_api(self._request("GET", "/api/bot-api/getMe"))
@@ -72,16 +107,30 @@ class BotClient:
         self._mode = me.encryption_mode
         return me
 
-    def enable_e2ee(self) -> EncryptionKeyPair:
-        key = generate_key_pair()
+    def enable_e2ee(self) -> E2EEKeys:
+        # Reuse the pair from a failed attempt: a lost PUT response must not
+        # make the bot generate a new identity (the server would answer 409).
+        if self._pending_e2ee is None:
+            self._pending_e2ee = E2EEKeys(
+                generate_key_pair(), generate_signing_key_pair()
+            )
+        keys = self._pending_e2ee
+        encryption_key, identity_key = keys
+        self.encryption_key = encryption_key
+        self.identity_key = identity_key
         self._request(
             "PUT",
             "/api/bot-api/encryption-key",
-            {"publicKey": key.public_key},
+            {
+                "publicKey": encryption_key.public_key,
+                "identityPublicKey": identity_key.public_key,
+            },
         )
-        self.encryption_key = key
+        self._pending_e2ee = None
         self._mode = "e2ee"
-        return key
+        # _encryption_options() loads the bot id lazily: a getMe failure here
+        # would lose the private keys that the server has already accepted.
+        return keys
 
     def get_user_device_keys(self, user_id: str) -> list[DeviceKey]:
         raw = self._request(
@@ -92,7 +141,11 @@ class BotClient:
         if not isinstance(raw, list):
             return []
         return [
-            DeviceKey(id=str(item.get("id", "")), public_key=str(item.get("publicKey", "")))
+            DeviceKey(
+                id=str(item.get("id", "")),
+                public_key=str(item.get("publicKey", "")),
+                key_version=int(item.get("keyVersion", 1) or 1),
+            )
             for item in raw
             if item.get("id") and item.get("publicKey")
         ]
@@ -165,6 +218,25 @@ class BotClient:
             file_meta=file_meta or None,
         )
 
+    def _encryption_options(
+        self, chat_id: str, message_id: str
+    ) -> dict[str, Any]:
+        if self.encryption_key is None or self.identity_key is None:
+            raise BotAPIError("bot is in e2ee mode; encryption and identity keys are required")
+        if self._bot_id is None:
+            self.get_me()
+        if self._bot_id is None:
+            raise BotAPIError("bot identity is not loaded; call get_me() first")
+        return {
+            "sender_key": self.encryption_key,
+            "identity_key": self.identity_key,
+            "binding": {
+                "chatId": chat_id,
+                "messageId": message_id,
+                "fromId": self._bot_id,
+            },
+        }
+
     def send_message(
         self,
         chat_id: str,
@@ -199,11 +271,17 @@ class BotClient:
                 }
             if file_meta is not None:
                 content["fileMeta"] = file_meta
-            ciphertext, payload = encrypt_content(content, devices)
+            message_id = uuid.uuid4().hex
+            ciphertext, payload = encrypt_content(
+                content,
+                devices,
+                **self._encryption_options(chat_id, message_id),
+            )
             raw = self._request(
                 "POST",
                 "/api/bot-api/sendMessage",
                 {
+                    "id": message_id,
                     "chat_id": chat_id,
                     "text": ciphertext,
                     "encrypted": True,
@@ -270,7 +348,11 @@ class BotClient:
             content: dict[str, Any] = {"text": text}
             if markup is not None:
                 content["replyMarkup"] = markup
-            ciphertext, payload = encrypt_content(content, devices)
+            ciphertext, payload = encrypt_content(
+                content,
+                devices,
+                **self._encryption_options(chat_id, message_id),
+            )
             raw = self._request(
                 "POST",
                 "/api/bot-api/editMessageText",
@@ -333,15 +415,20 @@ class BotClient:
         if text is not None:
             body["text"] = text
         if (
-            self.encryption_key is not None
+            self._require_mode() == "e2ee"
             and text is not None
             and text != ""
         ):
-            user_id = self._callback_users.get(callback_query_id)
-            if user_id is None:
+            context = self._callback_contexts.get(callback_query_id)
+            if context is None:
                 raise BotAPIError("unknown callback user for e2ee answer")
+            chat_id, message_id, user_id = context
             devices = self.get_user_device_keys(user_id)
-            ciphertext, payload = encrypt_content({"text": text}, devices)
+            ciphertext, payload = encrypt_content(
+                {"text": text},
+                devices,
+                **self._encryption_options(chat_id, message_id),
+            )
             body["text"] = ciphertext
             body["encrypted"] = True
             body["encrypted_payload"] = payload
@@ -558,7 +645,11 @@ class BotClient:
                 chat_id=str(callback_raw.get("chat_id", "")),
                 data=str(callback_raw.get("data", "")),
             )
-            self._callback_users[callback.id] = callback.from_user.id
+            self._callback_contexts[callback.id] = (
+                callback.chat_id,
+                callback.message_id,
+                callback.from_user.id,
+            )
             self._chat_users[callback.chat_id] = callback.from_user.id
             if self.encryption_key is not None:
                 try:

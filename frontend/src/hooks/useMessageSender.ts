@@ -279,6 +279,7 @@ async function doSendMessage(
 		senderKey: encrypted.senderKey,
 		identityKey: encrypted.identityKey,
 		identitySig: encrypted.identitySig,
+		identityChain: encrypted.identityChain,
 		envelopes: encrypted.envelopes,
 	});
 
@@ -466,6 +467,7 @@ async function doEditMessage(
 		senderKey: encrypted.senderKey,
 		identityKey: encrypted.identityKey,
 		identitySig: encrypted.identitySig,
+		identityChain: encrypted.identityChain,
 		envelopes: encrypted.envelopes,
 	});
 

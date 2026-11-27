@@ -1,4 +1,4 @@
-import { getDB } from "./init.ts";
+import { getDB, getDBFor } from "./init.ts";
 import { notify } from "./notify.ts";
 
 const KEY_LAST_SYNCED_AT = "lastSyncedAt";
@@ -6,6 +6,14 @@ const KEY_LAST_SYNCED_AT = "lastSyncedAt";
 export const metaRepo = {
 	async get(key: string): Promise<unknown> {
 		const db = await getDB();
+		const entry = await db.get("meta", key);
+		return entry?.value;
+	},
+
+	// getFor reads from the database captured by accountKey, not whichever
+	// account is active after an await.
+	async getFor(accountKey: string, key: string): Promise<unknown> {
+		const db = await getDBFor(accountKey);
 		const entry = await db.get("meta", key);
 		return entry?.value;
 	},
@@ -20,6 +28,17 @@ export const metaRepo = {
 	// Use for e2ee key updates to avoid unnecessary re-renders across all chats.
 	async setNoNotify(key: string, value: unknown): Promise<void> {
 		const db = await getDB();
+		await db.put("meta", { key, value });
+	},
+
+	// setNoNotifyFor writes into the database captured by accountKey, not
+	// whichever account happens to be active after an await.
+	async setNoNotifyFor(
+		accountKey: string,
+		key: string,
+		value: unknown,
+	): Promise<void> {
+		const db = await getDBFor(accountKey);
 		await db.put("meta", { key, value });
 	},
 

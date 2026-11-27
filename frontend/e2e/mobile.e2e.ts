@@ -6,6 +6,8 @@ import {
 	test,
 } from "@playwright/test";
 
+import { completeBackupGate } from "./backup-gate.ts";
+
 // On a phone the list and the open chat must be two panes shown one at a
 // time: a fixed 300px sidebar next to the chat leaves no room for messages.
 // The test drives the real API and a 390x844 viewport.
@@ -143,9 +145,7 @@ test("a phone shows the list and the chat one at a time", async ({
 		const createKey = page.getByRole("button", { name: "Create new key" });
 		await expect(createKey).toBeVisible({ timeout: 15_000 });
 		await createKey.click();
-		await expect(page.getByRole("dialog")).toHaveCount(0, {
-			timeout: 20_000,
-		});
+		await completeBackupGate(page);
 
 		// The list is the only pane; the 300px sidebar does not sit next to
 		// an empty chat pane.
@@ -250,9 +250,7 @@ test("selects several messages and deletes them together", async ({
 		const createKey = page.getByRole("button", { name: "Create new key" });
 		await expect(createKey).toBeVisible({ timeout: 15_000 });
 		await createKey.click();
-		await expect(page.getByRole("dialog")).toHaveCount(0, {
-			timeout: 20_000,
-		});
+		await completeBackupGate(page);
 
 		const row = page.getByText(`${bob.user.nick}`, { exact: false }).first();
 		await row.click();

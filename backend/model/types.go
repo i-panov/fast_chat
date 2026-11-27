@@ -17,9 +17,13 @@ type User struct {
 	Banned bool `gorm:"not null;default:false" json:"banned,omitempty"`
 	// Token is the plaintext token returned once by CreateUserWithSession.
 	// It is deliberately not persisted: sessions hold only the hash.
-	Token        string    `gorm:"-"                   json:"-"`
-	Online       bool      `gorm:"default:false"       json:"online"`
-	PublicKey    string    `gorm:"not null;default:''" json:"-"` // E2E X25519 public key (base64)
+	Token             string `gorm:"-"                   json:"-"`
+	Online            bool   `gorm:"default:false"       json:"online"`
+	PublicKey         string `gorm:"not null;default:''" json:"-"` // master E2E X25519 public key (base64)
+	IdentityPublicKey string `gorm:"not null;default:''" json:"-"` // master Ed25519 identity public key (base64)
+	// KeyVersion is the current version of the master encryption key. Old
+	// private keys stay in the password-encrypted backup.
+	KeyVersion   int       `gorm:"not null;default:1"  json:"-"`
 	KeyBackup    string    `gorm:"not null;default:''" json:"-"` // client-encrypted private key backup blob (base64)
 	KeyBackupAt  time.Time `gorm:"default:null"        json:"-"` // when the backup blob was last written
 	AvatarFileID string    `gorm:"default:''"          json:"-"` // profile avatar file
@@ -241,9 +245,6 @@ type UserDevice struct {
 	CreatedAt   time.Time  `gorm:"not null"            json:"createdAt"`
 	LastSeenAt  time.Time  `gorm:"not null"            json:"lastSeenAt"`
 	RevokedAt   *time.Time `gorm:"index"               json:"revokedAt,omitempty"`
-	// ProtocolVersion is the highest E2EE payload version this device
-	// announced. Encryption uses v2 only when every recipient is >= 2.
-	ProtocolVersion int `gorm:"not null;default:0" json:"protocolVersion"`
 }
 
 // UserBlock is a local block: blocker does not want content or calls from

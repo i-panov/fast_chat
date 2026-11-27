@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -28,7 +29,7 @@ func RegisterUsers(api huma.API, st *store.Store, fed *federation.Client, cfg *c
 	registerKeyBackup(api, st)
 	registerUserAvatar(api, st)
 	registerUserBlocks(api, st)
-	registerUserDevices(api, st, fed, cfg)
+	registerUserDevices(api, st)
 }
 
 // registerClientConfig registers a subset of the operations.
@@ -100,10 +101,23 @@ func registerUserKeys(api huma.API, st *store.Store, fed *federation.Client, cfg
 		if err != nil {
 			return nil, &statusError{ErrorMessage: msgInvalidPublicKey, code: http.StatusBadRequest}
 		}
+		rawIdentity, identityErr := service.DecodePublicKey(input.Body.IdentityPublicKey)
+		if identityErr != nil {
+			return nil, &statusError{ErrorMessage: msgInvalidPublicKey, code: http.StatusBadRequest}
+		}
 
 		normalized := base64.StdEncoding.EncodeToString(rawKey)
+		normalizedIdentity := base64.StdEncoding.EncodeToString(rawIdentity)
+		version := max(input.Body.MasterKeyVersion, 1)
 
-		if err := st.UpdateUserPublicKey(ctx, user.ID, normalized); err != nil {
+		if err := st.UpdateUserMasterKey(ctx, user.ID, normalized, normalizedIdentity, version); err != nil {
+			if errors.Is(err, store.ErrStaleMasterKey) {
+				return nil, &statusError{
+					ErrorMessage: "stale E2EE key version",
+					ErrorCode:    "stale-master-key",
+					code:         http.StatusConflict,
+				}
+			}
 			slog.Error("failed to update public key", "err", err)
 			return nil, errInternal
 		}
@@ -126,12 +140,12 @@ func registerUserKeys(api huma.API, st *store.Store, fed *federation.Client, cfg
 
 		remoteDomain := service.RemoteServerFromIDFor(input.UserID, cfg.Federation.AllowPrivateAddresses)
 		if remoteDomain == "" || remoteDomain == cfg.Server.Domain {
-			key, exists := st.GetUserPublicKey(ctx, input.UserID)
+			publicKey, identityKey, version, exists := st.GetUserMasterKey(ctx, input.UserID)
 			if !exists {
 				return nil, &statusError{ErrorMessage: "user has no public key", code: http.StatusNotFound}
 			}
 
-			return publicKeyResponseBody(key), nil
+			return publicKeyResponseBody(publicKey, identityKey, version), nil
 		}
 
 		if fed == nil {
@@ -147,28 +161,40 @@ func registerUserKeys(api huma.API, st *store.Store, fed *federation.Client, cfg
 		}
 
 		var result struct {
-			PublicKey  string `json:"publicKey"`
-			KeyVersion string `json:"keyVersion"`
+			PublicKey         string `json:"publicKey"`
+			IdentityPublicKey string `json:"identityPublicKey"`
+			KeyVersion        string `json:"keyVersion"`
+			MasterKeyVersion  int    `json:"masterKeyVersion"`
 		}
 
 		if err := json.Unmarshal(data, &result); err != nil || result.PublicKey == "" {
 			return nil, &statusError{ErrorMessage: msgFailedParseRemote, code: http.StatusBadGateway}
 		}
 
-		// A peer must not plant an arbitrary string as someone's E2E key:
-		// it has to decode to a 32-byte public key like a locally stored one.
+		// A peer must not plant arbitrary bytes as someone's E2E keys: both
+		// must decode to 32-byte public keys like locally stored ones.
 		if _, err := service.DecodePublicKey(result.PublicKey); err != nil {
 			return nil, &statusError{ErrorMessage: "invalid remote public key", code: http.StatusBadGateway}
+		}
+		// Identity is optional for encryption and old/partial accounts may
+		// not have it; only reject bytes that are present but malformed.
+		if result.IdentityPublicKey != "" {
+			if _, err := service.DecodePublicKey(result.IdentityPublicKey); err != nil {
+				return nil, &statusError{ErrorMessage: "invalid remote identity key", code: http.StatusBadGateway}
+			}
 		}
 
 		keyVersion := result.KeyVersion
 		if keyVersion == "" {
 			keyVersion = service.KeyVersionFor(result.PublicKey)
 		}
+		version := max(result.MasterKeyVersion, 1)
 
 		var out publicKeyOutput
 		out.Body.PublicKey = result.PublicKey
+		out.Body.IdentityPublicKey = result.IdentityPublicKey
 		out.Body.KeyVersion = keyVersion
+		out.Body.MasterKeyVersion = version
 
 		return &out, nil
 	})
@@ -192,11 +218,19 @@ func registerKeyBackup(api huma.API, st *store.Store) {
 			return nil, &statusError{ErrorMessage: msgInvalidBackup, code: http.StatusBadRequest}
 		}
 
-		if _, err := base64.StdEncoding.DecodeString(input.Body.Backup); err != nil {
+		if !validKeyBackupBlob(input.Body.Backup) {
 			return nil, &statusError{ErrorMessage: msgInvalidBackup, code: http.StatusBadRequest}
 		}
 
-		if err := st.SetKeyBackup(ctx, user.ID, input.Body.Backup); err != nil {
+		version := max(input.Body.MasterKeyVersion, 1)
+		if err := st.SetKeyBackup(ctx, user.ID, input.Body.Backup, version); err != nil {
+			if errors.Is(err, store.ErrStaleKeyBackup) {
+				return nil, &statusError{
+					ErrorMessage: "stale E2EE key backup",
+					ErrorCode:    "stale-key-backup",
+					code:         http.StatusConflict,
+				}
+			}
 			slog.Error("failed to store key backup", "err", err)
 			return nil, errInternal
 		}
@@ -234,13 +268,20 @@ func registerKeyBackup(api huma.API, st *store.Store) {
 		Path:        pathKeyBackup,
 		Summary:     "Revoke the caller's key backup",
 		Security:    []map[string][]string{{bearerScheme: {}}},
-	}, func(ctx context.Context, _ *struct{}) (*statusOutput, error) {
+	}, func(ctx context.Context, input *deleteKeyBackupInput) (*statusOutput, error) {
 		user, ok := userFromContext(ctx)
 		if !ok {
 			return nil, errUnauthorized
 		}
 
-		if err := st.DeleteKeyBackup(ctx, user.ID); err != nil {
+		if err := st.DeleteKeyBackup(ctx, user.ID, max(input.MasterKeyVersion, 1)); err != nil {
+			if errors.Is(err, store.ErrStaleKeyBackup) {
+				return nil, &statusError{
+					ErrorMessage: "stale E2EE key backup",
+					ErrorCode:    "stale-key-backup",
+					code:         http.StatusConflict,
+				}
+			}
 			slog.Error("failed to delete key backup", "err", err)
 			return nil, errInternal
 		}
@@ -253,9 +294,10 @@ func registerKeyBackup(api huma.API, st *store.Store) {
 	})
 }
 
-// maxKeyBackupLen bounds the accepted backup blob size, matching the pre-migration
-// transport (a base64 blob holding two 32-byte keys plus salt/nonce).
-const maxKeyBackupLen = 4 << 10
+// maxKeyBackupLen bounds the accepted backup blob size. The v4 container can
+// carry a password wrapper, a passkey wrapper and the capped key/identity
+// history; 64 KiB was no longer enough for the worst case.
+const maxKeyBackupLen = 128 << 10
 
 type configOutput struct {
 	Body struct {
@@ -278,7 +320,9 @@ type searchUsersOutput struct {
 
 type updatePublicKeyInput struct {
 	Body struct {
-		PublicKey string `json:"publicKey"`
+		PublicKey         string `json:"publicKey"`
+		IdentityPublicKey string `json:"identityPublicKey"`
+		MasterKeyVersion  int    `json:"masterKeyVersion"`
 	}
 }
 
@@ -294,16 +338,21 @@ type publicKeyPathInput struct {
 
 type publicKeyOutput struct {
 	Body struct {
-		PublicKey      string `json:"publicKey"`
-		KeyVersion     string `json:"keyVersion"`
-		EncryptionMode string `json:"encryptionMode,omitempty"`
+		PublicKey         string `json:"publicKey"`
+		IdentityPublicKey string `json:"identityPublicKey"`
+		KeyVersion        string `json:"keyVersion"`
+		MasterKeyVersion  int    `json:"masterKeyVersion"`
+		EncryptionMode    string `json:"encryptionMode,omitempty"`
 	}
 }
 
-func publicKeyResponseBody(key string) *publicKeyOutput {
+func publicKeyResponseBody(key, identityKey string, version int) *publicKeyOutput {
+	version = max(version, 1)
 	var out publicKeyOutput
 	out.Body.PublicKey = key
+	out.Body.IdentityPublicKey = identityKey
 	out.Body.KeyVersion = service.KeyVersionFor(key)
+	out.Body.MasterKeyVersion = version
 	out.Body.EncryptionMode = "server"
 
 	return &out
@@ -311,8 +360,38 @@ func publicKeyResponseBody(key string) *publicKeyOutput {
 
 type setKeyBackupInput struct {
 	Body struct {
-		Backup string `json:"backup"`
+		Backup           string `json:"backup"`
+		MasterKeyVersion int    `json:"masterKeyVersion"`
 	}
+}
+
+// validKeyBackupBlob accepts only the v4 master-key container. The server
+// cannot decrypt it, but rejecting older shapes stops a stale tab from
+// replacing the current backup with an unreadable v2 blob.
+func validKeyBackupBlob(blob string) bool {
+	raw, err := base64.StdEncoding.DecodeString(blob)
+	if err != nil {
+		return false
+	}
+	var container struct {
+		V        int     `json:"v"`
+		Password *string `json:"password"`
+		Passkey  *struct {
+			CredentialID string `json:"credentialId"`
+			Salt         string `json:"salt"`
+			Blob         string `json:"blob"`
+		} `json:"passkey"`
+	}
+	if json.Unmarshal(raw, &container) != nil || container.V != 4 {
+		return false
+	}
+	// Password is the portable recovery factor and must always be present;
+	// passkey is only an additional wrapper.
+	return container.Password != nil && *container.Password != ""
+}
+
+type deleteKeyBackupInput struct {
+	MasterKeyVersion int `query:"masterKeyVersion"`
 }
 
 type keyBackupOutput struct {

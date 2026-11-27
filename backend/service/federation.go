@@ -380,10 +380,11 @@ func (s *Service) SendFederatedMessage(
 		}
 	}
 
-	if err := s.store.AddRawMessage(ctx, msg); err != nil {
+	created, err := s.store.AddRawMessageOnce(ctx, msg)
+	if err != nil {
 		return nil, err
 	}
-
+	//nolint:nestif // create-and-attach vs replay-repair share the loop.
 	if len(in.Files) > 0 {
 		fileIDs := make([]string, 0, len(in.Files))
 		for idx := range in.Files {
@@ -408,7 +409,13 @@ func (s *Service) SendFederatedMessage(
 			}
 			fileIDs = append(fileIDs, fileInfo.ID)
 		}
-		if err := s.store.SetMessageFiles(ctx, msg.ID, fileIDs); err != nil {
+		if created {
+			if err := s.store.SetMessageFiles(ctx, msg.ID, fileIDs); err != nil {
+				return nil, err
+			}
+		} else if err := s.store.AddMessageFiles(ctx, msg.ID, fileIDs); err != nil {
+			// A replay may repair missing attachments, but must never replace
+			// the list already stored for the message.
 			return nil, err
 		}
 		files, err := s.store.GetMessageFiles(ctx, msg.ID)
@@ -418,11 +425,17 @@ func (s *Service) SendFederatedMessage(
 		msg.Files = files
 	}
 
-	// A new message brings a chat back to a member who hid it, exactly like
-	// the local send path. Without this the chat stays filtered out of the
-	// delta forever and its history is never synced again.
+	// A message (new or replayed) brings a chat back to a member who hid it.
 	if err := s.store.ClearChatDeletesForChat(ctx, chat.ID); err != nil {
 		log().Warn("failed to unhide chat after a federated message", "chat", chat.ID, "err", err)
+	}
+
+	if !created {
+		// The row already existed, but its files may not have been attached by
+		// an earlier interrupted attempt. Everything above is idempotent; only
+		// the fan-out below must be skipped. Return msg so repaired Files are
+		// included.
+		return msg, nil
 	}
 
 	if msg.ThreadID != "" {

@@ -29,7 +29,6 @@ func RegisterFederated(api huma.API, st *store.Store, svc *service.Service, fm *
 	registerFederatedChats(api, st, svc, fm, cfg)
 	registerFederatedCalls(api, st, svc)
 	registerFederatedSync(api, svc)
-	registerFederatedDeviceKeys(api, st)
 	registerFederatedFiles(api, st, svc, cfg)
 }
 
@@ -64,12 +63,12 @@ func registerFederatedUsers(api huma.API, st *store.Store, svc *service.Service,
 			return nil, &statusError{ErrorMessage: "user does not belong to this server", code: http.StatusBadRequest}
 		}
 
-		key, exists := st.GetUserPublicKey(ctx, input.UserID)
+		key, identityKey, version, exists := st.GetUserMasterKey(ctx, input.UserID)
 		if !exists {
 			return nil, &statusError{ErrorMessage: "user has no public key", code: http.StatusNotFound}
 		}
 
-		out := publicKeyResponseBody(key)
+		out := publicKeyResponseBody(key, identityKey, version)
 		if bot, ok := st.GetBot(ctx, input.UserID); ok {
 			out.Body.EncryptionMode = bot.EncryptionMode
 		}

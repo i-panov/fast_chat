@@ -1,54 +1,49 @@
 import { describe, expect, it } from "vitest";
 import {
-	decryptBackup,
+	type BackupData,
 	decryptBackupData,
 	E2EBackupError,
-	encryptBackup,
 	encryptBackupData,
 } from "./backup.ts";
 import { generateIdentityKeyPair, generateKeyPair } from "./crypto.ts";
 
+async function backupData(): Promise<BackupData> {
+	return {
+		keyPair: await generateKeyPair(),
+		identityKeyPair: await generateIdentityKeyPair(),
+		keyVersion: 1,
+	};
+}
+
 describe("key backup roundtrip", () => {
-	it("recovers the account identity together with the device key", async () => {
-		const keyPair = await generateKeyPair();
-		const identityKeyPair = await generateIdentityKeyPair();
-		const blob = await encryptBackupData("pw", { keyPair, identityKeyPair });
+	it("recovers the master key, identity and version", async () => {
+		const data = await backupData();
+		const blob = await encryptBackupData("pw", data);
 
 		const recovered = await decryptBackupData("pw", blob);
-		expect(recovered.keyPair).toEqual(keyPair);
-		expect(recovered.identityKeyPair).toEqual(identityKeyPair);
-	});
-
-	it("recovers the key pair with the correct password", async () => {
-		const kp = await generateKeyPair();
-		const blob = await encryptBackup("correct horse battery staple", kp);
-
-		const recovered = await decryptBackup("correct horse battery staple", blob);
-		expect(recovered.publicKey).toBe(kp.publicKey);
-		expect(recovered.privateKey).toBe(kp.privateKey);
+		expect(recovered.keyPair).toEqual(data.keyPair);
+		expect(recovered.identityKeyPair).toEqual(data.identityKeyPair);
+		expect(recovered.keyVersion).toBe(1);
 	});
 
 	it("rejects a wrong password", async () => {
-		const kp = await generateKeyPair();
-		const blob = await encryptBackup("right password", kp);
+		const blob = await encryptBackupData("right password", await backupData());
 
-		await expect(decryptBackup("wrong password", blob)).rejects.toThrow(
+		await expect(decryptBackupData("wrong password", blob)).rejects.toThrow(
 			E2EBackupError,
 		);
 	});
 
 	it("rejects a malformed blob", async () => {
-		await expect(decryptBackup("password", "not-a-valid-blob")).rejects.toThrow(
-			E2EBackupError,
-		);
-		await expect(decryptBackup("password", "{}")).rejects.toThrow(
+		await expect(
+			decryptBackupData("password", "not-a-valid-blob"),
+		).rejects.toThrow(E2EBackupError);
+		await expect(decryptBackupData("password", "{}")).rejects.toThrow(
 			E2EBackupError,
 		);
 	});
 
 	it("rejects a blob with an unsupported format version", async () => {
-		// Well-shaped payload (valid base64 fields) but an unknown version:
-		// must be rejected before any decryption/parse of the ciphertext.
 		const payload = {
 			v: 99,
 			salt: btoa("salt"),
@@ -56,22 +51,23 @@ describe("key backup roundtrip", () => {
 			ct: btoa("ciphertext"),
 		};
 		const blob = btoa(JSON.stringify(payload));
-		await expect(decryptBackup("password", blob)).rejects.toThrow(
+		await expect(decryptBackupData("password", blob)).rejects.toThrow(
 			E2EBackupError,
 		);
 	});
 
-	it("produces different blobs for the same key pair", async () => {
-		const kp = await generateKeyPair();
-		const a = await encryptBackup("pw", kp);
-		const b = await encryptBackup("pw", kp);
+	it("produces different blobs for the same keys", async () => {
+		const data = await backupData();
+		const a = await encryptBackupData("pw", data);
+		const b = await encryptBackupData("pw", data);
 		expect(a).not.toBe(b);
 	});
 
 	it("does not leak the key material in the blob", async () => {
-		const kp = await generateKeyPair();
-		const blob = await encryptBackup("pw", kp);
-		expect(blob).not.toContain(kp.privateKey);
-		expect(blob).not.toContain(kp.publicKey.slice(0, 20));
+		const data = await backupData();
+		const blob = await encryptBackupData("pw", data);
+		expect(blob).not.toContain(data.keyPair.privateKey);
+		expect(blob).not.toContain(data.identityKeyPair.privateKey);
+		expect(blob).not.toContain(data.keyPair.publicKey.slice(0, 20));
 	});
 });

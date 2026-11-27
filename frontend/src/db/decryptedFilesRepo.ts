@@ -1,4 +1,4 @@
-import { getActiveAccountKey, getDB } from "./init.ts";
+import { getActiveAccountKey, getDB, getDBFor } from "./init.ts";
 import type { DecryptedFile } from "./schema.ts";
 
 // A separate limit from the ciphertext cache: the plaintext is what makes a
@@ -71,6 +71,15 @@ export const decryptedFilesRepo = {
 	async isCached(key: string): Promise<boolean> {
 		const db = await getDB();
 		return (await db.get("decryptedFiles", key)) !== undefined;
+	},
+
+	// clear removes every cached plaintext attachment. Called when a local
+	// lock closes so decrypted media does not survive behind the PIN.
+	async clear(
+		accountKey: string | null = getActiveAccountKey(),
+	): Promise<void> {
+		const db = await getDBFor(accountKey);
+		await db.clear("decryptedFiles");
 	},
 
 	async evictIfNeeded(keepKey?: string): Promise<void> {

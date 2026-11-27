@@ -1,4 +1,3 @@
-import sodium from "libsodium-wrappers";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { metaRepo } from "../db/metaRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
@@ -8,19 +7,22 @@ import { fileTypeForMime } from "../utils/fileType.ts";
 import { messageAAD } from "./chat-encrypt.ts";
 import {
 	decryptContent,
-	decryptText,
 	type EncryptedPayload,
-	encryptText,
-	ensureSodium,
 	type FileMeta,
 	type KeyPair,
-	openMessageKey,
 	openMessageKeyV2,
 	samePublicKey,
-	sealMessageKey,
 	verifySenderBinding,
 } from "./crypto.ts";
 import type { FileKey } from "./file-crypto.ts";
+import {
+	getAccountScope,
+	getIdentityHistory,
+	getIdentityKeyPair,
+	getKeyHistory,
+	getMyKeyVersion,
+	reportStaleEnvelopeVersion,
+} from "./keys.ts";
 
 export interface EncryptResult {
 	text: string; // base64 ciphertext
@@ -87,25 +89,8 @@ function sanitizeMarkup(value: unknown): InlineKeyboardMarkup | undefined {
 	return { inline_keyboard: out };
 }
 
-// encryptMessageText encrypts plaintext to every recipient's public key
-// and returns the ciphertext plus the envelope payload. Only the holder
-// of a recipient's private key can open its envelope.
-export async function encryptMessageText(
-	plaintext: string,
-	recipients: Array<{ keyId: string; publicKey: string }>,
-): Promise<EncryptResult> {
-	await ensureSodium();
-	const msgKey = sodium.randombytes_buf(
-		sodium.crypto_aead_xchacha20poly1305_ietf_KEYBYTES,
-	);
-	const { nonce, ciphertext } = await encryptText(plaintext, msgKey);
-	const envelopes = await sealMessageKey(msgKey, recipients);
-	const payload: EncryptedPayload = { v: 1, nonce, envelopes };
-
-	return { text: ciphertext, encryptedPayload: JSON.stringify(payload) };
-}
-
 const identityPin = (userId: string) => `e2ee.identity.${userId}`;
+const identityTrust = (userId: string) => `e2ee.identityTrust.${userId}`;
 
 // Trust-on-first-use for the account identity. The device key may change
 // (new browser, recovered backup); the identity is what must stay stable.
@@ -113,29 +98,93 @@ async function pinSenderIdentity(
 	fromId: string,
 	identityKey: string,
 	viewerId: string,
+	chain?: Array<{ from: string; to: string; signature: string }>,
 ): Promise<void> {
-	// Own messages come from this very account. A recovery may legitimately
-	// rotate the identity, and pinning would make the user's own messages
-	// unreadable on the device that performed it.
-	if (fromId === viewerId) return;
-
-	const pinned = await metaRepo.get(identityPin(fromId));
-	if (typeof pinned === "string" && pinned !== "") {
-		if (!samePublicKey(pinned, identityKey)) {
-			throw new Error("sender identity changed");
+	const scope = getAccountScope();
+	// Own messages must still carry our identity (current or historical):
+	// otherwise the server could forge a message "from me" with its own key.
+	if (fromId === viewerId) {
+		const own = await getIdentityKeyPair(scope);
+		if (own !== null && samePublicKey(own.publicKey, identityKey)) return;
+		const history = await getIdentityHistory(scope);
+		if (history.some((key) => samePublicKey(key, identityKey))) return;
+		// Another device of this account may have rotated the signing key.
+		// Accept the same signed chain peers would use.
+		const starts = [...(own === null ? [] : [own.publicKey]), ...history];
+		for (const start of starts) {
+			let current = start;
+			for (const link of chain ?? []) {
+				if (!samePublicKey(link.from, current)) continue;
+				const valid = await verifySenderBinding(
+					current,
+					`identity-rotation:${current}`,
+					link.to,
+					link.signature,
+				);
+				if (!valid) throw new Error("invalid identity rotation");
+				current = link.to;
+				if (samePublicKey(current, identityKey)) return;
+			}
 		}
-		return;
+		// No local identity at all (legacy or test state): nothing to compare.
+		if (own === null && history.length === 0) return;
+		throw new Error("own sender identity mismatch");
 	}
-	await metaRepo.setNoNotify(identityPin(fromId), identityKey);
+
+	const pinned = await metaRepo.getFor(scope, identityPin(fromId));
+	if (typeof pinned === "string" && pinned !== "") {
+		if (samePublicKey(pinned, identityKey)) return;
+		const trusted = await metaRepo.getFor(scope, identityTrust(fromId));
+		if (
+			Array.isArray(trusted) &&
+			trusted.some(
+				(value): value is string =>
+					typeof value === "string" && samePublicKey(value, identityKey),
+			)
+		) {
+			return;
+		}
+		// Walk the sender-provided rotation chain from the pinned identity.
+		// Only cryptographically verified hops become trusted; unrelated links
+		// in the same (attacker-controlled) array are ignored.
+		let current = pinned;
+		const verified = [pinned];
+		for (const link of chain ?? []) {
+			if (!samePublicKey(link.from, current)) continue;
+			const valid = await verifySenderBinding(
+				current,
+				`identity-rotation:${current}`,
+				link.to,
+				link.signature,
+			);
+			if (!valid) throw new Error("invalid identity rotation");
+			current = link.to;
+			verified.push(current);
+			if (samePublicKey(current, identityKey)) {
+				const known = Array.isArray(trusted)
+					? trusted.filter(
+							(value): value is string => typeof value === "string",
+						)
+					: [];
+				await metaRepo.setNoNotifyFor(scope, identityPin(fromId), identityKey);
+				await metaRepo.setNoNotifyFor(scope, identityTrust(fromId), [
+					...new Set([...known, ...verified]),
+				]);
+				return;
+			}
+		}
+		throw new Error("sender identity changed");
+	}
+	await metaRepo.setNoNotifyFor(scope, identityPin(fromId), identityKey);
+	await metaRepo.setNoNotifyFor(scope, identityTrust(fromId), [identityKey]);
 }
 
-// openBoundV2 validates the identity signature and returns the AAD string.
+// openBoundV3 validates the identity signature and returns the AAD string.
 // Every field of the binding is required: without them neither the AEAD nor
 // the signature can prove where the ciphertext belongs.
-async function openBoundV2(
+async function openBoundV3(
 	payload: EncryptedPayload,
 	msg: EncryptedContentSource,
-	viewerId: string,
 ): Promise<string> {
 	const { senderKey, identityKey, identitySig } = payload;
 	const { chatId, id, fromId } = msg;
@@ -147,7 +196,7 @@ async function openBoundV2(
 		id === undefined ||
 		fromId === undefined
 	) {
-		throw new Error("v2 message is missing its binding fields");
+		throw new Error("v3 message is missing its binding fields");
 	}
 	const aad = messageAAD({
 		chatId,
@@ -158,7 +207,9 @@ async function openBoundV2(
 	if (!(await verifySenderBinding(identityKey, aad, senderKey, identitySig))) {
 		throw new Error("sender identity signature is invalid");
 	}
-	await pinSenderIdentity(fromId, identityKey, viewerId);
+	// The identity is pinned only after the envelope actually opens and the
+	// content decrypts: a forged, unreadable record must not claim the peer's
+	// identity forever.
 	return aad;
 }
 
@@ -167,35 +218,51 @@ async function openAnyEnvelope(
 	userId: string,
 	key: KeyPair,
 ): Promise<Uint8Array> {
-	const ordered = [
-		...payload.envelopes.filter((envelope) => envelope.keyId === userId),
-		...payload.envelopes.filter((envelope) => envelope.keyId !== userId),
-	];
-	for (const envelope of ordered) {
-		try {
-			if (payload.v === 2) {
-				if (payload.senderKey === undefined) {
-					throw new Error("missing sender key");
-				}
+	// Only this account's envelopes can be opened. Envelopes for other
+	// participants are skipped without touching IndexedDB.
+	const own = payload.envelopes.filter((envelope) => envelope.keyId === userId);
+	const newestOwnVersion =
+		own.length > 0
+			? Math.max(...own.map((envelope) => envelope.keyVersion))
+			: 0;
+	const currentVersion = await getMyKeyVersion();
+	const history = own.some((envelope) => envelope.keyVersion !== currentVersion)
+		? await getKeyHistory()
+		: [];
+	for (const envelope of own) {
+		const versioned =
+			envelope.keyVersion === currentVersion
+				? key
+				: (history.find((entry) => entry.version === envelope.keyVersion)
+						?.keyPair ?? null);
+		// A stale local version marker can point at the wrong history entry.
+		// Try the current key as well so a partially desynced device still
+		// reads messages instead of losing them entirely.
+		const candidates =
+			versioned !== null && versioned.privateKey !== key.privateKey
+				? [versioned, key]
+				: [key];
+		for (const recipientKey of candidates) {
+			try {
 				return await openMessageKeyV2(
 					envelope,
 					payload.senderKey,
-					key.privateKey,
+					recipientKey.privateKey,
 				);
+			} catch {
+				// The envelope belongs to another version; try the next candidate.
 			}
-			return await openMessageKey(envelope, key.publicKey, key.privateKey);
-		} catch {
-			// The envelope belongs to another device key; try the next one.
 		}
+	}
+	if (newestOwnVersion > currentVersion) {
+		void reportStaleEnvelopeVersion(newestOwnVersion);
 	}
 	throw new Error("no envelope for this key");
 }
 
-// EncryptedContentSource is the subset of a message needed to decrypt v1
-// content. A v2 payload additionally binds chatId/id/fromId (and threadId)
-// as AEAD associated data; those fields are optional here so callers that
-// only have a partial record still decrypt legacy v1 content, while a v2
-// payload missing its binding fails closed.
+// EncryptedContentSource is the subset of a message needed to decrypt v3
+// content. The binding fields are optional in the type because some callers
+// hold partial records; a v3 payload missing any of them fails closed.
 export interface EncryptedContentSource {
 	text: string;
 	encryptedPayload?: string;
@@ -206,28 +273,9 @@ export interface EncryptedContentSource {
 	threadId?: string;
 }
 
-// decryptMessageText decrypts a single message's ciphertext using the
-// user's own envelope.
-export async function decryptMessageText(
-	msg: EncryptedContentSource,
-	userId: string,
-	key: KeyPair,
-): Promise<string> {
-	if (!msg.encryptedPayload) return msg.text;
-
-	const payload = JSON.parse(msg.encryptedPayload) as EncryptedPayload;
-	if (payload.v === 2) {
-		await openBoundV2(payload, msg, userId);
-	}
-	const msgKey = await openAnyEnvelope(payload, userId, key);
-	return decryptText(msg.text, payload.nonce, msgKey);
-}
-
 // decryptMessageContent decrypts the full content (text, location, file keys)
-// from the message's encrypted payload. Returns null if the message uses the
-// legacy v1 format (text-only encryption) or if decryption fails.
-// Exported so edit flows can recover the kept files' keys without duplicating
-// the v1/v2 detection logic.
+// from the message's encrypted payload. Returns null if there is no payload or
+// decryption fails.
 export async function decryptMessageContent(
 	msg: EncryptedContentSource,
 	userId: string,
@@ -243,13 +291,10 @@ export async function decryptMessageContent(
 
 	// encryptedPayload carries the msgKey envelopes + content nonce.
 	const payload = JSON.parse(msg.encryptedPayload) as EncryptedPayload;
-	if (payload.v !== 1 && payload.v !== 2) {
+	if (payload.v !== 3) {
 		throw new Error("unsupported encrypted payload version");
 	}
-	let aad: string | undefined;
-	if (payload.v === 2) {
-		aad = await openBoundV2(payload, msg, userId);
-	}
+	const aad = await openBoundV3(payload, msg);
 	const msgKey = await openAnyEnvelope(payload, userId, key);
 
 	try {
@@ -260,6 +305,14 @@ export async function decryptMessageContent(
 		);
 
 		if (typeof content.text !== "string") return null;
+		if (msg.fromId !== undefined) {
+			await pinSenderIdentity(
+				msg.fromId,
+				payload.identityKey,
+				userId,
+				payload.identityChain,
+			);
+		}
 		return {
 			text: content.text,
 			location: sanitizeLocation(content.location),
@@ -436,31 +489,8 @@ export async function decryptMessage(
 				content.fileMeta ?? {},
 			);
 		} else {
-			// Fall back to legacy v1 (text-only encryption), but do not
-			// display a malformed v2 JSON payload as the message text.
-			const legacy = await decryptMessageText(message, userId, key);
-			if (legacy.trim().startsWith("{")) {
-				try {
-					const parsed: unknown = JSON.parse(legacy);
-					if (
-						parsed !== null &&
-						typeof parsed === "object" &&
-						("fileKeys" in parsed ||
-							"replyMarkup" in parsed ||
-							"text" in parsed)
-					) {
-						throw new Error("invalid encrypted content");
-					}
-				} catch (error) {
-					if (
-						error instanceof Error &&
-						error.message === "invalid encrypted content"
-					) {
-						throw error;
-					}
-				}
-			}
-			out.text = legacy;
+			out.text = i18n.t(UNDECRYPTABLE_I18N_KEY);
+			out.undecryptable = true;
 		}
 	} catch {
 		out.text = i18n.t(UNDECRYPTABLE_I18N_KEY);
@@ -476,14 +506,9 @@ export async function decryptMessage(
 
 			if (parent !== undefined) {
 				if (parent.encrypted) {
-					// The parent may use the v2 content format (text + location +
-					// file keys) or legacy v1 text-only encryption. Try v2 first,
-					// then fall back to v1 instead of assuming v1 unconditionally.
 					const content = await decryptMessageContent(parent, userId, key);
 					parentText =
-						content !== null
-							? content.text
-							: await decryptMessageText(parent, userId, key);
+						content !== null ? content.text : i18n.t(UNDECRYPTABLE_I18N_KEY);
 				} else {
 					parentText = parent.text;
 				}

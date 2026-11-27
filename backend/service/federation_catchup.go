@@ -10,6 +10,7 @@ import (
 
 	"fast_chat/model"
 	"fast_chat/sse"
+	"fast_chat/store"
 )
 
 // federationSender is the signed server-to-server client the catch-up worker
@@ -217,6 +218,15 @@ func isPermanentFederationApplyError(err error) bool {
 		ErrMessageNotFound,
 		ErrDeleteWindowExpired,
 		ErrDeletingNotAllowed,
+		ErrMissingEncryptedPayload,
+		ErrEncryptedPayloadTooLarge,
+		ErrInvalidEncryptedPayload,
+		ErrUnsupportedPayloadVersion,
+		ErrInvalidNonce,
+		ErrInvalidBox,
+		ErrMissingEnvelopes,
+		ErrEmptyKeyID,
+		store.ErrMessageIDConflict,
 	} {
 		if errors.Is(err, sentinel) {
 			return true

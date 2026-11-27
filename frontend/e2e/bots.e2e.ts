@@ -1,5 +1,8 @@
 import { type APIRequestContext, expect, test } from "@playwright/test";
-import { decryptBotMessage } from "../../sdk/typescript/src/crypto.ts";
+import {
+	decryptBotMessage,
+	generateSigningKeyPair,
+} from "../../sdk/typescript/src/crypto.ts";
 import { BotClient } from "../../sdk/typescript/src/index.ts";
 
 interface Account {
@@ -138,9 +141,14 @@ test("E2EE bot sends encrypted file and location", async ({ request }) => {
 		publicKey: sodium.to_base64(userPair.publicKey),
 		privateKey: sodium.to_base64(userPair.privateKey),
 	};
-	const registered = await request.put("/api/users/device-key", {
+	const userIdentity = await generateSigningKeyPair();
+	const registered = await request.put("/api/users/public-key", {
 		headers: auth,
-		data: { publicKey: userKey.publicKey },
+		data: {
+			publicKey: userKey.publicKey,
+			identityPublicKey: userIdentity.publicKey,
+			masterKeyVersion: 1,
+		},
 	});
 	expect(registered.ok()).toBeTruthy();
 
@@ -148,8 +156,9 @@ test("E2EE bot sends encrypted file and location", async ({ request }) => {
 		token: creation.token,
 		baseUrl: "http://localhost:8081",
 	});
-	const botKey = await bot.enableE2EE();
-	expect(botKey.publicKey).not.toBe("");
+	const botKeys = await bot.enableE2EE();
+	expect(botKeys.encryptionKey.publicKey).not.toBe("");
+	const me = await bot.getMe();
 	const opened = await request.post("/api/bot-chats", {
 		headers: auth,
 		data: { username: creation.bot.username },
@@ -195,14 +204,16 @@ test("E2EE bot sends encrypted file and location", async ({ request }) => {
 	const fileContent = await decryptBotMessage(
 		fileMessage.text,
 		fileMessage.encryptedPayload,
-		user.sessionId ?? "bot-e2e",
+		user.user.id,
 		userKey,
+		{ chatId: chat.chat.id, messageId: fileMessage.id, fromId: me.id },
 	);
 	const locationContent = await decryptBotMessage(
 		locationMessage.text,
 		locationMessage.encryptedPayload,
-		user.sessionId ?? "bot-e2e",
+		user.user.id,
 		userKey,
+		{ chatId: chat.chat.id, messageId: locationMessage.id, fromId: me.id },
 	);
 	expect(locationContent.location).toEqual({ lat: 55.75, lng: 37.61 });
 	const file = fileMessage.files?.[0];

@@ -3,23 +3,18 @@ package transport
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"fast_chat/config"
-	"fast_chat/federation"
 	"fast_chat/model"
 	"fast_chat/service"
 	"fast_chat/store"
 )
 
-//nolint:gocognit,gocyclo,cyclop,dupl,funlen // the six small operations share the same auth preamble.
-func registerUserDevices(api huma.API, st *store.Store, fed *federation.Client, cfg *config.Config) {
+func registerUserDevices(api huma.API, st *store.Store) {
 	huma.Register(api, huma.Operation{
 		OperationID: "update-device-key",
 		Method:      http.MethodPut,
@@ -39,7 +34,7 @@ func registerUserDevices(api huma.API, st *store.Store, fed *federation.Client, 
 			return nil, &statusError{ErrorMessage: msgSessionRequired, code: http.StatusBadRequest}
 		}
 		normalized := encodePublicKey(rawKey)
-		if err := st.UpsertUserDevice(ctx, user.ID, user.SessionID, normalized, input.Body.ProtocolVersion); err != nil {
+		if err := st.UpsertUserDevice(ctx, user.ID, user.SessionID, normalized); err != nil {
 			slog.Error("failed to store device key", "err", err)
 			return nil, errInternal
 		}
@@ -84,118 +79,21 @@ func registerUserDevices(api huma.API, st *store.Store, fed *federation.Client, 
 	})
 
 	huma.Register(api, huma.Operation{
-		OperationID: "set-device-key-backup",
-		Method:      http.MethodPut,
-		Path:        "/api/users/device-key/backup",
-		Summary:     "Store the encrypted backup of this device key",
-		Security:    []map[string][]string{{bearerScheme: {}}},
-	}, func(ctx context.Context, input *deviceBackupInput) (*statusOutput, error) {
-		user, ok := userFromContext(ctx)
-		if !ok {
-			return nil, errUnauthorized
-		}
-		if user.SessionID == "" {
-			return nil, &statusError{ErrorMessage: msgSessionRequired, code: http.StatusBadRequest}
-		}
-		if input.Body.Backup == "" || len(input.Body.Backup) > maxKeyBackupLen {
-			return nil, &statusError{ErrorMessage: msgInvalidBackup, code: http.StatusBadRequest}
-		}
-		if _, err := base64.StdEncoding.DecodeString(input.Body.Backup); err != nil {
-			return nil, &statusError{ErrorMessage: msgInvalidBackup, code: http.StatusBadRequest}
-		}
-		if err := st.SetUserDeviceBackup(ctx, user.ID, user.SessionID, input.Body.Backup); err != nil {
-			return nil, errInternal
-		}
-		return okStatus(), nil
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "get-device-key-backup",
-		Method:      http.MethodGet,
-		Path:        "/api/users/device-keys/{deviceId}/backup",
-		Summary:     "Fetch the encrypted backup of one device key",
-		Security:    []map[string][]string{{bearerScheme: {}}},
-	}, func(ctx context.Context, input *deviceKeyPathInput) (*deviceBackupOutput, error) {
-		user, ok := userFromContext(ctx)
-		if !ok {
-			return nil, errUnauthorized
-		}
-		blob, found := st.GetUserDeviceBackup(ctx, user.ID, input.DeviceID)
-		if !found {
-			return nil, &statusError{ErrorMessage: "backup not found", code: http.StatusNotFound}
-		}
-		var out deviceBackupOutput
-		out.Body.Backup = blob
-		return &out, nil
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "delete-device-key-backup",
-		Method:      http.MethodDelete,
-		Path:        "/api/users/device-key/backup",
-		Summary:     "Delete the encrypted backup of this device key",
-		Security:    []map[string][]string{{bearerScheme: {}}},
-	}, func(ctx context.Context, _ *struct{}) (*statusOutput, error) {
-		user, ok := userFromContext(ctx)
-		if !ok {
-			return nil, errUnauthorized
-		}
-		if user.SessionID == "" {
-			return nil, &statusError{ErrorMessage: msgSessionRequired, code: http.StatusBadRequest}
-		}
-		if err := st.DeleteUserDeviceBackup(ctx, user.ID, user.SessionID); err != nil {
-			return nil, errInternal
-		}
-		return okStatus(), nil
-	})
-
-	huma.Register(api, huma.Operation{
 		OperationID: "list-device-keys",
 		Method:      http.MethodGet,
 		Path:        "/api/users/{userId}/device-keys",
 		Summary:     "List the E2EE device keys of a user",
 		Security:    []map[string][]string{{bearerScheme: {}}},
 	}, func(ctx context.Context, input *deviceKeysPathInput) (*deviceKeysOutput, error) {
-		if _, ok := userFromContext(ctx); !ok {
+		user, ok := userFromContext(ctx)
+		if !ok {
 			return nil, errUnauthorized
 		}
-		remoteDomain := service.RemoteServerFromIDFor(input.UserID, cfg.Federation.AllowPrivateAddresses)
-		if remoteDomain == "" || remoteDomain == cfg.Server.Domain {
-			devices, err := st.ListUserDevices(ctx, input.UserID)
-			if err != nil {
-				return nil, errInternal
-			}
-			return deviceKeysResponse(devices), nil
+		// Legacy per-device keys are only exposed to their owner; v3 clients
+		// use the account master key instead.
+		if input.UserID != user.ID {
+			return nil, &statusError{ErrorMessage: "forbidden", code: http.StatusForbidden}
 		}
-		if fed == nil {
-			return nil, &statusError{ErrorMessage: "failed to fetch device keys", code: http.StatusBadGateway}
-		}
-		remoteURL := fed.URL(remoteDomain, "/api/federated/users/"+url.PathEscape(input.UserID)+"/device-keys")
-		data, err := fed.Request(ctx, http.MethodGet, remoteURL, nil)
-		if err != nil {
-			slog.Warn("remote device keys failed", "err", err)
-			return nil, &statusError{ErrorMessage: "failed to fetch device keys", code: http.StatusBadGateway}
-		}
-		var result struct {
-			Devices []deviceKeyDTO `json:"devices"`
-		}
-		if err := json.Unmarshal(data, &result); err != nil {
-			return nil, &statusError{ErrorMessage: msgFailedParseRemote, code: http.StatusBadGateway}
-		}
-		var out deviceKeysOutput
-		out.Body.Devices = result.Devices
-		return &out, nil
-	})
-}
-
-func registerFederatedDeviceKeys(api huma.API, st *store.Store) {
-	huma.Register(api, huma.Operation{
-		OperationID: "federated-user-device-keys",
-		Method:      http.MethodGet,
-		Path:        "/api/federated/users/{userId}/device-keys",
-		Summary:     "Serve a user's E2EE device keys to a peer server",
-		Security:    fedSecurity,
-	}, func(ctx context.Context, input *deviceKeysPathInput) (*deviceKeysOutput, error) {
 		devices, err := st.ListUserDevices(ctx, input.UserID)
 		if err != nil {
 			return nil, errInternal
@@ -227,8 +125,7 @@ func encodePublicKey(raw []byte) string {
 
 type deviceKeyInput struct {
 	Body struct {
-		PublicKey       string `json:"publicKey"`
-		ProtocolVersion int    `json:"protocolVersion,omitempty"`
+		PublicKey string `json:"publicKey"`
 	}
 }
 
@@ -251,17 +148,5 @@ type deviceKeyDTO struct {
 type deviceKeysOutput struct {
 	Body struct {
 		Devices []deviceKeyDTO `json:"devices"`
-	}
-}
-
-type deviceBackupInput struct {
-	Body struct {
-		Backup string `json:"backup"`
-	}
-}
-
-type deviceBackupOutput struct {
-	Body struct {
-		Backup string `json:"backup"`
 	}
 }

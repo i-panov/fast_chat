@@ -31,7 +31,7 @@ await bot.start();
 - `downloadFile(fileId)`
 - `sendLocation(chatId, latitude, longitude)`
 - `answerCallbackQuery(id, text?, showAlert?)`
-- `enableE2EE()`
+- `enableE2EE()` — returns `{ encryptionKey, identityKey }`
 - `getUserDeviceKeys(userId)`
 - `onMessage(handler)`
 - `onCallbackQuery(handler)`
@@ -39,20 +39,30 @@ await bot.start();
 - `stop()`
 
 The SDK only supports long polling. Bot chats are plaintext by default. Call
-`enableE2EE()` once and persist the returned key pair to switch existing and
-new bot chats to encrypted text, encrypted inline keyboards and encrypted
-callback data. Files and locations are plaintext and are not available in
-E2EE mode.
+`enableE2EE()` once and persist both returned keys (`encryptionKey` and
+`identityKey`) to switch existing and new bot chats to encrypted text,
+encrypted inline keyboards, encrypted callback data, files and locations
+(file keys and metadata travel inside the encrypted content).
 
-Incoming E2EE messages may use payload v2 (`crypto_box_easy`, authenticated
-sender envelope, Ed25519 identity signature, AAD `chatId|messageId|fromId|threadId`);
-the SDK verifies the signature and binding before decrypting. Replies are sent
-as v1 and remain readable by every client, including old web tabs.
+Messages use payload v3: one envelope per participant's master key,
+`crypto_box_easy`, Ed25519 identity signature and AAD
+`chatId|messageId|fromId|threadId`. Legacy v1/v2 payloads are rejected.
+
+### Breaking changes (v3)
+
+- `enableE2EE()` returns `{ encryptionKey, identityKey }`. The deprecated
+  `publicKey`/`privateKey` aliases still point at the encryption pair.
+- `encryptBotReply`/`decryptBotMessage` require the identity key and message
+  binding; callers that pass only the encryption key must be updated.
+- A legacy E2EE bot (no identity) cannot be upgraded by calling `enableE2EE()`
+  again: it generates a new encryption pair. Send `PUT
+  /api/bot-api/encryption-key` manually with the **existing** `publicKey` and a
+  new `identityPublicKey`; the server accepts it at the same version.
 
 An E2EE bot can only send proactively to a chat after it has received a
-message from that chat: the device keys of the recipient are unknown before
-that. `sendMessage` rejects such an attempt with `BotApiError` instead of
-sending plaintext.
+message from that chat: the recipient's master key is unknown before that.
+`sendMessage` rejects such an attempt with `BotApiError` instead of sending
+plaintext.
 
 ## Encrypted files
 

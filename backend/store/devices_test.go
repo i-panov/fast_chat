@@ -9,13 +9,13 @@ func TestUserDevices(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if err := s.UpsertUserDevice(ctx, "alice:test", "dev-1", "pk-1", 2); err != nil {
+	if err := s.UpsertUserDevice(ctx, "alice:test", "dev-1", "pk-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpsertUserDevice(ctx, "alice:test", "dev-1", "pk-2", 2); err != nil {
+	if err := s.UpsertUserDevice(ctx, "alice:test", "dev-1", "pk-2"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpsertUserDevice(ctx, "alice:test", "dev-2", "pk-3", 2); err != nil {
+	if err := s.UpsertUserDevice(ctx, "alice:test", "dev-2", "pk-3"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -43,7 +43,7 @@ func TestUserDevices(t *testing.T) {
 
 	// Re-registering the same device on the next page load must not revive a
 	// key the user revoked.
-	if err := s.UpsertUserDevice(ctx, "alice:test", "dev-1", "pk-4", 2); err != nil {
+	if err := s.UpsertUserDevice(ctx, "alice:test", "dev-1", "pk-4"); err != nil {
 		t.Fatal(err)
 	}
 	devices, err = s.ListUserDevices(ctx, "alice:test")
@@ -63,7 +63,7 @@ func TestDeviceKeyFollowsSessionRevocation(t *testing.T) {
 	if !ok {
 		t.Fatal("session missing")
 	}
-	if err := s.UpsertUserDevice(ctx, user.ID, session.ID, "pk", 2); err != nil {
+	if err := s.UpsertUserDevice(ctx, user.ID, session.ID, "pk"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RevokeSession(ctx, user.ID, session.ID); err != nil {

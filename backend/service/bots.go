@@ -14,9 +14,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"fast_chat/federation"
 	"fast_chat/internal/ids"
 	"fast_chat/model"
 	"fast_chat/sse"
+	"fast_chat/store"
 )
 
 const (
@@ -49,6 +51,7 @@ var (
 	ErrBotActionInvalid       = errors.New("unsupported bot action")
 	ErrBotAttachmentRemote    = errors.New("files and locations are not supported for federated bot chats")
 	ErrBotGroupMember         = errors.New("bots can only be used in 1-1 chats")
+	ErrBotKeysAlreadySet      = errors.New("bot already has E2EE keys")
 )
 
 var botBaseRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_]{0,26}[a-z0-9])?$`)
@@ -242,8 +245,44 @@ func (s *Service) PollBotUpdates(ctx context.Context, botID string, offset uint6
 	}
 }
 
-func (s *Service) SetBotEncryptionKey(ctx context.Context, botID, publicKey string) error {
-	if err := s.store.SetBotEncryptionKey(ctx, botID, publicKey); err != nil {
+func (s *Service) SetBotEncryptionKey(ctx context.Context, botID, publicKey, identityPublicKey string) error {
+	expectedVersion := 1
+	if user, ok := s.store.GetUserByID(ctx, botID); ok {
+		if user.KeyVersion >= 1 {
+			expectedVersion = user.KeyVersion
+		}
+	}
+	keyVersion := expectedVersion
+	if bot, ok := s.store.GetBot(ctx, botID); ok && bot.EncryptionMode == EncryptionModeE2EE {
+		user, _ := s.store.GetUserByID(ctx, botID)
+		if user != nil && user.IdentityPublicKey != "" {
+			if user.IdentityPublicKey != identityPublicKey {
+				// Re-enabling with a different identity would make every
+				// client that pinned the old key reject the bot's messages.
+				return ErrBotKeysAlreadySet
+			}
+			if user.PublicKey == publicKey {
+				// A retried request with the exact same keys is not a
+				// rotation and must not inflate key_version.
+				return nil
+			}
+			// Bots have no key history: rotating the encryption key would
+			// make messages encrypted before recipients refresh their cached
+			// pubkey permanently unreadable.
+			return ErrBotKeysAlreadySet
+		}
+	}
+	if err := s.store.SetBotEncryptionKey(
+		ctx,
+		botID,
+		publicKey,
+		identityPublicKey,
+		expectedVersion,
+		keyVersion,
+	); err != nil {
+		if errors.Is(err, store.ErrBotIdentityConflict) {
+			return ErrBotKeysAlreadySet
+		}
 		return err
 	}
 	chatIDs, err := s.store.ChatIDsByBotID(ctx, botID)
@@ -266,11 +305,23 @@ func (s *Service) SetBotEncryptionKey(ctx context.Context, botID, publicKey stri
 // SendBotMessage stores a plaintext bot message and pushes it to the human
 // participant when offline.
 func (s *Service) SendBotMessage(ctx context.Context, botID, chatID, text string, markup *model.InlineKeyboardMarkup) (*model.Message, error) {
-	return s.sendBotMessage(ctx, botID, chatID, text, markup, false, "", nil, nil)
+	return s.sendBotMessage(ctx, botID, chatID, text, markup, false, "", nil, nil, "")
 }
 
-func (s *Service) SendBotEncryptedMessage(ctx context.Context, botID, chatID, ciphertext, payload string) (*model.Message, error) {
-	return s.sendBotMessage(ctx, botID, chatID, ciphertext, nil, true, payload, nil, nil)
+// SendBotEncryptedMessageWithID uses the client-generated message id, so the
+// bot can bind its signature and AAD to the same id the server stores.
+func (s *Service) SendBotEncryptedMessageWithID(
+	ctx context.Context, botID, chatID, messageID, ciphertext, payload string,
+) (*model.Message, error) {
+
+	return s.sendBotMessage(ctx, botID, chatID, ciphertext, nil, true, payload, nil, nil, messageID)
+}
+
+func (s *Service) SendBotEncryptedMessageWithFilesID(
+	ctx context.Context, botID, chatID, messageID, ciphertext, payload string, fileIDs []string,
+) (*model.Message, error) {
+
+	return s.sendBotMessage(ctx, botID, chatID, ciphertext, nil, true, payload, fileIDs, nil, messageID)
 }
 
 // SendBotMessageWithFiles attaches already-uploaded files to a bot message.
@@ -280,18 +331,18 @@ func (s *Service) SendBotMessageWithFiles(
 	encrypted bool, payload string, location *model.Location,
 ) (*model.Message, error) {
 
-	return s.sendBotMessage(ctx, botID, chatID, text, markup, encrypted, payload, fileIDs, location)
+	return s.sendBotMessage(ctx, botID, chatID, text, markup, encrypted, payload, fileIDs, location, "")
 }
 
 func (s *Service) SendBotFile(ctx context.Context, botID, chatID, fileID, caption string) (*model.Message, error) {
-	return s.sendBotMessage(ctx, botID, chatID, caption, nil, false, "", []string{fileID}, nil)
+	return s.sendBotMessage(ctx, botID, chatID, caption, nil, false, "", []string{fileID}, nil, "")
 }
 
 func (s *Service) SendBotLocation(ctx context.Context, botID, chatID string, lat, lng float64) (*model.Message, error) {
 	if !ValidCoords(lat, lng) {
 		return nil, ErrInvalidCoordinates
 	}
-	return s.sendBotMessage(ctx, botID, chatID, "", nil, false, "", nil, &model.Location{Lat: lat, Lng: lng})
+	return s.sendBotMessage(ctx, botID, chatID, "", nil, false, "", nil, &model.Location{Lat: lat, Lng: lng}, "")
 }
 
 type federationEnqueuer interface {
@@ -323,7 +374,7 @@ func (s *Service) queueFederation(ctx context.Context, remoteServer, method, pat
 	}
 }
 
-//nolint:gocyclo,gocognit,cyclop,nestif // attachments, markup, push and federation share one send path.
+//nolint:gocyclo,gocognit,cyclop // attachments, markup, push and federation share one send path.
 func (s *Service) sendBotMessage(
 	ctx context.Context,
 	botID, chatID, text string,
@@ -332,6 +383,7 @@ func (s *Service) sendBotMessage(
 	payload string,
 	fileIDs []string,
 	location *model.Location,
+	messageID string,
 ) (*model.Message, error) {
 
 	bot, ok := s.store.GetBot(ctx, botID)
@@ -401,24 +453,29 @@ func (s *Service) sendBotMessage(
 	if err := validateInlineKeyboard(markup); err != nil {
 		return nil, err
 	}
-	msg, created, err := s.store.AddMessage(ctx, chatID, "", botID, user.DisplayName, text, "", "", location, encrypted, payload)
+	msg, created, err := s.store.AddMessage(ctx, chatID, "", botID, user.DisplayName, text, messageID, "", location, encrypted, payload)
 	if err != nil {
 		return nil, err
 	}
+	// Attachments and markup are idempotent: a retry whose first attempt
+	// inserted the row but failed to attach files/markup must repair them.
+	if len(resolvedFiles) > 0 {
+		if err := s.store.AddMessageFiles(ctx, msg.ID, resolvedFiles); err != nil &&
+			(created || !errors.Is(err, store.ErrFileNotFound)) {
+
+			return nil, err
+		}
+		files, _ := s.store.GetMessageFiles(ctx, msg.ID) //nolint:errcheck // best-effort
+		msg.Files = files
+	}
+	// Never overwrite a markup that a later edit may have set on a replay.
+	if markup != nil && created {
+		if err := s.store.SetMessageReplyMarkup(ctx, msg.ID, markup); err != nil {
+			return nil, err
+		}
+		msg.ReplyMarkup = markup
+	}
 	if created {
-		if len(resolvedFiles) > 0 {
-			if err := s.store.AddMessageFiles(ctx, msg.ID, resolvedFiles); err != nil {
-				return nil, err
-			}
-			files, _ := s.store.GetMessageFiles(ctx, msg.ID) //nolint:errcheck // best-effort
-			msg.Files = files
-		}
-		if markup != nil {
-			if err := s.store.SetMessageReplyMarkup(ctx, msg.ID, markup); err != nil {
-				return nil, err
-			}
-			msg.ReplyMarkup = markup
-		}
 		// A bot message is still a new message: it must bring a hidden chat
 		// back, otherwise the push arrives while the chat stays invisible.
 		if err := s.store.ClearChatDeletes(ctx, chat.ID, bc.UserID); err != nil {
@@ -632,6 +689,9 @@ func (s *Service) AnswerBotCallback(
 		"showAlert":        showAlert,
 		"encrypted":        encrypted,
 		"encryptedPayload": payload,
+		"botId":            query.BotID,
+		keyChatID:          query.ChatID,
+		"messageId":        query.MessageID,
 	}})
 	return nil
 }
@@ -784,52 +844,50 @@ func (s *Service) ListOwnedBots(ctx context.Context, ownerID string) ([]BotManag
 }
 
 type DeviceKey struct {
-	ID        string    `json:"id"`
-	PublicKey string    `json:"publicKey"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID         string `json:"id"`
+	PublicKey  string `json:"publicKey"`
+	KeyVersion int    `json:"keyVersion"`
 }
 
+// ListUserDeviceKeys returns the account's master key. The name is kept for
+// the Bot API shape; v3 keys messages to the account, not to a device.
 func (s *Service) ListUserDeviceKeys(ctx context.Context, userID string) ([]DeviceKey, error) {
 	remote := RemoteServerFromIDFor(userID, s.cfg.Federation.AllowPrivateAddresses)
 	if remote != "" && remote != s.cfg.Server.Domain {
 		if s.fed == nil {
 			return nil, ErrUserNotFound
 		}
-		data, err := s.fed.Request(ctx, "GET", s.fed.URL(remote, "/api/federated/users/"+url.PathEscape(userID)+"/device-keys"), nil)
+		data, err := s.fed.Request(ctx, "GET", s.fed.URL(remote, "/api/federated/users/"+url.PathEscape(userID)+"/public-key"), nil)
 		if err != nil {
+			var statusErr *federation.StatusError
+			if errors.As(err, &statusErr) && statusErr.Status == 404 {
+				return nil, ErrUserNotFound
+			}
 			return nil, err
 		}
 		var result struct {
-			Devices []struct {
-				ID        string `json:"id"`
-				PublicKey string `json:"publicKey"`
-			} `json:"devices"`
+			PublicKey        string `json:"publicKey"`
+			MasterKeyVersion int    `json:"masterKeyVersion"`
 		}
-		if err := json.Unmarshal(data, &result); err != nil {
-			return nil, err
+		if err := json.Unmarshal(data, &result); err != nil || result.PublicKey == "" {
+			return nil, ErrUserNotFound
 		}
-		out := make([]DeviceKey, 0, len(result.Devices))
-		for _, device := range result.Devices {
-			out = append(out, DeviceKey{ID: device.ID, PublicKey: device.PublicKey})
+		if _, err := DecodePublicKey(result.PublicKey); err != nil {
+			return nil, ErrUserNotFound
 		}
-		return out, nil
-	}
-	devices, err := s.store.ListUserDevices(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]DeviceKey, 0, len(devices))
-	for idx := range devices {
-		out = append(out, DeviceKey{
-			ID: devices[idx].ID, PublicKey: devices[idx].PublicKey, CreatedAt: devices[idx].CreatedAt,
-		})
-	}
-	if len(out) == 0 {
-		if key, ok := s.store.GetUserPublicKey(ctx, userID); ok && key != "" {
-			out = append(out, DeviceKey{ID: userID, PublicKey: key})
+		if result.MasterKeyVersion < 1 {
+			result.MasterKeyVersion = 1
 		}
+		return []DeviceKey{{
+			ID: userID, PublicKey: result.PublicKey, KeyVersion: result.MasterKeyVersion,
+		}}, nil
 	}
-	return out, nil
+
+	publicKey, _, version, ok := s.store.GetUserMasterKey(ctx, userID)
+	if !ok {
+		return nil, ErrUserNotFound
+	}
+	return []DeviceKey{{ID: userID, PublicKey: publicKey, KeyVersion: version}}, nil
 }
 
 // FetchFederatedFile returns the bytes of a remote file placeholder through

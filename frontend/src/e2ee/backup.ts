@@ -17,24 +17,47 @@ const KEY_BYTES = 32; // XChaCha20-Poly1305 key length
 
 // Version tag in the serialized payload. Bumped whenever the blob shape
 // changes so we can reject old blobs and migrate rather than mis-parsing.
-const BLOB_VERSION = 2; // v2 adds the optional identity key pair
-const MIN_BLOB_VERSION = 1;
+const BLOB_VERSION = 3;
 const MALFORMED_BACKUP_MSG = "malformed backup blob";
 
 interface PlainBackup {
 	publicKey: string;
 	privateKey: string;
-	identityPublicKey?: string;
-	identityPrivateKey?: string;
+	identityPublicKey: string;
+	identityPrivateKey: string;
+	keyVersion: number;
+	keyHistory?: Array<{
+		version: number;
+		publicKey: string;
+		privateKey: string;
+	}>;
+	identityHistory?: string[];
+	identityChain?: Array<{ from: string; to: string; signature: string }>;
+}
+
+export interface KeyHistoryEntry {
+	version: number;
+	keyPair: KeyPair;
+}
+
+export interface IdentityRotation {
+	from: string;
+	to: string;
+	signature: string;
 }
 
 export interface BackupData {
 	keyPair: KeyPair;
-	identityKeyPair?: IdentityKeyPair;
+	identityKeyPair: IdentityKeyPair;
+	keyVersion: number;
+	keyHistory?: KeyHistoryEntry[];
+	identityHistory?: string[];
+	identityChain?: IdentityRotation[];
 }
 
 interface BlobPayload {
 	v: number; // format version
+	iterations?: number; // PBKDF2 rounds; absent in old blobs
 	salt: string; // base64 PBKDF2 salt
 	nonce: string; // base64 XChaCha20 nonce
 	ct: string; // base64 ciphertext of PlainBackup JSON
@@ -58,6 +81,7 @@ function fromBase64(s: string): Uint8Array<ArrayBuffer> {
 async function deriveKey(
 	password: string,
 	salt: Uint8Array<ArrayBuffer>,
+	iterations: number = PBKDF2_ITERATIONS,
 ): Promise<Uint8Array> {
 	const enc = new TextEncoder();
 	const material = await crypto.subtle.importKey(
@@ -68,7 +92,7 @@ async function deriveKey(
 		["deriveBits"],
 	);
 	const bits = await crypto.subtle.deriveBits(
-		{ name: "PBKDF2", hash: PBKDF2_HASH, salt, iterations: PBKDF2_ITERATIONS },
+		{ name: "PBKDF2", hash: PBKDF2_HASH, salt, iterations },
 		material,
 		KEY_BYTES * 8,
 	);
@@ -80,10 +104,6 @@ async function deriveKey(
 // An empty password is rejected: it would produce a valid-looking blob on a
 // trivially guessable key. Callers should enforce a stronger minimum (the UI
 // validates length); this is only the last-resort guard.
-export function encryptBackup(password: string, kp: KeyPair): Promise<string> {
-	return encryptBackupData(password, { keyPair: kp });
-}
-
 export async function encryptBackupData(
 	password: string,
 	data: BackupData,
@@ -102,11 +122,17 @@ export async function encryptBackupData(
 	const plain: PlainBackup = {
 		publicKey: data.keyPair.publicKey,
 		privateKey: data.keyPair.privateKey,
+		identityPublicKey: data.identityKeyPair.publicKey,
+		identityPrivateKey: data.identityKeyPair.privateKey,
+		keyVersion: Math.max(1, data.keyVersion),
+		keyHistory: data.keyHistory?.map((entry) => ({
+			version: entry.version,
+			publicKey: entry.keyPair.publicKey,
+			privateKey: entry.keyPair.privateKey,
+		})),
+		identityHistory: data.identityHistory,
+		identityChain: data.identityChain,
 	};
-	if (data.identityKeyPair !== undefined) {
-		plain.identityPublicKey = data.identityKeyPair.publicKey;
-		plain.identityPrivateKey = data.identityKeyPair.privateKey;
-	}
 	const ct = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
 		sodium.from_string(JSON.stringify(plain)),
 		null,
@@ -117,6 +143,7 @@ export async function encryptBackupData(
 
 	const payload: BlobPayload = {
 		v: BLOB_VERSION,
+		iterations: PBKDF2_ITERATIONS,
 		salt: toBase64(salt),
 		nonce: sodium.to_base64(nonce),
 		ct: sodium.to_base64(ct),
@@ -128,13 +155,6 @@ export async function encryptBackupData(
 // decryptBackup recovers the key pair from a blob. Throws E2EBackupError
 // if the password is wrong or the blob is malformed.
 export class E2EBackupError extends Error {}
-
-export async function decryptBackup(
-	password: string,
-	blob: string,
-): Promise<KeyPair> {
-	return (await decryptBackupData(password, blob)).keyPair;
-}
 
 export async function decryptBackupData(
 	password: string,
@@ -164,11 +184,7 @@ export async function decryptBackupData(
 
 	// Reject blobs written by an older (or newer) format rather than
 	// silently mis-parsing a changed payload shape.
-	if (
-		typeof payload.v !== "number" ||
-		payload.v < MIN_BLOB_VERSION ||
-		payload.v > BLOB_VERSION
-	) {
+	if (payload.v !== BLOB_VERSION) {
 		throw new E2EBackupError("unsupported backup format");
 	}
 
@@ -190,7 +206,13 @@ export async function decryptBackupData(
 		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}
 
-	const key = await deriveKey(password, salt);
+	const iterations =
+		typeof payload.iterations === "number" &&
+		Number.isFinite(payload.iterations) &&
+		payload.iterations >= 100_000
+			? payload.iterations
+			: PBKDF2_ITERATIONS;
+	const key = await deriveKey(password, salt, iterations);
 
 	let plain: Uint8Array;
 	try {
@@ -214,23 +236,104 @@ export async function decryptBackupData(
 
 	if (
 		typeof parsed?.publicKey !== "string" ||
-		typeof parsed?.privateKey !== "string"
+		typeof parsed?.privateKey !== "string" ||
+		typeof parsed.identityPublicKey !== "string" ||
+		typeof parsed.identityPrivateKey !== "string" ||
+		typeof parsed.keyVersion !== "number" ||
+		parsed.keyVersion < 1
 	) {
 		throw new E2EBackupError(MALFORMED_BACKUP_MSG);
 	}
 
-	const out: BackupData = {
+	return {
 		keyPair: { publicKey: parsed.publicKey, privateKey: parsed.privateKey },
-	};
-	// Both halves must be present together: a half identity is unusable.
-	if (
-		typeof parsed.identityPublicKey === "string" &&
-		typeof parsed.identityPrivateKey === "string"
-	) {
-		out.identityKeyPair = {
+		identityKeyPair: {
 			publicKey: parsed.identityPublicKey,
 			privateKey: parsed.identityPrivateKey,
+		},
+		keyVersion: parsed.keyVersion,
+		keyHistory: Array.isArray(parsed.keyHistory)
+			? parsed.keyHistory
+					.filter(
+						(
+							entry,
+						): entry is {
+							version: number;
+							publicKey: string;
+							privateKey: string;
+						} =>
+							typeof entry?.version === "number" &&
+							typeof entry.publicKey === "string" &&
+							typeof entry.privateKey === "string",
+					)
+					.map((entry) => ({
+						version: entry.version,
+						keyPair: {
+							publicKey: entry.publicKey,
+							privateKey: entry.privateKey,
+						},
+					}))
+			: undefined,
+		identityHistory: Array.isArray(parsed.identityHistory)
+			? parsed.identityHistory.filter((key) => typeof key === "string")
+			: undefined,
+		identityChain: Array.isArray(parsed.identityChain)
+			? parsed.identityChain.filter(
+					(item): item is IdentityRotation =>
+						typeof item?.from === "string" &&
+						typeof item.to === "string" &&
+						typeof item.signature === "string",
+				)
+			: undefined,
+	};
+}
+
+// ServerBackupContainer keeps the same master-key payload wrapped by several
+// independent factors. The server stores it verbatim and cannot open either
+// wrapper.
+export interface PasskeyBackupWrapper {
+	credentialId: string;
+	salt: string;
+	blob: string;
+}
+
+export interface ServerBackupContainer {
+	v: 4;
+	// Plaintext master-key version. The server cannot verify the encrypted
+	// payload, but the client uses it to tell a current backup from a stale
+	// one after a rotation on another device.
+	masterKeyVersion?: number;
+	password?: string;
+	passkey?: PasskeyBackupWrapper;
+}
+
+export function encodeServerBackup(container: ServerBackupContainer): string {
+	return btoa(JSON.stringify(container));
+}
+
+export function decodeServerBackup(blob: string): ServerBackupContainer | null {
+	try {
+		const parsed = JSON.parse(atob(blob)) as Partial<ServerBackupContainer>;
+		if (parsed.v !== 4) return null;
+		return {
+			v: 4,
+			masterKeyVersion:
+				typeof parsed.masterKeyVersion === "number" &&
+				parsed.masterKeyVersion >= 1
+					? parsed.masterKeyVersion
+					: undefined,
+			password:
+				typeof parsed.password === "string" ? parsed.password : undefined,
+			passkey:
+				typeof parsed.passkey === "object" &&
+				parsed.passkey !== null &&
+				typeof parsed.passkey.credentialId === "string" &&
+				typeof parsed.passkey.salt === "string" &&
+				typeof parsed.passkey.blob === "string"
+					? parsed.passkey
+					: undefined,
 		};
+	} catch {
+		return null;
 	}
-	return out;
 }

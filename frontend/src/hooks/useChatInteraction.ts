@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CallManager } from "../calls/callManager.ts";
 import { decryptFileStream } from "../e2ee/file-crypto.ts";
-import { ensureAccountKeys, RecoveryRequiredError } from "../e2ee/keys.ts";
+import {
+	ensureAccountKeys,
+	KeyBackupCheckFailedError,
+	LocalLockRequiredError,
+	NewKeyConfirmationRequiredError,
+	RecoveryRequiredError,
+	StaleKeyStateError,
+} from "../e2ee/keys.ts";
+import i18n from "../i18n.ts";
 import {
 	retryFailedOps,
 	scheduleSync,
@@ -10,6 +18,7 @@ import {
 import type { Message, PendingFile, TypingPayload } from "../types/api.ts";
 import type { ChatPageState } from "../types/chat.ts";
 import { useAuth } from "../useAuth";
+import { emitNotification } from "../utils/notify.ts";
 import { useCall } from "./useCall.ts";
 import { useChatList } from "./useChatList";
 import { useChatSubmit } from "./useChatSubmit";
@@ -63,9 +72,20 @@ function useChatLifecycle({
 	useEffect(() => {
 		if (token === undefined) return;
 		void ensureAccountKeys(token).catch((err) => {
-			// Recovery is surfaced by the UI via the recovery-needed event;
-			// not a fatal error worth logging as a failure.
-			if (err instanceof RecoveryRequiredError) return;
+			if (err instanceof KeyBackupCheckFailedError) {
+				emitNotification(i18n.t("error.backupCheckFailed"));
+				return;
+			}
+			// Expected key states are surfaced by the UI through their events;
+			// they are not failures worth logging.
+			if (
+				err instanceof RecoveryRequiredError ||
+				err instanceof LocalLockRequiredError ||
+				err instanceof NewKeyConfirmationRequiredError ||
+				err instanceof StaleKeyStateError
+			) {
+				return;
+			}
 			console.error("E2E key generation failed:", err);
 		});
 	}, [token]);

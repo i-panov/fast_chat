@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	ErrBotNotFound      = errors.New("bot not found")
-	ErrBotTokenNotFound = errors.New("bot token not found")
+	ErrBotNotFound         = errors.New("bot not found")
+	ErrBotTokenNotFound    = errors.New("bot token not found")
+	ErrBotIdentityConflict = errors.New("bot identity already configured")
 )
 
 func (s *Store) CreateBot(ctx context.Context, bot *model.Bot, initialChat *model.Chat) error {
@@ -255,30 +256,39 @@ func (s *Store) SetMessageReplyMarkup(ctx context.Context, messageID string, mar
 		Update("reply_markup", string(data)).Error
 }
 
-func (s *Store) SetBotEncryptionKey(ctx context.Context, userID, publicKey string) error {
+func (s *Store) SetBotEncryptionKey(
+	ctx context.Context,
+	userID, publicKey, identityPublicKey string,
+	expectedVersion int,
+	keyVersion int,
+) error {
+
+	if keyVersion < 1 {
+		keyVersion = 1
+	}
+	if expectedVersion < 1 {
+		expectedVersion = 1
+	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.Bot{}).Where("user_id = ?", userID).
 			Updates(map[string]any{"encryption_mode": "e2ee", "updated_at": time.Now().UTC()}).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&model.User{}).Where("id = ?", userID).
-			Update("public_key", publicKey).Error; err != nil {
-			return err
+		result := tx.Model(&model.User{}).
+			Where(
+				"id = ? AND key_version = ? AND (public_key = ? OR public_key = '') AND (identity_public_key = '' OR identity_public_key = ?)",
+				userID, expectedVersion, publicKey, identityPublicKey,
+			).
+			Updates(map[string]any{
+				fieldPublicKey:        publicKey,
+				"identity_public_key": identityPublicKey,
+				"key_version":         keyVersion,
+			})
+		if result.Error != nil {
+			return result.Error
 		}
-		// The bot SDK understands v2 payloads, so its device entry must say
-		// so: otherwise web encryption would keep falling back to v1. The row
-		// id is the bot account id because bots have no browser session.
-		now := time.Now().UTC()
-		if err := tx.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "id"}},
-			DoUpdates: clause.AssignmentColumns([]string{
-				colUserID, "public_key", "protocol_version", fieldLastSeenAt,
-			}),
-		}).Create(&model.UserDevice{
-			ID: userID, UserID: userID, PublicKey: publicKey,
-			ProtocolVersion: 2, CreatedAt: now, LastSeenAt: now,
-		}).Error; err != nil {
-			return err
+		if result.RowsAffected == 0 {
+			return ErrBotIdentityConflict
 		}
 		return tx.Model(&model.Chat{}).Where("bot_id = ?", userID).
 			Update("bot_encryption_mode", "e2ee").Error

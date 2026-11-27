@@ -63,14 +63,12 @@ const (
 	MaxMessageFiles  = 10
 	MaxReadByMembers = 100
 
-	// MaxEncryptedPayloadLen is the maximum size of encryptedPayload JSON.
-	// A typical 2-person chat payload is ~200 bytes; 32KB is generous.
-	MaxEncryptedPayloadLen = 32768
+	// MaxEncryptedPayloadLen bounds encryptedPayload JSON. One envelope per
+	// member is ~200 bytes, so 64 KiB keeps large E2EE groups workable while
+	// still rejecting absurd payloads.
+	MaxEncryptedPayloadLen = 65536
 	// xchachaNonceLen is libsodium crypto_aead_xchacha20poly1305_ietf_NPUBBYTES.
 	xchachaNonceLen = 24
-	// sealedBoxLen is the full sealed box for a 32-byte message key:
-	// ephemeral public key (32) + MAC (16) + message key (32).
-	sealedBoxLen = 80
 	// easyBoxLen is crypto_box_easy for a 32-byte message key: MAC (16) +
 	// message key (32), with the sender's key carried separately.
 	easyBoxLen = 48
@@ -236,9 +234,10 @@ func ValidateEncryptedPayload(encrypted bool, payload string) error {
 		IdentityKey string `json:"identityKey"`
 		IdentitySig string `json:"identitySig"`
 		Envelopes   []struct {
-			KeyID string `json:"keyId"`
-			Box   string `json:"box"`
-			Nonce string `json:"nonce"`
+			KeyID      string `json:"keyId"`
+			KeyVersion int    `json:"keyVersion"`
+			Box        string `json:"box"`
+			Nonce      string `json:"nonce"`
 		} `json:"envelopes"`
 	}
 
@@ -246,22 +245,20 @@ func ValidateEncryptedPayload(encrypted bool, payload string) error {
 		return ErrInvalidEncryptedPayload
 	}
 
-	if data.V != 1 && data.V != 2 {
+	if data.V != 3 {
 		return ErrUnsupportedPayloadVersion
 	}
 
-	if data.V == 2 {
-		senderKey, err := decodeEncryptedBase64(data.SenderKey)
-		if err != nil || len(senderKey) != x25519KeyLen {
-			return ErrInvalidEncryptedPayload
-		}
-		identityKey, keyErr := decodeEncryptedBase64(data.IdentityKey)
-		identitySig, sigErr := decodeEncryptedBase64(data.IdentitySig)
-		if keyErr != nil || sigErr != nil ||
-			len(identityKey) != ed25519KeyLen || len(identitySig) != ed25519SigLen {
+	senderKey, err := decodeEncryptedBase64(data.SenderKey)
+	if err != nil || len(senderKey) != x25519KeyLen {
+		return ErrInvalidEncryptedPayload
+	}
+	identityKey, keyErr := decodeEncryptedBase64(data.IdentityKey)
+	identitySig, sigErr := decodeEncryptedBase64(data.IdentitySig)
+	if keyErr != nil || sigErr != nil ||
+		len(identityKey) != ed25519KeyLen || len(identitySig) != ed25519SigLen {
 
-			return ErrInvalidEncryptedPayload
-		}
+		return ErrInvalidEncryptedPayload
 	}
 
 	// XChaCha20 nonce is exactly 24 bytes (libsodium
@@ -279,26 +276,16 @@ func ValidateEncryptedPayload(encrypted bool, payload string) error {
 		if envelope.KeyID == "" {
 			return ErrEmptyKeyID
 		}
+		if envelope.KeyVersion < 1 {
+			return ErrInvalidEncryptedPayload
+		}
 		boxRaw, err := decodeEncryptedBase64(envelope.Box)
-		if err != nil {
+		if err != nil || len(boxRaw) != easyBoxLen {
 			return ErrInvalidBox
 		}
-
-		if data.V == 2 {
-			// crypto_box_easy(32-byte key) = 48 bytes plus a 24-byte nonce.
-			nonceRaw, nonceErr := decodeEncryptedBase64(envelope.Nonce)
-			if nonceErr != nil || len(nonceRaw) != xchachaNonceLen {
-				return ErrInvalidNonce
-			}
-			if len(boxRaw) != easyBoxLen {
-				return ErrInvalidBox
-			}
-			continue
-		}
-
-		// v1: sealed boxes are 80 bytes (ephemeral key + MAC + 32-byte key).
-		if len(boxRaw) != sealedBoxLen {
-			return ErrInvalidBox
+		nonceRaw, nonceErr := decodeEncryptedBase64(envelope.Nonce)
+		if nonceErr != nil || len(nonceRaw) != xchachaNonceLen {
+			return ErrInvalidNonce
 		}
 	}
 

@@ -16,7 +16,6 @@ let newKeyHandler: ((token: string) => void) | null = null;
 vi.mock("../../e2ee/keys.ts", () => ({
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-return
 	createNewKey: (...args: unknown[]) => createNewKey(...args),
-	onMultiDeviceKeyRequired: () => () => {},
 	onNewKeyConfirmationNeeded: (fn: (token: string) => void) => {
 		newKeyHandler = fn;
 		return () => {
@@ -28,10 +27,6 @@ vi.mock("../../e2ee/keys.ts", () => ({
 vi.mock("@mantine/notifications", () => ({
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-return
 	notifications: { show: (...args: unknown[]) => showNotification(...args) },
-}));
-
-vi.mock("../../useAuth.tsx", () => ({
-	useAuth: () => ({ logoutAll: vi.fn() }),
 }));
 
 describe("MultiDeviceKeyModal", () => {

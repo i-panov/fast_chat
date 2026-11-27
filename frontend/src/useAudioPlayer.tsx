@@ -7,6 +7,11 @@ import {
 	useRef,
 	useState,
 } from "react";
+import {
+	hasLocalLock,
+	isLocalLockUnlocked,
+	LOCAL_LOCK_CHANGED_EVENT,
+} from "./e2ee/keys.ts";
 import { releaseBlobUrl, retainBlobUrl } from "./utils/blobUrlRefs.ts";
 
 export interface AudioTrack {
@@ -174,6 +179,22 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 		setCurrentTrack(null);
 		setIsPlaying(false);
 	}, []);
+
+	// A locked account must not keep playing decrypted audio behind the
+	// lock overlay.
+	useEffect(() => {
+		const onLock = () => {
+			// Rotation/key creation also fires this event: only stop when a
+			// local lock is actually configured and closed.
+			void hasLocalLock()
+				.then((locked) => {
+					if (locked && !isLocalLockUnlocked()) stop();
+				})
+				.catch(() => {});
+		};
+		window.addEventListener(LOCAL_LOCK_CHANGED_EVENT, onLock);
+		return () => window.removeEventListener(LOCAL_LOCK_CHANGED_EVENT, onLock);
+	}, [stop]);
 
 	const toggle = useCallback(() => {
 		if (isPlaying) {

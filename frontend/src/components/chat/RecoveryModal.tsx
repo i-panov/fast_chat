@@ -11,9 +11,21 @@ import { useTranslation } from "react-i18next";
 import { E2EBackupError } from "../../e2ee/backup.ts";
 import {
 	discardRecoveryAndGenerate,
+	getIdentityKeyPair,
+	hasLocalLock,
+	KeyPublishError,
 	onRecoveryNeeded,
 	restoreKeyPairFromBackup,
+	StaleKeyStateError,
 } from "../../e2ee/keys.ts";
+import {
+	hasServerPasskeyBackup,
+	isPasskeyUnlockAvailable,
+	restoreWithServerPasskey,
+} from "../../e2ee/passkeyLock.ts";
+
+const RECOVERY_FAILED_KEY = "backup.recoveryFailed";
+const RECOVERY_STALE_KEY = "backup.recoveryStale";
 
 interface Props {
 	activeToken: string | null;
@@ -27,6 +39,7 @@ export function RecoveryModal({ activeToken }: Props) {
 	const [loading, setLoading] = useState(false);
 	const [working, setWorking] = useState<"recover" | "decline" | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [passkeyAvailable, setPasskeyAvailable] = useState(false);
 
 	useEffect(() => {
 		return onRecoveryNeeded((evtToken) => {
@@ -35,12 +48,25 @@ export function RecoveryModal({ activeToken }: Props) {
 				setError(null);
 				setToken(evtToken);
 				setOpen(true);
+				void hasServerPasskeyBackup(evtToken)
+					.then(setPasskeyAvailable)
+					.catch(() => setPasskeyAvailable(false));
 			}
 		});
 	}, [activeToken]);
 
+	// The dialog is tied to the token that triggered it. A session switch
+	// while it is open must not let its actions touch another account.
+	useEffect(() => {
+		void activeToken;
+		setOpen(false);
+		setToken(null);
+		setPassword("");
+		setError(null);
+	}, [activeToken]);
+
 	async function handleRecover() {
-		if (token === null || password === "") return;
+		if (token === null || token !== activeToken || password === "") return;
 		setLoading(true);
 		setWorking("recover");
 		setError(null);
@@ -51,7 +77,29 @@ export function RecoveryModal({ activeToken }: Props) {
 			setError(
 				err instanceof E2EBackupError
 					? t("backup.recoveryWrongPassword")
-					: t("backup.recoveryFailed"),
+					: err instanceof StaleKeyStateError
+						? t(RECOVERY_STALE_KEY)
+						: t(RECOVERY_FAILED_KEY),
+			);
+		} finally {
+			setLoading(false);
+			setWorking(null);
+		}
+	}
+
+	async function handlePasskeyRecover() {
+		if (token === null || token !== activeToken) return;
+		setLoading(true);
+		setWorking("recover");
+		setError(null);
+		try {
+			await restoreWithServerPasskey(token);
+			window.location.reload();
+		} catch (err) {
+			setError(
+				err instanceof StaleKeyStateError
+					? t(RECOVERY_STALE_KEY)
+					: t(RECOVERY_FAILED_KEY),
 			);
 		} finally {
 			setLoading(false);
@@ -60,15 +108,43 @@ export function RecoveryModal({ activeToken }: Props) {
 	}
 
 	async function handleDecline() {
-		if (token === null) return;
+		if (token === null || token !== activeToken) return;
 		setLoading(true);
 		setWorking("decline");
 		setError(null);
 		try {
-			await discardRecoveryAndGenerate(token);
+			const locked = await hasLocalLock();
+			const identity = await getIdentityKeyPair();
+			const warning = locked
+				? t("backup.recoveryDeclineLock")
+				: identity === null
+					? t("backup.recoveryDeclineIdentity")
+					: t("backup.recoveryDeclineConfirm");
+			if (!window.confirm(warning)) {
+				return;
+			}
+			await discardRecoveryAndGenerate(token, {
+				resetLocalLock: locked,
+				allowIdentityRollback: true,
+			});
 			window.location.reload();
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			// The new key is already local; a failed upload is retried by
+			// ensureAccountKeys on the next load, so do not ask the user to
+			// discard again (that would rotate once more).
+			if (err instanceof KeyPublishError) {
+				window.location.reload();
+				return;
+			}
+			const code =
+				typeof err === "object" && err !== null && "code" in err
+					? (err as { code?: unknown }).code
+					: undefined;
+			setError(
+				code === "stale-key-backup"
+					? t(RECOVERY_STALE_KEY)
+					: t(RECOVERY_FAILED_KEY),
+			);
 		} finally {
 			setLoading(false);
 			setWorking(null);
@@ -114,6 +190,16 @@ export function RecoveryModal({ activeToken }: Props) {
 					</Text>
 				)}
 
+				{passkeyAvailable && isPasskeyUnlockAvailable() && (
+					<Button
+						variant="light"
+						loading={working === "recover"}
+						onClick={() => void handlePasskeyRecover()}
+					>
+						{t("backup.recoverPasskey")}
+					</Button>
+				)}
+
 				<div
 					style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}
 				>
@@ -136,6 +222,16 @@ export function RecoveryModal({ activeToken }: Props) {
 					>
 						{t("backup.recoveryRecover")}
 					</Button>
+					{error !== null && (
+						<Button
+							variant="subtle"
+							onClick={() => {
+								setOpen(false);
+							}}
+						>
+							{t("backup.close")}
+						</Button>
+					)}
 				</div>
 			</Stack>
 		</Modal>

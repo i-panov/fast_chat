@@ -188,7 +188,18 @@ function openDatabase(name: string): Promise<IDBPDatabase<FCSchema>> {
 }
 
 export function getDB(): Promise<IDBPDatabase<FCSchema>> {
-	const name = dbNameFor(activeAccountKey);
+	return getDBFor(activeAccountKey);
+}
+
+// getDBFor pins the write to an account captured before a long operation:
+// the active account can switch during awaits, and key material must never
+// land in another account's database.
+export function getDBFor(
+	accountKey: string | null,
+): Promise<IDBPDatabase<FCSchema>> {
+	// "" would name a phantom `fast_chat_` database; treat "no account" the
+	// same way as an explicit null.
+	const name = dbNameFor(accountKey === "" ? null : accountKey);
 	let db = dbs.get(name);
 	if (db === undefined) {
 		db = openDatabase(name);

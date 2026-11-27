@@ -7,17 +7,17 @@ export interface EncryptionKeyPair {
 
 interface Envelope {
 	keyId: string;
+	keyVersion: number;
 	box: string;
-	nonce?: string;
+	nonce: string;
 }
 
 interface EncryptedPayload {
-	v: 1 | 2;
+	v: 3;
 	nonce: string;
-	// v2: authenticated sender envelope.
-	senderKey?: string;
-	identityKey?: string;
-	identitySig?: string;
+	senderKey: string;
+	identityKey: string;
+	identitySig: string;
 	envelopes: Envelope[];
 }
 
@@ -40,6 +40,7 @@ export function messageAAD(binding: MessageBinding): string {
 interface DeviceKey {
 	id: string;
 	publicKey: string;
+	keyVersion?: number;
 }
 
 export interface FileKey {
@@ -71,6 +72,40 @@ function decodeBase64(value: string): Uint8Array {
 	return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
+// Signing private keys travel as a 32-byte seed so Python/PyNaCl can read
+// them too (libsodium's native secret key is 64 bytes).
+function seedKeypair(seed: Uint8Array): {
+	publicKey: Uint8Array;
+	privateKey: Uint8Array;
+} {
+	// libsodium-wrappers ships the function but its typings omit it.
+	const fn = (
+		sodium as unknown as {
+			crypto_sign_seed_keypair(seed: Uint8Array): {
+				publicKey: Uint8Array;
+				privateKey: Uint8Array;
+			};
+		}
+	).crypto_sign_seed_keypair;
+	return fn(seed);
+}
+
+function signingSecretKey(privateKey: string): Uint8Array {
+	const raw = decodeBase64(privateKey);
+	if (raw.length === 64) return raw;
+	return seedKeypair(raw).privateKey;
+}
+
+export async function generateSigningKeyPair(): Promise<EncryptionKeyPair> {
+	await sodium.ready;
+	const seed = sodium.randombytes_buf(32);
+	const pair = seedKeypair(seed);
+	return {
+		publicKey: sodium.to_base64(pair.publicKey),
+		privateKey: sodium.to_base64(seed),
+	};
+}
+
 export async function generateEncryptionKeyPair(): Promise<EncryptionKeyPair> {
 	await sodium.ready;
 	const pair = sodium.crypto_box_keypair();
@@ -93,64 +128,36 @@ export async function decryptBotMessage(
 	payloadJSON: string,
 	botID: string,
 	key: EncryptionKeyPair,
-	binding?: MessageBinding,
+	binding: MessageBinding,
 ): Promise<BotContent> {
 	await sodium.ready;
 	const payload = JSON.parse(payloadJSON) as EncryptedPayload;
-	if (payload.v !== 1 && payload.v !== 2) {
+	if (payload.v !== 3) {
 		throw new Error("unsupported encrypted payload version");
 	}
 
-	let aad: Uint8Array | null = null;
-	if (payload.v === 2) {
-		const { senderKey, identityKey, identitySig } = payload;
-		if (
-			binding === undefined ||
-			senderKey === undefined ||
-			identityKey === undefined ||
-			identitySig === undefined
-		) {
-			throw new Error("v2 message is missing its sender binding");
-		}
-		const aadText = messageAAD(binding);
-		const signed = new TextEncoder().encode(`${aadText}|${senderKey}`);
-		const valid = sodium.crypto_sign_verify_detached(
-			decodeBase64(identitySig),
-			signed,
-			decodeBase64(identityKey),
-		);
-		if (!valid) throw new Error("sender identity signature is invalid");
-		aad = new TextEncoder().encode(aadText);
-	}
+	const aadText = messageAAD(binding);
+	const signed = new TextEncoder().encode(`${aadText}|${payload.senderKey}`);
+	const valid = sodium.crypto_sign_verify_detached(
+		decodeBase64(payload.identitySig),
+		signed,
+		decodeBase64(payload.identityKey),
+	);
+	if (!valid) throw new Error("sender identity signature is invalid");
 
 	for (const envelope of payload.envelopes) {
 		if (envelope.keyId !== botID) continue;
 		try {
-			let msgKey: Uint8Array;
-			if (payload.v === 2) {
-				if (
-					payload.senderKey === undefined ||
-					envelope.nonce === undefined
-				) {
-					throw new Error("v2 envelope is incomplete");
-				}
-				msgKey = sodium.crypto_box_open_easy(
-					decodeBase64(envelope.box),
-					decodeBase64(envelope.nonce),
-					decodeBase64(payload.senderKey),
-					decodeBase64(key.privateKey),
-				);
-			} else {
-				msgKey = sodium.crypto_box_seal_open(
-					decodeBase64(envelope.box),
-					decodeBase64(key.publicKey),
-					decodeBase64(key.privateKey),
-				);
-			}
+			const msgKey = sodium.crypto_box_open_easy(
+				decodeBase64(envelope.box),
+				decodeBase64(envelope.nonce),
+				decodeBase64(payload.senderKey),
+				decodeBase64(key.privateKey),
+			);
 			const plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
 				null,
 				decodeBase64(text),
-				aad,
+				new TextEncoder().encode(aadText),
 				decodeBase64(payload.nonce),
 				msgKey,
 			);
@@ -165,11 +172,16 @@ export async function decryptBotMessage(
 export async function encryptBotReply(
 	text: string,
 	devices: DeviceKey[],
-	markup?: ReplyMarkup,
-	extra?: {
+	markup: ReplyMarkup | undefined,
+	extra: {
 		location?: { lat: number; lng: number };
 		fileKeys?: Record<string, FileKey>;
 		fileMeta?: Record<string, FileMeta>;
+	} | undefined,
+	options: {
+		binding: MessageBinding;
+		encryptionKey: EncryptionKeyPair;
+		identityKey: EncryptionKeyPair;
 	},
 ): Promise<{ text: string; payload: string }> {
 	await sodium.ready;
@@ -195,23 +207,41 @@ export async function encryptBotReply(
 			),
 		};
 	}
+	const aadText = messageAAD(options.binding);
 	const plain = new TextEncoder().encode(JSON.stringify(content));
 	const ciphertext = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
 		plain,
-		null,
+		new TextEncoder().encode(aadText),
 		null,
 		nonce,
 		msgKey,
 	);
-	const envelopes = devices.map((device) => ({
-		keyId: device.id,
-		box: sodium.to_base64(
-			sodium.crypto_box_seal(msgKey, decodeBase64(device.publicKey)),
-		),
-	}));
+	const envelopes = devices.map((device) => {
+		const envelopeNonce = sodium.randombytes_buf(24);
+		return {
+			keyId: device.id,
+			keyVersion: device.keyVersion ?? 1,
+			box: sodium.to_base64(
+				sodium.crypto_box_easy(
+					msgKey,
+					envelopeNonce,
+					decodeBase64(device.publicKey),
+					decodeBase64(options.encryptionKey.privateKey),
+				),
+			),
+			nonce: sodium.to_base64(envelopeNonce),
+		};
+	});
+	const signature = sodium.crypto_sign_detached(
+		new TextEncoder().encode(`${aadText}|${options.encryptionKey.publicKey}`),
+		signingSecretKey(options.identityKey.privateKey),
+	);
 	const payload: EncryptedPayload = {
-		v: 1,
+		v: 3,
 		nonce: sodium.to_base64(nonce),
+		senderKey: options.encryptionKey.publicKey,
+		identityKey: options.identityKey.publicKey,
+		identitySig: sodium.to_base64(signature),
 		envelopes,
 	};
 	return { text: sodium.to_base64(ciphertext), payload: JSON.stringify(payload) };

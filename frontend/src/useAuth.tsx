@@ -14,7 +14,7 @@ import {
 } from "./api.ts";
 import { setActiveAccountKey, setActiveAccountKeySilently } from "./db/init.ts";
 import { notify } from "./db/notify.ts";
-import { clearLocalKeys } from "./e2ee/keys.ts";
+import { clearLocalKeys, lockLocalKeys } from "./e2ee/keys.ts";
 import { getRouter } from "./router.tsx";
 import {
 	clearBackgroundSession,
@@ -471,10 +471,14 @@ function useAuthState() {
 
 	const switchAccountWithCleanup = useCallback(
 		(token: string) => {
+			// Do not leave the previous account's master key unlocked in
+			// memory while another account is active.
+			const leaving = accounts.find((a) => a.token === activeToken);
+			if (leaving !== undefined) lockLocalKeys(leaving.user.id);
 			clearAccountSwitchState();
 			switchAccount(token);
 		},
-		[switchAccount],
+		[accounts, activeToken, switchAccount],
 	);
 
 	const logout = useCallback(() => {

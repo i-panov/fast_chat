@@ -10,17 +10,18 @@ import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
 import { useLiveQuery } from "../db/useLiveQuery.ts";
 import type { KeyPair } from "../e2ee/crypto.ts";
-import { getMyKeyPair } from "../e2ee/keys.ts";
 import {
-	decryptMessage,
-	decryptMessageContent,
-	decryptMessageText,
-} from "../e2ee/message.ts";
+	getMyKeyPair,
+	hasLocalLock,
+	isLocalLockUnlocked,
+} from "../e2ee/keys.ts";
+import { decryptMessage, decryptMessageContent } from "../e2ee/message.ts";
 import i18n from "../i18n.ts";
 import type { Message, Thread } from "../types/api.ts";
 import { useAuth } from "../useAuth.tsx";
 import { stripMeta } from "../utils/helpers.ts";
 import { emitNotification } from "../utils/notify.ts";
+import { useLocalLockRevision } from "./useLocalLockRevision.ts";
 
 interface UseThreadsParams {
 	token: string | undefined;
@@ -43,8 +44,8 @@ interface UseThreadsReturn {
 
 const PAGE_SIZE = 30;
 
-// decryptMessageContentSafe resolves a parent preview regardless of the
-// payload version: v2 content first, legacy v1 text as fallback.
+// decryptMessageContentSafe resolves a parent preview. A payload without v3
+// content is not renderable and is reported as undecryptable by the caller.
 async function decryptMessageContentSafe(
 	parent: {
 		text: string;
@@ -55,8 +56,8 @@ async function decryptMessageContentSafe(
 	key: KeyPair,
 ): Promise<string> {
 	const content = await decryptMessageContent(parent, userId, key);
-	if (content !== null) return content.text;
-	return decryptMessageText(parent, userId, key);
+	if (content === null) throw new Error("undecryptable content");
+	return content.text;
 }
 
 function useDecryptedThreadMessages(
@@ -66,11 +67,24 @@ function useDecryptedThreadMessages(
 	const [decryptedThreadMessages, setDecryptedThreadMessages] = useState<
 		Message[]
 	>([]);
+	const lockRevision = useLocalLockRevision();
 
 	useEffect(() => {
 		let alive = true;
+		// Recompute cached undecryptable rows after a local lock change.
+		void lockRevision;
 
 		void (async () => {
+			let locked = false;
+			try {
+				locked = (await hasLocalLock()) && !isLocalLockUnlocked();
+			} catch {
+				locked = false;
+			}
+			if (locked) {
+				if (alive) setDecryptedThreadMessages([]);
+				return;
+			}
 			const key = await getMyKeyPair();
 			// Decrypt in parallel: thread pages are small (PAGE_SIZE) and each
 			// item is independent, so sequential awaits only add latency.
@@ -92,12 +106,14 @@ function useDecryptedThreadMessages(
 			);
 
 			if (alive) setDecryptedThreadMessages(out);
-		})();
+		})().catch(() => {
+			// A DB reset during teardown must not become an unhandled rejection.
+		});
 
 		return () => {
 			alive = false;
 		};
-	}, [activeThreadMessagesStored, userId]);
+	}, [activeThreadMessagesStored, userId, lockRevision]);
 
 	return decryptedThreadMessages;
 }
@@ -111,11 +127,23 @@ function useThreadParentText(
 	const [threadParentText, setThreadParentText] = useState<
 		Record<string, string>
 	>({});
+	const lockRevision = useLocalLockRevision();
 
 	useEffect(() => {
 		let alive = true;
+		void lockRevision;
 
 		void (async () => {
+			let locked = false;
+			try {
+				locked = (await hasLocalLock()) && !isLocalLockUnlocked();
+			} catch {
+				locked = false;
+			}
+			if (locked) {
+				if (alive) setThreadParentText({});
+				return;
+			}
 			const key = await getMyKeyPair();
 			const list = Object.values(threadsMap);
 			// Parallel parent resolution (IDB read + decrypt per thread).
@@ -148,12 +176,14 @@ function useThreadParentText(
 			);
 
 			if (alive) setThreadParentText(Object.fromEntries(entries));
-		})();
+		})().catch(() => {
+			// A DB reset during teardown must not become an unhandled rejection.
+		});
 
 		return () => {
 			alive = false;
 		};
-	}, [threadsMap, userId]);
+	}, [threadsMap, userId, lockRevision]);
 
 	return threadParentText;
 }

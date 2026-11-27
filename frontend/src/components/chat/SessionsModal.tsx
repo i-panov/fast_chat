@@ -7,29 +7,19 @@ import {
 	Loader,
 	Modal,
 	Paper,
-	PasswordInput,
 	Stack,
 	Text,
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-	getSessions,
-	getUserDeviceKeys,
-	revokeDeviceSession,
-	revokeUserDeviceKey,
-} from "../../api.ts";
-import { restoreKeyPairFromDeviceBackup } from "../../e2ee/keys.ts";
+import { getSessions, revokeDeviceSession } from "../../api.ts";
 import type { SessionInfo } from "../../types/api.ts";
-
-const RESTORE_KEY_LABEL = "sessions.restoreKey";
 
 interface Props {
 	open: boolean;
 	onClose: () => void;
 	token: string | undefined;
-	userId: string;
 	onLogoutAll: () => void;
 }
 
@@ -38,26 +28,16 @@ function formatDate(value: string): string {
 	return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-// The dialog bundles sessions, key state and per-device backup actions.
-// eslint-disable-next-line max-lines-per-function
-export function SessionsModal({
-	open,
-	onClose,
-	token,
-	userId,
-	onLogoutAll,
-}: Props) {
+// The dialog lists the account's sessions. Per-device E2EE keys no longer
+// exist (v3 uses one master key), so there is no key revocation here: the
+// equivalent action is rotating the master key.
+export function SessionsModal({ open, onClose, token, onLogoutAll }: Props) {
 	const { t } = useTranslation();
-	// The list holds a device name, three badges and up to three actions: on
-	// a phone the dialog takes the whole screen instead of squeezing them.
+	// On a phone the dialog takes the whole screen instead of squeezing the
+	// rows into a narrow column.
 	const fullScreen = useMediaQuery("(max-width: 48em)") === true;
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
 	const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-	const [deviceKeys, setDeviceKeys] = useState<Map<string, boolean>>(new Map());
-	const [restoreTarget, setRestoreTarget] = useState<SessionInfo | null>(null);
-	const [restorePassword, setRestorePassword] = useState("");
-	const [restoreError, setRestoreError] = useState<string | null>(null);
-	const [restoring, setRestoring] = useState(false);
 	const [loading, setLoading] = useState(false);
 	const [revoking, setRevoking] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -68,19 +48,11 @@ export function SessionsModal({
 		let cancelled = false;
 		setLoading(true);
 		setError(null);
-		void Promise.all([getSessions(token), getUserDeviceKeys(token, userId)])
-			.then(([result, keys]) => {
+		void getSessions(token)
+			.then((result) => {
 				if (!cancelled) {
 					setSessions(result.sessions);
 					setCurrentSessionId(result.currentSessionId);
-					setDeviceKeys(
-						new Map(
-							keys.devices.map((device) => [
-								device.id,
-								device.hasBackup === true,
-							]),
-						),
-					);
 				}
 			})
 			.catch((err: unknown) => {
@@ -95,25 +67,7 @@ export function SessionsModal({
 		return () => {
 			cancelled = true;
 		};
-	}, [open, token, userId]);
-
-	async function handleRevokeKey(deviceID: string) {
-		if (token === undefined) return;
-		setRevoking(deviceID);
-		setError(null);
-		try {
-			await revokeUserDeviceKey(token, deviceID);
-			setDeviceKeys((prev) => {
-				const next = new Map(prev);
-				next.delete(deviceID);
-				return next;
-			});
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-		} finally {
-			setRevoking(null);
-		}
-	}
+	}, [open, token]);
 
 	async function handleRevoke(sessionID: string) {
 		if (token === undefined) return;
@@ -130,206 +84,109 @@ export function SessionsModal({
 	}
 
 	return (
-		<>
-			<Modal
-				opened={open}
-				onClose={onClose}
-				title={t("sessions.title")}
-				size="lg"
-				fullScreen={fullScreen}
-				centered
-			>
-				<Stack gap="md">
-					<Text size="xs" c="dimmed">
-						{t("sessions.hint")}
-					</Text>
+		<Modal
+			opened={open}
+			onClose={onClose}
+			title={t("sessions.title")}
+			size="lg"
+			fullScreen={fullScreen}
+			centered
+		>
+			<Stack gap="md">
+				<Text size="xs" c="dimmed">
+					{t("sessions.hint")}
+				</Text>
 
-					{loading ? (
-						<Group justify="center">
-							<Loader size="sm" />
-						</Group>
-					) : (
-						<Stack gap="xs">
-							{sessions.length === 0 && !error && (
-								<Text size="sm" c="dimmed">
-									{t("sessions.empty")}
-								</Text>
-							)}
-							{sessions.map((session) => {
-								const hasKey = deviceKeys.has(session.id);
-								const hasBackup = deviceKeys.get(session.id) === true;
-								// Trust both signals: the per-row flag and the id the
-								// server reported for this request. A stale or
-								// missing flag must not expose "end session" for
-								// the device the user is currently on.
-								const isCurrent =
-									session.current || session.id === currentSessionId;
+				{loading ? (
+					<Group justify="center">
+						<Loader size="sm" />
+					</Group>
+				) : (
+					<Stack gap="xs">
+						{sessions.length === 0 && !error && (
+							<Text size="sm" c="dimmed">
+								{t("sessions.empty")}
+							</Text>
+						)}
+						{sessions.map((session) => {
+							// Trust both signals: the per-row flag and the id the
+							// server reported for this request. A stale or
+							// missing flag must not expose "end session" for
+							// the device the user is currently on.
+							const isCurrent =
+								session.current || session.id === currentSessionId;
 
-								return (
-									<Paper key={session.id} withBorder p="sm" radius="sm">
-										<Stack gap="xs">
-											<Group
-												justify="space-between"
-												align="flex-start"
-												gap="xs"
-												wrap="wrap"
-											>
-												<Box style={{ minWidth: 0, flex: "1 1 200px" }}>
-													<Text size="sm" fw={500} truncate>
-														{session.deviceName || session.deviceId}
-													</Text>
-													<Text size="xs" c="dimmed">
-														{t("sessions.lastSeen", {
-															when: formatDate(session.lastSeenAt),
-														})}
-													</Text>
-												</Box>
-												<Group gap={6} wrap="wrap">
-													{isCurrent && (
-														<Badge size="xs" variant="light">
-															{t("sessions.thisDevice")}
-														</Badge>
-													)}
-													{hasKey && (
-														<Badge size="xs" variant="outline" color="teal">
-															{t("sessions.key")}
-														</Badge>
-													)}
-													{hasBackup && (
-														<Badge size="xs" variant="outline" color="blue">
-															{t("sessions.keyBackup")}
-														</Badge>
-													)}
-												</Group>
+							return (
+								<Paper key={session.id} withBorder p="sm" radius="sm">
+									<Stack gap="xs">
+										<Group
+											justify="space-between"
+											align="flex-start"
+											gap="xs"
+											wrap="wrap"
+										>
+											<Box style={{ minWidth: 0, flex: "1 1 200px" }}>
+												<Text size="sm" fw={500} truncate>
+													{session.deviceName || session.deviceId}
+												</Text>
+												<Text size="xs" c="dimmed">
+													{t("sessions.lastSeen", {
+														when: formatDate(session.lastSeenAt),
+													})}
+												</Text>
+											</Box>
+											<Group gap={6} wrap="wrap">
+												{isCurrent && (
+													<Badge size="xs" variant="light">
+														{t("sessions.thisDevice")}
+													</Badge>
+												)}
 											</Group>
-											{(hasKey || !isCurrent) && (
-												<Group gap="xs" justify="flex-end" wrap="wrap">
-													{hasBackup && (
-														<Button
-															size="xs"
-															color="blue"
-															variant="subtle"
-															onClick={() => {
-																setRestorePassword("");
-																setRestoreError(null);
-																setRestoreTarget(session);
-															}}
-														>
-															{t(RESTORE_KEY_LABEL)}
-														</Button>
-													)}
-													{hasKey && (
-														<Button
-															size="xs"
-															color="orange"
-															variant="subtle"
-															loading={revoking === session.id}
-															onClick={() => {
-																void handleRevokeKey(session.id);
-															}}
-														>
-															{t("sessions.revokeKey")}
-														</Button>
-													)}
-													{!isCurrent && (
-														<Button
-															size="xs"
-															color="red"
-															variant="outline"
-															loading={revoking === session.id}
-															onClick={() => {
-																void handleRevoke(session.id);
-															}}
-														>
-															{t("sessions.revoke")}
-														</Button>
-													)}
-												</Group>
-											)}
-										</Stack>
-									</Paper>
-								);
-							})}
-						</Stack>
-					)}
-
-					{error !== null && (
-						<Alert color="red" title={t("sessions.errorTitle")}>
-							{error}
-						</Alert>
-					)}
-
-					<Group justify="space-between">
-						<Button
-							color="red"
-							variant="filled"
-							onClick={() => {
-								onLogoutAll();
-								onClose();
-							}}
-						>
-							{t("sessions.logoutAll")}
-						</Button>
-						<Button variant="default" onClick={onClose}>
-							{t("sessions.close")}
-						</Button>
-					</Group>
-				</Stack>
-			</Modal>
-			<Modal
-				opened={restoreTarget !== null}
-				onClose={() => setRestoreTarget(null)}
-				title={t("sessions.restoreKeyTitle")}
-				size="sm"
-				centered
-			>
-				<Stack gap="md">
-					<Text size="sm">
-						{t("sessions.restoreKeyHint", {
-							device: restoreTarget?.deviceName ?? "",
+										</Group>
+										{!isCurrent && (
+											<Group gap="xs" justify="flex-end" wrap="wrap">
+												<Button
+													size="xs"
+													color="red"
+													variant="outline"
+													loading={revoking === session.id}
+													onClick={() => {
+														void handleRevoke(session.id);
+													}}
+												>
+													{t("sessions.revoke")}
+												</Button>
+											</Group>
+										)}
+									</Stack>
+								</Paper>
+							);
 						})}
-					</Text>
-					<PasswordInput
-						label={t("backup.password")}
-						value={restorePassword}
-						onChange={(event) => setRestorePassword(event.currentTarget.value)}
-						autoFocus
-					/>
-					{restoreError !== null && (
-						<Alert color="red" title={t("sessions.restoreKeyFailed")}>
-							{restoreError}
-						</Alert>
-					)}
-					<Group justify="flex-end">
-						<Button variant="default" onClick={() => setRestoreTarget(null)}>
-							{t("sessions.close")}
-						</Button>
-						<Button
-							loading={restoring}
-							disabled={restorePassword === "" || token === undefined}
-							onClick={() => {
-								if (restoreTarget === null || token === undefined) return;
-								setRestoring(true);
-								setRestoreError(null);
-								void restoreKeyPairFromDeviceBackup(
-									token,
-									restoreTarget.id,
-									restorePassword,
-								)
-									.then(() => window.location.reload())
-									.catch((err: unknown) => {
-										setRestoreError(
-											err instanceof Error ? err.message : String(err),
-										);
-									})
-									.finally(() => setRestoring(false));
-							}}
-						>
-							{t(RESTORE_KEY_LABEL)}
-						</Button>
-					</Group>
-				</Stack>
-			</Modal>
-		</>
+					</Stack>
+				)}
+
+				{error !== null && (
+					<Alert color="red" title={t("sessions.errorTitle")}>
+						{error}
+					</Alert>
+				)}
+
+				<Group justify="space-between">
+					<Button
+						color="red"
+						variant="filled"
+						onClick={() => {
+							onLogoutAll();
+							onClose();
+						}}
+					>
+						{t("sessions.logoutAll")}
+					</Button>
+					<Button variant="default" onClick={onClose}>
+						{t("sessions.close")}
+					</Button>
+				</Group>
+			</Stack>
+		</Modal>
 	);
 }

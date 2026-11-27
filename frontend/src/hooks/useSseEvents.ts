@@ -157,16 +157,32 @@ async function showBotCallbackAnswer(
 		showAlert?: boolean;
 		encrypted?: boolean;
 		encryptedPayload?: string;
+		botId?: string;
+		chatId?: string;
+		messageId?: string;
 	};
 	if (answer.text === undefined || answer.text === "") return;
 	let text = answer.text;
 	if (answer.encrypted === true && answer.encryptedPayload !== undefined) {
-		if (userId === undefined) return;
+		if (
+			userId === undefined ||
+			answer.botId === undefined ||
+			answer.chatId === undefined ||
+			answer.messageId === undefined
+		) {
+			return;
+		}
 		try {
 			const key = await getMyKeyPair();
 			if (key === null) return;
 			const content = await decryptMessageContent(
-				{ text: answer.text, encryptedPayload: answer.encryptedPayload },
+				{
+					text: answer.text,
+					encryptedPayload: answer.encryptedPayload,
+					chatId: answer.chatId,
+					id: answer.messageId,
+					fromId: answer.botId,
+				},
 				userId,
 				key,
 			);

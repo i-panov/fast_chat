@@ -684,7 +684,7 @@ func TestFederationPairRemoteBotChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pair.b.svc.SetBotEncryptionKey(ctx, created.User.ID, "cHVibGlj"); err != nil {
+	if err := pair.b.svc.SetBotEncryptionKey(ctx, created.User.ID, "cHVibGlj", "aWRlbnRpdHk="); err != nil {
 		t.Fatal(err)
 	}
 
@@ -714,8 +714,14 @@ func TestFederationPairRemoteBotChat(t *testing.T) {
 	})
 
 	nonce := base64.RawURLEncoding.EncodeToString(make([]byte, 24))
-	box := base64.RawURLEncoding.EncodeToString(make([]byte, 80))
-	payload := fmt.Sprintf(`{"v":1,"nonce":%q,"envelopes":[{"keyId":%q,"box":%q}]}`, nonce, created.User.ID, box)
+	box := base64.RawURLEncoding.EncodeToString(make([]byte, 48))
+	senderKey := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	identityKey := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	identitySig := base64.RawURLEncoding.EncodeToString(make([]byte, 64))
+	payload := fmt.Sprintf(
+		`{"v":3,"nonce":%q,"senderKey":%q,"identityKey":%q,"identitySig":%q,"envelopes":[{"keyId":%q,"keyVersion":1,"box":%q,"nonce":%q}]}`,
+		nonce, senderKey, identityKey, identitySig, created.User.ID, box, nonce,
+	)
 	status, body = pair.a.doJSON(t, http.MethodPost, "/api/chats/"+chatID+"/messages", alice.Token, map[string]any{
 		"text": "ciphertext", "encrypted": true, "encryptedPayload": payload,
 	})
@@ -733,7 +739,7 @@ func TestFederationPairRemoteBotChat(t *testing.T) {
 	}
 
 	status, body = pair.b.doJSON(t, http.MethodPost, "/api/bot-api/sendMessage", created.Token, map[string]any{
-		"chat_id": chatID, "text": "ciphertext", "encrypted": true, "encrypted_payload": payload,
+		"id": "bot-encrypted-reply", "chat_id": chatID, "text": "ciphertext", "encrypted": true, "encrypted_payload": payload,
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("reply = %d %v", status, body)

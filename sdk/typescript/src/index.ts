@@ -6,6 +6,7 @@ import {
 	encryptFileBytes,
 	generateEncryptionKeyPair,
 	generateFileKey,
+	generateSigningKeyPair,
 	hashBytes,
 	type EncryptionKeyPair,
 } from "./crypto.js";
@@ -105,6 +106,7 @@ export interface BotClientOptions {
 	baseUrl?: string;
 	fetch?: typeof fetch;
 	encryptionKey?: EncryptionKeyPair;
+	identityKey?: EncryptionKeyPair;
 	initialOffset?: number;
 	onOffset?: (offset: number) => void;
 	mode?: "server" | "e2ee";
@@ -113,6 +115,16 @@ export interface BotClientOptions {
 export interface UserDeviceKey {
 	id: string;
 	publicKey: string;
+	keyVersion?: number;
+}
+
+export interface BotE2EEKeys {
+	encryptionKey: EncryptionKeyPair;
+	identityKey: EncryptionKeyPair;
+	/** @deprecated Compatibility alias for the encryption pair. */
+	publicKey: string;
+	/** @deprecated Compatibility alias for the encryption pair. */
+	privateKey: string;
 }
 
 export class BotApiError extends Error {
@@ -184,17 +196,25 @@ export class BotClient {
 	private controller: AbortController | null = null;
 	private offset: number;
 	private encryptionKey?: EncryptionKeyPair;
+	private pendingE2EEKeys?: BotE2EEKeys;
+	private identityKey?: EncryptionKeyPair;
+	private botID?: string;
 	private mode?: "server" | "e2ee";
 	private modeCheckedAt = 0;
 	private readonly onOffset?: (offset: number) => void;
 	private chatUsers = new Map<string, string>();
-	private callbackUsers = new Map<string, string>();
+
+	private callbackContexts = new Map<
+		string,
+		{ chatId: string; messageId: string; fromId: string }
+	>();
 
 	constructor(options: BotClientOptions) {
 		this.token = options.token;
 		this.baseUrl = (options.baseUrl ?? "http://localhost:8080").replace(/\/$/, "");
 		this.fetchImpl = options.fetch ?? globalThis.fetch;
 		this.encryptionKey = options.encryptionKey;
+		this.identityKey = options.identityKey;
 		this.offset = options.initialOffset ?? 0;
 		this.onOffset = options.onOffset;
 		this.mode = options.mode;
@@ -214,6 +234,7 @@ export class BotClient {
 	async getMe(): Promise<BotUser> {
 		const user = toUser(await this.request<RawUser>("GET", "/api/bot-api/getMe"));
 		this.mode = user.encryptionMode;
+		this.botID = user.id;
 		return user;
 	}
 
@@ -234,6 +255,37 @@ export class BotClient {
 			options?.signal,
 		);
 		return Promise.all(raw.map((update) => this.toUpdate(update)));
+	}
+
+	private async botEncryptionKeys(binding: {
+		chatId: string;
+		messageId: string;
+		fromId: string;
+	}): Promise<{
+		binding: { chatId: string; messageId: string; fromId: string };
+		encryptionKey: EncryptionKeyPair;
+		identityKey: EncryptionKeyPair;
+	}> {
+		if (this.encryptionKey === undefined || this.identityKey === undefined) {
+			throw new BotApiError(
+				"bot is in e2ee mode; encryption and identity keys are required",
+				0,
+				0,
+			);
+		}
+		if (this.botID === undefined) {
+			// The constructor may already know the mode from options and skip
+			// getMe(); E2EE sending still needs the bot's own id.
+			await this.getMe();
+		}
+		if (this.botID === undefined) {
+			throw new BotApiError("bot identity is not loaded; call getMe() first", 0, 0);
+		}
+		return {
+			binding: { ...binding, fromId: this.botID },
+			encryptionKey: this.encryptionKey,
+			identityKey: this.identityKey,
+		};
 	}
 
 	private async requireMode(): Promise<"server" | "e2ee"> {
@@ -309,6 +361,7 @@ export class BotClient {
 				);
 			}
 			const devices = await this.getUserDeviceKeys(userID);
+			const messageId = randomMessageID();
 			const encrypted = await encryptBotReply(
 				text,
 				devices,
@@ -318,11 +371,17 @@ export class BotClient {
 					fileKeys: options?.fileKeys,
 					fileMeta: options?.fileMeta,
 				},
+				await this.botEncryptionKeys({
+					chatId,
+					messageId,
+					fromId: userID,
+				}),
 			);
 			const raw = await this.request<RawMessage>(
 				"POST",
 				"/api/bot-api/sendMessage",
 				{
+					id: messageId,
 					chat_id: chatId,
 					text: encrypted.text,
 					encrypted: true,
@@ -398,6 +457,11 @@ export class BotClient {
 					fileKeys: options?.fileKeys,
 					fileMeta: options?.fileMeta,
 				},
+				await this.botEncryptionKeys({
+					chatId,
+					messageId,
+					fromId: userID,
+				}),
 			);
 			const raw = await this.request<RawMessage>(
 				"POST",
@@ -548,11 +612,22 @@ export class BotClient {
 		text?: string,
 		showAlert = false,
 	): Promise<void> {
-		if (this.encryptionKey !== undefined && text !== undefined && text !== "") {
-			const userID = this.callbackUsers.get(callbackQueryId);
-			if (userID === undefined) throw new Error("unknown callback user");
-			const devices = await this.getUserDeviceKeys(userID);
-			const encrypted = await encryptBotReply(text, devices);
+		const mode = await this.requireMode();
+		if (mode === "e2ee" && text !== undefined && text !== "") {
+			const context = this.callbackContexts.get(callbackQueryId);
+			if (context === undefined) throw new BotApiError("unknown callback user", 0, 0);
+			const devices = await this.getUserDeviceKeys(context.fromId);
+			const encrypted = await encryptBotReply(
+				text,
+				devices,
+				undefined,
+				undefined,
+				await this.botEncryptionKeys({
+					chatId: context.chatId,
+					messageId: context.messageId,
+					fromId: context.fromId,
+				}),
+			);
 			await this.request("POST", "/api/bot-api/answerCallbackQuery", {
 				callback_query_id: callbackQueryId,
 				text: encrypted.text,
@@ -570,14 +645,29 @@ export class BotClient {
 		});
 	}
 
-	async enableE2EE(): Promise<EncryptionKeyPair> {
-		const key = await generateEncryptionKeyPair();
+	async enableE2EE(): Promise<BotE2EEKeys> {
+		// Reuse keys from a previous attempt: if the PUT was applied but its
+		// response was lost, regenerating would hit "identity already set".
+		const encryptionKey =
+			this.pendingE2EEKeys?.encryptionKey ?? (await generateEncryptionKeyPair());
+		const identityKey =
+			this.pendingE2EEKeys?.identityKey ?? (await generateSigningKeyPair());
+		const keys: BotE2EEKeys = {
+			encryptionKey,
+			identityKey,
+			publicKey: encryptionKey.publicKey,
+			privateKey: encryptionKey.privateKey,
+		};
+		this.pendingE2EEKeys = keys;
+		this.encryptionKey = encryptionKey;
+		this.identityKey = identityKey;
 		await this.request("PUT", "/api/bot-api/encryption-key", {
-			publicKey: key.publicKey,
+			publicKey: encryptionKey.publicKey,
+			identityPublicKey: identityKey.publicKey,
 		});
-		this.encryptionKey = key;
+		this.pendingE2EEKeys = undefined;
 		this.mode = "e2ee";
-		return key;
+		return keys;
 	}
 
 	private async encryptedMarkup(
@@ -606,14 +696,15 @@ export class BotClient {
 	}
 
 	async getUserDeviceKeys(userID: string): Promise<UserDeviceKey[]> {
+		type RawDevice = { id: string; publicKey: string; keyVersion?: number };
 		const result = await this.request<
-			| Array<{ id: string; publicKey: string }>
-			| { devices: Array<{ id: string; publicKey: string }> }
+			RawDevice[] | { devices: RawDevice[] }
 		>("POST", "/api/bot-api/getUserDeviceKeys", { userId: userID });
 		const devices = Array.isArray(result) ? result : result.devices;
 		return devices.map((device) => ({
 			id: device.id,
 			publicKey: device.publicKey,
+			keyVersion: device.keyVersion ?? 1,
 		}));
 	}
 
@@ -700,7 +791,11 @@ export class BotClient {
 				data,
 				undecryptable,
 			};
-			this.callbackUsers.set(callbackQuery.id, callbackQuery.from.id);
+			this.callbackContexts.set(callbackQuery.id, {
+				chatId: callbackQuery.chatId,
+				messageId: callbackQuery.messageId,
+				fromId: callbackQuery.from.id,
+			});
 			this.chatUsers.set(callbackQuery.chatId, callbackQuery.from.id);
 		}
 		return { updateId: raw.update_id, message, callbackQuery };
@@ -718,11 +813,11 @@ export class BotClient {
 		}
 		if (decrypt && this.encryptionKey !== undefined && raw.encrypted === true && raw.encrypted_payload !== undefined) {
 			try {
-				const me = await this.getMe();
+				const botID = this.botID ?? (await this.getMe()).id ?? "";
 				const content = await decryptBotMessage(
 					raw.text,
 					raw.encrypted_payload,
-					me.id ?? "",
+					botID,
 					this.encryptionKey,
 					{
 						chatId: raw.chat_id,
@@ -735,9 +830,19 @@ export class BotClient {
 				base.fileKeys = content.fileKeys;
 				base.fileMeta = content.fileMeta;
 				base.files = (raw.files ?? [])
-					.filter((file) => file.hash !== undefined && content.fileMeta?.[file.hash] !== undefined)
+					.filter(
+						(file) =>
+							file.hash !== undefined &&
+							content.fileMeta !== undefined &&
+							Object.hasOwn(content.fileMeta, file.hash),
+					)
 					.map((file) => {
-					const meta = file.hash === undefined ? undefined : content.fileMeta?.[file.hash];
+					const meta =
+						file.hash !== undefined &&
+						content.fileMeta !== undefined &&
+						Object.hasOwn(content.fileMeta, file.hash)
+							? content.fileMeta[file.hash]
+							: undefined;
 					return meta === undefined
 						? file
 						: {
@@ -810,6 +915,10 @@ export class BotClient {
 	}
 }
 
+function randomMessageID(): string {
+	return globalThis.crypto.randomUUID().replace(/-/g, "");
+}
+
 function toUser(raw: RawUser): BotUser {
 	return {
 		id: raw.id,
@@ -876,6 +985,7 @@ export {
 	encryptFileBytes,
 	generateEncryptionKeyPair,
 	generateFileKey,
+	generateSigningKeyPair,
 	hashBytes,
 } from "./crypto.js";
 export type { FileKey, FileMeta } from "./crypto.js";

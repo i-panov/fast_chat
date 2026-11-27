@@ -187,6 +187,7 @@ func TestFederatedTypingValidatesUser(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, uri, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Federation-Server", fm.ServerDomain())
+		req.Header.Set(federation.ProtocolHeader, strconv.Itoa(federation.CurrentProtocolVersion))
 		req.Header.Set("X-Federation-Signature", sig)
 		req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
 		req.Header.Set(federation.NonceHeader, nonce)

@@ -19,7 +19,7 @@ import { ProfileModal } from "./components/chat/ProfileModal.tsx";
 import { SessionsModal } from "./components/chat/SessionsModal.tsx";
 import { UserAvatar } from "./components/shared/UserAvatar.tsx";
 import type { KeyPair } from "./e2ee/crypto.ts";
-import { getMyKeyPair } from "./e2ee/keys.ts";
+import { getMyKeyPair, hasServerKeyBackup } from "./e2ee/keys.ts";
 import i18n, { getCurrentLocale, SUPPORTED_LANGS } from "./i18n.ts";
 import type { AppConfig } from "./types/api.ts";
 import { useAuth } from "./useAuth.tsx";
@@ -169,6 +169,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 	const [confirmClearData, setConfirmClearData] = useState(false);
 	const [clearDataLoading, setClearDataLoading] = useState(false);
 	const [backupOpen, setBackupOpen] = useState(false);
+	const [backupExists, setBackupExists] = useState(false);
 	const [sessionsOpen, setSessionsOpen] = useState(false);
 	const [botsOpen, setBotsOpen] = useState(false);
 	const [profileOpen, setProfileOpen] = useState(false);
@@ -192,6 +193,24 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 
 		return () => ctrl.abort();
 	}, [open]);
+
+	useEffect(() => {
+		if (!open || activeAccount === null) {
+			setBackupExists(false);
+			return;
+		}
+		let cancelled = false;
+		void hasServerKeyBackup(activeAccount.token)
+			.then((exists) => {
+				if (!cancelled) setBackupExists(exists);
+			})
+			.catch(() => {
+				if (!cancelled) setBackupExists(false);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [open, activeAccount]);
 
 	useEffect(() => {
 		if (!open) return;
@@ -262,7 +281,7 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					onClick={() => setBackupOpen(true)}
 					disabled={activeAccount === null}
 				>
-					{t("backup.open")}
+					{backupExists ? t("backup.manage") : t("backup.open")}
 				</Button>
 				<Button
 					variant="outline"
@@ -407,7 +426,6 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					open={sessionsOpen}
 					onClose={() => setSessionsOpen(false)}
 					token={activeAccount.token}
-					userId={activeAccount.user.id}
 					onLogoutAll={logoutAll}
 				/>
 			)}
@@ -424,9 +442,13 @@ export function AccountSwitcher({ open, onClose, onLogout }: Props) {
 					onClose={() => {
 						setBackupOpen(false);
 						void refreshKeyPair();
+						if (activeAccount !== null) {
+							void hasServerKeyBackup(activeAccount.token)
+								.then(setBackupExists)
+								.catch(() => setBackupExists(false));
+						}
 					}}
 					token={activeAccount.token}
-					deviceId={activeAccount.sessionId}
 					keyPair={keyPair}
 				/>
 			)}

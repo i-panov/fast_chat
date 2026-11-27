@@ -29,6 +29,7 @@ import {
 import { ActiveCallOverlay } from "../components/chat/ActiveCallOverlay.tsx";
 import { AppHeader } from "../components/chat/AppHeader.tsx";
 import { AudioPlayerBar } from "../components/chat/AudioPlayerBar.tsx";
+import { BackupSetupGate } from "../components/chat/BackupSetupGate.tsx";
 import { CallButton } from "../components/chat/CallButton.tsx";
 import { ChatList } from "../components/chat/ChatList.tsx";
 import { CreateGroupModal } from "../components/chat/CreateGroupModal.tsx";
@@ -728,7 +729,7 @@ function ActiveChatView({
 	);
 }
 
-// eslint-disable-next-line max-lines-per-function -- the page owns the layout, routing and call windows in one place.
+// eslint-disable-next-line max-lines-per-function -- the page owns layout, routing, calls and security gates.
 export function ChatPage() {
 	const s = useChatPage();
 	const { selectChat, handleOpenThread } = s;
@@ -962,6 +963,7 @@ export function ChatPage() {
 					onLogout={s.logout}
 				/>
 				<RecoveryModal activeToken={s.activeAccount?.token ?? null} />
+				<BackupSetupGate activeToken={s.activeAccount?.token ?? null} />
 				<AppHeader
 					onSwitcherToggle={() => s.setSwitcherOpen(true)}
 					onOpenMessageSearch={() => setMessageSearchOpen(true)}

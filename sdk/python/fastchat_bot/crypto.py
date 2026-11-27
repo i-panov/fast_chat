@@ -3,8 +3,8 @@
 The wire format is the same as the browser client:
 
 * message content is a JSON object encrypted with XChaCha20-Poly1305;
-* the random message key is sealed to every recipient X25519 key;
-* the payload is JSON ``{"v":1,"nonce":..., "envelopes":[...]}``;
+* the random message key is wrapped for every participant's master key;
+* the payload is JSON ``{"v":3,...}`` with an identity signature;
 * callback data sent to a bot is ``"fcbenc:" + base64(sealed data)``.
 """
 
@@ -21,12 +21,13 @@ from nacl.bindings import (
     crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
     crypto_aead_xchacha20poly1305_ietf_decrypt,
     crypto_aead_xchacha20poly1305_ietf_encrypt,
+    crypto_box_easy,
     crypto_box_keypair,
     crypto_box_open_easy,
     crypto_box_seal,
     crypto_box_seal_open,
 )
-from nacl.signing import VerifyKey
+from nacl.signing import SigningKey, VerifyKey
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,7 @@ class EncryptionKeyPair:
 class DeviceKey:
     id: str
     public_key: str
+    key_version: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,37 +54,11 @@ def generate_key_pair() -> EncryptionKeyPair:
     return EncryptionKeyPair(_b64(public), _b64(private))
 
 
-def encrypt_content(
-    content: dict[str, Any],
-    devices: list[DeviceKey],
-) -> tuple[str, str]:
-    """Return (base64 ciphertext, encryptedPayload JSON)."""
-    if not devices:
-        raise ValueError("no recipient device keys")
-    message_key = os.urandom(
-        crypto_aead_xchacha20poly1305_ietf_KEYBYTES
+def generate_signing_key_pair() -> EncryptionKeyPair:
+    key = SigningKey.generate()
+    return EncryptionKeyPair(
+        _b64(bytes(key.verify_key)), _b64(bytes(key))
     )
-    nonce = os.urandom(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES)
-    plaintext = json.dumps(content, separators=(",", ":")).encode()
-    ciphertext = crypto_aead_xchacha20poly1305_ietf_encrypt(
-        plaintext, None, nonce, message_key
-    )
-    envelopes = []
-    for device in devices:
-        envelopes.append(
-            {
-                "keyId": device.id,
-                "box": _b64(
-                    crypto_box_seal(message_key, _unb64(device.public_key))
-                ),
-            }
-        )
-    payload = {
-        "v": 1,
-        "nonce": _b64(nonce),
-        "envelopes": envelopes,
-    }
-    return _b64(ciphertext), json.dumps(payload, separators=(",", ":"))
 
 
 def message_aad(
@@ -91,70 +67,107 @@ def message_aad(
     return "|".join([chat_id, message_id, from_id, thread_id or ""])
 
 
+def encrypt_content(
+    content: dict[str, Any],
+    devices: list[DeviceKey],
+    *,
+    sender_key: EncryptionKeyPair,
+    identity_key: EncryptionKeyPair,
+    binding: dict[str, str],
+) -> tuple[str, str]:
+    """Return (base64 ciphertext, encryptedPayload JSON)."""
+    if not devices:
+        raise ValueError("no recipient device keys")
+    message_key = os.urandom(
+        crypto_aead_xchacha20poly1305_ietf_KEYBYTES
+    )
+    nonce = os.urandom(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES)
+    aad = message_aad(
+        binding["chatId"],
+        binding["messageId"],
+        binding["fromId"],
+        binding.get("threadId"),
+    )
+    plaintext = json.dumps(content, separators=(",", ":")).encode()
+    ciphertext = crypto_aead_xchacha20poly1305_ietf_encrypt(
+        plaintext, aad.encode(), nonce, message_key
+    )
+    envelopes = []
+    for device in devices:
+        envelope_nonce = os.urandom(24)
+        envelopes.append(
+            {
+                "keyId": device.id,
+                "keyVersion": max(1, device.key_version),
+                "box": _b64(
+                    crypto_box_easy(
+                        message_key,
+                        envelope_nonce,
+                        _unb64(device.public_key),
+                        _unb64(sender_key.private_key),
+                    )
+                ),
+                "nonce": _b64(envelope_nonce),
+            }
+        )
+    signature = SigningKey(_unb64(identity_key.private_key)[:32]).sign(
+        f"{aad}|{sender_key.public_key}".encode()
+    ).signature
+    payload = {
+        "v": 3,
+        "nonce": _b64(nonce),
+        "senderKey": sender_key.public_key,
+        "identityKey": identity_key.public_key,
+        "identitySig": _b64(signature),
+        "envelopes": envelopes,
+    }
+    return _b64(ciphertext), json.dumps(payload, separators=(",", ":"))
+
 def decrypt_content(
     text: str,
     encrypted_payload: str,
     key_id: str,
     key: EncryptionKeyPair,
-    binding: dict[str, str] | None = None,
+    binding: dict[str, str],
 ) -> dict[str, Any]:
-    """Open the envelope addressed to key_id and decrypt message content.
-
-    v2 payloads are authenticated: the envelope is a crypto_box_easy signed
-    by the account identity. Without the binding fields neither the AAD nor
-    the signature can be checked, so such a payload fails closed.
-    """
+    """Open the envelope addressed to key_id and decrypt v3 content."""
     payload = json.loads(encrypted_payload)
-    version = payload.get("v")
-    if version not in (1, 2):
+    if payload.get("v") != 3:
         raise ValueError("unsupported encrypted payload version")
+    sender_key = payload.get("senderKey")
+    identity_key = payload.get("identityKey")
+    identity_sig = payload.get("identitySig")
+    if not all(isinstance(value, str) for value in (
+        sender_key, identity_key, identity_sig
+    )):
+        raise ValueError("v3 message is missing its sender binding")
 
-    aad: bytes | None = None
-    if version == 2:
-        sender_key = payload.get("senderKey")
-        identity_key = payload.get("identityKey")
-        identity_sig = payload.get("identitySig")
-        if (
-            binding is None
-            or not isinstance(sender_key, str)
-            or not isinstance(identity_key, str)
-            or not isinstance(identity_sig, str)
-        ):
-            raise ValueError("v2 message is missing its sender binding")
-        aad_text = message_aad(
-            binding["chatId"],
-            binding["messageId"],
-            binding["fromId"],
-            binding.get("threadId"),
+    aad = message_aad(
+        binding["chatId"],
+        binding["messageId"],
+        binding["fromId"],
+        binding.get("threadId"),
+    )
+    try:
+        VerifyKey(_unb64(identity_key)).verify(
+            f"{aad}|{sender_key}".encode(), _unb64(identity_sig)
         )
-        try:
-            VerifyKey(_unb64(identity_key)).verify(
-                f"{aad_text}|{sender_key}".encode(), _unb64(identity_sig)
-            )
-        except Exception as exc:
-            raise ValueError("sender identity signature is invalid") from exc
-        aad = aad_text.encode()
+    except Exception as exc:
+        raise ValueError("sender identity signature is invalid") from exc
 
     for envelope in payload.get("envelopes", []):
         if str(envelope.get("keyId", "")) != key_id:
             continue
         try:
-            if version == 2:
-                message_key = crypto_box_open_easy(
-                    _unb64(str(envelope["box"])),
-                    _unb64(str(envelope["nonce"])),
-                    _unb64(str(payload["senderKey"])),
-                    _unb64(key.private_key),
-                )
-            else:
-                message_key = crypto_box_seal_open(
-                    _unb64(str(envelope["box"])),
-                    _unb64(key.public_key),
-                    _unb64(key.private_key),
-                )
+            message_key = crypto_box_open_easy(
+                _unb64(str(envelope["box"])),
+                _unb64(str(envelope["nonce"])),
+                _unb64(sender_key),
+                _unb64(key.private_key),
+            )
             plaintext = crypto_aead_xchacha20poly1305_ietf_decrypt(
                 _unb64(text),
-                aad,
+                aad.encode(),
                 _unb64(str(payload["nonce"])),
                 message_key,
             )
@@ -162,7 +175,6 @@ def decrypt_content(
         except Exception:
             continue
     raise ValueError("no matching bot envelope")
-
 
 def encrypt_callback_data(data: str, bot_public_key: str) -> str:
     encrypted = "fcbenc:" + _b64(

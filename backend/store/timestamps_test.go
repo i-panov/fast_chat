@@ -198,7 +198,7 @@ func TestPersistedTimestampsAreUTC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.SetKeyBackup(ctx, user.ID, "blob"); err != nil {
+	if err := s.SetKeyBackup(ctx, user.ID, "blob", 1); err != nil {
 		t.Fatal(err)
 	}
 

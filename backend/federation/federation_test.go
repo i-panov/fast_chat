@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -292,6 +293,42 @@ func TestVerifyRejectsCrossServerReplay(t *testing.T) {
 	// to B must not verify.
 	if b.Verify(context.Background(), "remote.test", sig, http.MethodPost, "/x", body, ts, "other-nonce") {
 		t.Fatal("Verify accepted a signature minted for another recipient")
+	}
+}
+
+func TestProtocolVersionRequiresCurrent(t *testing.T) {
+	m := newTestManager(t, "local.test")
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	m.mu.Lock()
+	m.pubKeyCache["old.test"] = &cacheEntry{
+		key:       &key.PublicKey,
+		versions:  []int{1},
+		expiresAt: now.Add(time.Hour),
+	}
+	m.pubKeyCache["mixed.test"] = &cacheEntry{
+		key:       &key.PublicKey,
+		versions:  []int{1, CurrentProtocolVersion},
+		expiresAt: now.Add(time.Hour),
+	}
+	m.pubKeyCache["legacy.test"] = &cacheEntry{
+		key:       &key.PublicKey,
+		expiresAt: now.Add(time.Hour),
+	}
+	m.mu.Unlock()
+
+	if _, err := m.ProtocolVersion(context.Background(), "old.test"); !errors.Is(err, ErrNoCommonProtocol) {
+		t.Fatalf("v1 peer = %v, want ErrNoCommonProtocol", err)
+	}
+	if _, err := m.ProtocolVersion(context.Background(), "legacy.test"); !errors.Is(err, ErrNoCommonProtocol) {
+		t.Fatalf("legacy peer without versions = %v, want ErrNoCommonProtocol", err)
+	}
+	version, err := m.ProtocolVersion(context.Background(), "mixed.test")
+	if err != nil || version != CurrentProtocolVersion {
+		t.Fatalf("mixed peer = %d, %v", version, err)
 	}
 }
 

@@ -12,6 +12,18 @@ import (
 	"fast_chat/model"
 )
 
+func v3TestPayload() string {
+	nonce := base64.RawURLEncoding.EncodeToString(make([]byte, 24))
+	box := base64.RawURLEncoding.EncodeToString(make([]byte, 48))
+	sender := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	identity := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	signature := base64.RawURLEncoding.EncodeToString(make([]byte, 64))
+	return fmt.Sprintf(
+		`{"v":3,"nonce":%q,"senderKey":%q,"identityKey":%q,"identitySig":%q,"envelopes":[{"keyId":"u1","keyVersion":1,"box":%q,"nonce":%q}]}`,
+		nonce, sender, identity, signature, box, nonce,
+	)
+}
+
 func TestBotChatRoundTrip(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
@@ -226,7 +238,7 @@ func TestBotEncryptionMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetBotEncryptionKey(ctx, created.User.ID, "cHVibGlj"); err != nil {
+	if err := s.SetBotEncryptionKey(ctx, created.User.ID, "cHVibGlj", "aWRlbnRpdHk="); err != nil {
 		t.Fatal(err)
 	}
 	bot, ok := s.store.GetBot(ctx, created.User.ID)
@@ -240,10 +252,8 @@ func TestBotEncryptionMode(t *testing.T) {
 	if view.BotEncryptionMode != "e2ee" {
 		t.Fatalf("mode = %q", view.BotEncryptionMode)
 	}
-	nonce := base64.RawURLEncoding.EncodeToString(make([]byte, 24))
-	box := base64.RawURLEncoding.EncodeToString(make([]byte, 80))
-	payload := fmt.Sprintf(`{"v":1,"nonce":%q,"envelopes":[{"keyId":"u1","box":%q}]}`, nonce, box)
-	msg, err := s.SendBotEncryptedMessage(ctx, created.User.ID, view.ID, "ciphertext", payload)
+	payload := v3TestPayload()
+	msg, err := s.SendBotEncryptedMessageWithID(ctx, created.User.ID, view.ID, "test-encrypted-id", "ciphertext", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +343,7 @@ func TestBotE2EEFileEnforcement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetBotEncryptionKey(ctx, created.User.ID, "cHVibGlj"); err != nil {
+	if err := s.SetBotEncryptionKey(ctx, created.User.ID, "cHVibGlj", "aWRlbnRpdHk="); err != nil {
 		t.Fatal(err)
 	}
 	view, err := s.OpenBotChat(ctx, owner.ID, "files_bot")
@@ -348,9 +358,7 @@ func TestBotE2EEFileEnforcement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nonce := base64.RawURLEncoding.EncodeToString(make([]byte, 24))
-	box := base64.RawURLEncoding.EncodeToString(make([]byte, 80))
-	payload := fmt.Sprintf(`{"v":1,"nonce":%q,"envelopes":[{"keyId":"u1","box":%q}]}`, nonce, box)
+	payload := v3TestPayload()
 	if _, err := s.SendBotMessageWithFiles(ctx, created.User.ID, view.ID, "x", nil, []string{plaintext.ID}, true, payload, nil); err == nil {
 		t.Fatal("plaintext file accepted in e2ee bot chat")
 	}

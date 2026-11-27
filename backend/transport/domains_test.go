@@ -149,7 +149,7 @@ func TestPublicKeyFlow(t *testing.T) {
 
 	// Invalid key is rejected with the pre-migration message.
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/public-key", user.Token, `{"publicKey":"not-base64!!"}`))
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/public-key", user.Token, `{"publicKey":"not-base64!!","identityPublicKey":"`+base64.StdEncoding.EncodeToString(make([]byte, 32))+`","masterKeyVersion":1}`))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -160,8 +160,9 @@ func TestPublicKeyFlow(t *testing.T) {
 
 	// A valid 32-byte base64 key is accepted.
 	valid := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	identity := base64.StdEncoding.EncodeToString(make([]byte, 32))
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/public-key", user.Token, `{"publicKey":"`+valid+`"}`))
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/public-key", user.Token, `{"publicKey":"`+valid+`","identityPublicKey":"`+identity+`","masterKeyVersion":1}`))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -174,8 +175,11 @@ func TestPublicKeyFlow(t *testing.T) {
 	}
 
 	resp := decodeBody(t, rec)
-	if resp["publicKey"] == "" {
-		t.Errorf("expected publicKey, got %v", resp)
+	if resp["publicKey"] == "" || resp["identityPublicKey"] == "" {
+		t.Errorf("expected master public keys, got %v", resp)
+	}
+	if resp["masterKeyVersion"] != float64(1) {
+		t.Errorf("masterKeyVersion = %v", resp["masterKeyVersion"])
 	}
 }
 
@@ -186,13 +190,21 @@ func TestKeyBackupFlow(t *testing.T) {
 	user := createTestUser(t, st)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/key-backup", user.Token, `{"backup":"not base64!"}`))
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/key-backup", user.Token, `{"backup":"not base64!","masterKeyVersion":1}`))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 
+	legacy := base64.StdEncoding.EncodeToString([]byte(`{"v":2,"salt":"x"}`))
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/key-backup", user.Token, `{"backup":"QUJDRA=="}`))
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/key-backup", user.Token, `{"backup":"`+legacy+`","masterKeyVersion":1}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for legacy blob, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	validBackup := base64.StdEncoding.EncodeToString([]byte(`{"v":4,"password":"cGFzcw=="}`))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/key-backup", user.Token, `{"backup":"`+validBackup+`","masterKeyVersion":1}`))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -203,12 +215,12 @@ func TestKeyBackupFlow(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	if resp := decodeBody(t, rec); resp["backup"] != "QUJDRA==" {
+	if resp := decodeBody(t, rec); resp["backup"] != validBackup {
 		t.Errorf("backup = %v", resp["backup"])
 	}
 
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, bearerReq(t, http.MethodDelete, "/api/users/key-backup", user.Token, ""))
+	h.ServeHTTP(rec, bearerReq(t, http.MethodDelete, "/api/users/key-backup?masterKeyVersion=1", user.Token, ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
@@ -517,6 +529,47 @@ func TestFederatedEndpointRequiresSignature(t *testing.T) {
 	}
 }
 
+func TestMasterKeyVersionIsMonotonic(t *testing.T) {
+	ts := newDomainTestServer(t)
+	h := ts.Handler
+	user := createTestUser(t, ts.Store)
+
+	keyA := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	keyB := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
+	identity := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32))
+	putKey := func(publicKey string, version int) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		body := `{"publicKey":"` + publicKey + `","identityPublicKey":"` + identity + `","masterKeyVersion":` + strconv.Itoa(version) + `}`
+		h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/public-key", user.Token, body))
+		return rec
+	}
+
+	if rec := putKey(keyA, 1); rec.Code != http.StatusOK {
+		t.Fatalf("first key = %d: %s", rec.Code, rec.Body.String())
+	}
+	// A second key under the same version is a rollback, not an update.
+	if rec := putKey(keyB, 1); rec.Code != http.StatusConflict {
+		t.Fatalf("same-version different key = %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := putKey(keyB, 2); rec.Code != http.StatusOK {
+		t.Fatalf("higher version = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	backup := base64.StdEncoding.EncodeToString([]byte(`{"v":4,"password":"cGFzcw=="}`))
+	putBackup := func(version int) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		body := `{"backup":"` + backup + `","masterKeyVersion":` + strconv.Itoa(version) + `}`
+		h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/key-backup", user.Token, body))
+		return rec
+	}
+	if rec := putBackup(1); rec.Code != http.StatusConflict {
+		t.Fatalf("stale backup = %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := putBackup(2); rec.Code != http.StatusOK {
+		t.Fatalf("current backup = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestFederatedSignedRequestFlow(t *testing.T) {
 	ts := newDomainTestServer(t)
 	h := ts.Handler
@@ -537,6 +590,7 @@ func TestFederatedSignedRequestFlow(t *testing.T) {
 
 	req := bearerReq(t, http.MethodGet, uri, "", "")
 	req.Header.Set("X-Federation-Server", ownDomain)
+	req.Header.Set(federation.ProtocolHeader, strconv.Itoa(federation.CurrentProtocolVersion))
 	req.Header.Set("X-Federation-Signature", signature)
 	req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
 	req.Header.Set(federation.NonceHeader, "test-nonce")
@@ -565,6 +619,24 @@ func TestFederatedSignedRequestFlow(t *testing.T) {
 
 	if !found {
 		t.Errorf("alice not found in remote search results: %v", users)
+	}
+
+	// A request without the protocol header is v1 and must be refused before
+	// its v3 payload is silently dropped.
+	legacyTS := time.Now().Unix()
+	legacySig, err := fm.Sign(ownDomain, http.MethodGet, uri, nil, legacyTS, "no-proto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyReq := bearerReq(t, http.MethodGet, uri, "", "")
+	legacyReq.Header.Set("X-Federation-Server", ownDomain)
+	legacyReq.Header.Set("X-Federation-Signature", legacySig)
+	legacyReq.Header.Set("X-Federation-Timestamp", strconv.FormatInt(legacyTS, 10))
+	legacyReq.Header.Set(federation.NonceHeader, "no-proto")
+	legacyRec := httptest.NewRecorder()
+	h.ServeHTTP(legacyRec, legacyReq)
+	if legacyRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for v1 request, got %d: %s", legacyRec.Code, legacyRec.Body.String())
 	}
 
 	// A bad signature is rejected with the pre-migration 401 shape.
@@ -647,6 +719,7 @@ func TestOversizedFederatedBodyRejected(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, uri, bytes.NewReader(big))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Federation-Server", fm.ServerDomain())
+	req.Header.Set(federation.ProtocolHeader, strconv.Itoa(federation.CurrentProtocolVersion))
 	req.Header.Set("X-Federation-Signature", signature)
 	req.Header.Set("X-Federation-Timestamp", strconv.FormatInt(timestamp, 10))
 	req.Header.Set(federation.NonceHeader, "test-nonce")
@@ -1035,41 +1108,6 @@ func TestUserDeviceKeyEndpoints(t *testing.T) {
 	h.ServeHTTP(rec, bearerReq(t, http.MethodDelete, "/api/users/device-key", user.Token, ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete device key = %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestUserDeviceBackupEndpoints(t *testing.T) {
-	ts := newDomainTestServer(t)
-	h := ts.Handler
-	st := ts.Store
-	user := createTestUser(t, st)
-	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/device-key", user.Token, `{"publicKey":"`+key+`"}`))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("put device key = %d: %s", rec.Code, rec.Body.String())
-	}
-
-	backup := base64.StdEncoding.EncodeToString([]byte("opaque-backup"))
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, bearerReq(t, http.MethodPut, "/api/users/device-key/backup", user.Token, `{"backup":"`+backup+`"}`))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("put backup = %d: %s", rec.Code, rec.Body.String())
-	}
-
-	devices, err := st.ListUserDevices(context.Background(), user.ID)
-	if err != nil || len(devices) != 1 || devices[0].KeyBackup == "" {
-		t.Fatalf("devices = %+v err=%v", devices, err)
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, bearerReq(t, http.MethodGet, "/api/users/device-keys/"+devices[0].ID+"/backup", user.Token, ""))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("get backup = %d: %s", rec.Code, rec.Body.String())
-	}
-	resp := decodeBody(t, rec)
-	if resp["backup"] != backup {
-		t.Fatalf("backup = %v", resp["backup"])
 	}
 }
 

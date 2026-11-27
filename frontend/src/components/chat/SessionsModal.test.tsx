@@ -5,19 +5,14 @@ import { SessionsModal } from "./SessionsModal.tsx";
 
 vi.mock("../../api.ts", () => ({
 	getSessions: vi.fn(),
-	getUserDeviceKeys: vi.fn(() => Promise.resolve({ devices: [] })),
 	revokeDeviceSession: vi.fn(),
-	revokeUserDeviceKey: vi.fn(),
 }));
 
-const { getSessions, getUserDeviceKeys, revokeDeviceSession } = await import(
-	"../../api.ts"
-);
+const { getSessions, revokeDeviceSession } = await import("../../api.ts");
 
 const REVOKE_RE = /^(sessions\.revoke|Revoke|End session|Завершить сеанс)$/;
-const RESTORE_RE = /sessions\.restoreKey|Restore key/;
+const REVOKE_KEY_RE = /Revoke key/;
 const LOGOUT_ALL_RE = /sessions\.logoutAll|Sign out everywhere/;
-const REVOKE_KEY_RE = /sessions\.revokeKey|Revoke key/;
 
 const current = {
 	id: "s1",
@@ -55,7 +50,6 @@ describe("SessionsModal", () => {
 					open
 					onClose={() => {}}
 					token="tok"
-					userId="a:test"
 					onLogoutAll={onLogoutAll}
 				/>
 			</MantineProvider>,
@@ -75,66 +69,17 @@ describe("SessionsModal", () => {
 		expect(onLogoutAll).not.toHaveBeenCalled();
 	});
 
-	it("renders one restore action per device even when it has a backup", async () => {
-		vi.mocked(getSessions).mockResolvedValue({
-			currentSessionId: "s1",
-			sessions: [current],
-		});
-		vi.mocked(getUserDeviceKeys).mockResolvedValue({
-			devices: [
-				{
-					id: "s1",
-					publicKey: "pk",
-					createdAt: "2026-01-01T00:00:00Z",
-					lastSeenAt: "2026-01-01T00:00:00Z",
-					hasBackup: true,
-				},
-			],
-		});
-
-		render(
-			<MantineProvider>
-				<SessionsModal
-					open
-					onClose={() => {}}
-					token="tok"
-					userId="a:test"
-					onLogoutAll={vi.fn()}
-				/>
-			</MantineProvider>,
-		);
-
-		expect(await screen.findByText("Chrome on Linux")).toBeTruthy();
-		expect(
-			await screen.findAllByRole("button", { name: RESTORE_RE }),
-		).toHaveLength(1);
-		expect(screen.getByText("sessions.keyBackup")).toBeTruthy();
-	});
-
 	it("does not offer to end the session of the current device", async () => {
 		vi.mocked(getSessions).mockResolvedValue({
 			currentSessionId: "s1",
 			sessions: [current],
 		});
-		vi.mocked(getUserDeviceKeys).mockResolvedValue({
-			devices: [
-				{
-					id: "s1",
-					publicKey: "pk",
-					createdAt: "2026-01-01T00:00:00Z",
-					lastSeenAt: "2026-01-01T00:00:00Z",
-					hasBackup: false,
-				},
-			],
-		});
-
 		render(
 			<MantineProvider>
 				<SessionsModal
 					open
 					onClose={() => {}}
 					token="tok"
-					userId="a:test"
 					onLogoutAll={vi.fn()}
 				/>
 			</MantineProvider>,
@@ -142,7 +87,7 @@ describe("SessionsModal", () => {
 
 		expect(await screen.findByText("Chrome on Linux")).toBeTruthy();
 		expect(screen.queryByRole("button", { name: REVOKE_RE })).toBeNull();
-		expect(screen.getByRole("button", { name: REVOKE_KEY_RE })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: REVOKE_KEY_RE })).toBeNull();
 	});
 
 	it("treats the id reported by the server as the current session", async () => {
@@ -157,7 +102,6 @@ describe("SessionsModal", () => {
 					open
 					onClose={() => {}}
 					token="tok"
-					userId="a:test"
 					onLogoutAll={vi.fn()}
 				/>
 			</MantineProvider>,
@@ -180,7 +124,6 @@ describe("SessionsModal", () => {
 					open
 					onClose={() => {}}
 					token="tok"
-					userId="a:test"
 					onLogoutAll={onLogoutAll}
 				/>
 			</MantineProvider>,

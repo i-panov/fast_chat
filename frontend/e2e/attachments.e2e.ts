@@ -8,6 +8,7 @@ import {
 	type Page,
 	test,
 } from "@playwright/test";
+import { completeBackupGate } from "./backup-gate.ts";
 
 // A photo sent from the web client must stay visible after the canonical
 // server copy replaces the optimistic local one. Attachments in an encrypted
@@ -120,6 +121,13 @@ function x25519PublicKey(): string {
 	return Buffer.from(der.subarray(der.length - 32)).toString("base64url");
 }
 
+function ed25519PublicKey(): string {
+	const { publicKey } = generateKeyPairSync("ed25519");
+	const der = publicKey.export({ type: "spki", format: "der" });
+
+	return Buffer.from(der.subarray(der.length - 32)).toString("base64url");
+}
+
 async function openAs(
 	browser: Browser,
 	account: Account,
@@ -144,9 +152,8 @@ async function createAccountKey(page: Page): Promise<void> {
 	const button = page.getByRole("button", { name: CREATE_KEY_RE });
 	await expect(button).toBeVisible({ timeout: 20_000 });
 	await button.click();
-	await expect(page.getByRole("dialog")).toHaveCount(0, {
-		timeout: 20_000,
-	});
+	// The mandatory backup gate appears after the key is created.
+	await completeBackupGate(page);
 }
 
 test("a sent photo survives the sync back from the server", async ({
@@ -171,11 +178,15 @@ test("a sent photo survives the sync back from the server", async ({
 		"photo-b",
 	);
 
-	const deviceKey = await request.put("/api/users/device-key", {
+	const masterKey = await request.put("/api/users/public-key", {
 		headers: { Authorization: `Bearer ${bob.token}` },
-		data: { publicKey: x25519PublicKey() },
+		data: {
+			publicKey: x25519PublicKey(),
+			identityPublicKey: ed25519PublicKey(),
+			masterKeyVersion: 1,
+		},
 	});
-	expect(deviceKey.ok()).toBeTruthy();
+	expect(masterKey.ok()).toBeTruthy();
 
 	const created = await request.post("/api/chats", {
 		headers: { Authorization: `Bearer ${alice.token}` },

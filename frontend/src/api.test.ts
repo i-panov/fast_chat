@@ -470,8 +470,8 @@ describe("endpoint helpers", () => {
 	it("manages keys and backups", async () => {
 		fetchMock.mockResolvedValue(jsonResponse(200, { status: "ok" }));
 
-		await uploadPublicKey("tok", "pub");
-		await setKeyBackup("tok", "blob");
+		await uploadPublicKey("tok", "pub", "identity", 1);
+		await setKeyBackup("tok", "blob", 1);
 
 		fetchMock.mockResolvedValue(jsonResponse(200, { publicKey: "pub" }));
 		expect(await getPublicKey("tok", "u1")).toEqual({ publicKey: "pub" });
@@ -479,9 +479,10 @@ describe("endpoint helpers", () => {
 		fetchMock.mockResolvedValue(jsonResponse(200, { backup: "blob" }));
 		expect(await getKeyBackup("tok")).toEqual({ backup: "blob" });
 
-		await deleteKeyBackup("tok");
+		await deleteKeyBackup("tok", 3);
 		const [delPath, delInit] = fetchMock.mock.calls[4] as [string, RequestInit];
-		expect(delPath).toBe("/api/users/key-backup");
+		// biome-ignore lint/security/noSecrets: URL assertion, not a credential.
+		expect(delPath).toBe("/api/users/key-backup?masterKeyVersion=3");
 		expect(delInit.method).toBe("DELETE");
 	});
 

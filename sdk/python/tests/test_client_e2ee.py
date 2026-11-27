@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from fastchat_bot import BotClient, DeviceKey, generate_key_pair
+from fastchat_bot.crypto import generate_signing_key_pair
 from fastchat_bot.crypto import encrypt_content
 
 
@@ -12,13 +13,18 @@ class EncryptedClientTests(unittest.TestCase):
         bot_key = generate_key_pair()
         user_key = generate_key_pair()
         client = BotClient("token", encryption_key=bot_key)
+        client.identity_key = generate_signing_key_pair()
         client._mode = "e2ee"
         client._bot_id = "bot:test"
         client._chat_users["c1"] = "user:test"
 
+        user_identity = generate_signing_key_pair()
         ciphertext, payload = encrypt_content(
             {"text": "secret"},
-            [DeviceKey("bot:test", bot_key.public_key)],
+            [DeviceKey("bot:test", bot_key.public_key, 1)],
+            sender_key=user_key,
+            identity_key=user_identity,
+            binding={"chatId": "c1", "messageId": "m1", "fromId": "user:test"},
         )
         sent: list[dict] = []
 
@@ -44,7 +50,7 @@ class EncryptedClientTests(unittest.TestCase):
                     }
                 ]
             if path == "/api/bot-api/getUserDeviceKeys":
-                return [{"id": "user:test", "publicKey": user_key.public_key}]
+                return [{"id": "user:test", "publicKey": user_key.public_key, "keyVersion": 1}]
             if path == "/api/bot-api/sendMessage":
                 sent.append(body or {})
                 return {
@@ -108,12 +114,15 @@ class EncryptedClientTests(unittest.TestCase):
         bot_key = generate_key_pair()
         user_key = generate_key_pair()
         client = BotClient("token", encryption_key=bot_key)
-        client._callback_users["q1"] = "user:test"
+        client.identity_key = generate_signing_key_pair()
+        client._mode = "e2ee"
+        client._bot_id = "bot:test"
+        client._callback_contexts["q1"] = ("c1", "m1", "user:test")
         sent: list[dict] = []
 
         def fake_request(method, path, body=None, **kwargs):
             if path == "/api/bot-api/getUserDeviceKeys":
-                return [{"id": "user:test", "publicKey": user_key.public_key}]
+                return [{"id": "user:test", "publicKey": user_key.public_key, "keyVersion": 1}]
             if path == "/api/bot-api/answerCallbackQuery":
                 sent.append(body or {})
                 return {}
@@ -137,13 +146,15 @@ class EncryptedClientTests(unittest.TestCase):
         bot_key = generate_key_pair()
         user_key = generate_key_pair()
         client = BotClient("token", encryption_key=bot_key)
+        client.identity_key = generate_signing_key_pair()
         client._mode = "e2ee"
+        client._bot_id = "bot:test"
         client._chat_users["c1"] = "user:test"
         sent: list[dict] = []
 
         def fake_request(method, path, body=None, **kwargs):
             if path == "/api/bot-api/getUserDeviceKeys":
-                return [{"id": "user:test", "publicKey": user_key.public_key}]
+                return [{"id": "user:test", "publicKey": user_key.public_key, "keyVersion": 1}]
             if path == "/api/bot-api/uploadFile":
                 return {"file": {"id": "f1", "originalName": "a.txt", "mimeType": "text/plain", "size": 3, "hash": "h"}}
             if path == "/api/bot-api/sendMessage":

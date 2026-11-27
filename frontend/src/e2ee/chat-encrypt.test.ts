@@ -2,14 +2,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatsRepo } from "../db/chatsRepo.ts";
 import { setActiveAccountKey } from "../db/init.ts";
 import type { Message } from "../types/api.ts";
+import { encodeServerBackup, encryptBackupData } from "./backup.ts";
 import { type EncryptResult, encryptForChat } from "./chat-encrypt.ts";
-import { generateKeyPair, type KeyPair } from "./crypto.ts";
+import {
+	generateIdentityKeyPair,
+	generateKeyPair,
+	type KeyPair,
+} from "./crypto.ts";
 import {
 	decryptFileStream,
 	encryptFileStream,
 	generateFileKey,
 } from "./file-crypto.ts";
-import { confirmNewKey, ensureAccountKeys } from "./keys.ts";
+import {
+	confirmNewKey,
+	ensureAccountKeys,
+	RecoveryRequiredError,
+} from "./keys.ts";
 import { decryptMessage } from "./message.ts";
 
 // Mutable holder for the keys generated per test. vi.mock factories are
@@ -47,27 +56,6 @@ vi.mock("../api.ts", () => ({
 	),
 	setKeyBackup: vi.fn(),
 	deleteKeyBackup: vi.fn(),
-	registerDeviceKey: vi.fn(() => Promise.resolve({ status: "ok" })),
-	getUserDeviceKeys: vi.fn((_token: string, userId: string) => {
-		const pair =
-			userId === "alice:test"
-				? keyStore.alice
-				: userId === "bob:test"
-					? keyStore.bob
-					: null;
-		return Promise.resolve({
-			devices:
-				pair === null
-					? []
-					: [
-							{
-								id: `dev-${userId}`,
-								publicKey: pair.publicKey,
-								protocolVersion: 2,
-							},
-						],
-		});
-	}),
 }));
 
 function toMessage(id: string, encrypted: EncryptResult): Message {
@@ -121,6 +109,8 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 			"chat-v2",
 			{ text: "hello v2", location: { lat: 10, lng: 20 } },
 			fileKeys,
+			undefined,
+			{ messageId: "m-v2", fromId: "alice:test" },
 		);
 
 		if (encrypted === null) throw new Error("encryptForChat returned null");
@@ -147,6 +137,8 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 			"chat-v2",
 			{ text: "with file" },
 			{ "plaintext-hash": fileKey },
+			undefined,
+			{ messageId: "m-v2-file", fromId: "alice:test" },
 		);
 		if (encrypted === null) throw new Error("encryptForChat returned null");
 
@@ -207,6 +199,7 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 			{ text: "" },
 			fileKeys,
 			fileMeta,
+			{ messageId: "m-v2-photo", fromId: "alice:test" },
 		);
 		if (encrypted === null) throw new Error("encryptForChat returned null");
 
@@ -297,6 +290,8 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 			"chat-v2",
 			{ text: "just text" },
 			{},
+			undefined,
+			{ messageId: "m-v2-text", fromId: "alice:test" },
 		);
 		if (encrypted === null) throw new Error("encryptForChat returned null");
 
@@ -381,15 +376,37 @@ describe("encryptForChat → decryptMessage roundtrip (v2 content format)", () =
 		).resolves.toBeNull();
 	});
 
-	it("returns null when key recovery is required", async () => {
+	it("surfaces recovery when the device has no key but a backup exists", async () => {
 		// Fresh scope: no local keys, so the server backup is consulted.
 		setActiveAccountKey("scope-recovery:test");
 		const { getKeyBackup } = await import("../api.ts");
-		vi.mocked(getKeyBackup).mockResolvedValueOnce({ backup: "opaque-blob" });
+		const kp = await generateKeyPair();
+		const identity = await generateIdentityKeyPair();
+		vi.mocked(getKeyBackup).mockResolvedValueOnce({
+			backup: encodeServerBackup({
+				v: 4,
+				password: await encryptBackupData("pw", {
+					keyPair: kp,
+					identityKeyPair: identity,
+					keyVersion: 1,
+				}),
+			}),
+		});
 
+		await chatsRepo.upsert({
+			id: "chat-v2",
+			type: "group",
+			name: "v2",
+			ownerId: "scope-recovery:test",
+			members: [
+				{ id: "scope-recovery:test", nick: "me" },
+				{ id: "bob:test", nick: "bob" },
+			],
+			createdAt: "2026-01-01T00:00:00Z",
+		});
 		await expect(
 			encryptForChat("token", "chat-v2", { text: "x" }, {}),
-		).resolves.toBeNull();
+		).rejects.toBeInstanceOf(RecoveryRequiredError);
 	});
 });
 

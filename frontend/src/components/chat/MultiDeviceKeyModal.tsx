@@ -2,90 +2,54 @@ import { Alert, Button, Group, Modal, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-	createNewKey,
-	onMultiDeviceKeyRequired,
-	onNewKeyConfirmationNeeded,
-} from "../../e2ee/keys.ts";
-import { useAuth } from "../../useAuth.tsx";
+import { createNewKey, onNewKeyConfirmationNeeded } from "../../e2ee/keys.ts";
 
 interface Props {
 	activeToken: string | null;
 }
 
-type Mode = "multi-device" | "new-key";
-
+// NewKeyConfirmationModal asks before generating the first key on an account:
+// old messages cannot be read with it, so the choice must be explicit.
 export function MultiDeviceKeyModal({ activeToken }: Props) {
 	const { t } = useTranslation();
-	const { logoutAll } = useAuth();
-	const [mode, setMode] = useState<Mode | null>(null);
-	const [busy, setBusy] = useState(false);
 	const [modalToken, setModalToken] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
 
 	useEffect(() => {
-		setMode(null);
-		setBusy(false);
 		setModalToken(null);
-		const offMulti = onMultiDeviceKeyRequired((token) => {
-			if (token === activeToken) {
-				setModalToken(token);
-				setMode("multi-device");
-			}
+		setBusy(false);
+		const off = onNewKeyConfirmationNeeded((token) => {
+			if (token === activeToken) setModalToken(token);
 		});
-		const offNew = onNewKeyConfirmationNeeded((token) => {
-			if (token === activeToken) {
-				setModalToken(token);
-				setMode("new-key");
-			}
-		});
-		return () => {
-			offMulti();
-			offNew();
-		};
+		return off;
 	}, [activeToken]);
 
-	if (mode === null) return null;
-
-	const multi = mode === "multi-device";
+	if (modalToken === null) return null;
 
 	return (
 		<Modal
 			opened
-			onClose={() => setMode(null)}
-			title={t(multi ? "backup.multiDeviceTitle" : "backup.newKeyTitle")}
+			onClose={() => setModalToken(null)}
+			title={t("backup.newKeyTitle")}
 			size="sm"
 			centered
 		>
 			<Stack gap="md">
-				<Alert
-					color={multi ? "yellow" : "orange"}
-					title={t(
-						multi ? "backup.multiDeviceAlertTitle" : "backup.newKeyAlertTitle",
-					)}
-				>
-					<Text size="sm">
-						{t(multi ? "backup.multiDevicePrompt" : "backup.newKeyPrompt")}
-					</Text>
+				<Alert color="orange" title={t("backup.newKeyAlertTitle")}>
+					<Text size="sm">{t("backup.newKeyPrompt")}</Text>
 					<Text size="sm" mt="xs">
-						{t(multi ? "backup.multiDeviceWarning" : "backup.newKeyWarning")}
+						{t("backup.newKeyWarning")}
 					</Text>
 				</Alert>
-				<Text size="sm">
-					{t(multi ? "backup.multiDeviceAdvice" : "backup.newKeyAdvice")}
-				</Text>
+				<Text size="sm">{t("backup.newKeyAdvice")}</Text>
 				<Group justify="flex-end" gap="xs">
-					<Button variant="default" onClick={() => setMode(null)}>
+					<Button variant="default" onClick={() => setModalToken(null)}>
 						{t("backup.close")}
 					</Button>
 					<Button
-						color={multi ? "red" : "orange"}
+						color="orange"
 						loading={busy}
 						onClick={() => {
-							if (multi) {
-								setMode(null);
-								logoutAll();
-								return;
-							}
 							if (activeToken === null || modalToken !== activeToken) {
 								notifications.show({
 									message: t("error.newKeyFailed"),
@@ -105,7 +69,7 @@ export function MultiDeviceKeyModal({ activeToken }: Props) {
 								.finally(() => setBusy(false));
 						}}
 					>
-						{t(multi ? "backup.multiDeviceLogoutAll" : "backup.newKeyConfirm")}
+						{t("backup.newKeyConfirm")}
 					</Button>
 				</Group>
 			</Stack>

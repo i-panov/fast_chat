@@ -297,12 +297,29 @@ func registerBots(api huma.API, st *store.Store, svc *service.Service, fed *fede
 			}
 		}
 		if input.Body.Encrypted {
+			// The bot signs chatId|messageId|fromId|threadId. A server-chosen
+			// id would never match that signature, so encrypted sends must
+			// carry the client id explicitly.
+			if input.Body.ID == "" {
+				return nil, &statusError{
+					ErrorMessage: "encrypted message requires id",
+					code:         http.StatusBadRequest,
+				}
+			}
 			// E2EE markup/location live inside the encrypted content; the
-			// plaintext fields are intentionally ignored.
-			msg, err = svc.SendBotMessageWithFiles(
-				ctx, bot.UserID, input.Body.ChatID, input.Body.Text,
-				nil, fileIDs, true, input.Body.EncryptedPayload, nil,
-			)
+			// plaintext fields are intentionally ignored. The client id lets
+			// the bot bind its signature to the stored message id.
+			if len(fileIDs) > 0 {
+				msg, err = svc.SendBotEncryptedMessageWithFilesID(
+					ctx, bot.UserID, input.Body.ChatID, input.Body.ID,
+					input.Body.Text, input.Body.EncryptedPayload, fileIDs,
+				)
+			} else {
+				msg, err = svc.SendBotEncryptedMessageWithID(
+					ctx, bot.UserID, input.Body.ChatID, input.Body.ID,
+					input.Body.Text, input.Body.EncryptedPayload,
+				)
+			}
 		} else if len(fileIDs) > 0 || input.Body.Location != nil {
 			msg, err = svc.SendBotMessageWithFiles(
 				ctx, bot.UserID, input.Body.ChatID, input.Body.Text,
@@ -371,8 +388,12 @@ func registerBots(api huma.API, st *store.Store, svc *service.Service, fed *fede
 		if err != nil {
 			return nil, &statusError{ErrorMessage: msgInvalidPublicKey, code: http.StatusBadRequest}
 		}
-		if err := svc.SetBotEncryptionKey(ctx, bot.UserID, encodePublicKey(raw)); err != nil {
-			return nil, errInternal
+		rawIdentity, identityErr := service.DecodePublicKey(input.Body.IdentityPublicKey)
+		if identityErr != nil {
+			return nil, &statusError{ErrorMessage: msgInvalidPublicKey, code: http.StatusBadRequest}
+		}
+		if err := svc.SetBotEncryptionKey(ctx, bot.UserID, encodePublicKey(raw), encodePublicKey(rawIdentity)); err != nil {
+			return nil, botError(err)
 		}
 		return newBotOKOutput(), nil
 	})
@@ -392,6 +413,12 @@ func registerBots(api huma.API, st *store.Store, svc *service.Service, fed *fede
 		}
 		devices, err := svc.ListUserDeviceKeys(ctx, input.Body.UserID)
 		if err != nil {
+			if errors.Is(err, service.ErrUserNotFound) {
+				return nil, &statusError{
+					ErrorMessage: "recipient has no E2EE key",
+					code:         http.StatusNotFound,
+				}
+			}
 			return nil, errInternal
 		}
 		var out botUserKeysOutput
@@ -490,6 +517,8 @@ func botError(err error) error {
 	switch {
 	case errors.Is(err, service.ErrBotUsernameInvalid):
 		return &statusError{ErrorMessage: "invalid bot username", code: http.StatusBadRequest}
+	case errors.Is(err, service.ErrBotKeysAlreadySet):
+		return &statusError{ErrorMessage: "bot E2EE keys are already configured", code: http.StatusConflict}
 	case errors.Is(err, service.ErrBotUsernameTaken):
 		return &statusError{ErrorMessage: "bot username taken", code: http.StatusConflict}
 	case errors.Is(err, service.ErrBotQuotaExceeded):
@@ -520,6 +549,8 @@ func botError(err error) error {
 		return &statusError{ErrorMessage: "files and locations are not supported in federated bot chats", code: http.StatusBadRequest}
 	case errors.Is(err, service.ErrMessageNotFound):
 		return &statusError{ErrorMessage: msgMessageNotFound, code: http.StatusNotFound}
+	case errors.Is(err, store.ErrMessageIDConflict):
+		return &statusError{ErrorMessage: "message id already used", code: http.StatusConflict}
 	default:
 		return errInternal
 	}
@@ -566,6 +597,7 @@ type botUpdatesOutput struct {
 
 type botSendMessageInput struct {
 	Body struct {
+		ID               string                      `json:"id,omitempty"`
 		ChatID           string                      `json:"chat_id"` //nolint:tagliatelle // Bot API uses snake_case
 		Text             string                      `json:"text"`
 		ReplyMarkup      *model.InlineKeyboardMarkup `json:"reply_markup,omitempty"` //nolint:tagliatelle // Bot API uses snake_case
@@ -750,7 +782,8 @@ func botMessageDTOFrom(msg *model.Message, user *model.User) *botMessageDTO {
 
 type botEncryptionInput struct {
 	Body struct {
-		PublicKey string `json:"publicKey"`
+		PublicKey         string `json:"publicKey"`
+		IdentityPublicKey string `json:"identityPublicKey"`
 	}
 }
 

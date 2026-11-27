@@ -8,15 +8,20 @@ import {
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setActiveAccountKey } from "../../db/init.ts";
+import { metaRepo } from "../../db/metaRepo.ts";
 import { generateKeyPair, type KeyPair } from "../../e2ee/crypto.ts";
-import { getMyKeyPair } from "../../e2ee/keys.ts";
+import { clearLocalKeys, getMyKeyPair } from "../../e2ee/keys.ts";
 import { RecoveryModal } from "./RecoveryModal.tsx";
 
 let backupOnServer: string | null = null;
 
 vi.mock("../../api.ts", () => ({
 	uploadPublicKey: vi.fn(),
-	getPublicKey: vi.fn(),
+	getPublicKey: vi.fn(() => ({
+		publicKey: "",
+		identityPublicKey: "",
+		masterKeyVersion: 1,
+	})),
 	getKeyBackup: vi.fn(() => {
 		if (backupOnServer === null) throw new Error("http 404: no key backup");
 		return { backup: backupOnServer };
@@ -71,8 +76,18 @@ beforeEach(async () => {
 	setActiveAccountKey(`alice-${scopeCounter++}:test`);
 	backupOnServer = null;
 	vi.clearAllMocks();
+	vi.spyOn(window, "confirm").mockReturnValue(true);
 	keys = await generateKeyPair();
+	await metaRepo.setNoNotify("e2ee.publicKey", keys.publicKey);
+	await metaRepo.setNoNotify("e2ee.privateKey", keys.privateKey);
+	await metaRepo.setNoNotify("e2ee.keyVersion", 1);
 });
+
+// The recovery prompt is shown on a device that has no usable local key.
+async function uploadAndClear(password: string) {
+	await uploadKeyBackup("tok", password);
+	await clearLocalKeys();
+}
 
 describe("RecoveryModal", () => {
 	it("stays closed without a matching recovery event", () => {
@@ -104,7 +119,7 @@ describe("RecoveryModal", () => {
 	});
 
 	it("recovers the key pair with the right password", async () => {
-		await uploadKeyBackup("tok", "right-pass", keys);
+		await uploadAndClear("right-pass");
 		render(
 			<MantineProvider>
 				<RecoveryModal activeToken="tok" />
@@ -123,7 +138,7 @@ describe("RecoveryModal", () => {
 	});
 
 	it("shows an error on a wrong password", async () => {
-		await uploadKeyBackup("tok", "right-pass", keys);
+		await uploadAndClear("right-pass");
 		render(
 			<MantineProvider>
 				<RecoveryModal activeToken="tok" />
@@ -143,7 +158,7 @@ describe("RecoveryModal", () => {
 	});
 
 	it("recovers on Enter", async () => {
-		await uploadKeyBackup("tok", "right-pass", keys);
+		await uploadAndClear("right-pass");
 		render(
 			<MantineProvider>
 				<RecoveryModal activeToken="tok" />
@@ -162,7 +177,7 @@ describe("RecoveryModal", () => {
 	});
 
 	it("declining discards the backup", async () => {
-		await uploadKeyBackup("tok", "right-pass", keys);
+		await uploadAndClear("right-pass");
 		render(
 			<MantineProvider>
 				<RecoveryModal activeToken="tok" />

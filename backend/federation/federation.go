@@ -49,9 +49,11 @@ const (
 
 	wellKnownPath  = "/.well-known/fast-chat"
 	ProtocolHeader = "X-Federation-Protocol"
-	// CurrentProtocolVersion is the version this server speaks. Version 1 is
-	// the pre-versioning format; future incompatible changes bump it.
-	CurrentProtocolVersion = 1
+	// CurrentProtocolVersion is the version this server speaks. Version 2
+	// marks the E2EE v3 break: encrypted messages from a v1 peer cannot be
+	// read, so plain v1 federation is refused explicitly instead of silently
+	// dropping ciphertext.
+	CurrentProtocolVersion = 2
 	privFileName           = "federation.priv"
 	pubFileName            = "federation.pub"
 	cacheTTL               = 1 * time.Hour
@@ -367,23 +369,40 @@ func (m *Manager) PublicKeyPEM() (string, error) {
 }
 
 // ProtocolVersion returns the highest protocol version common to this server
-// and the peer. Version 1 is assumed for peers whose well-known predates the
-// protocolVersions field.
-func (m *Manager) ProtocolVersion(_ context.Context, serverDomain string) (int, error) {
+// and the peer. Peers whose well-known predates the protocolVersions field are
+// treated as incompatible; the request then fails instead of shipping a
+// payload the peer cannot decrypt.
+func (m *Manager) ProtocolVersion(ctx context.Context, serverDomain string) (int, error) {
 	if serverDomain == m.serverDomain {
 		return CurrentProtocolVersion, nil
 	}
 
-	// The well-known document is fetched by Verify on the inbound side. A
-	// peer that has not been seen yet is assumed to speak v1: sending an
-	// extra round-trip from every outbound request would make the client
-	// depend on a network call that is not needed for the pre-versioning
-	// protocol.
+	// The well-known document is fetched by Verify on the inbound side.
+	// Assume the current version for an unseen peer: since E2EE v3 a v1 peer
+	// cannot read our payloads, and letting it reject the request with a
+	// clear status beats silently sending undecryptable ciphertext.
 	m.mu.RLock()
 	entry := m.pubKeyCache[serverDomain]
 	m.mu.RUnlock()
-	versions := []int{1}
-	if entry != nil && len(entry.versions) > 0 {
+	if entry != nil && !entry.expiresAt.After(time.Now()) {
+		// A peer may have upgraded since the cached well-known. Refresh it;
+		// on failure keep the last known versions.
+		if key, versions, err := m.fetchWellKnown(ctx, serverDomain); err == nil {
+			entry = &cacheEntry{
+				key:       key,
+				versions:  versions,
+				expiresAt: time.Now().Add(cacheTTL),
+			}
+			m.mu.Lock()
+			m.pubKeyCache[serverDomain] = entry
+			m.mu.Unlock()
+		}
+	}
+	// A known peer with an empty version list has a pre-versioning
+	// well-known (v1): it cannot read our payloads. Only an unseen peer is
+	// assumed to speak the current version.
+	versions := []int{CurrentProtocolVersion}
+	if entry != nil {
 		versions = entry.versions
 	}
 
@@ -393,7 +412,7 @@ func (m *Manager) ProtocolVersion(_ context.Context, serverDomain string) (int, 
 			best = remote
 		}
 	}
-	if best == 0 {
+	if best != CurrentProtocolVersion {
 		return 0, fmt.Errorf("%w: %q", ErrNoCommonProtocol, serverDomain)
 	}
 	return best, nil

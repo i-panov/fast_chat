@@ -3,13 +3,18 @@ import { getMessages } from "../api.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import type { StoredMessage } from "../db/schema.ts";
 import { useLiveQuery } from "../db/useLiveQuery.ts";
-import { getMyKeyPair } from "../e2ee/keys.ts";
+import {
+	getMyKeyPair,
+	hasLocalLock,
+	isLocalLockUnlocked,
+} from "../e2ee/keys.ts";
 import { decryptMessage } from "../e2ee/message.ts";
 import i18n from "../i18n.ts";
 import type { Message, MessageStatus } from "../types/api.ts";
 import { useAuth } from "../useAuth.tsx";
 import { stripMeta } from "../utils/helpers.ts";
 import { emitNotification } from "../utils/notify.ts";
+import { useLocalLockRevision } from "./useLocalLockRevision.ts";
 
 interface MessageWithStatus extends Message {
 	status: MessageStatus;
@@ -80,6 +85,7 @@ export function useMessages({
 	// result array keeps a stable reference while contents are unchanged
 	// so unrelated notify() cycles do not re-render the message list.
 	const [visible, setVisible] = useState<MessageWithStatus[]>([]);
+	const lockRevision = useLocalLockRevision();
 	const decryptCacheRef = useRef<Map<string, MessageWithStatus>>(new Map());
 	// Revision index: message id → cache keys of its known revisions, so
 	// dropping a superseded revision is O(1) instead of scanning the whole
@@ -101,9 +107,26 @@ export function useMessages({
 				decryptRevisionsRef.current.clear();
 			}
 
-			const signature = (stored ?? [])
+			// While the lock is closed, drop decrypted text instead of leaving
+			// it in the cache/DOM behind the overlay. A DB reset during
+			// teardown must not turn into an unhandled rejection.
+			let locked = false;
+			try {
+				locked = (await hasLocalLock()) && !isLocalLockUnlocked();
+			} catch {
+				locked = false;
+			}
+			if (locked) {
+				decryptCacheRef.current.clear();
+				decryptRevisionsRef.current.clear();
+				lastVisibleRef.current = null;
+				if (alive) setVisible([]);
+				return;
+			}
+
+			const signature = `${lockRevision}|${(stored ?? [])
 				.map((s) => `${s.id}:${s.status}:${s._updatedAt}`)
-				.join("|");
+				.join("|")}`;
 			const prev = lastVisibleRef.current;
 			if (prev !== null && prev.key === signature) {
 				if (alive) setVisible(prev.value);
@@ -114,6 +137,9 @@ export function useMessages({
 			const out: MessageWithStatus[] = [];
 
 			for (const sm of stored ?? []) {
+				// The effect may be superseded by a lock/account change while
+				// the previous loop is still decrypting.
+				if (!alive) return;
 				if (sm.status === "deleted") continue;
 
 				const cacheKey = `${sm.id}:${sm._updatedAt}:${sm.status}`;
@@ -153,12 +179,14 @@ export function useMessages({
 
 			lastVisibleRef.current = { key: signature, value: out };
 			if (alive) setVisible(out);
-		})();
+		})().catch(() => {
+			// A DB reset during teardown must not become an unhandled rejection.
+		});
 
 		return () => {
 			alive = false;
 		};
-	}, [stored, userId]);
+	}, [stored, userId, lockRevision]);
 	const loadMore = useCallback(async () => {
 		if (chatId === null || token === undefined) return;
 		const cursorKey = `${userId ?? ""}:${chatId}`;

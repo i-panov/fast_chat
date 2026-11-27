@@ -2,17 +2,28 @@ import { useEffect, useState } from "react";
 import { getActiveAccountKey } from "../db/init.ts";
 import type { FileKey } from "../e2ee/file-crypto.ts";
 import { decryptFileStream } from "../e2ee/file-crypto.ts";
+import {
+	getLockEpoch,
+	isLocalLockConfigured,
+	isLocalLockUnlocked,
+} from "../e2ee/keys.ts";
 import type { FileInfo } from "../types/api.ts";
 import { registerBlobUrl, releaseBlobUrl } from "../utils/blobUrlRefs.ts";
 import {
 	cacheDecryptedFile,
 	decryptedCacheKey,
 	getCachedDecryptedFile,
+	removeCachedDecryptedFile,
 } from "../utils/fileCache.ts";
 import { useFileUrl } from "./useFileUrl.ts";
+import { useLocalLockRevision } from "./useLocalLockRevision.ts";
 
 // The key is matched by file hash first, then by file id. Returns undefined
 // for plaintext files.
+function isLockClosed(): boolean {
+	return isLocalLockConfigured() === true && !isLocalLockUnlocked();
+}
+
 function fileKeyFor(
 	file: FileInfo | undefined,
 	fileKeys: Record<string, FileKey> | undefined,
@@ -50,11 +61,18 @@ export function useDecryptedFileUrl(
 	// failed ciphertext request must not surface before the cache had its
 	// chance: the plaintext may already be stored and the ciphertext evicted.
 	const [cacheChecked, setCacheChecked] = useState(false);
+	const lockRevision = useLocalLockRevision();
 
 	const key = fileKeyFor(file, fileKeys);
 	const localPlaintext = file?.url.startsWith("blob:") === true;
 
 	useEffect(() => {
+		void lockRevision;
+		if (isLockClosed()) {
+			setDecryptedUrl(null);
+			setCacheChecked(false);
+			return;
+		}
 		setDecryptError(null);
 		if (!file) {
 			setDecryptedUrl(null);
@@ -82,12 +100,16 @@ export function useDecryptedFileUrl(
 		// late write would persist one account's plaintext in another's
 		// IndexedDB, where it survives the first account's logout.
 		const accountKey = getActiveAccountKey();
+		const epoch = getLockEpoch();
 		const cacheKey = decryptedCacheKey(file.url, fileKey, file.hash ?? file.id);
 
 		void (async () => {
 			try {
 				const cached = await getCachedDecryptedFile(cacheKey);
 				if (getActiveAccountKey() !== accountKey) return;
+				if (cancelled || isLockClosed() || getLockEpoch() !== epoch) {
+					return;
+				}
 				if (!cancelled) setCacheChecked(true);
 				if (cached !== undefined) {
 					createdUrl = URL.createObjectURL(cached);
@@ -113,11 +135,21 @@ export function useDecryptedFileUrl(
 					type: file.mimeType,
 				});
 				if (getActiveAccountKey() !== accountKey) return;
+				// The lock may have closed while the stream was decrypting;
+				// cleanup runs before the next effect, so cancelled means the
+				// plaintext must not be cached or shown.
+				if (cancelled || isLockClosed() || getLockEpoch() !== epoch) return;
 
 				try {
 					await cacheDecryptedFile(cacheKey, plainBlob, accountKey);
 				} catch {
 					// Quota or a blocked database: showing the file still wins.
+				}
+				if (cancelled || isLockClosed() || getLockEpoch() !== epoch) {
+					// The plaintext was written before the lock/cleanup could
+					// run; remove it so it does not stay on disk.
+					await removeCachedDecryptedFile(cacheKey);
+					return;
 				}
 
 				createdUrl = URL.createObjectURL(plainBlob);
@@ -146,7 +178,7 @@ export function useDecryptedFileUrl(
 				createdUrl = null;
 			}
 		};
-	}, [file, fileKeys, encryptedUrl]);
+	}, [file, fileKeys, encryptedUrl, lockRevision]);
 
 	const resolved = file ? decryptedUrl : null;
 	// A key with no plaintext yet means decryption is still running (or the

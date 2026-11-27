@@ -223,33 +223,29 @@ func TestSendMessageRejectsIDUsedByAnotherChat(t *testing.T) {
 	}
 }
 
-func TestValidateEncryptedPayloadAcceptsURLSafeBase64(t *testing.T) {
-	nonce := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 24))
-	box := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 80))
-	payload := `{"v":1,"nonce":"` + nonce + `","envelopes":[{"keyId":"u1","box":"` + box + `"}]}`
-	if err := ValidateEncryptedPayload(true, payload); err != nil {
-		t.Fatalf("URL-safe payload rejected: %v", err)
-	}
-}
-
-func TestValidateEncryptedPayloadV2RequiresIdentity(t *testing.T) {
+func TestValidateEncryptedPayloadV3(t *testing.T) {
 	nonce := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 24))
 	easyBox := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 48))
 	senderKey := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32))
 	identityKey := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32))
 	identitySig := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{5}, 64))
-	envelopes := `[{"keyId":"u1","box":"` + easyBox + `","nonce":"` + nonce + `"}]`
+	envelopes := `[{"keyId":"u1","keyVersion":1,"box":"` + easyBox + `","nonce":"` + nonce + `"}]`
 
-	valid := `{"v":2,"nonce":"` + nonce + `","senderKey":"` + senderKey +
+	valid := `{"v":3,"nonce":"` + nonce + `","senderKey":"` + senderKey +
 		`","identityKey":"` + identityKey + `","identitySig":"` + identitySig +
 		`","envelopes":` + envelopes + `}`
 	if err := ValidateEncryptedPayload(true, valid); err != nil {
-		t.Fatalf("valid v2 payload rejected: %v", err)
+		t.Fatalf("valid v3 payload rejected: %v", err)
 	}
 
-	withoutIdentity := `{"v":2,"nonce":"` + nonce + `","senderKey":"` + senderKey +
+	withoutIdentity := `{"v":3,"nonce":"` + nonce + `","senderKey":"` + senderKey +
 		`","envelopes":` + envelopes + `}`
 	if err := ValidateEncryptedPayload(true, withoutIdentity); err == nil {
-		t.Fatal("v2 payload without identity was accepted")
+		t.Fatal("v3 payload without identity was accepted")
+	}
+
+	v1 := `{"v":1,"nonce":"` + nonce + `","envelopes":` + envelopes + `}`
+	if !errors.Is(ValidateEncryptedPayload(true, v1), ErrUnsupportedPayloadVersion) {
+		t.Fatal("legacy payload must be rejected")
 	}
 }

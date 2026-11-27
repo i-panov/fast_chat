@@ -45,21 +45,6 @@ vi.mock("../api.ts", () => ({
 	),
 	setKeyBackup: vi.fn(),
 	deleteKeyBackup: vi.fn(),
-	registerDeviceKey: vi.fn(() => Promise.resolve({ status: "ok" })),
-	getUserDeviceKeys: vi.fn((_token: string, userId: string) => {
-		const pair =
-			userId === "alice:test"
-				? keyStore.alice
-				: userId === "bob:test"
-					? keyStore.bob
-					: null;
-		return Promise.resolve({
-			devices:
-				pair === null
-					? []
-					: [{ id: `dev-${userId}`, publicKey: pair.publicKey }],
-		});
-	}),
 }));
 
 vi.mock("../sync/syncEngine.ts", () => ({

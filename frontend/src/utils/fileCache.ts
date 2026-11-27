@@ -42,6 +42,18 @@ export function clearFileCache(): void {
 	inMemoryCache.clear();
 }
 
+// clearDecryptedFileCache drops plaintext attachments of one account from both
+// memory and IndexedDB. The ciphertext cache stays: it is useless without the
+// locked master key and re-downloading every file after each unlock is costly.
+export async function clearDecryptedFileCache(
+	accountKey: string | null = getActiveAccountKey(),
+): Promise<void> {
+	// inMemoryCache holds the *ciphertext* blob URLs; revoking them would
+	// break mounted attachments after unlock. Only the plaintext store is
+	// cleared here.
+	await decryptedFilesRepo.clear(accountKey).catch(() => {});
+}
+
 export function acquireFileBlobUrl(
 	fileUrl: string,
 	token?: string,
@@ -111,6 +123,12 @@ export async function getCachedDecryptedFile(
 	if (cached === undefined) return;
 
 	return new Blob([cached.bytes], { type: cached.mimeType });
+}
+
+export async function removeCachedDecryptedFile(
+	cacheKey: string,
+): Promise<void> {
+	await decryptedFilesRepo.remove(cacheKey).catch(() => {});
 }
 
 export async function cacheDecryptedFile(

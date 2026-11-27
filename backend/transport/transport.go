@@ -730,13 +730,16 @@ func verifyFederatedRequest(fm *federation.Manager, w http.ResponseWriter, r *ht
 		return false, false
 	}
 
-	// Version 1 is the pre-versioning protocol. A future incompatible
-	// version is refused instead of being parsed as v1.
-	if version := r.Header.Get(federation.ProtocolHeader); version != "" {
-		parsed, err := strconv.Atoi(version)
-		if err != nil || parsed != federation.CurrentProtocolVersion {
-			return false, false
-		}
+	// A missing header means the pre-versioning protocol (v1), which this
+	// server no longer speaks. Refuse it explicitly rather than accepting a
+	// payload it cannot read.
+	version := r.Header.Get(federation.ProtocolHeader)
+	if version == "" {
+		version = "1"
+	}
+	parsed, err := strconv.Atoi(version)
+	if err != nil || parsed != federation.CurrentProtocolVersion {
+		return false, false
 	}
 
 	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)

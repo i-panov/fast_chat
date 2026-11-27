@@ -168,25 +168,29 @@ test("getUserDeviceKeys accepts the server array shape", async () => {
 			}),
 	});
 	const keys = await client.getUserDeviceKeys("u1");
-	assert.deepEqual(keys, [{ id: "u1", publicKey: "cHVibGlj" }]);
+	assert.deepEqual(keys, [{ id: "u1", publicKey: "cHVibGlj", keyVersion: 1 }]);
 });
 
 test("sendEncryptedFile attaches the uploaded file", async () => {
-	const { generateEncryptionKeyPair } = await import("../src/crypto.js");
+	const { generateEncryptionKeyPair, generateSigningKeyPair } = await import(
+		"../src/crypto.js"
+	);
 	const botKey = await generateEncryptionKeyPair();
+	const botIdentity = await generateSigningKeyPair();
 	const userKey = await generateEncryptionKeyPair();
 	let sent: Record<string, unknown> | undefined;
 	const client = new BotClient({
 		token: "t",
 		mode: "e2ee",
 		encryptionKey: botKey,
+		identityKey: botIdentity,
 		fetch: async (url, init) => {
 			const path = new URL(String(url)).pathname;
 			if (path === "/api/bot-api/getMe") {
 				return jsonResponse({ ok: true, result: { id: "bot:test", username: "b", display_name: "B", is_bot: true, encryption_mode: "e2ee" } });
 			}
 			if (path === "/api/bot-api/getUserDeviceKeys") {
-				return jsonResponse({ ok: true, result: [{ id: "user:test", publicKey: userKey.publicKey }] });
+				return jsonResponse({ ok: true, result: [{ id: "user:test", publicKey: userKey.publicKey, keyVersion: 1 }] });
 			}
 			if (path === "/api/bot-api/uploadFile") {
 				return jsonResponse({ file: { id: "f1", mimeType: "text/plain", size: 1, originalName: "a.txt" } });

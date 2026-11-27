@@ -36,11 +36,25 @@ for update in bot.get_updates():
 
 ```python
 bot = BotClient(token)
-key = bot.enable_e2ee()          # save key.public_key/key.private_key
+encryption_key, identity_key = bot.enable_e2ee()  # persist both
 ...
 
-bot = BotClient(token, encryption_key=key)
+bot = BotClient(
+    token,
+    encryption_key=encryption_key,
+    identity_key=identity_key,
+)
 ```
+
+### Breaking changes (v3)
+
+`enable_e2ee()` returns an `E2EEKeys` tuple `(encryption_key, identity_key)`;
+it also keeps `public_key`/`private_key` aliases for the encryption pair.
+`encrypt_content`/`decrypt_content` require `identity_key` and a message
+binding. A legacy E2EE bot without identity must be upgraded by sending
+`PUT /api/bot-api/encryption-key` manually with its existing `publicKey` and a
+new `identityPublicKey`; calling `enable_e2ee()` again would rotate the
+encryption key instead.
 
 The wire format matches the TypeScript SDK and browser client. Sending an
 E2EE message requires the bot to have already received a message in that chat,
@@ -54,10 +68,13 @@ uv pip install -e sdk/python
 
 ## Limits
 
-E2EE is supported for text, inline keyboards, callback data and callback
-answers. Files and locations remain plaintext-only, matching the server
-protocol. Pass a saved `EncryptionKeyPair` to `BotClient` after the first
-`enable_e2ee()` call; the SDK does not persist private keys.
+E2EE is supported for text, inline keyboards, callback data, callback
+answers, files and locations (file keys/metadata travel inside the encrypted
+content). Pass both saved `EncryptionKeyPair` values (`encryption_key` and
+`identity_key`) to `BotClient` after the first `enable_e2ee()` call; the SDK
+does not persist private keys. Messages use
+payload v3 with one envelope per participant and an Ed25519 identity
+signature; legacy v1/v2 payloads are rejected.
 
 ## Encrypted files
 

@@ -182,30 +182,74 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*model.User, 
 	return &user, true
 }
 
-// UpdateUserPublicKey stores the user's E2E X25519 public key (base64).
-func (s *Store) UpdateUserPublicKey(ctx context.Context, userID, publicKey string) error {
-	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
-		Update("public_key", publicKey).Error
-}
+const fieldPublicKey = "public_key"
 
-// GetUserPublicKey returns the user's E2E public key; ok=false when the
-// user has no key yet (they have not completed E2E setup).
-func (s *Store) GetUserPublicKey(ctx context.Context, userID string) (string, bool) {
-	var key string
-	if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
-		Select("public_key").Scan(&key).Error; err != nil || key == "" {
-		return "", false
+// ErrStaleMasterKey reports a key upload older than the stored version.
+var ErrStaleMasterKey = errors.New("stale E2EE key version")
+
+// UpdateUserMasterKey stores the account's master public key pair and its
+// version. The private halves never reach the server.
+func (s *Store) UpdateUserMasterKey(ctx context.Context, userID, publicKey, identityPublicKey string, version int) error {
+	version = max(version, 1)
+	// An upload may advance the version, or repeat the exact same key (a
+	// lost response retry). A different key or identity under an old/equal
+	// version is a rollback: it would leave the server handing out a key
+	// that the rotating device cannot read or peers cannot verify.
+	result := s.db.WithContext(ctx).Model(&model.User{}).
+		Where(
+			`id = ? AND (
+				key_version < ?
+				OR (key_version = ? AND identity_public_key = '')
+				OR (key_version = ? AND (public_key = ? OR public_key = '')
+					AND (identity_public_key = ? OR identity_public_key = ''))
+			)`,
+			userID, version, version, version, publicKey, identityPublicKey,
+		).
+		Updates(map[string]any{
+			fieldPublicKey:        publicKey,
+			"identity_public_key": identityPublicKey,
+			"key_version":         version,
+		})
+	if result.Error != nil {
+		return result.Error
 	}
-
-	return key, true
+	if result.RowsAffected == 0 {
+		return ErrStaleMasterKey
+	}
+	return nil
 }
+
+// GetUserMasterKey returns the account's master public keys and version.
+func (s *Store) GetUserMasterKey(ctx context.Context, userID string) (string, string, int, bool) {
+	var user model.User
+	if err := s.db.WithContext(ctx).Select("public_key", "identity_public_key", "key_version").
+		Where("id = ?", userID).First(&user).Error; err != nil || user.PublicKey == "" {
+		return "", "", 0, false
+	}
+	version := user.KeyVersion
+	version = max(version, 1)
+	return user.PublicKey, user.IdentityPublicKey, version, true
+}
+
+// ErrStaleKeyBackup reports a backup whose version does not match the
+// published master key. Without this guard a device that missed a rotation
+// could overwrite the backup of the current key with an older private key.
+var ErrStaleKeyBackup = errors.New("stale E2EE key backup")
 
 // SetKeyBackup stores the client-encrypted private key backup blob for a
 // user. The server never decrypts it; it only stores and returns it.
-func (s *Store) SetKeyBackup(ctx context.Context, userID, blob string) error {
+func (s *Store) SetKeyBackup(ctx context.Context, userID, blob string, version int) error {
 	now := time.Now().UTC()
-	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
-		Updates(map[string]any{fieldKeyBackup: blob, fieldKeyBackupAt: now}).Error
+	result := s.db.WithContext(ctx).Model(&model.User{}).
+		Where("id = ? AND key_version = ?", userID, max(version, 1)).
+		Updates(map[string]any{fieldKeyBackup: blob, fieldKeyBackupAt: now})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrStaleKeyBackup
+	}
+	return nil
 }
 
 // GetKeyBackup returns the stored backup blob; ok=false when none exists.
@@ -220,9 +264,17 @@ func (s *Store) GetKeyBackup(ctx context.Context, userID string) (string, bool) 
 }
 
 // DeleteKeyBackup removes a user's backup blob (key revocation).
-func (s *Store) DeleteKeyBackup(ctx context.Context, userID string) error {
-	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
-		Updates(map[string]any{fieldKeyBackup: "", fieldKeyBackupAt: nil}).Error
+func (s *Store) DeleteKeyBackup(ctx context.Context, userID string, version int) error {
+	result := s.db.WithContext(ctx).Model(&model.User{}).
+		Where("id = ? AND key_version = ?", userID, max(version, 1)).
+		Updates(map[string]any{fieldKeyBackup: "", fieldKeyBackupAt: nil})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrStaleKeyBackup
+	}
+	return nil
 }
 
 func (s *Store) GetUsersByIDs(ctx context.Context, userIDs []string) map[string]string {

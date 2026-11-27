@@ -39,8 +39,12 @@ function mockGetMessages() {
 	return vi.mocked(getMessages);
 }
 
+let scopeCounter = 0;
+
 beforeEach(() => {
-	setActiveAccountKey("alice:test");
+	// Unique DB per test: a leftover local lock in a shared scope would
+	// blank decrypted messages by design.
+	setActiveAccountKey(`alice-messages-${scopeCounter++}:test`);
 	vi.clearAllMocks();
 	mockGetMessages().mockResolvedValue({ messages: [] });
 });

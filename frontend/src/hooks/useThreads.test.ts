@@ -4,11 +4,51 @@ import { setActiveAccountKey } from "../db/init.ts";
 import { messagesRepo } from "../db/messagesRepo.ts";
 import { threadMessagesRepo } from "../db/threadMessagesRepo.ts";
 import { threadsRepo } from "../db/threadsRepo.ts";
-import type { KeyPair } from "../e2ee/crypto.ts";
-import { confirmNewKey, ensureAccountKeys } from "../e2ee/keys.ts";
-import { encryptMessageText } from "../e2ee/message.ts";
+import { messageAAD } from "../e2ee/chat-encrypt.ts";
+import {
+	type EncryptedPayload,
+	encryptContent,
+	type KeyPair,
+	sealMessageKey,
+	signSenderBinding,
+} from "../e2ee/crypto.ts";
+import {
+	confirmNewKey,
+	ensureAccountKeys,
+	ensureIdentityKeys,
+} from "../e2ee/keys.ts";
 import type { Message, Thread } from "../types/api.ts";
 import { onNotification } from "../utils/notify.ts";
+
+async function encryptThreadMessage(
+	text: string,
+	messageId: string,
+	fromId: string,
+	threadId?: string,
+) {
+	const identity = await ensureIdentityKeys();
+	const binding = { chatId: "c1", messageId, fromId, threadId };
+	const msgKey = crypto.getRandomValues(new Uint8Array(32));
+	const aad = messageAAD(binding);
+	const content = await encryptContent({ text }, msgKey, aad);
+	const envelopes = await sealMessageKey(
+		msgKey,
+		[{ keyId: "alice:test", publicKey: keys.publicKey, keyVersion: 1 }],
+		keys,
+	);
+	const payload: EncryptedPayload = {
+		v: 3,
+		nonce: content.nonce,
+		senderKey: keys.publicKey,
+		identityKey: identity.publicKey,
+		identitySig: await signSenderBinding(identity, aad, keys.publicKey),
+		envelopes,
+	};
+	return {
+		text: content.ciphertext,
+		encryptedPayload: JSON.stringify(payload),
+	};
+}
 
 vi.mock("../api.ts", () => ({
 	createThread: vi.fn(),
@@ -78,8 +118,12 @@ function plainMsg(id: string, text: string): Message {
 
 let keys: KeyPair;
 
+let scopeCounter = 0;
+
 beforeEach(async () => {
-	setActiveAccountKey("alice:test");
+	// A unique database per test: a local PIN/passkey lock left in the
+	// shared scope would make the decryptors correctly blank all text.
+	setActiveAccountKey(`alice-threads-${scopeCounter++}:test`);
 	vi.clearAllMocks();
 	mockApi().getThreads.mockResolvedValue({ threads: [] });
 	mockApi().getThreadMessages.mockResolvedValue({ messages: [] });
@@ -161,10 +205,12 @@ describe("useThreads", () => {
 			30,
 			"cur1",
 		);
-		expect(result.current.activeThreadMessages.map((m) => m.id)).toEqual([
-			"m1",
-			"m2",
-		]);
+		await waitFor(() => {
+			expect(result.current.activeThreadMessages.map((m) => m.id)).toEqual([
+				"m1",
+				"m2",
+			]);
+		});
 
 		act(() => {
 			result.current.closeThread();
@@ -230,19 +276,24 @@ describe("useThreads", () => {
 	});
 
 	it("decrypts thread messages and the encrypted parent text", async () => {
-		const enc = await encryptMessageText("reply secret", [
-			{ keyId: "alice:test", publicKey: keys.publicKey },
-		]);
-		const parentEnc = await encryptMessageText("parent secret", [
-			{ keyId: "alice:test", publicKey: keys.publicKey },
-		]);
+		const enc = await encryptThreadMessage(
+			"reply secret",
+			"tm1",
+			"alice:test",
+			"th-enc",
+		);
+		const parentEnc = await encryptThreadMessage(
+			"parent secret",
+			"p-enc",
+			"alice:test",
+		);
 
 		await messagesRepo.upsertMany([
 			{
 				id: "p-enc",
 				chatId: "c1",
-				fromId: "bob:test",
-				fromNick: "bob",
+				fromId: "alice:test",
+				fromNick: "alice",
 				text: parentEnc.text,
 				encrypted: true,
 				encryptedPayload: parentEnc.encryptedPayload,
@@ -254,8 +305,8 @@ describe("useThreads", () => {
 			{
 				id: "tm1",
 				chatId: "c1",
-				fromId: "bob:test",
-				fromNick: "bob",
+				fromId: "alice:test",
+				fromNick: "alice",
 				text: enc.text,
 				encrypted: true,
 				encryptedPayload: enc.encryptedPayload,

@@ -7,7 +7,6 @@ import type {
 	CallInfo,
 	Chat,
 	CreateChatOptions,
-	DeviceKey,
 	EditMessageOptions,
 	FileInfo,
 	ICEConfig,
@@ -188,52 +187,6 @@ export function sseAuth(connectionId: string, token: string) {
 	});
 }
 
-export function registerDeviceKey(
-	token: string,
-	publicKey: string,
-	protocolVersion = 2,
-) {
-	return request<{ status: string }>("/api/users/device-key", token, {
-		method: "PUT",
-		body: JSON.stringify({ publicKey, protocolVersion }),
-	});
-}
-
-export function setDeviceKeyBackup(token: string, backup: string) {
-	return request<{ status: string }>("/api/users/device-key/backup", token, {
-		method: "PUT",
-		body: JSON.stringify({ backup }),
-	});
-}
-
-export function getDeviceKeyBackup(token: string, deviceId: string) {
-	return request<{ backup: string }>(
-		`/api/users/device-keys/${encodeURIComponent(deviceId)}/backup`,
-		token,
-	);
-}
-
-export function deleteDeviceKeyBackup(token: string) {
-	return request<{ status: string }>("/api/users/device-key/backup", token, {
-		method: "DELETE",
-	});
-}
-
-export function revokeUserDeviceKey(token: string, deviceId: string) {
-	return request<{ status: string }>(
-		`/api/users/device-keys/${encodeURIComponent(deviceId)}`,
-		token,
-		{ method: "DELETE" },
-	);
-}
-
-export function getUserDeviceKeys(token: string, userId: string) {
-	return request<{ devices: DeviceKey[] }>(
-		`/api/users/${encodeURIComponent(userId)}/device-keys`,
-		token,
-	);
-}
-
 export function getBlockedUsers(token: string) {
 	return request<{ users: BlockedUser[] }>("/api/blocks", token);
 }
@@ -395,24 +348,35 @@ export function sendMessage(token: string, params: SendMessageParams) {
 	});
 }
 
-export function uploadPublicKey(token: string, publicKey: string) {
+export function uploadPublicKey(
+	token: string,
+	publicKey: string,
+	identityPublicKey: string,
+	masterKeyVersion: number,
+) {
 	return request<{ status: string }>("/api/users/public-key", token, {
 		method: "PUT",
-		body: JSON.stringify({ publicKey }),
+		body: JSON.stringify({ publicKey, identityPublicKey, masterKeyVersion }),
 	});
 }
 
 export function getPublicKey(token: string, userId: string) {
-	return request<{ publicKey: string; keyVersion?: string }>(
-		`/api/users/${encodeURIComponent(userId)}/public-key`,
-		token,
-	);
+	return request<{
+		publicKey: string;
+		identityPublicKey: string;
+		keyVersion?: string;
+		masterKeyVersion: number;
+	}>(`/api/users/${encodeURIComponent(userId)}/public-key`, token);
 }
 
-export function setKeyBackup(token: string, backup: string) {
+export function setKeyBackup(
+	token: string,
+	backup: string,
+	masterKeyVersion: number,
+) {
 	return request<{ status: string }>(KEY_BACKUP_ENDPOINT, token, {
 		method: "PUT",
-		body: JSON.stringify({ backup }),
+		body: JSON.stringify({ backup, masterKeyVersion }),
 	});
 }
 
@@ -420,10 +384,12 @@ export function getKeyBackup(token: string) {
 	return request<{ backup: string }>(KEY_BACKUP_ENDPOINT, token);
 }
 
-export function deleteKeyBackup(token: string) {
-	return request<{ status: string }>(KEY_BACKUP_ENDPOINT, token, {
-		method: "DELETE",
-	});
+export function deleteKeyBackup(token: string, masterKeyVersion: number) {
+	return request<{ status: string }>(
+		`${KEY_BACKUP_ENDPOINT}?masterKeyVersion=${masterKeyVersion}`,
+		token,
+		{ method: "DELETE" },
+	);
 }
 
 export function uploadFile(

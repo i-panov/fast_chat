@@ -6,20 +6,20 @@ import type { FileKey } from "./file-crypto.ts";
 
 export interface Envelope {
 	keyId: string;
-	box: string; // base64 sealed/boxed message key
-	// v2: per-recipient nonce for crypto_box_easy. Absent in legacy v1
-	// envelopes, which use an anonymous sealed box.
-	nonce?: string;
+	keyVersion: number;
+	box: string; // base64 crypto_box_easy(message key)
+	nonce: string; // base64 per-recipient nonce
 }
 
 export interface EncryptedPayload {
-	v: 1 | 2;
+	v: 3;
 	nonce: string; // base64 content nonce
-	// v2: the sender's X25519 public key and the account identity key that
+	// The sender's master encryption key and the account identity that
 	// signs it. The recipient pins the identity key on first use.
-	senderKey?: string;
-	identityKey?: string;
-	identitySig?: string;
+	senderKey: string;
+	identityKey: string;
+	identitySig: string;
+	identityChain?: Array<{ from: string; to: string; signature: string }>;
 	envelopes: Envelope[];
 }
 
@@ -126,32 +126,21 @@ export function decodeBase64(value: string): Uint8Array {
 	return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
-// Seal the message key to every recipient's public key. With senderKeys the
-// envelope is an authenticated crypto_box_easy: only the sender (holder of
-// senderKeys.privateKey) could have produced it. Without it the legacy
-// anonymous sealed box is used (v1).
+// sealMessageKey wraps the message key for every participant's master
+// encryption key. The sender's private key authenticates the envelope.
 export async function sealMessageKey(
 	msgKey: Uint8Array,
-	recipients: Array<{ keyId: string; publicKey: string }>,
-	senderKeys?: KeyPair,
+	recipients: Array<{ keyId: string; publicKey: string; keyVersion: number }>,
+	senderKeys: KeyPair,
 ): Promise<Envelope[]> {
 	await ensureSodium();
-
-	if (senderKeys === undefined) {
-		return recipients.map((r) => ({
-			keyId: r.keyId,
-			box: sodium.to_base64(
-				sodium.crypto_box_seal(msgKey, decodeBase64(r.publicKey)),
-			),
-		}));
-	}
-
 	const senderPrivateKey = decodeBase64(senderKeys.privateKey);
 
 	return recipients.map((r) => {
 		const nonce = sodium.randombytes_buf(sodium.crypto_box_NONCEBYTES);
 		return {
 			keyId: r.keyId,
+			keyVersion: r.keyVersion,
 			nonce: sodium.to_base64(nonce),
 			box: sodium.to_base64(
 				sodium.crypto_box_easy(
@@ -183,24 +172,6 @@ export async function openMessageKeyV2(
 		decodeBase64(senderPublicKey),
 		decodeBase64(recipientPrivateKey),
 	);
-}
-
-export async function openMessageKey(
-	envelope: Envelope,
-	publicKey: string,
-	privateKey: string,
-): Promise<Uint8Array> {
-	await ensureSodium();
-	return sodium.crypto_box_seal_open(
-		decodeBase64(envelope.box),
-		decodeBase64(publicKey),
-		decodeBase64(privateKey),
-	);
-}
-
-export interface EncryptedText {
-	nonce: string;
-	ciphertext: string;
 }
 
 // FileMeta describes a file without revealing its content. It travels inside
@@ -280,42 +251,4 @@ export async function decryptContent(
 	);
 
 	return JSON.parse(sodium.to_string(plain)) as MessageContent;
-}
-
-export async function encryptText(
-	plaintext: string,
-	msgKey: Uint8Array,
-): Promise<EncryptedText> {
-	await ensureSodium();
-	const nonce = sodium.randombytes_buf(
-		sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
-	);
-	const ciphertext = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
-		sodium.from_string(plaintext),
-		null,
-		null,
-		nonce,
-		msgKey,
-	);
-
-	return {
-		nonce: sodium.to_base64(nonce),
-		ciphertext: sodium.to_base64(ciphertext),
-	};
-}
-
-export async function decryptText(
-	ciphertext: string,
-	nonce: string,
-	msgKey: Uint8Array,
-): Promise<string> {
-	await ensureSodium();
-	const plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
-		null,
-		decodeBase64(ciphertext),
-		null,
-		decodeBase64(nonce),
-		msgKey,
-	);
-	return sodium.to_string(plain);
 }
