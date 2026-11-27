@@ -3,10 +3,54 @@
 Живое состояние работ по fast_chat. Нужен, чтобы состояние проекта не жило только
 в истории чата: новая сессия поднимается за один ход по этому файлу.
 
-- Обновлено: 2026-11-27 (ручная блокировка и диагностика passkey PRF).
+- Обновлено: 2026-11-27 (исправление всех findings read-only ревью: 23 модуля).
 - База: `master` @ `e3893cf` (композер, тексты, локализация).
 - Правила работы — `AGENTS.md`. Проверки — `make lint`, `make test`, `make frontend:e2e`.
 - Обновлять при изменении состава остатка, а не после каждого шага.
+
+## Текущая сессия: исправление findings ревью (не закоммичено)
+
+Цель: закрыть 7 Critical и ~130 Important из read-only ревью 23 модулей
+(бэкенд 11 + фронтенд 12), не трогая продуктовые решения. Полные отчёты —
+`/tmp/opencode/reviews/*.md`, отчёты о фиксах — `/tmp/opencode/reviews/fixes/*.md`,
+чек-лист верификации — `/tmp/opencode/reviews/VERIFY-CHECKLIST.md`.
+
+Сделано (волнами по 3 субагента с эксклюзивным владением файлами):
+
+- Critical: C1 федерация (пир больше не правит/удаляет сообщения локальных
+  пользователей); C2 `threadId` (edit с тредом и внутри треда); C3 tombstone в
+  тредах; C4 межвкладочный logout/401; C5 tombstone vs queued send; C6/C7
+  звонки (потерянный `call_ended`, hangup на unmount).
+- Бэкенд: block-check на typing/read/edit/delete и в `AddChatMember`; лимит
+  `MemberIDs`; квоты файлов и dedup↔GC; `BindSession`/reap в SSE-хабе; ротация
+  сессий с grace-окном; каскад треда и `chat_pins`; N+1 и имя группы в рунах;
+  un-hide окно `Sync`; дедлайн SMTP; durable admin fan-out; TOFU-пиннинг,
+  nonce-cap, per-peer outbox, `CheckRedirect`, лимит тела чужой ошибки; Bot API
+  403/409, лимит long-poll, block-check бот-каналов, токен вне истории чата.
+- Фронтенд: account-guard (`useMessages`/outbox/fileCache/decryptedFiles);
+  композер после `await`; forward и pending-чат; sync после `maxSyncRounds`;
+  stale blob URL и проверки MSE; OSM-тайлы по клику; PIN/recovery/identity
+  guard; группы (гонка `openGroupSettings`, «призрак» leave, руны); админка;
+  блокировки; `ErrorBoundary`.
+- Верификатор дополнительно: «Закрепить» только владельцу группы; пересылка
+  сообщения только с локацией; воркер берёт тот же Web Lock и не теряет sync
+  при открытом окне; `logoutAll` сообщает об ошибке сервера; расшифрованный
+  кэш вложений удаляется вместе с сообщением; флейк `ChatPage.test` устранён.
+
+Проверки: `make backend:lint` — 0 issues; `make frontend:lint` — 0 ошибок
+(39 задокументированных `set-state-in-effect`); `go test -race ./...` — все
+пакеты ok; `npx vitest run` — 985+ тестов passed; `make frontend:e2e` — 12/12
+passed.
+
+Осталось (отложено осознанно, подробно — `docs/REVIEW-BACKLOG.md`):
+
+- Important: реакции/readBy в клиентском delta-sync; plaintext-имена E2EE-вложений
+  (продуктовое решение); полная аутентификация ключевой директории получателя;
+  общая IDB-транзакция «строка + blobs + enqueue».
+- Частично: стриминговая расшифровка больших файлов, окно буфера MSE, прямая
+  подписка звонков на `connected`/`sse_closed`.
+- Minor и декомпозиция крупных файлов — списком в backlog.
+- [manual] iOS long-press, autoplay Safari, WebAuthn PRF на Android.
 
 ## Текущая сессия: ручная блокировка и passkey PRF
 
