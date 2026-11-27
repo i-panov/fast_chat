@@ -34,6 +34,9 @@ import {
 	hasPasskeyLock,
 	hasServerPasskeyBackup,
 	isPasskeyUnlockAvailable,
+	PasskeyPrfMissingError,
+	PasskeyPrfUnstableError,
+	PasskeyPrfUnsupportedError,
 } from "../../e2ee/passkeyLock.ts";
 
 const PIN_PATTERN = /^\d{6}$/;
@@ -93,6 +96,15 @@ export function LocalPinSettings({ token }: { token: string }) {
 	function mapError(err: unknown): string {
 		if (err instanceof LocalLockRequiredError)
 			return t("localLock.error.locked");
+		if (err instanceof PasskeyPrfUnsupportedError) {
+			return t("localLock.error.prfUnsupported");
+		}
+		if (err instanceof PasskeyPrfMissingError) {
+			return t("localLock.error.prfMissing");
+		}
+		if (err instanceof PasskeyPrfUnstableError) {
+			return t("localLock.error.prfUnstable");
+		}
 		if (
 			err instanceof Error &&
 			(err.message === "no local keys to protect" ||
@@ -150,6 +162,7 @@ export function LocalPinSettings({ token }: { token: string }) {
 		try {
 			await enablePasskey();
 		} catch (err) {
+			console.error("enablePasskey failed", err);
 			setError(mapError(err));
 		} finally {
 			setBusy(false);
@@ -370,6 +383,11 @@ export function LocalPinSettings({ token }: { token: string }) {
 							: "localLock.passkeyEnable",
 					)}
 				</Button>
+			)}
+			{isPasskeyUnlockAvailable() && !passkeyEnabled && (
+				<Text size="xs" c="dimmed">
+					{t("localLock.passkeyTwoPrompts")}
+				</Text>
 			)}
 		</Stack>
 	);

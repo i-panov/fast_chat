@@ -20,6 +20,7 @@ import {
 	LOCAL_LOCK_CHANGED_EVENT,
 	LOCAL_LOCK_META,
 	LocalLockRequiredError,
+	lockLocalKeys,
 	notifyKeyMaterialChanged,
 	PASSKEY_LOCK_META,
 	PRIVATE_KEY_META,
@@ -28,6 +29,7 @@ import {
 	setUnlockedMasterKeys,
 	withAccountKeyLock,
 } from "./keys.ts";
+import { listenForLockRequests, postLockRequest } from "./localLockChannel.ts";
 import { hasPasskeyLock } from "./passkeyLock.ts";
 
 const PIN_PATTERN = /^\d{6}$/;
@@ -156,10 +158,25 @@ async function clearLocalLockAndKeysLocked(scope: string): Promise<void> {
 		metaRepo.setNoNotifyFor(scope, KEY_VERSION_META, null),
 	]);
 	// lockLocalKeys clears the in-memory copies and fires the change event.
-	const { lockLocalKeys } = await import("./keys.ts");
 	lockLocalKeys(scope);
 	// Other tabs must drop their in-memory keys too after a wipe.
 	notifyKeyMaterialChanged(scope);
+}
+
+// requestLocalLock is the explicit "lock now" action: it forgets this tab's
+// in-memory keys and asks the other tabs of the same account to do the same.
+// The disk state does not change — the keys are already wrapped there.
+export function requestLocalLock(notifyTabs = true): void {
+	const scope = getAccountScope();
+	lockLocalKeys(scope);
+	if (notifyTabs) postLockRequest(scope);
+}
+
+// subscribeToRemoteLock locks this tab when another tab locks the account.
+export function subscribeToRemoteLock(): () => void {
+	return listenForLockRequests((scope) => {
+		if (scope === getAccountScope()) lockLocalKeys(scope);
+	});
 }
 
 export function onLocalLockChanged(listener: () => void): () => void {

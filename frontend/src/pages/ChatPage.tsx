@@ -971,6 +971,7 @@ export function ChatPage() {
 				<RecoveryModal activeToken={s.activeAccount?.token ?? null} />
 				<BackupSetupGate activeToken={s.activeAccount?.token ?? null} />
 				<AppHeader
+					accountKey={s.user.id}
 					onSwitcherToggle={() => s.setSwitcherOpen(true)}
 					onOpenMessageSearch={() => setMessageSearchOpen(true)}
 				/>

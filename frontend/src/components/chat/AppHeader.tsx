@@ -1,11 +1,14 @@
 import { ActionIcon, Group, Loader, Paper, Tooltip } from "@mantine/core";
-import { Menu, Search } from "lucide-react";
+import { Lock, Menu, Search } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { requestLocalLock } from "../../e2ee/localLock.ts";
+import { useLocalLockState } from "../../hooks/useLocalLockState.ts";
 import { useNetworkStatus } from "../../hooks/useNetworkStatus.ts";
 import { useSyncStatus } from "../../hooks/useSyncStatus.ts";
 
 interface Props {
+	accountKey: string;
 	onSwitcherToggle: () => void;
 	onOpenMessageSearch?: () => void;
 }
@@ -28,10 +31,15 @@ function Dot({ color, label }: { color: string; label: string }) {
 	);
 }
 
-export function AppHeader({ onSwitcherToggle, onOpenMessageSearch }: Props) {
+export function AppHeader({
+	accountKey,
+	onSwitcherToggle,
+	onOpenMessageSearch,
+}: Props) {
 	const { t } = useTranslation();
 	const isOnline = useNetworkStatus();
 	const syncState = useSyncStatus();
+	const localLock = useLocalLockState(accountKey);
 
 	let indicator: ReactNode;
 	if (syncState === "syncing") {
@@ -74,6 +82,19 @@ export function AppHeader({ onSwitcherToggle, onOpenMessageSearch }: Props) {
 					<Menu size={18} />
 				</ActionIcon>
 				<Group gap={4}>
+					{localLock.enabled && !localLock.locked && (
+						<Tooltip label={t("localLock.lockNow")} withArrow>
+							<ActionIcon
+								variant="subtle"
+								color="gray"
+								size="lg"
+								onClick={() => requestLocalLock()}
+								aria-label={t("localLock.lockNow")}
+							>
+								<Lock size={18} />
+							</ActionIcon>
+						</Tooltip>
+					)}
 					{onOpenMessageSearch !== undefined && (
 						<ActionIcon
 							variant="subtle"

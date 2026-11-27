@@ -17,6 +17,8 @@ import {
 import {
 	clearLocalLockAndKeys,
 	onLocalLockChanged,
+	requestLocalLock,
+	subscribeToRemoteLock,
 	unlockLocalPin,
 } from "../../e2ee/localLock.ts";
 import {
@@ -53,7 +55,6 @@ export function LocalLockModal({
 	);
 	const lockTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const backgroundTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const lockChannel = useRef<BroadcastChannel | null>(null);
 
 	useEffect(() => {
 		if (activeToken === null) {
@@ -91,29 +92,8 @@ export function LocalLockModal({
 
 	// Auto-lock in one tab must also lock the other open tabs of this account.
 	useEffect(() => {
-		if (typeof BroadcastChannel === "undefined" || activeToken === null) {
-			return;
-		}
-		const channel = new BroadcastChannel("fastchat-local-lock");
-		lockChannel.current = channel;
-		channel.onmessage = (event: MessageEvent<unknown>) => {
-			const data = event.data as {
-				type?: string;
-				token?: string;
-				tabId?: string;
-			} | null;
-			if (
-				data?.type === "lock" &&
-				data.token === activeToken &&
-				data.tabId !== KEY_TAB_ID
-			) {
-				lockLocalKeys();
-			}
-		};
-		return () => {
-			channel.close();
-			lockChannel.current = null;
-		};
+		if (activeToken === null) return;
+		return subscribeToRemoteLock();
 	}, [activeToken]);
 
 	// Rotation/creation in another tab leaves this tab with a stale in-memory
@@ -161,17 +141,10 @@ export function LocalLockModal({
 		};
 		const lock = (notifyTabs = true) => {
 			clearTimers();
-			lockLocalKeys();
 			if (notifyTabs) {
-				try {
-					lockChannel.current?.postMessage({
-						type: "lock",
-						token: activeToken,
-						tabId: KEY_TAB_ID,
-					});
-				} catch {
-					// BroadcastChannel is best-effort.
-				}
+				requestLocalLock();
+			} else {
+				lockLocalKeys();
 			}
 			setLocked(true);
 		};

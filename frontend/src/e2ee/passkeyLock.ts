@@ -4,6 +4,7 @@ import { clearDecryptedFileCache } from "../utils/fileCache.ts";
 import {
 	decodeServerBackup,
 	decryptBackupData,
+	E2EBackupError,
 	encodeServerBackup,
 	encryptBackupData,
 } from "./backup.ts";
@@ -39,6 +40,26 @@ import {
 const PUBLIC_KEY_CREDENTIAL = "public-key";
 const BASE64_PADDING_RE = /=+$/;
 const ACCOUNT_CHANGED = "account changed";
+
+// PRF failures are typed so the UI can say what the provider actually did
+// instead of falling back to "could not change the local protection".
+export class PasskeyPrfUnsupportedError extends Error {
+	constructor() {
+		super("passkey provider does not support PRF");
+	}
+}
+
+export class PasskeyPrfMissingError extends Error {
+	constructor() {
+		super("passkey did not return a PRF output");
+	}
+}
+
+export class PasskeyPrfUnstableError extends Error {
+	constructor() {
+		super("passkey returned an unstable PRF output");
+	}
+}
 
 interface PasskeyRecord {
 	v: 1;
@@ -79,13 +100,16 @@ export function isPasskeyUnlockAvailable(): boolean {
 }
 
 interface PrfResults {
-	prf?: { enabled?: boolean; results?: { first?: ArrayBuffer } };
+	prf?: {
+		enabled?: boolean;
+		results?: { first?: ArrayBuffer };
+	};
 }
 
 function prfResult(credential: PublicKeyCredential): ArrayBuffer {
 	const results = credential.getClientExtensionResults() as PrfResults;
 	const first = results.prf?.results?.first;
-	if (first === undefined) throw new Error("passkey does not expose PRF");
+	if (first === undefined) throw new PasskeyPrfMissingError();
 	return first;
 }
 
@@ -105,6 +129,44 @@ async function assertPasskey(
 	return prfResult(credential as PublicKeyCredential);
 }
 
+// createPasskey registers the credential and reads the PRF capability in the
+// same call. Evaluating PRF at creation saves a prompt when the authenticator
+// returns the output right away; a provider that reports prf.enabled: false
+// can never unwrap the key, so it fails before the confirmation assertion.
+async function createPasskey(salt: Uint8Array<ArrayBuffer>): Promise<{
+	credentialId: Uint8Array<ArrayBuffer>;
+	prf: ArrayBuffer | null;
+}> {
+	const created = (await navigator.credentials.create({
+		publicKey: {
+			challenge: randomBytes(32),
+			rp: { name: "Fast Chat", id: window.location.hostname },
+			user: {
+				id: randomBytes(32),
+				name: "fastchat",
+				displayName: "Fast Chat",
+			},
+			pubKeyCredParams: [
+				{ type: PUBLIC_KEY_CREDENTIAL, alg: -7 },
+				{ type: PUBLIC_KEY_CREDENTIAL, alg: -257 },
+			],
+			authenticatorSelection: {
+				userVerification: "required",
+				residentKey: "preferred",
+			},
+			extensions: { prf: { eval: { first: salt } } },
+		},
+	})) as PublicKeyCredential | null;
+	if (created === null) throw new Error("passkey registration cancelled");
+
+	const results = created.getClientExtensionResults() as PrfResults;
+	if (results.prf?.enabled === false) throw new PasskeyPrfUnsupportedError();
+	return {
+		credentialId: new Uint8Array(created.rawId),
+		prf: results.prf?.results?.first ?? null,
+	};
+}
+
 // enablePasskey stores a second wrapper of the master key under the PRF
 // output of a platform passkey. It does not replace the PIN or server backup.
 export function enablePasskey(): Promise<void> {
@@ -117,31 +179,9 @@ async function enablePasskeyLocked(scope: string): Promise<void> {
 		throw new Error("passkeys are not available in this browser");
 	}
 	const salt = randomBytes(32);
-	const userId = randomBytes(32);
-	const created = (await navigator.credentials.create({
-		publicKey: {
-			challenge: randomBytes(32),
-			rp: { name: "Fast Chat", id: window.location.hostname },
-			user: {
-				id: userId,
-				name: "fastchat",
-				displayName: "Fast Chat",
-			},
-			pubKeyCredParams: [
-				{ type: PUBLIC_KEY_CREDENTIAL, alg: -7 },
-				{ type: PUBLIC_KEY_CREDENTIAL, alg: -257 },
-			],
-			authenticatorSelection: {
-				userVerification: "required",
-				residentKey: "preferred",
-			},
-			extensions: { prf: {} },
-		},
-	})) as PublicKeyCredential | null;
-	if (created === null) throw new Error("passkey registration cancelled");
-
-	const credentialId = new Uint8Array(created.rawId);
-	const prf = await assertPasskey(credentialId, salt);
+	const created = await createPasskey(salt);
+	const credentialId = created.credentialId;
+	const prf = created.prf ?? (await assertPasskey(credentialId, salt));
 	const keyPair = await getMyKeyPair(scope);
 	const identityKeyPair = await getIdentityKeyPair(scope);
 	if (keyPair === null || identityKeyPair === null) {
@@ -186,11 +226,11 @@ async function enablePasskeyLocked(scope: string): Promise<void> {
 			!samePublicKey(check.keyPair.publicKey, keyPair.publicKey) ||
 			!samePublicKey(check.identityKeyPair.publicKey, identityKeyPair.publicKey)
 		) {
-			throw new Error("passkey lock verification failed");
+			throw new PasskeyPrfUnstableError();
 		}
 	} catch (err) {
 		await metaRepo.setNoNotifyFor(scope, PASSKEY_LOCK_META, null);
-		throw err;
+		throw err instanceof E2EBackupError ? new PasskeyPrfUnstableError() : err;
 	}
 	await Promise.all([
 		metaRepo.setNoNotifyFor(scope, PUBLIC_KEY_META, null),
@@ -235,31 +275,6 @@ async function unlockWithPasskeyLocked(scope: string): Promise<void> {
 	notifyKeyMaterialChanged(scope);
 }
 
-async function createPasskeyCredential(): Promise<Uint8Array<ArrayBuffer>> {
-	const created = (await navigator.credentials.create({
-		publicKey: {
-			challenge: randomBytes(32),
-			rp: { name: "Fast Chat", id: window.location.hostname },
-			user: {
-				id: randomBytes(32),
-				name: "fastchat",
-				displayName: "Fast Chat",
-			},
-			pubKeyCredParams: [
-				{ type: PUBLIC_KEY_CREDENTIAL, alg: -7 },
-				{ type: PUBLIC_KEY_CREDENTIAL, alg: -257 },
-			],
-			authenticatorSelection: {
-				userVerification: "required",
-				residentKey: "preferred",
-			},
-			extensions: { prf: {} },
-		},
-	})) as PublicKeyCredential | null;
-	if (created === null) throw new Error("passkey registration cancelled");
-	return new Uint8Array(created.rawId);
-}
-
 // enableServerPasskey adds a second, passkey-PRF wrapper to the server backup.
 // It requires an existing password wrapper as the portable fallback.
 export function enableServerPasskey(token: string): Promise<void> {
@@ -284,9 +299,10 @@ async function enableServerPasskeyLocked(
 	// A device that lost a rotation race must not wrap its orphan key with a
 	// passkey: the password wrapper belongs to the server key.
 	await assertLocalKeyMatchesServer(token, scope);
-	const credentialId = await createPasskeyCredential();
 	const salt = randomBytes(32);
-	const prf = await assertPasskey(credentialId, salt);
+	const created = await createPasskey(salt);
+	const credentialId = created.credentialId;
+	const prf = created.prf ?? (await assertPasskey(credentialId, salt));
 	const keyPair = await getMyKeyPair(scope);
 	const identityKeyPair = await getIdentityKeyPair(scope);
 	if (keyPair === null || identityKeyPair === null) {
@@ -308,12 +324,14 @@ async function enableServerPasskeyLocked(
 	const check = await decryptBackupData(
 		toBase64Url(new Uint8Array(confirmPrf)),
 		blob,
-	);
+	).catch((err: unknown) => {
+		throw err instanceof E2EBackupError ? new PasskeyPrfUnstableError() : err;
+	});
 	if (
 		!samePublicKey(check.keyPair.publicKey, keyPair.publicKey) ||
 		!samePublicKey(check.identityKeyPair.publicKey, identityKeyPair.publicKey)
 	) {
-		throw new Error("passkey backup verification failed");
+		throw new PasskeyPrfUnstableError();
 	}
 	await setKeyBackup(
 		token,
